@@ -14,6 +14,28 @@
 Use the exact variable names below. The app reads them through the
 `SecretProvider`, which maps logical keys to these names.
 
+### Platform credentials vs tenant credentials (Milestone 2)
+
+- **Platform credentials** belong to Wigmore's own HubSpot app and are the
+  same for every customer: `HUBSPOT_APP_*`.
+- **Tenant credentials** belong to one customer: its Sugar login, its
+  Gainsight access key, and later its HubSpot refresh token. Each is:
+  1. **registered** for the tenant, which stores only a reference (e.g.
+     `tenant.juniper.sugar.password`) in the database, and
+  2. **supplied** under the matching name, `TENANT_<SLUG>_<SYSTEM>_<NAME>`,
+     e.g. `TENANT_JUNIPER_SUGAR_PASSWORD`.
+
+  A tenant can only ever resolve its own credentials. The key is derived from
+  its slug, and the database enforces this. Non-secret connection details
+  (base URLs, API versions, portal ids) are tenant _integration settings_, not
+  environment variables.
+
+### Database credentials (Milestone 2)
+
+Two per environment: `MIGRATION_DATABASE_URL` (schema owner, migrations only)
+and `DATABASE_URL` (a non-privileged member of `lip_app`, used by the API,
+worker and CLI). See [operations/database-roles.md](operations/database-roles.md).
+
 ## By milestone
 
 ### M3–M5 — HubSpot developer environment (we create this ourselves; no Juniper access needed)
@@ -46,10 +68,10 @@ Webhooks need a public HTTPS URL. For local testing we will use a tunnel
 
 ### M10 — Gainsight CS (read-only)
 
-| Variable                  | Where it comes from                                                                                                                          |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GAINSIGHT_CS_BASE_URL`   | Your Gainsight CS tenant URL, e.g. `https://<tenant>.gainsightcloud.com`                                                                     |
-| `GAINSIGHT_CS_ACCESS_KEY` | Gainsight CS → Administration → Connectors 2.0 → Gainsight API → generate an access key. Use a read-only / least-privilege integration user. |
+| Setting                                  | Where it goes                                        | Where it comes from                                                                                                                          |
+| ---------------------------------------- | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Base URL                                 | Tenant integration settings (`gainsight_cs.baseUrl`) | Your Gainsight CS tenant URL, e.g. `https://<tenant>.gainsightcloud.com`                                                                     |
+| `TENANT_JUNIPER_GAINSIGHT_CS_ACCESS_KEY` | Secret (env / Key Vault)                             | Gainsight CS → Administration → Connectors 2.0 → Gainsight API → generate an access key. Use a read-only / least-privilege integration user. |
 
 ### M16 — Juniper's real HubSpot (when customer access arrives)
 
@@ -61,12 +83,11 @@ copies tokens by hand.
 
 Until then M7 uses a realistic mock of Sugar's REST API.
 
-| Variable                                  | Where it comes from                                                                                                  |
-| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `SUGAR_BASE_URL`                          | Juniper's Sugar instance URL                                                                                         |
-| `SUGAR_CLIENT_ID` / `SUGAR_CLIENT_SECRET` | Sugar Admin → OAuth Keys (a dedicated key for this integration)                                                      |
-| `SUGAR_USERNAME` / `SUGAR_PASSWORD`       | A dedicated Sugar API user (least privilege; read-only for M17)                                                      |
-| `SUGAR_PLATFORM`                          | A custom platform name registered in Sugar Admin → Configure API Platforms, so our sessions don't log out real users |
+| Setting                                                                 | Where it goes                                                                       | Where it comes from                                                                                                                                   |
+| ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Base URL, API version, platform                                         | Tenant integration settings (`sugar.baseUrl`, `sugar.apiVersion`, `sugar.platform`) | Juniper's Sugar instance. The platform is a custom name registered in Sugar Admin → Configure API Platforms, so our sessions don't log out real users |
+| `TENANT_JUNIPER_SUGAR_CLIENT_ID` / `TENANT_JUNIPER_SUGAR_CLIENT_SECRET` | Secret                                                                              | Sugar Admin → OAuth Keys (a dedicated key for this integration)                                                                                       |
+| `TENANT_JUNIPER_SUGAR_USERNAME` / `TENANT_JUNIPER_SUGAR_PASSWORD`       | Secret                                                                              | A dedicated Sugar API user (least privilege; read-only for M17)                                                                                       |
 
 ## Handling rules
 

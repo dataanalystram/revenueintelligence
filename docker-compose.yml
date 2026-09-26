@@ -11,7 +11,10 @@ services:
       POSTGRES_PASSWORD: lip
       POSTGRES_DB: lip
     ports: ['5432:5432']
-    volumes: [pgdata:/var/lib/postgresql/data]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Creates the application login role on first start (development only).
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U lip -d lip']
       interval: 5s
@@ -33,17 +36,20 @@ services:
   migrate:
     profiles: [app]
     build: { context: ., target: migrate }
-    environment: &app-env
-      DATABASE_URL: postgresql://lip:lip@postgres:5432/lip
-      REDIS_URL: redis://redis:6379
-      NODE_ENV: production
+    environment:
+      # Migrations run as the schema owner.
+      MIGRATION_DATABASE_URL: postgresql://lip:lip@postgres:5432/lip
     depends_on:
       postgres: { condition: service_healthy }
 
   api:
     profiles: [app]
     build: { context: ., target: runtime }
-    environment: *app-env
+    environment:
+      &app-env # The application runs as a non-privileged member of lip_app (row-level security applies).
+      DATABASE_URL: postgresql://lip_api:lip_api@postgres:5432/lip
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
     ports: ['3000:3000']
     depends_on:
       migrate: { condition: service_completed_successfully }

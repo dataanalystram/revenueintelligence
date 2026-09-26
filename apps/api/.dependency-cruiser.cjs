@@ -30,6 +30,25 @@ module.exports = {
       },
     },
     {
+      name: 'root-database-client-only-in-tenancy',
+      severity: 'error',
+      comment:
+        'Tenant data is reached only through TenantDatabase.transaction(ctx, ...). Business modules ' +
+        'never receive the root PrismaService, so unscoped queries cannot be written (ADR 0008).',
+      from: {
+        path: '^src/modules/',
+        pathNot: ['^src/modules/tenancy/infrastructure/', '\\.spec\\.ts$'],
+      },
+      to: { path: '^src/platform/database/' },
+    },
+    {
+      name: 'tenant-context-issued-only-by-tenancy',
+      severity: 'error',
+      comment: 'Only the tenancy module may import the context issuer.',
+      from: { pathNot: '^src/modules/tenancy/' },
+      to: { path: '^src/modules/tenancy/tenant-context\\.ts$' },
+    },
+    {
       name: 'domain-is-pure',
       severity: 'error',
       comment:

@@ -1,4 +1,6 @@
 import { Module, type DynamicModule } from '@nestjs/common';
+import { IdentityModule } from './modules/identity';
+import { TenancyModule } from './modules/tenancy';
 import type { AppConfig } from './platform/config';
 import { PlatformModule } from './platform/platform.module';
 
@@ -11,7 +13,7 @@ export class WorkerModule {
   static forRoot(config?: AppConfig): DynamicModule {
     return {
       module: WorkerModule,
-      imports: [PlatformModule.forRoot(config)],
+      imports: [PlatformModule.forRoot(config), TenancyModule, IdentityModule],
     };
   }
 }

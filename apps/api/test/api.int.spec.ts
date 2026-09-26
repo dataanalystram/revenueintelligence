@@ -12,7 +12,6 @@ describe('API process (real PostgreSQL + Redis)', () => {
 
   beforeAll(async () => {
     infra = await startInfrastructure();
-    await migrate(infra.config.databaseUrl);
     app = await createApiApp(infra.config);
     await app.init();
     http = app.getHttpServer() as App;
@@ -25,7 +24,7 @@ describe('API process (real PostgreSQL + Redis)', () => {
 
   it('applies database migrations cleanly and idempotently', async () => {
     // Re-running must be a no-op, as it is on every deployment.
-    await expect(migrate(infra.config.databaseUrl)).resolves.toBeDefined();
+    await expect(migrate(infra.adminUrl)).resolves.toBeDefined();
   });
 
   it('GET /health/live returns 200', async () => {

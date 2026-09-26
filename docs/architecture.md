@@ -30,6 +30,7 @@ per tenant ([ADR 0004](adr/0004-product-scope-and-fuelius-coexistence.md)).
 | Qualification      | Pluggable providers (rules / Jev / hybrid); humans override; policy separate                                               | [0005](adr/0005-qualification-architecture.md)              |
 | Lead creation      | HubSpot owns marketing-sourced Leads; platform owns intelligence-sourced Leads after duplicate checks; true origin kept    | [0006](adr/0006-lead-creation-ownership-and-attribution.md) |
 | Domain model       | Immutable canonical entities, Zod schemas, pure behaviour functions                                                        | [0007](adr/0007-canonical-domain-model.md)                  |
+| Tenant isolation   | PostgreSQL RLS + mandatory TenantContext/TenantTransaction + composite keys; app runs as a non-privileged role             | [0008](adr/0008-tenant-isolation.md)                        |
 
 ## 2. Architectural style: modular monolith
 
@@ -103,10 +104,23 @@ are translated into canonical types.
 
 ## 5. Tenancy and productisation
 
-Juniper is tenant #1. From M2 every persistent integration record carries a
-`tenant_id`, every query is tenant-scoped, and credentials are stored per
-tenant through the secret provider. HubSpot OAuth is implemented as a
-multi-account app so future customers install the same app.
+Juniper is tenant #1. Isolation is enforced in three layers
+([ADR 0008](adr/0008-tenant-isolation.md)):
+
+```
+module code ──> TenantConfigService / repositories(tx)
+                      │ require TenantContext (issued only by TenantContextService)
+                      ▼
+               TenantDatabase.transaction(ctx, tx => …)
+                      │ BEGIN; set_config('app.current_tenant', id, local); status check
+                      ▼
+               PostgreSQL (app role, RLS forced)
+                 tenant_id = app_current_tenant() on every tenant table,
+                 composite FKs (tenant_id, id), tenant-scoped unique keys
+```
+
+HubSpot OAuth will be implemented as a multi-account app, so future customers
+install the same app.
 
 Tenant-specific, never hard-coded:
 
