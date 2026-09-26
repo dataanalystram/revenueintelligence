@@ -26,6 +26,8 @@ export interface FakeAssociation {
   typeId: number;
   category: 'HUBSPOT_DEFINED' | 'USER_DEFINED' | 'INTEGRATOR_DEFINED';
   label: string | null;
+  /** Further types on the same link (live, HubSpot pairs a labelled type with an unlabelled one). */
+  alsoTypes?: readonly { typeId: number; label: string | null }[];
 }
 
 export interface FakeAccount {
@@ -121,6 +123,7 @@ const REVERSE_TYPES: Record<number, [number, string | null]> = {
 export class FakeHubSpot {
   readonly requests: FakeRequestLog[] = [];
   private readonly faults: FakeFault[] = [];
+  private reverseHidden: ((a: FakeAssociation) => boolean) | undefined;
   private server: Server | undefined;
   private readonly options: FakeHubSpotOptions;
 
@@ -137,6 +140,14 @@ export class FakeHubSpot {
   /** Fails the next matching request(s) with the given response. */
   fail(fault: FakeFault): void {
     this.faults.push({ ...fault, times: fault.times ?? 1 });
+  }
+
+  /**
+   * Makes the stored associations `pick` selects unreadable in reverse (a
+   * non-reciprocal link, for testing reciprocity checks); `undefined` resets.
+   */
+  hideReverse(pick: ((a: FakeAssociation) => boolean) | undefined): void {
+    this.reverseHidden = pick;
   }
 
   async start(port = 0): Promise<this> {
@@ -370,17 +381,11 @@ export class FakeHubSpot {
       this.denied(to, OBJECT_SCOPE[to], account, res)
     )
       return;
-    const seen = new Map<number, FakeAssociation>();
+    const seen = new Map<number, { category: string; typeId: number; label: string | null }>();
     for (const a of this.links(from, to)) {
-      seen.set(a.typeId, a);
+      for (const t of types(a)) seen.set(t.typeId, { category: a.category, ...t });
     }
-    this.send(res, 200, {
-      results: [...seen.values()].map((a) => ({
-        category: a.category,
-        typeId: a.typeId,
-        label: a.label,
-      })),
-    });
+    this.send(res, 200, { results: [...seen.values()] });
   }
 
   private batchRead(
@@ -429,7 +434,7 @@ export class FakeHubSpot {
         from: { id: input.id },
         to: slice.map((a) => ({
           toObjectId: Number(a.toId),
-          associationTypes: [{ category: a.category, typeId: a.typeId, label: a.label }],
+          associationTypes: types(a).map((t) => ({ category: a.category, ...t })),
         })),
         ...(start + pageSize < links.length
           ? { paging: { next: { after: String(start + pageSize) } } }
@@ -462,17 +467,20 @@ export class FakeHubSpot {
     const all = this.options.associations ?? [];
     const forward = all.filter((a) => a.fromType === from && a.toType === to);
     const reverse = all
-      .filter((a) => a.fromType === to && a.toType === from)
+      .filter((a) => a.fromType === to && a.toType === from && !this.reverseHidden?.(a))
       .map((a) => {
-        const [typeId, label] = REVERSE_TYPES[a.typeId] ?? [a.typeId, a.label];
+        const [first, ...rest] = types(a).map((t) => {
+          const [typeId, label] = REVERSE_TYPES[t.typeId] ?? [t.typeId, t.label];
+          return { typeId, label };
+        });
         return {
           fromType: from,
           fromId: a.toId,
           toType: to,
           toId: a.fromId,
-          typeId,
           category: a.category,
-          label,
+          ...first!,
+          alsoTypes: rest,
         };
       });
     return [...forward, ...reverse];
@@ -484,11 +492,16 @@ export class FakeHubSpot {
   }
 }
 
+function types(a: FakeAssociation): { typeId: number; label: string | null }[] {
+  return [{ typeId: a.typeId, label: a.label }, ...(a.alsoTypes ?? [])];
+}
+
 /**
  * A small, deterministic data set: 5 contacts, 3 companies, 3 leads with
- * associations. Association type ids 1 and 279 (contact to company) and 580
- * (lead to primary company) and 578 (lead to primary contact) match the ids
- * the live discovery of the test account reported on 2026-09-26.
+ * associations. Association type ids 1 and 279 (contact to company), 580 + 610
+ * (lead to company) and 578 + 608 (lead to contact) match the ids and labels
+ * the live discovery of the test account reported on 2026-09-26, where each
+ * lead link carried both its labelled and its unlabelled type.
  */
 export function sampleData(): Pick<FakeHubSpotOptions, 'records' | 'associations'> {
   const contacts = [1, 2, 3, 4, 5].map((n) => ({
@@ -518,7 +531,8 @@ export function sampleData(): Pick<FakeHubSpotOptions, 'records' | 'associations
         toId: contacts[i]!.id,
         typeId: 578,
         category: 'HUBSPOT_DEFINED' as const,
-        label: null,
+        label: 'Primary',
+        alsoTypes: [{ typeId: 608, label: null }],
       },
       {
         fromType: 'leads',
@@ -528,6 +542,7 @@ export function sampleData(): Pick<FakeHubSpotOptions, 'records' | 'associations
         typeId: 580,
         category: 'HUBSPOT_DEFINED' as const,
         label: 'Primary',
+        alsoTypes: [{ typeId: 610, label: null }],
       },
     ]),
     ...contacts.slice(0, 3).map((c, i) => ({

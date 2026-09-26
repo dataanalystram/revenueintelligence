@@ -222,7 +222,10 @@ describe('HubSpot connector (tenant-scoped)', () => {
       )!;
       expect(leadCompany.result).toMatchObject({
         status: 'ok',
-        types: [{ typeId: 580, label: 'Primary' }],
+        types: [
+          { typeId: 580, label: 'Primary' },
+          { typeId: 610, label: null },
+        ],
       });
       const sample = report.associationSamples.find(
         (s) => s.from === 'leads' && s.to === 'contacts',
@@ -231,6 +234,10 @@ describe('HubSpot connector (tenant-scoped)', () => {
         status: 'ok',
         recordsChecked: 3,
         recordsWithAssociations: 3,
+        typesSeen: [
+          { category: 'standard', typeId: 578, label: 'Primary' },
+          { category: 'standard', typeId: 608, label: null },
+        ],
       });
 
       // Only current date-based endpoints, and the report lists each one used.
@@ -244,9 +251,9 @@ describe('HubSpot connector (tenant-scoped)', () => {
       });
       // Reverse directions are checked on exactly the records the Leads link to,
       // and every forward link reads back in reverse with HubSpot's paired type.
-      for (const [from, typeId, label] of [
-        ['contacts', 579, 'Lead with Primary Contact'],
-        ['companies', 581, 'Lead with Primary Company'],
+      for (const [from, typeId, label, unlabelledTypeId] of [
+        ['contacts', 579, 'Lead with Primary Contact', 609],
+        ['companies', 581, 'Lead with Primary Company', 611],
       ] as const) {
         const reverse = report.associationSamples.find((x) => x.from === from && x.to === 'leads')!;
         expect(reverse.result).toMatchObject({
@@ -255,7 +262,10 @@ describe('HubSpot connector (tenant-scoped)', () => {
           recordsChecked: 3,
           recordsWithAssociations: 3,
           reciprocal: { forwardLinks: 3, confirmed: 3 },
-          typesSeen: [{ category: 'standard', typeId, label }],
+          typesSeen: [
+            { category: 'standard', typeId, label },
+            { category: 'standard', typeId: unlabelledTypeId, label: null },
+          ],
         });
       }
       const contactCompany = report.associationSamples.find(
@@ -283,6 +293,30 @@ describe('HubSpot connector (tenant-scoped)', () => {
       const json = JSON.stringify(report);
       expect(json).not.toContain('school1.example');
       expect(json).not.toContain('First1');
+    });
+
+    it('a forward Lead link missing in reverse is not counted as reciprocal', async () => {
+      const t = await provisionTenant(h, 'hsnorecip');
+      await enable(t, '1001', TOKEN_A);
+      fake.hideReverse((a) => a.fromId === '302' && a.toType === 'contacts');
+      try {
+        const report = await discovery.discover(t);
+        const reverse = report.associationSamples.find(
+          (x) => x.from === 'contacts' && x.to === 'leads',
+        )!;
+        expect(reverse.result).toMatchObject({
+          status: 'ok',
+          recordsChecked: 3,
+          recordsWithAssociations: 2,
+          reciprocal: { forwardLinks: 3, confirmed: 2 },
+        });
+        const company = report.associationSamples.find(
+          (x) => x.from === 'companies' && x.to === 'leads',
+        )!;
+        expect(company.result).toMatchObject({ reciprocal: { forwardLinks: 3, confirmed: 3 } });
+      } finally {
+        fake.hideReverse(undefined);
+      }
     });
 
     it('missing Leads scope → Leads reported unavailable with the scope HubSpot requires', async () => {

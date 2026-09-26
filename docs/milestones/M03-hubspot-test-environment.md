@@ -319,28 +319,37 @@ The last live-evidence gap was that the test account held no Leads. The owner
 created three test Leads by hand in the HubSpot UI, each linked to an existing
 test Contact and test Company. The connector did not write anything.
 
-Discovery changed in one read-only way. The reverse samples (Contact → Lead,
-Company → Lead) are now read on exactly the contacts and companies the
-sampled Leads link to, rather than on whichever contacts or companies happen
-to be sampled. A reciprocity check confirms each forward link reads back in
-reverse. The test fake now serves reverse associations with HubSpot's paired
-type ids, as HubSpot does. Tests cover Lead pagination, both reverse
-directions and reciprocity.
+Discovery gained one read-only capability. It now samples the reverse
+directions (Contact → Lead, Company → Lead), which it did not sample before.
+It reads them on exactly the contacts and companies that the sampled Leads
+link to. A reciprocity check confirms each forward link reads back in
+reverse. The test fake now matches the live data: it serves reverse
+associations with HubSpot's paired type ids, and each Lead link carries both
+its labelled and its unlabelled type. Tests cover:
+
+- Lead pagination;
+- both reverse directions;
+- reciprocity, including a forward link that is missing in reverse (fake
+  switch `hideReverse`: counted 2 of 3, not 3 of 3).
 
 Mutations:
 
 - **Reciprocity count forced to 0:** the discovery test fails.
 - **Reverse samples taken from the generic contact/company sample:** the
   discovery test fails.
+- **Reciprocity count inflated (`confirmed = forward.length`):** the
+  non-reciprocal test fails (`confirmed` expected 2, received 3). Before
+  that test existed, this mutation passed. The independent review found the
+  gap.
 
 Live result (`hubspot:discover --tenant hstest`, production path):
 
 ```
 leads      3 read; 132 properties       pages of 2: pagesRead 2, paginationVerified true
-leads→contacts     checked 3, with 3, associations 3   types 578 Primary
-leads→companies    checked 3, with 3, associations 3   types 580 Primary
-contacts→leads     checked 1 (the linked contact), associations 3   types 579 "Lead with Primary Contact"   reciprocal 3/3
-companies→leads    checked 1 (the linked company), associations 3   types 581 "Lead with Primary Company"   reciprocal 3/3
+leads→contacts     checked 3, with 3, associations 3   types 578 Primary + 608
+leads→companies    checked 3, with 3, associations 3   types 580 Primary + 610
+contacts→leads     checked 1 (the linked contact), associations 3   types 579 "Lead with Primary Contact" + 609   reciprocal 3/3
+companies→leads    checked 1 (the linked company), associations 3   types 581 "Lead with Primary Company" + 611   reciprocal 3/3
 missing scopes     none;   methods: GET, POST (batch read only);   non-date-versioned paths: 0
 report: no Service Key, no Lead names ("M3 Test Lead"), no email values; Lead records hold counts and ids only
 ```

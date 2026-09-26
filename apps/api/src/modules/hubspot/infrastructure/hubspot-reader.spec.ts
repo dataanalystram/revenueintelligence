@@ -203,6 +203,7 @@ describe('HubSpotReader (translation into vendor-neutral read models)', () => {
   it('maps association labels to vendor-neutral categories', async () => {
     await expect(reader.listAssociationTypes('leads', 'companies')).resolves.toEqual([
       { category: 'standard', typeId: 580, label: 'Primary' },
+      { category: 'standard', typeId: 610, label: null },
     ]);
   });
 
