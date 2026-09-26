@@ -106,8 +106,13 @@ an invalid configuration.
   level the snapshot would be taken before the lock, and reads after it could
   be stale. The pin means changing the database's default isolation level
   cannot reintroduce the race (regression-tested).
-- The configuration tables may be written only by the tenancy module; an
-  ESLint rule forbids other code from touching their Prisma delegates.
+- The configuration tables may be written only by the tenancy module. An
+  ESLint rule flags other code that reaches their Prisma delegates, whether by
+  dot access, bracket access or destructuring. It cannot see raw SQL (e.g.
+  `tenantClient(tx).$executeRaw`), so raw SQL against these tables outside
+  the tenancy module is a review-time rule, not a lint-time one. Row-level
+  security still confines any such write to the transaction's tenant; what
+  the lint rule protects is the cross-setting validation.
 
 ## Consequences
 

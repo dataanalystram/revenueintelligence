@@ -277,3 +277,31 @@ removed on its own:
 
 The sequential Jev test is independent of the lock and passes in every case.
 The flip-flop loop is timing-dependent and is kept as a smoke test only.
+
+### Third review round
+
+A second independent review of the fixes above verified all six as fixed.
+Its verdict was "ready for user review": no blockers and no major findings.
+It found five minor issues, all fixed:
+
+1. **The runtime script could hang.** Once it tracked the real node PID, a
+   process that ignored SIGTERM made `wait` block forever. A process that does
+   not exit within 10 s is now recorded as FAIL and SIGKILLed. Mutation: a
+   worker that swallows SIGTERM and keeps its event loop alive. The run
+   printed FAIL, killed it, exited 1 after 39 s and left no orphans.
+2. **The ESLint rule missed some access forms.** It also flags bracket access
+   and destructuring now; all three forms are proven by probe. ADR 0008 now
+   states that raw SQL cannot be linted and is a review-time rule.
+3. **Overclaiming script comment.** It said the connection-count checks prove
+   Prisma and Redis disconnected. They only prove no connections are left
+   (a dead process's sockets close anyway). The checks are renamed and
+   commented accordingly; the shutdown-log checks are the real evidence. The
+   earlier commit message's wording on this point was too strong.
+4. **Silent abort.** `grep -c` exits 1 on zero matches, which aborted the
+   script silently under `set -e` when there were no Redis clients. It now
+   counts with `awk`.
+5. **A stale pointer** to `pnpm test:live` in `scripts/verify-runtime.d/README.md`
+   is corrected.
+
+A unit test was also added for the lock-timeout (55P03) error mapping, which
+had been covered only by an integration test.

@@ -45,9 +45,23 @@ export default tseslint.config(
     rules: {
       'no-restricted-syntax': [
         'error',
+        // Dot access, bracket access and destructuring of the configuration
+        // delegates. (Raw SQL cannot be linted; see ADR 0008.)
         {
           selector:
             'MemberExpression[property.name=/^tenant(Integration|FlowSetting|QualificationConfig|CredentialRef|Policy|Product|FieldMapping|LeadSourceMapping)$/]',
+          message:
+            'Tenant configuration is accessed only through TenantConfigService / TenantCredentialsService (ADR 0008).',
+        },
+        {
+          selector:
+            'MemberExpression[computed=true][property.value=/^tenant(Integration|FlowSetting|QualificationConfig|CredentialRef|Policy|Product|FieldMapping|LeadSourceMapping)$/]',
+          message:
+            'Tenant configuration is accessed only through TenantConfigService / TenantCredentialsService (ADR 0008).',
+        },
+        {
+          selector:
+            'ObjectPattern > Property[key.name=/^tenant(Integration|FlowSetting|QualificationConfig|CredentialRef|Policy|Product|FieldMapping|LeadSourceMapping)$/]',
           message:
             'Tenant configuration is accessed only through TenantConfigService / TenantCredentialsService (ADR 0008).',
         },

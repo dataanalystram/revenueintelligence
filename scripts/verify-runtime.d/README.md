@@ -9,6 +9,7 @@ Conventions for a check file (e.g. `20-hubspot.sh`):
   `pass`, `fail`, `compose`, `API_URL`, `API_DIR`, `APP_DB_URL`, `OWNER_DB_URL`,
   `REDIS_URL`, `WORK` (log directory).
 - Needs no real credentials. External systems are exercised against local
-  fakes; live checks belong to `pnpm test:live`.
+  fakes; live checks belong to the connector's live suite (see the verify
+  skill, section 4).
 - Leaves nothing running: any process it starts must be stopped before the
   file returns.

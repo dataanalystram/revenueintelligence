@@ -118,18 +118,25 @@ log "8. Graceful shutdown (real node processes)"
 check "API PID is the node process" bash -c "[[ \"\$(ps -o args= -p $API_PID)\" == 'node dist/main.js' ]]"
 check "worker PID is the node process" bash -c "[[ \"\$(ps -o args= -p $WORKER_PID)\" == 'node dist/worker.js' ]]"
 pg_app_sessions() { compose exec -T -e PGPASSWORD=lip postgres psql -h 127.0.0.1 -U lip -d lip -Atc "SELECT count(*) FROM pg_stat_activity WHERE usename = 'lip_api'"; }
-redis_clients() { compose exec -T redis redis-cli CLIENT LIST | grep -vc 'cmd=client'; }
+redis_clients() { compose exec -T redis redis-cli CLIENT LIST | awk '!/cmd=client/ { n++ } END { print n + 0 }'; }
 curl -fsS "$API_URL/health/ready" >/dev/null   # ensure live DB and Redis connections exist
 before_pg="$(pg_app_sessions)"; before_redis="$(redis_clients)"
 [[ "$before_pg" -gt 0 && "$before_redis" -gt 0 ]] && pass "before shutdown: $before_pg app DB session(s), $before_redis Redis client(s)" \
   || fail "expected open connections before shutdown (db=$before_pg redis=$before_redis)"
 kill -TERM "$API_PID" "$WORKER_PID"
 stopped() { for _ in $(seq 1 40); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.25; done; return 1; }
-check "API node process exits on SIGTERM within 10s" stopped "$API_PID"
-check "worker node process exits on SIGTERM within 10s" stopped "$WORKER_PID"
 # 0 = exited normally; 143 = Nest closed the app, then re-raised SIGTERM.
+# A process that does not exit in time is recorded as a failure and SIGKILLed,
+# so a shutdown regression fails the run instead of hanging it in `wait`.
 clean_exit() {
   local name="$1" pid="$2" logfile="$3" code=0
+  if ! stopped "$pid"; then
+    fail "$name node process did not exit within 10s of SIGTERM (killed)"
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    return
+  fi
+  pass "$name node process exits on SIGTERM within 10s"
   wait "$pid" 2>/dev/null || code=$?
   if [[ $code -ne 0 && $code -ne 143 ]]; then fail "$name exit code $code"; return; fi
   if grep -q '"level":\(50\|60\)' "$logfile"; then fail "$name logged errors"; return; fi
@@ -141,9 +148,11 @@ API_PID=""; WORKER_PID=""
 # Written by the app's own onApplicationShutdown hook, after modules were destroyed.
 check "API ran its shutdown hooks (Application shut down cleanly)" grep -q 'Application shut down cleanly' "$WORK/api.log"
 check "worker ran its shutdown hooks (Application shut down cleanly)" grep -q 'Application shut down cleanly' "$WORK/worker.log"
-# Shutdown hooks really ran: Prisma disconnected and Redis clients quit.
-check "all app DB sessions closed after shutdown" bash -c "for i in \$(seq 1 20); do [ \"\$(docker compose -p '$PROJECT' -f '$ROOT/docker-compose.yml' exec -T -e PGPASSWORD=lip postgres psql -h 127.0.0.1 -U lip -d lip -Atc \"SELECT count(*) FROM pg_stat_activity WHERE usename = 'lip_api'\")\" = 0 ] && exit 0; sleep 0.25; done; exit 1"
-check "all app Redis clients disconnected after shutdown" bash -c "[ \"\$(docker compose -p '$PROJECT' -f '$ROOT/docker-compose.yml' exec -T redis redis-cli CLIENT LIST | grep -vc 'cmd=client')\" = 0 ]"
+# No connections left behind. (These pass for any dead process, since the
+# kernel closes its sockets; the log-line checks above are what prove an orderly
+# shutdown.)
+check "no app DB sessions left after shutdown" bash -c "for i in \$(seq 1 20); do [ \"\$(docker compose -p '$PROJECT' -f '$ROOT/docker-compose.yml' exec -T -e PGPASSWORD=lip postgres psql -h 127.0.0.1 -U lip -d lip -Atc \"SELECT count(*) FROM pg_stat_activity WHERE usename = 'lip_api'\")\" = 0 ] && exit 0; sleep 0.25; done; exit 1"
+check "no app Redis clients left after shutdown" bash -c "[ \"\$(docker compose -p '$PROJECT' -f '$ROOT/docker-compose.yml' exec -T redis redis-cli CLIENT LIST | awk '!/cmd=client/ { n++ } END { print n + 0 }')\" = 0 ]"
 
 printf '\n== Summary: %d passed, %d failed\n' "$PASSED" "$FAILED"
 [[ $FAILED -eq 0 ]]
