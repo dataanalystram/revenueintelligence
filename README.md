@@ -70,18 +70,24 @@ Run everything in containers instead: `docker compose --profile app up --build`.
 
 ## Quality gates
 
-| Command                    | What it checks                                           |
-| -------------------------- | -------------------------------------------------------- |
-| `pnpm format:check`        | Prettier formatting                                      |
-| `pnpm lint`                | ESLint with type-aware rules (e.g. no floating promises) |
-| `pnpm typecheck`           | TypeScript strict mode                                   |
-| `pnpm depcheck:boundaries` | Module-boundary rules (dependency-cruiser)               |
-| `pnpm test:unit`           | Unit tests                                               |
-| `pnpm test:integration`    | Integration tests — needs Docker                         |
-| `pnpm verify`              | All of the above                                         |
+| Command                    | What it checks                                                                                       |
+| -------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `pnpm format:check`        | Prettier formatting                                                                                  |
+| `pnpm lint`                | ESLint with type-aware rules (e.g. no floating promises)                                             |
+| `pnpm typecheck`           | TypeScript strict mode                                                                               |
+| `pnpm depcheck:boundaries` | Module-boundary rules (dependency-cruiser)                                                           |
+| `pnpm test:unit`           | Unit tests                                                                                           |
+| `pnpm test:integration`    | Integration tests — needs Docker                                                                     |
+| `pnpm verify`              | All of the above                                                                                     |
+| `pnpm verify:runtime`      | Runs the real API and worker against PostgreSQL/Redis and checks behaviour end to end (needs Docker) |
+| `pnpm verify:docker`       | Builds the images and runs migrate, API, worker and CLI containers (needs Docker)                    |
+| `pnpm test:live`           | Tests against real external **test** environments; skipped without credentials                       |
 
-CI (`.github/workflows/ci.yml`) runs every gate plus a Docker image build on
-each pull request.
+CI (`.github/workflows/ci.yml`) runs every gate, runtime verification and the
+Docker checks on each pull request. The full procedure used before a milestone
+is reported complete (including a fresh-clone run) is the `verify` skill in
+`.claude/skills/verify/SKILL.md`. Project rules for contributors and agents are
+in `CLAUDE.md`.
 
 ## Credentials
 

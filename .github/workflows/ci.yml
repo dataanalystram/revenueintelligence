@@ -45,18 +45,28 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm test:integration
 
-  docker:
-    name: Docker image builds
+  runtime:
+    name: Runtime verification (real API, worker, PostgreSQL, Redis)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - name: Build runtime image
-        uses: docker/build-push-action@v6
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
         with:
-          context: .
-          target: runtime
-          push: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm verify:runtime
+
+  docker:
+    name: Docker images build and start
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm verify:docker

@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# Runtime verification: runs the real application against real PostgreSQL and
+# Redis and checks its behaviour end to end. Supplements (never replaces)
+# `pnpm verify`.
+#
+#   pnpm verify:runtime            # from the repository root
+#
+# Requires: Docker (with compose v2), Node 22, pnpm, curl. No credentials.
+# Uses an isolated compose project on free ports and removes everything on exit.
+# Milestone-specific checks live in scripts/verify-runtime.d/*.sh and are
+# sourced after the core checks.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+API_DIR="$ROOT/apps/api"
+PROJECT="lipverify$$"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/lip-verify.XXXXXX")"
+PASSED=0
+FAILED=0
+API_PID=""
+WORKER_PID=""
+
+free_port() { node -e "const s=require('net').createServer();s.listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})"; }
+log() { printf '\n== %s\n' "$*"; }
+pass() { PASSED=$((PASSED + 1)); printf '  PASS  %s\n' "$*"; }
+fail() { FAILED=$((FAILED + 1)); printf '  FAIL  %s\n' "$*"; }
+check() { local name="$1"; shift; if "$@" >>"$WORK/checks.log" 2>&1; then pass "$name"; else fail "$name"; fi; }
+compose() { docker compose -p "$PROJECT" -f "$ROOT/docker-compose.yml" "$@"; }
+
+cleanup() {
+  local code=$?
+  [[ -n "$API_PID" ]] && kill "$API_PID" 2>/dev/null || true
+  [[ -n "$WORKER_PID" ]] && kill "$WORKER_PID" 2>/dev/null || true
+  compose down -v --remove-orphans >/dev/null 2>&1 || true
+  if [[ $code -eq 0 && $FAILED -eq 0 ]]; then rm -rf "$WORK"; else echo "Logs kept in $WORK"; fi
+}
+trap cleanup EXIT
+
+export LIP_POSTGRES_PORT="${LIP_VERIFY_PG_PORT:-$(free_port)}"
+export LIP_REDIS_PORT="${LIP_VERIFY_REDIS_PORT:-$(free_port)}"
+API_PORT="$(free_port)"
+API_URL="http://127.0.0.1:$API_PORT"
+OWNER_DB_URL="postgresql://lip:lip@127.0.0.1:$LIP_POSTGRES_PORT/lip"
+# Development-only credentials created by docker/postgres/init/01-app-role.sql.
+APP_DB_URL="postgresql://lip_api:lip_api@127.0.0.1:$LIP_POSTGRES_PORT/lip"
+REDIS_URL="redis://127.0.0.1:$LIP_REDIS_PORT"
+export REDIS_URL
+
+log "1. Install and build"
+(cd "$ROOT" && pnpm install --frozen-lockfile >"$WORK/install.log" 2>&1) && pass "pnpm install --frozen-lockfile" || { fail "install"; exit 1; }
+(cd "$ROOT" && pnpm --filter @lip/api build >"$WORK/build.log" 2>&1) && pass "build (prisma generate + nest build)" || { fail "build"; exit 1; }
+
+# The application processes below run exactly as in production.
+export NODE_ENV=production LOG_LEVEL=info
+
+log "2. Start PostgreSQL and Redis (compose project $PROJECT, ports $LIP_POSTGRES_PORT/$LIP_REDIS_PORT)"
+compose up -d --wait postgres redis >"$WORK/compose.log" 2>&1 && pass "postgres and redis healthy" || { fail "dependencies"; exit 1; }
+
+log "3. Migrations (schema owner via MIGRATION_DATABASE_URL)"
+migrate() { (cd "$API_DIR" && MIGRATION_DATABASE_URL="$OWNER_DB_URL" DATABASE_URL="" pnpm exec prisma migrate deploy); }
+check "migrate deploy applies" migrate
+check "migrate deploy re-run is a no-op" bash -c "$(declare -f migrate); cd '$API_DIR' && MIGRATION_DATABASE_URL='$OWNER_DB_URL' DATABASE_URL='' pnpm exec prisma migrate deploy | grep -q 'No pending migrations'"
+
+log "4. Start API and worker (non-privileged role lip_api)"
+(cd "$API_DIR" && DATABASE_URL="$APP_DB_URL" PORT="$API_PORT" node dist/main.js >"$WORK/api.log" 2>&1) &
+API_PID=$!
+(cd "$API_DIR" && DATABASE_URL="$APP_DB_URL" node dist/worker.js >"$WORK/worker.log" 2>&1) &
+WORKER_PID=$!
+
+wait_ready() {
+  for _ in $(seq 1 60); do
+    curl -fsS "$API_URL/health/ready" >/dev/null 2>&1 && return 0
+    sleep 0.5
+  done
+  return 1
+}
+wait_ready && pass "API ready at $API_URL" || { fail "API did not become ready"; tail -20 "$WORK/api.log"; exit 1; }
+sleep 1
+check "worker process running" kill -0 "$WORKER_PID"
+check "worker logged start-up" grep -q 'Worker started' "$WORK/worker.log"
+
+log "5. HTTP behaviour"
+json_field() { node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const v=$1;process.stdout.write(String(v(JSON.parse(d))))})"; }
+check "GET /health/live → 200" bash -c "curl -fsS '$API_URL/health/live' | grep -q '\"status\":\"ok\"'"
+check "GET /health/ready → database+redis up" bash -c "curl -fsS '$API_URL/health/ready' | grep -q '\"database\":{\"status\":\"up\"' && curl -fsS '$API_URL/health/ready' | grep -q '\"redis\":{\"status\":\"up\"'"
+check "x-request-id echoed" bash -c "curl -fsS -D - -o /dev/null -H 'x-request-id: verify-123' '$API_URL/health/live' | grep -qi '^x-request-id: verify-123'"
+check "unknown route → 404 standard error body" bash -c "curl -sS '$API_URL/nope' | grep -q '\"statusCode\":404'"
+check "security headers (nosniff, no x-powered-by)" bash -c "h=\$(curl -fsS -D - -o /dev/null '$API_URL/health/live'); echo \"\$h\" | grep -qi 'x-content-type-options: nosniff' && ! echo \"\$h\" | grep -qi 'x-powered-by'"
+
+log "6. Tenancy at runtime"
+provision() { (cd "$API_DIR" && DATABASE_URL="$APP_DB_URL" node dist/cli/provision-tenant.js "$@"); }
+check "provision tenant 'verifyco' from the juniper template" bash -c "$(declare -f provision); API_DIR='$API_DIR' APP_DB_URL='$APP_DB_URL'; provision --slug verifyco --name 'Verify Co' --template juniper | grep -q '\"slug\": \"verifyco\"'"
+check "duplicate provisioning refused" bash -c "$(declare -f provision); API_DIR='$API_DIR' APP_DB_URL='$APP_DB_URL'; ! provision --slug verifyco --name Again 2>&1 && provision --slug verifyco --name Again 2>&1 | grep -q 'already exists'"
+psql_as() { compose exec -T -e PGPASSWORD="$2" postgres psql -h 127.0.0.1 -U "$1" -d lip -Atc "$3"; }
+check "owner sees provisioned config rows" bash -c "[ \"\$(docker compose -p '$PROJECT' -f '$ROOT/docker-compose.yml' exec -T -e PGPASSWORD=lip postgres psql -h 127.0.0.1 -U lip -d lip -Atc 'SELECT count(*) FROM tenant_lead_source_mappings')\" -gt 0 ]"
+check "app role with no tenant set sees nothing (RLS)" bash -c "[ \"\$(docker compose -p '$PROJECT' -f '$ROOT/docker-compose.yml' exec -T -e PGPASSWORD=lip_api postgres psql -h 127.0.0.1 -U lip_api -d lip -Atc 'SELECT count(*) FROM tenant_lead_source_mappings')\" = 0 ]"
+check "app role cannot read migration history" bash -c "! docker compose -p '$PROJECT' -f '$ROOT/docker-compose.yml' exec -T -e PGPASSWORD=lip_api postgres psql -h 127.0.0.1 -U lip_api -d lip -Atc 'SELECT 1 FROM _prisma_migrations' 2>/dev/null"
+
+log "7. Resilience"
+compose stop redis >/dev/null 2>&1
+check "Redis down → readiness 503, redis down" bash -c "for i in \$(seq 1 20); do out=\$(curl -sS -w '%{http_code}' '$API_URL/health/ready'); case \"\$out\" in *'\"redis\":{\"status\":\"down\"'*503) exit 0;; esac; sleep 0.5; done; exit 1"
+check "liveness stays 200 while not ready" bash -c "curl -fsS '$API_URL/health/live' >/dev/null"
+compose start redis >/dev/null 2>&1
+check "Redis back → readiness recovers" bash -c "for i in \$(seq 1 60); do curl -fsS '$API_URL/health/ready' >/dev/null 2>&1 && exit 0; sleep 0.5; done; exit 1"
+check "API refuses to start as the schema owner (superuser)" bash -c "cd '$API_DIR' && ! DATABASE_URL='$OWNER_DB_URL' PORT=$(free_port) timeout 60 node dist/main.js >'$WORK/unsafe.log' 2>&1 && grep -q 'Refusing to use the database connection' '$WORK/unsafe.log'"
+
+# Milestone-specific runtime checks (have access to the variables above).
+for extra in "$ROOT"/scripts/verify-runtime.d/*.sh; do
+  [[ -e "$extra" ]] || continue
+  log "Extra: $(basename "$extra")"
+  # shellcheck source=/dev/null
+  source "$extra"
+done
+
+log "8. Graceful shutdown"
+kill -TERM "$API_PID" "$WORKER_PID"
+stopped() { for _ in $(seq 1 40); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.25; done; return 1; }
+check "API exits on SIGTERM within 10s" stopped "$API_PID"
+check "worker exits on SIGTERM within 10s" stopped "$WORKER_PID"
+# Nest closes the application, then re-raises the signal: 143 (128+SIGTERM) is a
+# clean signal-initiated exit. Anything else, or any error logged, is a failure.
+clean_exit() {
+  local name="$1" pid="$2" logfile="$3" code=0
+  wait "$pid" 2>/dev/null || code=$?
+  if [[ $code -ne 0 && $code -ne 143 ]]; then fail "$name exit code $code"; return; fi
+  if grep -q '"level":\(50\|60\)' "$logfile"; then fail "$name logged errors"; return; fi
+  pass "$name exited cleanly (code $code, no errors logged)"
+}
+clean_exit API "$API_PID" "$WORK/api.log"
+clean_exit worker "$WORKER_PID" "$WORK/worker.log"
+API_PID=""; WORKER_PID=""
+
+printf '\n== Summary: %d passed, %d failed\n' "$PASSED" "$FAILED"
+[[ $FAILED -eq 0 ]]
