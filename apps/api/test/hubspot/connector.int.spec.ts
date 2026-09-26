@@ -121,8 +121,14 @@ describe('HubSpot connector (tenant-scoped)', () => {
 
     it('enabled but no credential registered → not_configured', async () => {
       const t = await provisionTenant(h, 'hsnoref');
-      await h.config.configureIntegration(t, 'hubspot', { access: 'read_only' });
-      expect((await rejection(connector.forTenant(t))).kind).toBe('not_configured');
+      await h.config.configureIntegration(t, 'hubspot', {
+        access: 'read_only',
+        settings: { portalId: '1001' },
+      });
+      const err = await rejection(connector.forTenant(t));
+      expect(err.kind).toBe('not_configured');
+      expect(err.message).toContain('access token');
+      expect(fake.requests).toHaveLength(0);
     });
 
     it('credential registered but its secret is not set → not_configured', async () => {
@@ -130,6 +136,7 @@ describe('HubSpot connector (tenant-scoped)', () => {
       await enable(t, '1001');
       const err = await rejection(connector.forTenant(t));
       expect(err.kind).toBe('not_configured');
+      expect(err.message).toContain('access token');
       expect(fake.requests).toHaveLength(0);
     });
 

@@ -141,6 +141,26 @@ run, in both verification scripts. Proof: with a stubbed port picker that
 returns 5000, 5000, 5001, the second pick is 5001; with the exclusion removed,
 it is 5000 again.
 
+A second fresh-context review, of only this follow-up (`eaf604b..e3852e1`),
+returned **PASS WITH NITS** with two should-fix items, both fixed:
+
+1. **"No credential registered" passed for the wrong reason.** The new
+   `portalId` guard fired first. The test now configures a `portalId` and
+   asserts the "access token" message. Mutation: with the credential-error
+   mapping removed, it and the other credential tests fail with the raw
+   `RecordNotFoundError`/`SecretNotFoundError`.
+2. **`free_port` could loop forever if `node` printed nothing.** It now fails
+   fast on a non-numeric result and gives up after 20 attempts. Its callers
+   assign before `export`, so `set -e` stops the script. A stubbed failing
+   `node` returns exit 1; before the fix it hung.
+
+Nits fixed:
+
+- The 207 error `context` is parsed leniently: unknown keys are ignored and a
+  non-array `ids` becomes empty.
+- Repeated per-record failures across paging rounds are reported once.
+- An overridden Redis port is excluded from the PostgreSQL port pick.
+
 Nits recorded as technical debt (items 8 and 9): the closed
 association-category enum, and the live suite not exercising the tenant path.
 

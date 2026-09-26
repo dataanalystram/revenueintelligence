@@ -84,8 +84,11 @@ export const HsAssociationBatchReadSchema = z.object({
       z.object({
         message: z.string().optional(),
         category: z.string().optional(),
-        /** e.g. `{ ids: ["123"] }`: which inputs the error applies to. */
-        context: z.record(z.string(), z.array(z.string())).optional(),
+        /** e.g. `{ ids: ["123"] }`: which inputs the error applies to. Other keys are ignored. */
+        context: z
+          .object({ ids: z.array(z.string()).optional().catch(undefined) })
+          .optional()
+          .catch(undefined),
       }),
     )
     .optional(),

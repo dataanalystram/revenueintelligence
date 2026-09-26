@@ -225,7 +225,10 @@ export class HubSpotReader {
           this.auth,
         );
         for (const e of batch.errors ?? []) {
-          failures.push({ category: e.category, message: e.message, ids: e.context?.ids ?? [] });
+          const failure = { category: e.category, message: e.message, ids: e.context?.ids ?? [] };
+          // The same record can fail again on a later paging round: report it once.
+          const key = JSON.stringify(failure);
+          if (!failures.some((f) => JSON.stringify(f) === key)) failures.push(failure);
         }
         const next: typeof inputs = [];
         for (const result of batch.results) {

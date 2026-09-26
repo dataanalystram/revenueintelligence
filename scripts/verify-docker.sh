@@ -25,11 +25,14 @@ COMPOSE_LABEL="com.docker.compose.project=$PROJECT"
 # A currently free port, other than any given as arguments: ports picked
 # before anything binds them could otherwise be handed out twice.
 free_port() {
-  local p
-  while :; do
-    p="$(node -e "const s=require('net').createServer();s.listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})")"
-    [[ " $* " == *" $p "* ]] || { echo "$p"; return; }
+  local p _
+  for _ in $(seq 1 20); do
+    p="$(node -e "const s=require('net').createServer();s.listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})")" || p=""
+    [[ "$p" =~ ^[0-9]+$ ]] || { echo "free_port: could not get a free port" >&2; return 1; }
+    [[ " $* " == *" $p "* ]] || { echo "$p"; return 0; }
   done
+  echo "free_port: no distinct free port after 20 attempts" >&2
+  return 1
 }
 pass() { PASSED=$((PASSED + 1)); printf '  PASS  %s\n' "$*"; }
 fail() { FAILED=$((FAILED + 1)); printf '  FAIL  %s\n' "$*"; }

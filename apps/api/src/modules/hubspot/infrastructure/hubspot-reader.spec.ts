@@ -181,6 +181,20 @@ describe('HubSpotReader (translation into vendor-neutral read models)', () => {
     ]);
   });
 
+  it('tolerates an unfamiliar error context shape in a 207 response', async () => {
+    fake.fail({
+      match: /batch\/read$/,
+      status: 207,
+      body: {
+        status: 'COMPLETE',
+        results: [],
+        errors: [{ category: 'SOMETHING_NEW', message: 'x', context: { objectIds: [1, 2] } }],
+      },
+    });
+    const result = await reader.readAssociations('leads', ['301'], 'contacts');
+    expect(result.failures).toEqual([{ category: 'SOMETHING_NEW', message: 'x', ids: [] }]);
+  });
+
   it('surfaces classified errors from reads', async () => {
     fake.fail({ match: /leads$/, status: 403, body: { category: 'MISSING_SCOPES' } });
     const err = await reader.listRecords('leads').catch((e: unknown) => e);
