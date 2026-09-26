@@ -313,16 +313,46 @@ shutdown"). The diagnostics are in the log and no process remains. Before the
 fix, the same fault aborted the run after "worker PID is the node process".
 Tracked as technical-debt item 10.
 
+## Lead-record closure (live)
+
+The last live-evidence gap was that the test account held no Leads. The owner
+created three test Leads by hand in the HubSpot UI, each linked to an existing
+test Contact and test Company. The connector did not write anything.
+
+Discovery changed in one read-only way. The reverse samples (Contact → Lead,
+Company → Lead) are now read on exactly the contacts and companies the
+sampled Leads link to, rather than on whichever contacts or companies happen
+to be sampled. A reciprocity check confirms each forward link reads back in
+reverse. The test fake now serves reverse associations with HubSpot's paired
+type ids, as HubSpot does. Tests cover Lead pagination, both reverse
+directions and reciprocity.
+
+Mutations:
+
+- **Reciprocity count forced to 0:** the discovery test fails.
+- **Reverse samples taken from the generic contact/company sample:** the
+  discovery test fails.
+
+Live result (`hubspot:discover --tenant hstest`, production path):
+
+```
+leads      3 read; 132 properties       pages of 2: pagesRead 2, paginationVerified true
+leads→contacts     checked 3, with 3, associations 3   types 578 Primary
+leads→companies    checked 3, with 3, associations 3   types 580 Primary
+contacts→leads     checked 1 (the linked contact), associations 3   types 579 "Lead with Primary Contact"   reciprocal 3/3
+companies→leads    checked 1 (the linked company), associations 3   types 581 "Lead with Primary Company"   reciprocal 3/3
+missing scopes     none;   methods: GET, POST (batch read only);   non-date-versioned paths: 0
+report: no Service Key, no Lead names ("M3 Test Lead"), no email values; Lead records hold counts and ids only
+```
+
+`pnpm test:live`: 6/6.
+
 ## Open questions
 
-1. **No Lead records** exist in the test account, so Lead data and Lead
-   record associations were not read live, only the object, schema and
-   association types. A Lead created by hand in the test account would
-   exercise them; the connector does not write.
-2. **Lead webhooks:** not confirmed on the current app model (community
+1. **Lead webhooks:** not confirmed on the current app model (community
    reports say they do not fire). To be tested in M5; the design must not
    depend on them until then. Service Keys cannot receive webhooks; M5 needs
    the projects-based app.
-3. **Juniper-dependent:** Sales Hub tier (Leads object), rate-limit tier and
+2. **Juniper-dependent:** Sales Hub tier (Leads object), rate-limit tier and
    custom association labels. These are answered by Juniper's discovery run
    at M16.

@@ -108,6 +108,16 @@ const PROPERTIES: Record<
   ],
 };
 
+/** HubSpot-defined reverse association type ids and labels (seen live 2026-09-26). */
+const REVERSE_TYPES: Record<number, [number, string | null]> = {
+  578: [579, 'Lead with Primary Contact'],
+  608: [609, null],
+  580: [581, 'Lead with Primary Company'],
+  610: [611, null],
+  1: [2, 'Contact with Primary Company'],
+  279: [280, null],
+};
+
 export class FakeHubSpot {
   readonly requests: FakeRequestLog[] = [];
   private readonly faults: FakeFault[] = [];
@@ -361,8 +371,8 @@ export class FakeHubSpot {
     )
       return;
     const seen = new Map<number, FakeAssociation>();
-    for (const a of this.options.associations ?? []) {
-      if (a.fromType === from && a.toType === to) seen.set(a.typeId, a);
+    for (const a of this.links(from, to)) {
+      seen.set(a.typeId, a);
     }
     this.send(res, 200, {
       results: [...seen.values()].map((a) => ({
@@ -402,9 +412,7 @@ export class FakeHubSpot {
     const known = new Set((this.options.records?.[from as 'contacts'] ?? []).map((r) => r.id));
     const unknown = inputs.filter((input) => !known.has(input.id)).map((input) => input.id);
     for (const input of inputs.filter((i) => known.has(i.id))) {
-      const links = (this.options.associations ?? []).filter(
-        (a) => a.fromType === from && a.toType === to && a.fromId === input.id,
-      );
+      const links = this.links(from, to).filter((a) => a.fromId === input.id);
       if (links.length === 0) {
         errors.push({
           status: 'error',
@@ -443,6 +451,31 @@ export class FakeHubSpot {
       startedAt: '2026-09-26T00:00:00Z',
       completedAt: '2026-09-26T00:00:01Z',
     });
+  }
+
+  /**
+   * Associations from one object type to another. As in HubSpot, every stored
+   * association can also be read in reverse, with HubSpot's paired type id and
+   * label (as discovered live on the test account).
+   */
+  private links(from: string, to: string): FakeAssociation[] {
+    const all = this.options.associations ?? [];
+    const forward = all.filter((a) => a.fromType === from && a.toType === to);
+    const reverse = all
+      .filter((a) => a.fromType === to && a.toType === from)
+      .map((a) => {
+        const [typeId, label] = REVERSE_TYPES[a.typeId] ?? [a.typeId, a.label];
+        return {
+          fromType: from,
+          fromId: a.toId,
+          toType: to,
+          toId: a.fromId,
+          typeId,
+          category: a.category,
+          label,
+        };
+      });
+    return [...forward, ...reverse];
   }
 
   private send(res: ServerResponse, status: number, body: unknown): void {

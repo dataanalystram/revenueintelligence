@@ -235,6 +235,29 @@ describe('HubSpot connector (tenant-scoped)', () => {
 
       // Only current date-based endpoints, and the report lists each one used.
       expect(report.accountInfoVersions).toEqual({ '2026-09': { status: 'ok' } });
+      // Leads: 3 records in pages of 2, so HubSpot's cursor is followed.
+      expect(report.objects.leads.records).toMatchObject({
+        status: 'ok',
+        recordsRead: 3,
+        pagesRead: 2,
+        paginationVerified: true,
+      });
+      // Reverse directions are checked on exactly the records the Leads link to,
+      // and every forward link reads back in reverse with HubSpot's paired type.
+      for (const [from, typeId, label] of [
+        ['contacts', 579, 'Lead with Primary Contact'],
+        ['companies', 581, 'Lead with Primary Company'],
+      ] as const) {
+        const reverse = report.associationSamples.find((x) => x.from === from && x.to === 'leads')!;
+        expect(reverse.result).toMatchObject({
+          status: 'ok',
+          sampledFrom: `${from} linked from sampled leads`,
+          recordsChecked: 3,
+          recordsWithAssociations: 3,
+          reciprocal: { forwardLinks: 3, confirmed: 3 },
+          typesSeen: [{ category: 'standard', typeId, label }],
+        });
+      }
       const contactCompany = report.associationSamples.find(
         (x) => x.from === 'contacts' && x.to === 'companies',
       )!;

@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-26T18:02:28.449Z",
+  "generatedAt": "2026-09-26T23:19:46.576Z",
   "apiVersion": "2026-09",
   "apiHost": "api.hubapi.com",
   "account": {
@@ -28099,11 +28099,11 @@
       "records": {
         "status": "ok",
         "pageSize": 2,
-        "pagesRead": 1,
-        "recordsRead": 0,
-        "paginationVerified": false,
+        "pagesRead": 2,
+        "recordsRead": 3,
+        "paginationVerified": true,
         "morePages": false,
-        "sampleIds": []
+        "sampleIds": ["1377654649064", "1378313551039", "1378315213047"]
       },
       "properties": {
         "status": "ok",
@@ -30199,13 +30199,13 @@
         "types": [
           {
             "category": "standard",
-            "typeId": 578,
-            "label": "Primary"
+            "typeId": 608,
+            "label": null
           },
           {
             "category": "standard",
-            "typeId": 608,
-            "label": null
+            "typeId": 578,
+            "label": "Primary"
           }
         ]
       }
@@ -30237,13 +30237,13 @@
         "types": [
           {
             "category": "standard",
-            "typeId": 609,
-            "label": null
+            "typeId": 579,
+            "label": "Lead with Primary Contact"
           },
           {
             "category": "standard",
-            "typeId": 579,
-            "label": "Lead with Primary Contact"
+            "typeId": 609,
+            "label": null
           }
         ]
       }
@@ -30256,13 +30256,13 @@
         "types": [
           {
             "category": "standard",
-            "typeId": 611,
-            "label": null
+            "typeId": 581,
+            "label": "Lead with Primary Company"
           },
           {
             "category": "standard",
-            "typeId": 581,
-            "label": "Lead with Primary Company"
+            "typeId": 611,
+            "label": null
           }
         ]
       }
@@ -30275,11 +30275,6 @@
         "types": [
           {
             "category": "standard",
-            "typeId": 931,
-            "label": "Billing Contact"
-          },
-          {
-            "category": "standard",
             "typeId": 1,
             "label": "Primary"
           },
@@ -30287,6 +30282,11 @@
             "category": "standard",
             "typeId": 279,
             "label": null
+          },
+          {
+            "category": "standard",
+            "typeId": 931,
+            "label": "Billing Contact"
           }
         ]
       }
@@ -30299,6 +30299,11 @@
         "types": [
           {
             "category": "standard",
+            "typeId": 2,
+            "label": "Contact with Primary Company"
+          },
+          {
+            "category": "standard",
             "typeId": 280,
             "label": null
           },
@@ -30306,11 +30311,6 @@
             "category": "standard",
             "typeId": 930,
             "label": "Billing Contact"
-          },
-          {
-            "category": "standard",
-            "typeId": 2,
-            "label": "Contact with Primary Company"
           }
         ]
       }
@@ -30322,12 +30322,24 @@
       "to": "contacts",
       "result": {
         "status": "ok",
-        "recordsChecked": 0,
-        "recordsWithAssociations": 0,
+        "recordsChecked": 3,
+        "recordsWithAssociations": 3,
         "recordsWithoutAssociations": 0,
-        "associations": 0,
-        "typesSeen": [],
-        "failures": []
+        "associations": 3,
+        "typesSeen": [
+          {
+            "category": "standard",
+            "typeId": 578,
+            "label": "Primary"
+          },
+          {
+            "category": "standard",
+            "typeId": 608,
+            "label": null
+          }
+        ],
+        "failures": [],
+        "sampledFrom": "sampled leads records"
       }
     },
     {
@@ -30335,12 +30347,24 @@
       "to": "companies",
       "result": {
         "status": "ok",
-        "recordsChecked": 0,
-        "recordsWithAssociations": 0,
+        "recordsChecked": 3,
+        "recordsWithAssociations": 3,
         "recordsWithoutAssociations": 0,
-        "associations": 0,
-        "typesSeen": [],
-        "failures": []
+        "associations": 3,
+        "typesSeen": [
+          {
+            "category": "standard",
+            "typeId": 580,
+            "label": "Primary"
+          },
+          {
+            "category": "standard",
+            "typeId": 610,
+            "label": null
+          }
+        ],
+        "failures": [],
+        "sampledFrom": "sampled leads records"
       }
     },
     {
@@ -30364,13 +30388,72 @@
             "label": null
           }
         ],
-        "failures": []
+        "failures": [],
+        "sampledFrom": "sampled contacts records"
+      }
+    },
+    {
+      "from": "contacts",
+      "to": "leads",
+      "result": {
+        "status": "ok",
+        "recordsChecked": 1,
+        "recordsWithAssociations": 1,
+        "recordsWithoutAssociations": 0,
+        "associations": 3,
+        "typesSeen": [
+          {
+            "category": "standard",
+            "typeId": 579,
+            "label": "Lead with Primary Contact"
+          },
+          {
+            "category": "standard",
+            "typeId": 609,
+            "label": null
+          }
+        ],
+        "failures": [],
+        "sampledFrom": "contacts linked from sampled leads",
+        "reciprocal": {
+          "forwardLinks": 3,
+          "confirmed": 3
+        }
+      }
+    },
+    {
+      "from": "companies",
+      "to": "leads",
+      "result": {
+        "status": "ok",
+        "recordsChecked": 1,
+        "recordsWithAssociations": 1,
+        "recordsWithoutAssociations": 0,
+        "associations": 3,
+        "typesSeen": [
+          {
+            "category": "standard",
+            "typeId": 581,
+            "label": "Lead with Primary Company"
+          },
+          {
+            "category": "standard",
+            "typeId": 611,
+            "label": null
+          }
+        ],
+        "failures": [],
+        "sampledFrom": "companies linked from sampled leads",
+        "reciprocal": {
+          "forwardLinks": 3,
+          "confirmed": 3
+        }
       }
     }
   ],
   "leadObject": {
     "available": true,
-    "reason": "Leads object readable (0 record(s) read, 132 properties)"
+    "reason": "Leads object readable (3 record(s) read, 132 properties)"
   },
   "missingScopes": [],
   "accountInfoVersions": {
@@ -30384,7 +30467,7 @@
     "GET /crm/properties/2026-09/contacts": 1,
     "GET /crm/objects/2026-09/companies": 3,
     "GET /crm/properties/2026-09/companies": 1,
-    "GET /crm/objects/2026-09/leads": 1,
+    "GET /crm/objects/2026-09/leads": 2,
     "GET /crm/properties/2026-09/leads": 1,
     "GET /crm/associations/2026-09/leads/contacts/labels": 1,
     "GET /crm/associations/2026-09/leads/companies/labels": 1,
@@ -30392,6 +30475,10 @@
     "GET /crm/associations/2026-09/companies/leads/labels": 1,
     "GET /crm/associations/2026-09/contacts/companies/labels": 1,
     "GET /crm/associations/2026-09/companies/contacts/labels": 1,
-    "POST /crm/associations/2026-09/contacts/companies/batch/read": 1
+    "POST /crm/associations/2026-09/leads/contacts/batch/read": 1,
+    "POST /crm/associations/2026-09/leads/companies/batch/read": 1,
+    "POST /crm/associations/2026-09/contacts/companies/batch/read": 1,
+    "POST /crm/associations/2026-09/contacts/leads/batch/read": 1,
+    "POST /crm/associations/2026-09/companies/leads/batch/read": 1
   }
 }

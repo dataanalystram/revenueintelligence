@@ -1,5 +1,9 @@
 import { Inject, Injectable } from '@nestjs/common';
-import type { ExternalAssociationType, ExternalFieldDefinition } from '../../domain';
+import type {
+  ExternalAssociation,
+  ExternalAssociationType,
+  ExternalFieldDefinition,
+} from '../../domain';
 import type { TenantContext } from '../../tenancy';
 import { HubSpotError } from '../errors';
 import { HUBSPOT_CONFIG, type HubSpotConfig } from '../hubspot.config';
@@ -64,6 +68,13 @@ export interface AssociationSampleProbe {
     readonly message: string | undefined;
     readonly records: number;
   }[];
+  /** Which records were checked: the sampled records, or those linked from another object. */
+  readonly sampledFrom: string;
+  /**
+   * Reverse-direction samples only: of the forward links (e.g. lead → contact),
+   * how many HubSpot also returns in this direction (contact → the same lead).
+   */
+  readonly reciprocal?: { readonly forwardLinks: number; readonly confirmed: number };
 }
 
 export interface HubSpotDiscoveryReport {
@@ -131,6 +142,12 @@ const SAMPLE_PAIRS: readonly (readonly [HubSpotObjectType, HubSpotObjectType])[]
   ['contacts', 'companies'],
 ];
 
+/** Reverse of the Lead pairs: sampled from the records the Leads link to. */
+const REVERSE_PAIRS: readonly (readonly [HubSpotObjectType, HubSpotObjectType])[] = [
+  ['contacts', 'leads'],
+  ['companies', 'leads'],
+];
+
 /** Read-only discovery of a tenant's HubSpot account: objects, schema, associations. */
 @Injectable()
 export class HubSpotDiscoveryService {
@@ -196,6 +213,7 @@ export class HubSpotDiscoveryService {
     }
 
     const associationSamples = [];
+    const forwardLinks = new Map<string, ExternalAssociation[]>();
     for (const [from, to] of SAMPLE_PAIRS) {
       const source = objects[from].records;
       const ids = source.status === 'ok' ? source.sampleIds : [];
@@ -204,11 +222,39 @@ export class HubSpotDiscoveryService {
         to,
         result:
           source.status === 'ok'
-            ? await run(() => this.probeAssociations(reader, from, ids, to))
+            ? await run(async () => {
+                const { probe, links } = await this.probeAssociations(reader, from, ids, to);
+                forwardLinks.set(`${from}->${to}`, links);
+                return { ...probe, sampledFrom: `sampled ${from} records` };
+              })
             : ({
                 status: 'error',
                 message: `not probed: reading ${from} failed (${source.status})`,
               } as const),
+      });
+    }
+    // Reverse directions, checked on exactly the records the sampled Leads are
+    // linked to, so a Lead's contact and company are always among those read.
+    for (const [from, to] of REVERSE_PAIRS) {
+      const forward = forwardLinks.get(`${to}->${from}`);
+      associationSamples.push({
+        from,
+        to,
+        result: forward
+          ? await run(async () => {
+              const ids = [...new Set(forward.map((l) => l.to.id))];
+              const { probe, links } = await this.probeAssociations(reader, from, ids, to);
+              const reverse = new Set(links.map((l) => `${l.from.id}->${l.to.id}`));
+              return {
+                ...probe,
+                sampledFrom: `${from} linked from sampled ${to}`,
+                reciprocal: {
+                  forwardLinks: forward.length,
+                  confirmed: forward.filter((l) => reverse.has(`${l.to.id}->${l.from.id}`)).length,
+                },
+              };
+            })
+          : ({ status: 'error', message: `not probed: ${to} → ${from} was not read` } as const),
       });
     }
 
@@ -288,7 +334,10 @@ export class HubSpotDiscoveryService {
     from: HubSpotObjectType,
     ids: readonly string[],
     to: HubSpotObjectType,
-  ): Promise<AssociationSampleProbe> {
+  ): Promise<{
+    probe: Omit<AssociationSampleProbe, 'sampledFrom' | 'reciprocal'>;
+    links: ExternalAssociation[];
+  }> {
     const {
       associations: links,
       withoutAssociations,
@@ -298,7 +347,7 @@ export class HubSpotDiscoveryService {
       : { associations: [], withoutAssociations: [], failures: [] };
     const types = new Map<string, ExternalAssociationType>();
     for (const link of links) for (const t of link.types) types.set(`${t.category}:${t.typeId}`, t);
-    return {
+    const probe = {
       recordsChecked: ids.length,
       recordsWithAssociations: new Set(links.map((l) => l.from.id)).size,
       recordsWithoutAssociations: withoutAssociations.length,
@@ -311,6 +360,7 @@ export class HubSpotDiscoveryService {
         records: f.ids.length,
       })),
     };
+    return { probe, links };
   }
 }
 

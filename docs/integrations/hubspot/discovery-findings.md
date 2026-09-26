@@ -15,29 +15,30 @@ token resolved via the SecretProvider, and `portalId` verified. Full report:
 [discovery-report.json](discovery-report.json). It holds schema, counts and
 record ids, no field values; it was checked not to contain the key.
 
-| Check                | Result                                                                                                                                                |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Account              | `149338734`, type `DEVELOPER_TEST`, data hosting `eu1`. Matches `HUBSPOT_TEST_PORTAL_ID`; non-test accounts are refused                               |
-| Authentication       | Service Key accepted as a bearer token; an invalid token gets 401 (`pnpm test:live`)                                                                  |
-| Contacts             | Readable: 6 read in 3 pages of 2 with HubSpot cursors (pagination verified, more pages exist); 402 properties, 0 custom                               |
-| Companies            | Readable: 6 read in 3 pages of 2 (pagination verified); 247 properties, 3 custom                                                                      |
-| Leads                | **Object available and readable**: the list call succeeds; the account has **0 Lead records**; 132 Lead properties readable                           |
-| Schemas / properties | Readable for all three objects; the default properties the connector relies on exist (`email`, `firstname`, `lastname`, `jobtitle`, `name`, `domain`) |
-| Association labels   | Readable in all six directions (below)                                                                                                                |
-| Record associations  | Contacts → Companies: 6 checked, 4 with associations (types 1 and 279), 2 without. Lead samples not exercised: no Lead records exist                  |
-| Missing scopes       | **None**: HubSpot returned no 403 for any call                                                                                                        |
-| 404                  | A non-existent contact id returns 404, mapped to "not found"                                                                                          |
-| Writes               | **None**: only `GET`, and `POST` to association batch **read**. The transport refuses anything else before sending                                    |
-| Legacy (v1–v4) calls | **None**: every call used a date-based version (list below)                                                                                           |
+| Check                | Result                                                                                                                                                                                                                                                                                                                     |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Account              | `149338734`, type `DEVELOPER_TEST`, data hosting `eu1`. Matches `HUBSPOT_TEST_PORTAL_ID`; non-test accounts are refused                                                                                                                                                                                                    |
+| Authentication       | Service Key accepted as a bearer token; an invalid token gets 401 (`pnpm test:live`)                                                                                                                                                                                                                                       |
+| Contacts             | Readable: 6 read in 3 pages of 2 with HubSpot cursors (pagination verified, more pages exist); 402 properties, 0 custom                                                                                                                                                                                                    |
+| Companies            | Readable: 6 read in 3 pages of 2 (pagination verified); 247 properties, 3 custom                                                                                                                                                                                                                                           |
+| Leads                | **Readable with real records**: 3 Leads (created by hand in the test account) read in 2 pages of 2 via HubSpot's cursor (pagination verified); 132 Lead properties                                                                                                                                                         |
+| Schemas / properties | Readable for all three objects; the default properties the connector relies on exist (`email`, `firstname`, `lastname`, `jobtitle`, `name`, `domain`)                                                                                                                                                                      |
+| Association labels   | Readable in all six directions (below)                                                                                                                                                                                                                                                                                     |
+| Record associations  | Lead → Contact and Lead → Company: 3 of 3 Leads linked (types 578 / 580 Primary). Contact → Lead and Company → Lead read on exactly the linked contact and company: 3 associations each (types 579 / 581); **all 3 forward links confirmed in reverse**. Contacts → Companies: 6 checked, 4 with (types 1, 279), 2 without |
+| Missing scopes       | **None**: HubSpot returned no 403 for any call                                                                                                                                                                                                                                                                             |
+| 404                  | A non-existent contact id returns 404, mapped to "not found"                                                                                                                                                                                                                                                               |
+| Writes               | **None**: only `GET`, and `POST` to association batch **read**. The transport refuses anything else before sending                                                                                                                                                                                                         |
+| Legacy (v1–v4) calls | **None**: every call used a date-based version (list below)                                                                                                                                                                                                                                                                |
 
 **Endpoints and versions actually used** (from the report's `endpointsUsed`):
 
 ```
 GET  /account-info/2026-09/details
-GET  /crm/objects/2026-09/{contacts,companies,leads}          (3 + 3 + 1 calls)
+GET  /crm/objects/2026-09/{contacts,companies,leads}          (3 + 3 + 2 calls)
 GET  /crm/properties/2026-09/{contacts,companies,leads}
 GET  /crm/associations/2026-09/{leads,contacts,companies}/{…}/labels   (6 directions)
-POST /crm/associations/2026-09/contacts/companies/batch/read
+POST /crm/associations/2026-09/{leads→contacts, leads→companies, contacts→companies,
+                                 contacts→leads, companies→leads}/batch/read
 ```
 
 The live run changed two assumptions:
@@ -107,11 +108,11 @@ How this is enforced, not just intended:
 
 ## Does the test environment expose the Lead object?
 
-- **Live: yes.** `GET /crm/objects/2026-09/leads` succeeds and 132 Lead
-  properties are readable with the read-only Service Key. The account
-  currently holds **no Lead records**, so no Lead data or Lead association
-  was read. To exercise those paths, create a Lead in the test account by hand;
-  the connector never writes.
+- **Live: yes, with real records.** Three test Leads were created by hand in
+  the HubSpot UI; the connector never writes. The read-only Service Key read
+  all three through the production path, in 2 pages of 2 using HubSpot's
+  cursor, plus 132 Lead properties. The report holds their ids only: no Lead
+  names or other field values.
 - **Documented:** Leads (`0-136`, path `leads`) require **Sales Hub
   Professional or Enterprise**. The developer test account's Enterprise trial
   provides them.
@@ -134,9 +135,15 @@ How this is enforced, not just intended:
 - **Documented:** a Lead must be associated with an existing Contact, and
   can be associated with Companies. The live types confirm primary and
   unlabelled associations in both directions.
-- **Live:** real Contact → Company associations were read (types 1 and 279).
-  Lead record associations could not be sampled because the account has no
-  Leads.
+- **Live, record level:**
+  - All 3 Leads are linked to a Contact (type 578 Primary) and to a Company
+    (type 580 Primary).
+  - Reading in reverse, on exactly that contact and that company, returns the
+    same 3 Leads (types 579 "Lead with Primary Contact" and 581 "Lead with
+    Primary Company"). 3 of 3 forward links are confirmed in reverse.
+  - Real Contact → Company associations were also read (types 1 and 279).
+  - The unlabelled types (608/609, 610/611) are defined but were not used by
+    these records.
 - **Juniper dependency:** custom (user-defined) association labels are
   subscription-dependent. Juniper's labels, if any, appear in their
   discovery run (M16).
