@@ -1,8 +1,12 @@
 // Prisma schema for the Lead Intelligence Platform.
 //
-// Milestone 0 intentionally defines no domain tables: the canonical domain
-// model (M1) and tenant model (M2) are introduced in their own milestones.
-// Every persistent integration record added later MUST carry a tenant_id.
+// TENANCY RULES (ADR 0008) — every table except `tenants` is tenant-owned:
+//   * `tenant_id uuid NOT NULL` referencing tenants(id)
+//   * PostgreSQL row-level security ENABLED + FORCED with the `tenant_isolation`
+//     policy (added by hand in the migration SQL; Prisma does not model RLS)
+//   * unique constraints and foreign keys are composite with tenant_id, so a row
+//     can never reference another tenant's row
+// The schema-guard integration test fails CI if a table breaks these rules.
 
 generator client {
   provider            = "prisma-client"
@@ -13,4 +17,268 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Tenant registry (platform-level; the only table without tenant_id)
+// ---------------------------------------------------------------------------
+
+model Tenant {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  /// Immutable, [a-z][a-z0-9]{1,39}; used in secret keys (tenant.<slug>.…)
+  slug      String   @unique
+  name      String
+  /// active | suspended | offboarded
+  status    String   @default("active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  integrations        TenantIntegration[]
+  flowSettings        TenantFlowSetting[]
+  credentialRefs      TenantCredentialRef[]
+  qualificationConfig TenantQualificationConfig?
+  products            TenantProduct[]
+  fieldMappings       TenantFieldMapping[]
+  leadSourceMappings  TenantLeadSourceMapping[]
+  policies            TenantPolicy[]
+  companies           Company[]
+  persons             Person[]
+
+  @@unique([id, slug])
+  @@map("tenants")
+}
+
+// ---------------------------------------------------------------------------
+// Tenant configuration
+// ---------------------------------------------------------------------------
+
+model TenantIntegration {
+  tenantId  String   @map("tenant_id") @db.Uuid
+  /// hubspot | sugar | gainsight_cs | gainsight_px | jev
+  system    String
+  /// disabled | read_only | read_write
+  access    String   @default("disabled")
+  settings  Json     @default("{}")
+  version   Int      @default(1)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, system])
+  @@map("tenant_integrations")
+}
+
+model TenantFlowSetting {
+  tenantId  String   @map("tenant_id") @db.Uuid
+  /// e.g. hubspot_to_sugar_handover
+  flow      String
+  /// off | shadow | coexist | active (allowed values depend on the flow)
+  mode      String   @default("off")
+  version   Int      @default(1)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, flow])
+  @@map("tenant_flow_settings")
+}
+
+/// A pointer to a secret held by the SecretProvider. Never the secret itself.
+model TenantCredentialRef {
+  tenantId   String   @map("tenant_id") @db.Uuid
+  /// Denormalised so a CHECK constraint can force secret_key to start with tenant.<slug>.
+  tenantSlug String   @map("tenant_slug")
+  system     String
+  name       String
+  secretKey  String   @map("secret_key")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId, tenantSlug], references: [id, slug], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, system, name])
+  @@map("tenant_credential_refs")
+}
+
+model TenantQualificationConfig {
+  tenantId       String   @id @map("tenant_id") @db.Uuid
+  /// rules | jev | hybrid
+  mode           String   @default("rules")
+  rulesetVersion String?  @map("ruleset_version")
+  settings       Json     @default("{}")
+  version        Int      @default(1)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@map("tenant_qualification_config")
+}
+
+model TenantProduct {
+  tenantId    String   @map("tenant_id") @db.Uuid
+  key         String
+  name        String
+  description String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant    Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  ownership CompanyProduct[]
+
+  @@id([tenantId, key])
+  @@map("tenant_products")
+}
+
+model TenantFieldMapping {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId        String   @map("tenant_id") @db.Uuid
+  system          String
+  objectType      String   @map("object_type")
+  canonicalEntity String   @map("canonical_entity")
+  canonicalField  String   @map("canonical_field")
+  /// NULL while the external field is still TBC (never guessed)
+  externalField   String?  @map("external_field")
+  /// inbound | outbound | bidirectional
+  direction       String
+  /// tbc | proposed | confirmed
+  status          String   @default("tbc")
+  valueMap        Json     @default("{}") @map("value_map")
+  notes           String?
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, system, objectType, canonicalEntity, canonicalField])
+  @@map("tenant_field_mappings")
+}
+
+model TenantLeadSourceMapping {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId       String   @map("tenant_id") @db.Uuid
+  system         String
+  /// e.g. recent_conversion
+  sourceProperty String   @map("source_property")
+  /// equals | contains
+  matchType      String   @map("match_type")
+  sourceValue    String   @map("source_value")
+  channel        String
+  label          String?
+  priority       Int      @default(100)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, system, sourceProperty, matchType, sourceValue])
+  @@map("tenant_lead_source_mappings")
+}
+
+model TenantPolicy {
+  tenantId  String   @map("tenant_id") @db.Uuid
+  /// sla | routing | requalification
+  kind      String
+  document  Json
+  version   Int      @default(1)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, kind])
+  @@map("tenant_policies")
+}
+
+// ---------------------------------------------------------------------------
+// Identity: canonical people and organisations
+// ---------------------------------------------------------------------------
+
+model Company {
+  id             String   @id @db.Uuid
+  tenantId       String   @map("tenant_id") @db.Uuid
+  name           String
+  domains        String[] @default([])
+  customerStatus String   @default("unknown") @map("customer_status")
+  createdAt      DateTime @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime @map("updated_at") @db.Timestamptz(3)
+
+  tenant       Tenant               @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  products     CompanyProduct[]
+  externalRefs CompanyExternalRef[]
+  persons      Person[]
+
+  @@unique([tenantId, id])
+  @@index([tenantId, name])
+  @@map("companies")
+}
+
+model CompanyProduct {
+  tenantId   String    @map("tenant_id") @db.Uuid
+  companyId  String    @map("company_id") @db.Uuid
+  productKey String    @map("product_key")
+  /// active | trial | expired | churned
+  status     String
+  since      DateTime? @db.Timestamptz(3)
+  until      DateTime? @db.Timestamptz(3)
+
+  company Company       @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Cascade, onUpdate: Restrict)
+  product TenantProduct @relation(fields: [tenantId, productKey], references: [tenantId, key], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, companyId, productKey])
+  @@map("company_products")
+}
+
+model CompanyExternalRef {
+  tenantId   String   @map("tenant_id") @db.Uuid
+  system     String
+  objectType String   @map("object_type")
+  externalId String   @map("external_id")
+  companyId  String   @map("company_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  company Company @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@id([tenantId, system, objectType, externalId])
+  @@index([tenantId, companyId])
+  @@map("company_external_refs")
+}
+
+model Person {
+  id               String   @id @db.Uuid
+  tenantId         String   @map("tenant_id") @db.Uuid
+  primaryEmail     String   @map("primary_email")
+  additionalEmails String[] @default([]) @map("additional_emails")
+  firstName        String?  @map("first_name")
+  lastName         String?  @map("last_name")
+  jobTitle         String?  @map("job_title")
+  companyId        String?  @map("company_id") @db.Uuid
+  roles            String[] @default([])
+  createdAt        DateTime @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime @map("updated_at") @db.Timestamptz(3)
+
+  tenant       Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  company      Company?            @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  externalRefs PersonExternalRef[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, primaryEmail])
+  @@index([tenantId, companyId])
+  @@map("persons")
+}
+
+model PersonExternalRef {
+  tenantId   String   @map("tenant_id") @db.Uuid
+  system     String
+  objectType String   @map("object_type")
+  externalId String   @map("external_id")
+  personId   String   @map("person_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  person Person @relation(fields: [tenantId, personId], references: [tenantId, id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@id([tenantId, system, objectType, externalId])
+  @@index([tenantId, personId])
+  @@map("person_external_refs")
 }

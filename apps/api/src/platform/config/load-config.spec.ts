@@ -86,6 +86,38 @@ describe('loadConfig', () => {
     expect(error.issues.some((issue) => issue.startsWith(`${key}:`))).toBe(true);
   });
 
+  it('defaults to a safe database posture', () => {
+    expect(loadConfig(validEnv).database).toEqual({
+      allowPrivilegedRole: false,
+      poolMax: 10,
+      transactionTimeoutMs: 15000,
+    });
+  });
+
+  it('never allows privileged database roles in production', () => {
+    const error = captureError({
+      ...validEnv,
+      NODE_ENV: 'production',
+      DATABASE_ALLOW_PRIVILEGED_ROLE: 'true',
+    });
+    expect(error.issues).toEqual([
+      'DATABASE_ALLOW_PRIVILEGED_ROLE: must not be enabled in production',
+    ]);
+    expect(
+      loadConfig({ ...validEnv, DATABASE_ALLOW_PRIVILEGED_ROLE: 'true' }).database
+        .allowPrivilegedRole,
+    ).toBe(true);
+  });
+
+  it.each([
+    ['DATABASE_POOL_MAX', '0'],
+    ['DATABASE_POOL_MAX', '500'],
+    ['DATABASE_TRANSACTION_TIMEOUT_MS', '10'],
+  ])('rejects invalid %s=%s', (key, value) => {
+    const error = captureError({ ...validEnv, [key]: value });
+    expect(error.issues.some((issue) => issue.startsWith(`${key}:`))).toBe(true);
+  });
+
   it('requires an OTLP endpoint when tracing is enabled', () => {
     const error = captureError({ ...validEnv, OTEL_ENABLED: 'true' });
     expect(error.issues).toEqual([

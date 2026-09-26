@@ -1,0 +1,183 @@
+{
+  "description": "Juniper Education — initial configuration from the Lead Handover brief (13 Aug 2026). Only values stated in the brief are included; anything the brief marks TBC is recorded as tbc with no external field. Integrations and flows are always provisioned disabled/off.",
+  "qualification": { "mode": "rules" },
+  "products": [],
+  "leadSourceMappings": [
+    {
+      "system": "hubspot",
+      "sourceProperty": "recent_conversion",
+      "matchType": "contains",
+      "sourceValue": "Whitepaper",
+      "channel": "whitepaper_download",
+      "label": "Whitepaper",
+      "priority": 10
+    },
+    {
+      "system": "hubspot",
+      "sourceProperty": "recent_conversion",
+      "matchType": "contains",
+      "sourceValue": "Checklist",
+      "channel": "checklist_download",
+      "label": "Checklist",
+      "priority": 10
+    },
+    {
+      "system": "hubspot",
+      "sourceProperty": "recent_conversion",
+      "matchType": "contains",
+      "sourceValue": "Demo",
+      "channel": "demo_request",
+      "label": "Demo",
+      "priority": 20
+    },
+    {
+      "system": "hubspot",
+      "sourceProperty": "recent_conversion",
+      "matchType": "contains",
+      "sourceValue": "Book a call",
+      "channel": "book_a_call",
+      "label": "Book a call",
+      "priority": 20
+    },
+    {
+      "system": "hubspot",
+      "sourceProperty": "recent_conversion",
+      "matchType": "contains",
+      "sourceValue": "Webinar",
+      "channel": "webinar_registration",
+      "label": "Webinar",
+      "priority": 20
+    },
+    {
+      "system": "hubspot",
+      "sourceProperty": "recent_conversion",
+      "matchType": "contains",
+      "sourceValue": "Contact us",
+      "channel": "contact_us",
+      "label": "Contact us",
+      "priority": 20
+    },
+    {
+      "system": "hubspot",
+      "sourceProperty": "recent_conversion",
+      "matchType": "contains",
+      "sourceValue": "Download",
+      "channel": "resource_download",
+      "label": "Download",
+      "priority": 30
+    }
+  ],
+  "fieldMappings": [
+    {
+      "system": "sugar",
+      "objectType": "Leads",
+      "canonicalEntity": "lead",
+      "canonicalField": "stage",
+      "externalField": "status",
+      "direction": "bidirectional",
+      "status": "proposed",
+      "notes": "Brief D.2: existing static Status field. Picklist translation and velocity reporting via the stage-date fields still to be confirmed."
+    },
+    {
+      "system": "sugar",
+      "objectType": "Leads",
+      "canonicalEntity": "lead",
+      "canonicalField": "lead_type",
+      "externalField": null,
+      "direction": "outbound",
+      "status": "tbc",
+      "notes": "Brief D.2: check whether an equivalent picklist already exists."
+    },
+    {
+      "system": "sugar",
+      "objectType": "Leads",
+      "canonicalEntity": "lead",
+      "canonicalField": "source_label",
+      "externalField": null,
+      "direction": "outbound",
+      "status": "tbc",
+      "notes": "Brief: Heat indicators; values should match the Pathway 1 trigger list."
+    },
+    {
+      "system": "sugar",
+      "objectType": "Leads",
+      "canonicalEntity": "lead",
+      "canonicalField": "temperature",
+      "externalField": null,
+      "direction": "bidirectional",
+      "status": "tbc",
+      "notes": "Brief: Lead Label (Hot/Warm/Cold). Sales edits in Sugar sync back."
+    },
+    {
+      "system": "sugar",
+      "objectType": "Leads",
+      "canonicalEntity": "lead",
+      "canonicalField": "disqualified_reason",
+      "externalField": null,
+      "direction": "bidirectional",
+      "status": "tbc",
+      "notes": "Brief: picklist only, identical values both sides."
+    },
+    {
+      "system": "sugar",
+      "objectType": "Leads",
+      "canonicalEntity": "lead",
+      "canonicalField": "date_entered_new",
+      "externalField": null,
+      "direction": "outbound",
+      "status": "tbc",
+      "notes": "Brief: new field required in Sugar."
+    },
+    {
+      "system": "sugar",
+      "objectType": "Leads",
+      "canonicalEntity": "lead",
+      "canonicalField": "date_entered_attempting",
+      "externalField": null,
+      "direction": "outbound",
+      "status": "tbc",
+      "notes": "Brief: new field required in Sugar."
+    },
+    {
+      "system": "sugar",
+      "objectType": "Leads",
+      "canonicalEntity": "lead",
+      "canonicalField": "date_entered_connected",
+      "externalField": null,
+      "direction": "outbound",
+      "status": "tbc",
+      "notes": "Brief: new field required in Sugar."
+    },
+    {
+      "system": "sugar",
+      "objectType": "Leads",
+      "canonicalEntity": "lead",
+      "canonicalField": "date_entered_qualified",
+      "externalField": null,
+      "direction": "outbound",
+      "status": "tbc",
+      "notes": "Brief: new field required in Sugar."
+    },
+    {
+      "system": "sugar",
+      "objectType": "Leads",
+      "canonicalEntity": "lead",
+      "canonicalField": "date_entered_disqualified",
+      "externalField": null,
+      "direction": "outbound",
+      "status": "tbc",
+      "notes": "Brief: new field required in Sugar."
+    }
+  ],
+  "policies": {
+    "sla": { "responseMinutes": { "hot": 60, "warm": 1440, "cold": 4320 } },
+    "routing": {
+      "placeholder": true,
+      "notes": "Brief: Hot = direct 1:1 engagement; Warm/Cold = automated sequences. Defined in M14."
+    },
+    "requalification": {
+      "placeholder": true,
+      "notes": "Labs doc: do not re-qualify for a product already tried without a new compelling event. Windows defined in M11/M14."
+    }
+  }
+}

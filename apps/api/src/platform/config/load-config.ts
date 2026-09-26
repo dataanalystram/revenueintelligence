@@ -30,6 +30,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     http: Object.freeze({ host: e.HOST, port: e.PORT }),
     logLevel: e.LOG_LEVEL,
     databaseUrl: e.DATABASE_URL,
+    database: Object.freeze({
+      allowPrivilegedRole: e.DATABASE_ALLOW_PRIVILEGED_ROLE,
+      poolMax: e.DATABASE_POOL_MAX,
+      transactionTimeoutMs: e.DATABASE_TRANSACTION_TIMEOUT_MS,
+    }),
     redisUrl: e.REDIS_URL,
     secretsProvider: e.SECRETS_PROVIDER,
     healthCheckTimeoutMs: e.HEALTH_CHECK_TIMEOUT_MS,

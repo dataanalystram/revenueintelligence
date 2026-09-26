@@ -39,11 +39,11 @@ describe('Worker process (real PostgreSQL + Redis)', () => {
     }
 
     // Measure from an independent connection so the probe itself is excluded.
-    const probe = new Client({ connectionString: infra.config.databaseUrl });
+    const probe = new Client({ connectionString: infra.adminUrl });
     await probe.connect();
     try {
       const { rows } = await probe.query<{ count: string }>(
-        'SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()',
+        "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND usename = 'lip_api'",
       );
       expect(Number(rows[0]?.count)).toBe(0);
     } finally {

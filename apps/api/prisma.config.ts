@@ -9,9 +9,13 @@ export default defineConfig({
     path: 'prisma/migrations',
   },
   datasource: {
-    // A placeholder keeps `prisma generate` working without a database; commands
-    // that actually connect (migrate) require DATABASE_URL to be set.
+    // Migrations run as the schema owner (MIGRATION_DATABASE_URL); the
+    // application runs as the non-privileged app role (DATABASE_URL). See
+    // docs/operations/database-roles.md. A placeholder keeps `prisma generate`
+    // working without a database.
     url:
-      process.env.DATABASE_URL ?? 'postgresql://placeholder:placeholder@localhost:5432/placeholder',
+      process.env.MIGRATION_DATABASE_URL ??
+      process.env.DATABASE_URL ??
+      'postgresql://placeholder:placeholder@localhost:5432/placeholder',
   },
 });

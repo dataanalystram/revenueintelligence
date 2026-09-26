@@ -1,6 +1,6 @@
 # Milestone 1 — Canonical domain model
 
-- Status: **Complete — awaiting review**
+- Status: **Complete — approved**
 - Date: 2026-09-26
 - Branch / PR: `claude/blissful-mendel-urbh4r` —
   [PR #1](https://github.com/laxmanprasadsomaraju/Garethtasktest/pull/1)

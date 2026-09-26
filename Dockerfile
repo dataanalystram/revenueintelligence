@@ -2,7 +2,9 @@
 # Multi-stage build for the backend. One image, two process roles:
 #   API:     node dist/main.js     (default CMD)
 #   Worker:  node dist/worker.js
-#   Migrate: docker build --target migrate  ->  prisma migrate deploy
+#   Migrate: docker build --target migrate  ->  prisma migrate deploy (owner credentials)
+#   Provision a tenant: node dist/cli/provision-tenant.js --slug <s> --name <n> [--template <t>]
+# The API and worker must connect as a member of the lip_app role (ADR 0008).
 
 ARG NODE_VERSION=22-alpine
 
@@ -33,6 +35,8 @@ WORKDIR /app
 COPY --from=build --chown=node:node /out/node_modules ./node_modules
 COPY --from=build --chown=node:node /out/package.json ./package.json
 COPY --from=build --chown=node:node /repo/apps/api/dist ./dist
+# Tenant templates, used by the provisioning CLI (node dist/cli/provision-tenant.js).
+COPY --from=build --chown=node:node /repo/apps/api/config ./config
 USER node
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

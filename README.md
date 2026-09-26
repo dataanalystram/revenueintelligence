@@ -16,11 +16,12 @@ See [docs/architecture.md](docs/architecture.md) for the design and
 
 ## Status
 
-| Milestone                                   | State                                                                                  |
-| ------------------------------------------- | -------------------------------------------------------------------------------------- |
-| M0 — Repository / infrastructure foundation | ✅ Approved — [record](docs/milestones/M00-foundation.md)                              |
-| M1 — Canonical domain model                 | ✅ Complete, awaiting review — [record](docs/milestones/M01-canonical-domain-model.md) |
-| M2 — Tenant model / isolation               | Not started                                                                            |
+| Milestone                                           | State                                                                                  |
+| --------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| M0 — Repository / infrastructure foundation         | ✅ Approved — [record](docs/milestones/M00-foundation.md)                              |
+| M1 — Canonical domain model                         | ✅ Approved — [record](docs/milestones/M01-canonical-domain-model.md)                  |
+| M2 — Tenants and data isolation                     | ✅ Complete, awaiting review — [record](docs/milestones/M02-tenancy-data-isolation.md) |
+| M3 — HubSpot developer environment / read connector | Not started                                                                            |
 
 ## Stack
 
@@ -36,7 +37,10 @@ apps/api/                 Backend: one codebase, two process roles
   src/worker.ts           Background worker process (queue consumers from M6)
   src/platform/           Cross-cutting infrastructure (config, secrets, logging,
                           database, redis, health, telemetry, http)
-  src/modules/            Business modules / bounded contexts (added per milestone)
+  src/modules/            Business modules / bounded contexts (added per milestone):
+                          domain (M1), tenancy + identity (M2)
+  src/cli/                Operational commands (tenant provisioning)
+  config/tenant-templates Tenant configuration templates (e.g. juniper.json)
   prisma/                 Schema and migrations
   test/                   Integration tests (real PostgreSQL + Redis via Testcontainers)
 docs/                     Architecture, ADRs, milestone records, credentials guide
@@ -49,12 +53,18 @@ Prerequisites: Node.js 22 (`.nvmrc`), pnpm 10 (`corepack enable`), Docker.
 ```bash
 pnpm install
 cp .env.example apps/api/.env          # local only; git-ignored
-docker compose up -d postgres redis
-pnpm --filter @lip/api prisma:migrate:deploy
-pnpm --filter @lip/api dev             # API on http://localhost:3000
+docker compose up -d postgres redis    # also creates the dev app role lip_api
+pnpm --filter @lip/api prisma:migrate:deploy          # as the owner (MIGRATION_DATABASE_URL)
+pnpm --filter @lip/api build
+pnpm --filter @lip/api tenant:provision --slug juniper --name "Juniper Education" --template juniper
+pnpm --filter @lip/api dev             # API on http://localhost:3000 (runs as lip_api)
 pnpm --filter @lip/api dev:worker      # worker process
 curl localhost:3000/health/ready
 ```
+
+The API and worker connect as a **non-privileged** database role so that
+PostgreSQL row-level security isolates tenants. They refuse to start as a
+superuser. See [docs/operations/database-roles.md](docs/operations/database-roles.md).
 
 Run everything in containers instead: `docker compose --profile app up --build`.
 

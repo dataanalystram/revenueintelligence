@@ -17,7 +17,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate:dev": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
-    "test:coverage": "vitest run --config vitest.config.mts --coverage"
+    "test:coverage": "vitest run --config vitest.config.mts --coverage",
+    "tenant:provision": "node dist/cli/provision-tenant.js"
   },
   "dependencies": {
     "@nestjs/common": "^12.1.0",
