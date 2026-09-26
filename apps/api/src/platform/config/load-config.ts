@@ -33,6 +33,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     database: Object.freeze({
       allowPrivilegedRole: e.DATABASE_ALLOW_PRIVILEGED_ROLE,
       poolMax: e.DATABASE_POOL_MAX,
+      lockTimeoutMs: e.DATABASE_LOCK_TIMEOUT_MS,
       transactionTimeoutMs: e.DATABASE_TRANSACTION_TIMEOUT_MS,
     }),
     redisUrl: e.REDIS_URL,

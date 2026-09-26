@@ -41,8 +41,11 @@ project with free ports and no credentials:
 - checks readiness, HTTP behaviour, tenant provisioning and RLS as seen by the
   app role, resilience (Redis outage and recovery) and refusal of a privileged
   database role
-- runs milestone-specific checks from `scripts/verify-runtime.d/*.sh`
-- shuts down gracefully and removes everything
+- runs milestone-specific checks from `scripts/verify-runtime.d/*.sh`, if any
+  exist (none yet; see the README there)
+- shuts down gracefully, proving the real node processes exit, their DB and
+  Redis connections close, and their shutdown hooks log completion, then
+  removes everything
 
 Add a check script there whenever a milestone adds runtime behaviour. The
 script prints `PASS`/`FAIL` per check and exits non-zero on any failure (logs
@@ -60,16 +63,15 @@ containers, and checks readiness. Behind a TLS-intercepting proxy, pass extra
 build arguments via `LIP_DOCKER_BUILD_ARGS` or an alternative Dockerfile via
 `LIP_DOCKERFILE`. Never commit such environment-specific changes.
 
-## 4. Live connector tests (only when credentials are configured)
+## 4. Live connector tests (none yet)
 
-```bash
-pnpm test:live
-```
-
-These run against real external test environments (e.g. a HubSpot developer
-test account). They skip, reporting the missing variable names, when
-credentials are absent. Say explicitly which ones ran and which were skipped.
-Never print or log credential values.
+No live test suite exists yet. The first connector milestone adds one
+(e.g. against a HubSpot developer test account), together with a
+`pnpm test:live` script. That script must **fail**, not pass, when it finds
+zero suites, and each suite must report which credentials are missing when it
+skips. Until then, report "live tests: not applicable (no connector yet)".
+Never present a skipped or empty live run as passing, and never print
+credential values.
 
 ## 5. Fresh clone (mandatory before reporting a milestone complete)
 

@@ -95,7 +95,19 @@ the same transaction as the write. Such changes first take a per-tenant
 transaction-scoped advisory lock (`pg_advisory_xact_lock`), so concurrent
 admin requests for one tenant are serialised. Each one validates against the
 committed result of the previous one, and a check-then-act race cannot leave
-an invalid configuration. Tenants never contend with each other.
+an invalid configuration.
+
+- The lock is keyed per tenant, so tenants never wait for each other's lock.
+  They do share the connection pool, however, so waits are bounded:
+  `DATABASE_LOCK_TIMEOUT_MS` (default 5 s, set transaction-locally) turns a
+  long wait into a retryable `LockTimeoutError` instead of a pooled
+  connection held until the transaction times out.
+- These transactions are pinned to `READ COMMITTED`. At a higher isolation
+  level the snapshot would be taken before the lock, and reads after it could
+  be stale. The pin means changing the database's default isolation level
+  cannot reintroduce the race (regression-tested).
+- The configuration tables may be written only by the tenancy module; an
+  ESLint rule forbids other code from touching their Prisma delegates.
 
 ## Consequences
 

@@ -81,7 +81,6 @@ Run everything in containers instead: `docker compose --profile app up --build`.
 | `pnpm verify`              | All of the above                                                                                     |
 | `pnpm verify:runtime`      | Runs the real API and worker against PostgreSQL/Redis and checks behaviour end to end (needs Docker) |
 | `pnpm verify:docker`       | Builds the images and runs migrate, API, worker and CLI containers (needs Docker)                    |
-| `pnpm test:live`           | Tests against real external **test** environments; skipped without credentials                       |
 
 CI (`.github/workflows/ci.yml`) runs every gate, runtime verification and the
 Docker checks on each pull request. The full procedure used before a milestone

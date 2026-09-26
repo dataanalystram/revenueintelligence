@@ -27,6 +27,12 @@ export const envSchema = z
     DATABASE_ALLOW_PRIVILEGED_ROLE: booleanFromEnv.default(false),
     /** Maximum connections per process (API and worker each have their own pool). */
     DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(200).default(10),
+    /**
+     * Longest a transaction waits for a lock (e.g. the per-tenant configuration
+     * lock) before failing with a retryable "busy" error instead of holding a
+     * pooled connection.
+     */
+    DATABASE_LOCK_TIMEOUT_MS: z.coerce.number().int().min(50).max(60_000).default(5_000),
     DATABASE_TRANSACTION_TIMEOUT_MS: z.coerce
       .number()
       .int()
@@ -73,6 +79,7 @@ export interface AppConfig {
   readonly database: {
     readonly allowPrivilegedRole: boolean;
     readonly poolMax: number;
+    readonly lockTimeoutMs: number;
     readonly transactionTimeoutMs: number;
   };
   readonly redisUrl: string;

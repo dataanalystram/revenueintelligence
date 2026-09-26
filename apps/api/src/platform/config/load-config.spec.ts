@@ -90,6 +90,7 @@ describe('loadConfig', () => {
     expect(loadConfig(validEnv).database).toEqual({
       allowPrivilegedRole: false,
       poolMax: 10,
+      lockTimeoutMs: 5000,
       transactionTimeoutMs: 15000,
     });
   });

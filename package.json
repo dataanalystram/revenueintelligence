@@ -1,7 +1,7 @@
 {
   "name": "lead-intelligence-platform",
   "private": true,
-  "description": "Juniper / Wigmore Lead Intelligence Platform \u2014 HubSpot, Sugar CRM and Gainsight lead handover and qualification",
+  "description": "Juniper / Wigmore Lead Intelligence Platform — HubSpot, Sugar CRM and Gainsight lead handover and qualification",
   "packageManager": "pnpm@10.33.0",
   "engines": {
     "node": ">=22.12.0"
@@ -18,8 +18,7 @@
     "depcheck:boundaries": "pnpm -r depcheck:boundaries",
     "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm depcheck:boundaries && pnpm test",
     "verify:runtime": "bash scripts/verify-runtime.sh",
-    "verify:docker": "bash scripts/verify-docker.sh",
-    "test:live": "pnpm -r test:live"
+    "verify:docker": "bash scripts/verify-docker.sh"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

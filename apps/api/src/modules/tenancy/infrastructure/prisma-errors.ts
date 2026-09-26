@@ -1,5 +1,6 @@
 import {
   InvalidReferenceError,
+  LockTimeoutError,
   RecordNotFoundError,
   TenantIsolationViolationError,
   UniqueConstraintError,
@@ -50,6 +51,9 @@ export function translateDatabaseError(error: unknown, entity: string): never {
   const message = text(error);
   if (allCodes.includes('42501') || /row-level security/i.test(message)) {
     throw new TenantIsolationViolationError();
+  }
+  if (allCodes.includes('55P03') || /lock timeout/i.test(message)) {
+    throw new LockTimeoutError(entity);
   }
   if (allCodes.includes('P2002') || allCodes.includes('23505')) {
     throw new UniqueConstraintError(uniqueTarget(error));

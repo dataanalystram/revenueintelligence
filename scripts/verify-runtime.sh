@@ -62,9 +62,11 @@ check "migrate deploy applies" migrate
 check "migrate deploy re-run is a no-op" bash -c "$(declare -f migrate); cd '$API_DIR' && MIGRATION_DATABASE_URL='$OWNER_DB_URL' DATABASE_URL='' pnpm exec prisma migrate deploy | grep -q 'No pending migrations'"
 
 log "4. Start API and worker (non-privileged role lip_api)"
-(cd "$API_DIR" && DATABASE_URL="$APP_DB_URL" PORT="$API_PORT" node dist/main.js >"$WORK/api.log" 2>&1) &
+# `exec` replaces the subshell with node, so $! is node's own PID: signals and
+# exit codes below refer to the application process, not a wrapper shell.
+(cd "$API_DIR" && DATABASE_URL="$APP_DB_URL" PORT="$API_PORT" exec node dist/main.js >"$WORK/api.log" 2>&1) &
 API_PID=$!
-(cd "$API_DIR" && DATABASE_URL="$APP_DB_URL" node dist/worker.js >"$WORK/worker.log" 2>&1) &
+(cd "$API_DIR" && DATABASE_URL="$APP_DB_URL" exec node dist/worker.js >"$WORK/worker.log" 2>&1) &
 WORKER_PID=$!
 
 wait_ready() {
@@ -112,23 +114,36 @@ for extra in "$ROOT"/scripts/verify-runtime.d/*.sh; do
   source "$extra"
 done
 
-log "8. Graceful shutdown"
+log "8. Graceful shutdown (real node processes)"
+check "API PID is the node process" bash -c "[[ \"\$(ps -o args= -p $API_PID)\" == 'node dist/main.js' ]]"
+check "worker PID is the node process" bash -c "[[ \"\$(ps -o args= -p $WORKER_PID)\" == 'node dist/worker.js' ]]"
+pg_app_sessions() { compose exec -T -e PGPASSWORD=lip postgres psql -h 127.0.0.1 -U lip -d lip -Atc "SELECT count(*) FROM pg_stat_activity WHERE usename = 'lip_api'"; }
+redis_clients() { compose exec -T redis redis-cli CLIENT LIST | grep -vc 'cmd=client'; }
+curl -fsS "$API_URL/health/ready" >/dev/null   # ensure live DB and Redis connections exist
+before_pg="$(pg_app_sessions)"; before_redis="$(redis_clients)"
+[[ "$before_pg" -gt 0 && "$before_redis" -gt 0 ]] && pass "before shutdown: $before_pg app DB session(s), $before_redis Redis client(s)" \
+  || fail "expected open connections before shutdown (db=$before_pg redis=$before_redis)"
 kill -TERM "$API_PID" "$WORKER_PID"
 stopped() { for _ in $(seq 1 40); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.25; done; return 1; }
-check "API exits on SIGTERM within 10s" stopped "$API_PID"
-check "worker exits on SIGTERM within 10s" stopped "$WORKER_PID"
-# Nest closes the application, then re-raises the signal: 143 (128+SIGTERM) is a
-# clean signal-initiated exit. Anything else, or any error logged, is a failure.
+check "API node process exits on SIGTERM within 10s" stopped "$API_PID"
+check "worker node process exits on SIGTERM within 10s" stopped "$WORKER_PID"
+# 0 = exited normally; 143 = Nest closed the app, then re-raised SIGTERM.
 clean_exit() {
   local name="$1" pid="$2" logfile="$3" code=0
   wait "$pid" 2>/dev/null || code=$?
   if [[ $code -ne 0 && $code -ne 143 ]]; then fail "$name exit code $code"; return; fi
   if grep -q '"level":\(50\|60\)' "$logfile"; then fail "$name logged errors"; return; fi
-  pass "$name exited cleanly (code $code, no errors logged)"
+  pass "$name exited (code $code, no errors logged)"
 }
 clean_exit API "$API_PID" "$WORK/api.log"
 clean_exit worker "$WORKER_PID" "$WORK/worker.log"
 API_PID=""; WORKER_PID=""
+# Written by the app's own onApplicationShutdown hook, after modules were destroyed.
+check "API ran its shutdown hooks (Application shut down cleanly)" grep -q 'Application shut down cleanly' "$WORK/api.log"
+check "worker ran its shutdown hooks (Application shut down cleanly)" grep -q 'Application shut down cleanly' "$WORK/worker.log"
+# Shutdown hooks really ran: Prisma disconnected and Redis clients quit.
+check "all app DB sessions closed after shutdown" bash -c "for i in \$(seq 1 20); do [ \"\$(docker compose -p '$PROJECT' -f '$ROOT/docker-compose.yml' exec -T -e PGPASSWORD=lip postgres psql -h 127.0.0.1 -U lip -d lip -Atc \"SELECT count(*) FROM pg_stat_activity WHERE usename = 'lip_api'\")\" = 0 ] && exit 0; sleep 0.25; done; exit 1"
+check "all app Redis clients disconnected after shutdown" bash -c "[ \"\$(docker compose -p '$PROJECT' -f '$ROOT/docker-compose.yml' exec -T redis redis-cli CLIENT LIST | grep -vc 'cmd=client')\" = 0 ]"
 
 printf '\n== Summary: %d passed, %d failed\n' "$PASSED" "$FAILED"
 [[ $FAILED -eq 0 ]]

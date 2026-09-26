@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
+import { APP_CONFIG, type AppConfig } from '../../../platform/config';
 import type { ProductKey } from '../../domain';
 import {
   CredentialNameSchema,
@@ -42,6 +43,8 @@ import { tenantClient, type TenantTransaction } from './tenant-database';
 /** Stored rows are re-validated on read, so bad data can never enter the application. */
 @Injectable()
 export class PrismaTenantConfigRepository {
+  constructor(@Inject(APP_CONFIG) private readonly config: AppConfig) {}
+
   /**
    * Serialises configuration changes for one tenant until the transaction
    * ends. Changes whose validity depends on other settings (flows need
@@ -51,11 +54,20 @@ export class PrismaTenantConfigRepository {
    *
    * A transaction-scoped advisory lock: released automatically on commit or
    * rollback, independent of which rows exist, and keyed per tenant so
-   * tenants never contend.
+   * tenants do not contend for it. Callers must run at READ COMMITTED (see
+   * TenantConfigService) so reads after the lock see the previous holder's
+   * committed changes.
    */
   async lockTenantConfiguration(tx: TenantTransaction): Promise<void> {
-    await tenantClient(tx)
-      .$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`tenant-config:${tx.tenantId}`}, 0))`;
+    const db = tenantClient(tx);
+    // Bound the wait (transaction-local): a busy tenant fails fast with a
+    // retryable LockTimeoutError instead of holding a pooled connection.
+    await db.$queryRaw`SELECT set_config('lock_timeout', ${`${this.config.database.lockTimeoutMs}ms`}, true)`;
+    await guard(
+      'tenant configuration',
+      () =>
+        db.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`tenant-config:${tx.tenantId}`}, 0))`,
+    );
   }
 
   // --- Integrations ---------------------------------------------------------

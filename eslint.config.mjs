@@ -37,6 +37,24 @@ export default tseslint.config(
     },
   },
   {
+    // Tenant configuration tables are written only through TenantConfigService,
+    // which enforces cross-setting invariants under the per-tenant lock
+    // (ADR 0008). Other modules must not touch these Prisma delegates directly.
+    files: ['apps/api/src/**/*.ts'],
+    ignores: ['apps/api/src/modules/tenancy/infrastructure/**', '**/*.spec.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector:
+            'MemberExpression[property.name=/^tenant(Integration|FlowSetting|QualificationConfig|CredentialRef|Policy|Product|FieldMapping|LeadSourceMapping)$/]',
+          message:
+            'Tenant configuration is accessed only through TenantConfigService / TenantCredentialsService (ADR 0008).',
+        },
+      ],
+    },
+  },
+  {
     files: ['**/*.spec.ts', '**/test/**/*.ts'],
     rules: {
       '@typescript-eslint/no-unsafe-assignment': 'off',

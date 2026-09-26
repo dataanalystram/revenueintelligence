@@ -42,6 +42,15 @@ import { PrismaTenantConfigRepository } from '../infrastructure/prisma-tenant-co
 import { TenantDatabase, type TenantTransaction } from '../infrastructure/tenant-database';
 import type { TenantContext } from '../tenant-context';
 
+/**
+ * Configuration changes that validate across settings take the per-tenant
+ * lock first and must run at READ COMMITTED: each statement after the lock
+ * then sees the committed result of the previous holder. Pinned explicitly so
+ * a database whose default isolation level is changed cannot reintroduce the
+ * race.
+ */
+const CONFIG_CHANGE_TX = { isolationLevel: 'ReadCommitted' } as const;
+
 function validate<S extends z.ZodType>(schema: S, value: unknown, what: string): z.infer<S> {
   const result = schema.safeParse(value);
   if (!result.success) {
@@ -93,33 +102,37 @@ export class TenantConfigService {
   ): Promise<IntegrationConfig<S>> {
     const s = validate(IntegrationSystemSchema, system, 'integration system') as S;
     const access = validate(IntegrationAccessSchema, change.access, 'integration access');
-    return await this.db.transaction(ctx, async (tx) => {
-      await this.repo.lockTenantConfiguration(tx);
-      const current = await this.repo.getIntegration(tx, s);
-      const settings = validate(
-        IntegrationSettingsSchemas[s],
-        change.settings ?? current.settings,
-        `${s} settings`,
-      );
-      const accessMap = await this.accessMap(tx);
-      accessMap[s] = access;
-      const problems = (await this.repo.listFlows(tx)).flatMap((f) =>
-        flowConfigurationProblems(f.flow, f.mode, accessMap),
-      );
-      if (s === 'jev' && access === 'disabled') {
-        const qualification = await this.repo.getQualificationConfig(tx);
-        if (modeRequiresJev(qualification.mode)) {
-          problems.push(`qualification mode "${qualification.mode}" needs the jev integration`);
-        }
-      }
-      if (problems.length > 0) {
-        throw new TenantConfigError(
-          `Cannot change ${s} access while other settings depend on it`,
-          problems,
+    return await this.db.transaction(
+      ctx,
+      async (tx) => {
+        await this.repo.lockTenantConfiguration(tx);
+        const current = await this.repo.getIntegration(tx, s);
+        const settings = validate(
+          IntegrationSettingsSchemas[s],
+          change.settings ?? current.settings,
+          `${s} settings`,
         );
-      }
-      return this.repo.saveIntegration(tx, s, access, settings as never);
-    });
+        const accessMap = await this.accessMap(tx);
+        accessMap[s] = access;
+        const problems = (await this.repo.listFlows(tx)).flatMap((f) =>
+          flowConfigurationProblems(f.flow, f.mode, accessMap),
+        );
+        if (s === 'jev' && access === 'disabled') {
+          const qualification = await this.repo.getQualificationConfig(tx);
+          if (modeRequiresJev(qualification.mode)) {
+            problems.push(`qualification mode "${qualification.mode}" needs the jev integration`);
+          }
+        }
+        if (problems.length > 0) {
+          throw new TenantConfigError(
+            `Cannot change ${s} access while other settings depend on it`,
+            problems,
+          );
+        }
+        return this.repo.saveIntegration(tx, s, access, settings as never);
+      },
+      CONFIG_CHANGE_TX,
+    );
   }
 
   async listFlows(ctx: TenantContext): Promise<FlowSetting[]> {
@@ -130,12 +143,16 @@ export class TenantConfigService {
   async setFlowMode(ctx: TenantContext, flow: Flow, mode: FlowMode): Promise<FlowSetting> {
     const f = validate(FlowSchema, flow, 'flow');
     const m = validate(FlowModeSchema, mode, 'flow mode');
-    return await this.db.transaction(ctx, async (tx) => {
-      await this.repo.lockTenantConfiguration(tx);
-      const problems = flowConfigurationProblems(f, m, await this.accessMap(tx));
-      if (problems.length > 0) throw new TenantConfigError(`Cannot set ${f} to ${m}`, problems);
-      return this.repo.saveFlow(tx, f, m);
-    });
+    return await this.db.transaction(
+      ctx,
+      async (tx) => {
+        await this.repo.lockTenantConfiguration(tx);
+        const problems = flowConfigurationProblems(f, m, await this.accessMap(tx));
+        if (problems.length > 0) throw new TenantConfigError(`Cannot set ${f} to ${m}`, problems);
+        return this.repo.saveFlow(tx, f, m);
+      },
+      CONFIG_CHANGE_TX,
+    );
   }
 
   // --- Qualification --------------------------------------------------------
@@ -151,18 +168,22 @@ export class TenantConfigService {
     expectedVersion: number,
   ): Promise<QualificationConfig> {
     const config = validate(QualificationConfigInputSchema, input, 'qualification config');
-    return await this.db.transaction(ctx, async (tx) => {
-      await this.repo.lockTenantConfiguration(tx);
-      if (modeRequiresJev(config.mode)) {
-        const jev = await this.repo.getIntegration(tx, 'jev');
-        if (jev.access === 'disabled') {
-          throw new TenantConfigError(
-            `Qualification mode "${config.mode}" requires the jev integration`,
-          );
+    return await this.db.transaction(
+      ctx,
+      async (tx) => {
+        await this.repo.lockTenantConfiguration(tx);
+        if (modeRequiresJev(config.mode)) {
+          const jev = await this.repo.getIntegration(tx, 'jev');
+          if (jev.access === 'disabled') {
+            throw new TenantConfigError(
+              `Qualification mode "${config.mode}" requires the jev integration`,
+            );
+          }
         }
-      }
-      return this.repo.updateQualificationConfig(tx, config, expectedVersion);
-    });
+        return this.repo.updateQualificationConfig(tx, config, expectedVersion);
+      },
+      CONFIG_CHANGE_TX,
+    );
   }
 
   // --- Products ---------------------------------------------------------------

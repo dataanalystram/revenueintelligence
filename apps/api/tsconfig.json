@@ -12,7 +12,6 @@
     "test/**/*.ts",
     "vitest.config.mts",
     "vitest.integration.config.mts",
-    "prisma.config.ts",
-    "vitest.live.config.mts"
+    "prisma.config.ts"
   ]
 }

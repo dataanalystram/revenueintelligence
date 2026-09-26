@@ -220,3 +220,60 @@ with evidence, in the follow-up commit.
    and `CHECKPOINT_DISABLE=1` stops the version-check call.
    `pnpm verify:docker` asserts that both images run as `node` and that the
    migrate job applies migrations.
+
+### Second review round (independent `review-milestone` subagent)
+
+An independent reviewer (a separate subagent using the read-only
+`review-milestone` skill) reviewed the follow-up and the verification
+workflow. It found no blockers, one major issue and five minor issues. All
+are fixed:
+
+1. **Major: the runtime shutdown checks tested nothing.**
+   - The script recorded the PID of a `( cd … && node … ) &` wrapper
+     subshell, so SIGTERM killed the wrapper (exit 143) while node kept
+     running. Six orphaned API/worker pairs from earlier runs were found and
+     stopped.
+   - **Fix:** `exec node` inside the subshell, so the PID is node's.
+   - The checks now assert that the PID is the node process, that it exits,
+     that its DB sessions and Redis clients close, and that the app's own
+     shutdown hook logged `Application shut down cleanly` (new
+     `LifecycleLogger`).
+   - Mutation: removing `enableShutdownHooks()` still let the connection
+     checks pass (sockets close on death), but the shutdown-hook checks
+     failed. That is why they were added.
+2. **The race harness depended on a 5 s timeout.** `pg_stat_activity` is
+   snapshotted per transaction, so the second waiter was never seen and a
+   fallback hid it.
+   - **Fix:** clear the snapshot on each poll, no fallback, require both
+     waiters, and assert that the rejection is a `TenantConfigError`.
+   - The first race test now runs in about 0.2 s instead of about 5.6 s: the
+     interleaving really is forced.
+3. **The fix relied on the default isolation level.** The locked
+   transactions are now pinned to `READ COMMITTED`. A regression test runs
+   the race with the app role's default set to `REPEATABLE READ`.
+4. **Unbounded lock waits could exhaust the pool.** Added a
+   transaction-local `lock_timeout` (`DATABASE_LOCK_TIMEOUT_MS`, default
+   5 s) and a retryable `LockTimeoutError`. The test proves a busy tenant
+   fails fast while another tenant is unaffected. The ADR wording is
+   corrected.
+5. **The invariant was enforced only by convention.** An ESLint rule now
+   forbids code outside `tenancy/infrastructure` from touching the
+   configuration-table delegates. It was shown to reject a direct
+   flow-mode write from another module.
+6. **`pnpm test:live` passed with zero tests.** It is removed until a
+   connector milestone adds real live suites (it must then fail on zero
+   suites). The verify skill no longer describes things that don't exist,
+   and `scripts/verify-runtime.d/README.md` documents the extension
+   convention.
+
+**Mutation evidence** (`config-concurrency.int.spec.ts`, 6 tests), each fix
+removed on its own:
+
+| Fix removed          | Tests that fail                                                               |
+| -------------------- | ----------------------------------------------------------------------------- |
+| Lock                 | Both deterministic race tests, the REPEATABLE READ test, the busy-tenant test |
+| `READ COMMITTED` pin | The REPEATABLE READ test                                                      |
+| `lock_timeout`       | The busy-tenant test                                                          |
+
+The sequential Jev test is independent of the lock and passes in every case.
+The flip-flop loop is timing-dependent and is kept as a smoke test only.
