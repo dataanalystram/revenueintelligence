@@ -10,7 +10,7 @@ services:
       POSTGRES_USER: lip
       POSTGRES_PASSWORD: lip
       POSTGRES_DB: lip
-    ports: ['5432:5432']
+    ports: ['${LIP_POSTGRES_PORT:-5432}:5432']
     volumes:
       - pgdata:/var/lib/postgresql/data
       # Creates the application login role on first start (development only).
@@ -25,7 +25,7 @@ services:
     image: redis:7-alpine
     # AOF persistence so queued jobs survive a restart (matters from Milestone 6).
     command: ['redis-server', '--appendonly', 'yes']
-    ports: ['6379:6379']
+    ports: ['${LIP_REDIS_PORT:-6379}:6379']
     volumes: [redisdata:/data]
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']

@@ -178,7 +178,7 @@ describe('tenant provisioning and configuration rules', () => {
     it('refuses to reduce access while a flow depends on it', async () => {
       await expect(
         h.config.configureIntegration(t, 'sugar', { access: 'read_only' }),
-      ).rejects.toThrow(/flows depend on it/);
+      ).rejects.toThrow(/other settings depend on it/);
       await h.config.setFlowMode(t, 'hubspot_to_sugar_handover', 'off');
       await expect(
         h.config.configureIntegration(t, 'sugar', { access: 'disabled' }),

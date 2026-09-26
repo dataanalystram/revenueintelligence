@@ -92,3 +92,13 @@ export class TenantIsolationViolationError extends TenancyError {
     super('tenant_isolation_violation', 'The database rejected a cross-tenant write');
   }
 }
+
+/**
+ * A lock could not be obtained within DATABASE_LOCK_TIMEOUT_MS (e.g. another
+ * configuration change for the same tenant is in progress). Safe to retry.
+ */
+export class LockTimeoutError extends TenancyError {
+  constructor(readonly target: string) {
+    super('busy', `${target} is busy with another change; retry shortly`);
+  }
+}

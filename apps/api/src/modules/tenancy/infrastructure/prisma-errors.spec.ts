@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   InvalidReferenceError,
+  LockTimeoutError,
   RecordNotFoundError,
   TenantIsolationViolationError,
   UniqueConstraintError,
@@ -36,6 +37,16 @@ describe('translateDatabaseError', () => {
     } catch (error) {
       expect((error as UniqueConstraintError).target).toBe('slug');
     }
+  });
+
+  it('maps lock timeouts (55P03) to a retryable LockTimeoutError', () => {
+    const e = prismaError('P2010', {
+      driverAdapterError: {
+        cause: { code: '55P03', message: 'canceling statement due to lock timeout' },
+      },
+    });
+    expect(() => translateDatabaseError(e, 'tenant configuration')).toThrow(LockTimeoutError);
+    expect(() => translateDatabaseError(prismaError('55P03'), 'flow')).toThrow(LockTimeoutError);
   });
 
   it('maps foreign key and not-found errors', () => {

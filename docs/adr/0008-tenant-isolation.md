@@ -87,6 +87,33 @@ any one of them cannot leak data.
   - has a foreign key to a tenant table without `tenant_id`.
     It was shown to catch a deliberately leaky table.
 
+### Configuration invariants under concurrency
+
+Configuration rules that span settings (a flow needs its integrations' access;
+`jev`/`hybrid` qualification needs the Jev integration) are validated inside
+the same transaction as the write. Such changes first take a per-tenant
+transaction-scoped advisory lock (`pg_advisory_xact_lock`), so concurrent
+admin requests for one tenant are serialised. Each one validates against the
+committed result of the previous one, and a check-then-act race cannot leave
+an invalid configuration.
+
+- The lock is keyed per tenant, so tenants never wait for each other's lock.
+  They do share the connection pool, however, so waits are bounded:
+  `DATABASE_LOCK_TIMEOUT_MS` (default 5 s, set transaction-locally) turns a
+  long wait into a retryable `LockTimeoutError` instead of a pooled
+  connection held until the transaction times out.
+- These transactions are pinned to `READ COMMITTED`. At a higher isolation
+  level the snapshot would be taken before the lock, and reads after it could
+  be stale. The pin means changing the database's default isolation level
+  cannot reintroduce the race (regression-tested).
+- The configuration tables may be written only by the tenancy module. An
+  ESLint rule flags other code that reaches their Prisma delegates, whether by
+  dot access, bracket access or destructuring. It cannot see raw SQL (e.g.
+  `tenantClient(tx).$executeRaw`), so raw SQL against these tables outside
+  the tenancy module is a review-time rule, not a lint-time one. Row-level
+  security still confines any such write to the transaction's tenant; what
+  the lint rule protects is the cross-setting validation.
+
 ## Consequences
 
 - **Two database credentials** per environment: owner (migrations) and app

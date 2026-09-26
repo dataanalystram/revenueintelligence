@@ -1,6 +1,7 @@
 import { Module, type DynamicModule } from '@nestjs/common';
 import { ConfigModule, type AppConfig } from './config';
 import { DatabaseModule } from './database';
+import { LifecycleLogger } from './lifecycle';
 import { LoggingModule } from './logging';
 import { RedisModule } from './redis';
 import { SecretsModule } from './secrets';
@@ -22,6 +23,7 @@ export class PlatformModule {
         DatabaseModule,
         RedisModule,
       ],
+      providers: [LifecycleLogger],
       exports: [ConfigModule, LoggingModule, SecretsModule, DatabaseModule, RedisModule],
     };
   }

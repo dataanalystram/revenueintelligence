@@ -24,10 +24,16 @@ COPY apps/api apps/api
 RUN pnpm --filter @lip/api build \
  && pnpm --filter @lip/api deploy --prod --legacy /out
 
-# Runs pending database migrations, then exits. Use as a release/init job.
-FROM build AS migrate
+# Runs pending database migrations, then exits. Use as a release/init job with
+# MIGRATION_DATABASE_URL (schema owner). Runs as the unprivileged `node` user;
+# calls the Prisma CLI directly so no package manager is needed at runtime.
+FROM node:${NODE_VERSION} AS migrate
+# CHECKPOINT_DISABLE: no Prisma version-check call from a production job.
+ENV NODE_ENV=production CHECKPOINT_DISABLE=1
+COPY --from=build --chown=node:node /repo /repo
 WORKDIR /repo/apps/api
-CMD ["pnpm", "exec", "prisma", "migrate", "deploy"]
+USER node
+CMD ["./node_modules/.bin/prisma", "migrate", "deploy"]
 
 FROM node:${NODE_VERSION} AS runtime
 ENV NODE_ENV=production

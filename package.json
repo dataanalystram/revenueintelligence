@@ -16,7 +16,9 @@
     "test:unit": "pnpm -r test:unit",
     "test:integration": "pnpm -r test:integration",
     "depcheck:boundaries": "pnpm -r depcheck:boundaries",
-    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm depcheck:boundaries && pnpm test"
+    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm depcheck:boundaries && pnpm test",
+    "verify:runtime": "bash scripts/verify-runtime.sh",
+    "verify:docker": "bash scripts/verify-docker.sh"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

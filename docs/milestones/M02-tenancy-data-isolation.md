@@ -1,6 +1,6 @@
 # Milestone 2 — Tenants and data isolation
 
-- Status: **Complete — awaiting review**
+- Status: **Approved in principle; post-review follow-up applied (see end)**
 - Date: 2026-09-26
 - Branch: `claude/blissful-mendel-urbh4r` (restarted from `main` after PR #1 merged)
 
@@ -181,3 +181,258 @@ pnpm verify   (format, lint, typecheck, boundaries, unit, integration)
 - **Role names are cluster-wide:** environments must not share a PostgreSQL
   server with the same `lip_app`.
 - **Runtime image size** (~816 MB) remains an open M0 follow-up.
+
+## Post-review follow-up (2026-09-26)
+
+The independent review found no blockers and three issues. All are fixed,
+with evidence, in the follow-up commit.
+
+1. **Check-then-act race in `configureIntegration` / `setFlowMode`.**
+   Concurrent admin requests each validated against state the other was about
+   to change, so a flow could end up `active` while a required integration had
+   been lowered. The same race existed between disabling Jev and switching
+   qualification to `jev`/`hybrid`.
+   - **Fix:** every configuration change that validates across settings first
+     takes a per-tenant, transaction-scoped PostgreSQL advisory lock
+     (`lockTenantConfiguration`). It releases automatically at commit or
+     rollback, is independent of which rows exist, and never makes tenants
+     contend.
+   - **Additional defect found while fixing** (same invariant family):
+     `configureIntegration` never checked qualification mode, so Jev could be
+     disabled even _sequentially_ while qualification used it. It is now
+     refused.
+   - **Evidence** (`test/tenancy/config-concurrency.int.spec.ts`, 4 tests):
+     - The race is forced deterministically: an owner connection holds the
+       target rows so both requests complete their validation reads before
+       either writes.
+     - Against the unfixed code, all 4 tests failed (invalid states reached).
+     - With the fix, all 4 pass; exactly one request wins and the other is
+       refused.
+     - Removing only the lock makes the 3 race tests fail again.
+2. **Credential-key collision test extended** to every integration system
+   (`hubspot`, `sugar`, `gainsight_cs`, `gainsight_px`, `jev`, taken from the
+   schema). It now asserts that each environment variable maps to exactly one
+   (tenant, system, credential): 8 slugs × 5 systems × 15 adversarial names,
+   600 distinct names.
+3. **Migrate image runs as non-root.** The `migrate` stage now copies the
+   built workspace owned by `node`, runs as `USER node`, and calls the Prisma
+   CLI directly. No package manager or corepack download happens at runtime,
+   and `CHECKPOINT_DISABLE=1` stops the version-check call.
+   `pnpm verify:docker` asserts that both images run as `node` and that the
+   migrate job applies migrations.
+
+### Second review round (independent `review-milestone` subagent)
+
+An independent reviewer (a separate subagent using the read-only
+`review-milestone` skill) reviewed the follow-up and the verification
+workflow. It found no blockers, one major issue and five minor issues. All
+are fixed:
+
+1. **Major: the runtime shutdown checks tested nothing.**
+   - The script recorded the PID of a `( cd … && node … ) &` wrapper
+     subshell, so SIGTERM killed the wrapper (exit 143) while node kept
+     running. Six orphaned API/worker pairs from earlier runs were found and
+     stopped.
+   - **Fix:** `exec node` inside the subshell, so the PID is node's.
+   - The checks now assert that the PID is the node process, that it exits,
+     that its DB sessions and Redis clients close, and that the app's own
+     shutdown hook logged `Application shut down cleanly` (new
+     `LifecycleLogger`).
+   - Mutation: removing `enableShutdownHooks()` still let the connection
+     checks pass (sockets close on death), but the shutdown-hook checks
+     failed. That is why they were added.
+2. **The race harness depended on a 5 s timeout.** `pg_stat_activity` is
+   snapshotted per transaction, so the second waiter was never seen and a
+   fallback hid it.
+   - **Fix:** clear the snapshot on each poll, no fallback, require both
+     waiters, and assert that the rejection is a `TenantConfigError`.
+   - The first race test now runs in about 0.2 s instead of about 5.6 s: the
+     interleaving really is forced.
+3. **The fix relied on the default isolation level.** The locked
+   transactions are now pinned to `READ COMMITTED`. A regression test runs
+   the race with the app role's default set to `REPEATABLE READ`.
+4. **Unbounded lock waits could exhaust the pool.** Added a
+   transaction-local `lock_timeout` (`DATABASE_LOCK_TIMEOUT_MS`, default
+   5 s) and a retryable `LockTimeoutError`. The test proves a busy tenant
+   fails fast while another tenant is unaffected. The ADR wording is
+   corrected.
+5. **The invariant was enforced only by convention.** An ESLint rule now
+   forbids code outside `tenancy/infrastructure` from touching the
+   configuration-table delegates. It was shown to reject a direct
+   flow-mode write from another module.
+6. **`pnpm test:live` passed with zero tests.** It is removed until a
+   connector milestone adds real live suites (it must then fail on zero
+   suites). The verify skill no longer describes things that don't exist,
+   and `scripts/verify-runtime.d/README.md` documents the extension
+   convention.
+
+**Mutation evidence** (`config-concurrency.int.spec.ts`, 6 tests), each fix
+removed on its own:
+
+| Fix removed          | Tests that fail                                                               |
+| -------------------- | ----------------------------------------------------------------------------- |
+| Lock                 | Both deterministic race tests, the REPEATABLE READ test, the busy-tenant test |
+| `READ COMMITTED` pin | The REPEATABLE READ test                                                      |
+| `lock_timeout`       | The busy-tenant test                                                          |
+
+The sequential Jev test is independent of the lock and passes in every case.
+The flip-flop loop is timing-dependent and is kept as a smoke test only.
+
+### Third review round
+
+A second independent review of the fixes above verified all six as fixed.
+Its verdict was "ready for user review": no blockers and no major findings.
+It found five minor issues, all fixed:
+
+1. **The runtime script could hang.** Once it tracked the real node PID, a
+   process that ignored SIGTERM made `wait` block forever. A process that does
+   not exit within 10 s is now recorded as FAIL and SIGKILLed. Mutation: a
+   worker that swallows SIGTERM and keeps its event loop alive. The run
+   printed FAIL, killed it, exited 1 after 39 s and left no orphans.
+2. **The ESLint rule missed some access forms.** It also flags bracket access
+   and destructuring now; all three forms are proven by probe. ADR 0008 now
+   states that raw SQL cannot be linted and is a review-time rule.
+3. **Overclaiming script comment.** It said the connection-count checks prove
+   Prisma and Redis disconnected. They only prove no connections are left
+   (a dead process's sockets close anyway). The checks are renamed and
+   commented accordingly; the shutdown-log checks are the real evidence. The
+   earlier commit message's wording on this point was too strong.
+4. **Silent abort.** `grep -c` exits 1 on zero matches, which aborted the
+   script silently under `set -e` when there were no Redis clients. It now
+   counts with `awk`.
+5. **A stale pointer** to `pnpm test:live` in `scripts/verify-runtime.d/README.md`
+   is corrected.
+
+A unit test was also added for the lock-timeout (55P03) error mapping, which
+had been covered only by an integration test.
+
+## Verification defects and operational learning
+
+The most important lesson of this follow-up: **a passing verification script
+is not evidence until the script itself has been seen to fail.**
+
+### The false graceful-shutdown check
+
+- **The defect.** `verify-runtime.sh` started the API and worker as
+  `( cd … && node … ) &` and recorded `$!`, the PID of the wrapper subshell.
+  SIGTERM killed the wrapper, which exited 143, and the script reported
+  "exited cleanly". Node never received the signal. The report also wrongly
+  attributed code 143 to Nest re-raising the signal.
+- **How it was found.** It passed locally, from a fresh clone, and on CI. It
+  was caught only by the independent reviewer, who found the node processes
+  still running. Six orphaned API/worker pairs from earlier runs were
+  stopped; all six exited within 5 s of a real SIGTERM.
+- **The fix, in layers:**
+  1. `exec node`, so the recorded PID is node's own. A check asserts that
+     the PID's command line is `node dist/main.js` / `node dist/worker.js`.
+  2. The app's own `onApplicationShutdown` hook logs
+     `Application shut down cleanly` (`LifecycleLogger`), and the script
+     asserts it. This is the check that proves an orderly shutdown. The
+     connection-count checks only prove nothing is left behind, because a
+     dead process's sockets close anyway.
+  3. A process that does not exit within 10 s is recorded as FAIL and
+     SIGKILLed, so a shutdown regression fails the run instead of hanging it.
+  4. Every process the run starts carries the environment tag
+     `LIP_VERIFY_RUN=<project>`. Cleanup kills anything tagged even if PID
+     tracking is wrong. A final check asserts no tagged process remains.
+     Cleanup also verifies the compose project's containers, volumes and
+     networks are gone, and exits non-zero otherwise.
+
+### Invalid failures seen along the way
+
+These are recorded because they nearly passed as evidence:
+
+- A run "failed" because the Docker daemon had died, not because of the
+  mutation under test.
+- A role-guard mutation failed the TypeScript build, not the guard check.
+- A lock-removal mutation (`false AND pg_advisory_xact_lock(…)`) was a SQL
+  type error that failed every test, including tests unrelated to the lock.
+- A "stuck worker" mutation that only swallowed SIGTERM did not get stuck:
+  node exits once its event loop is empty. It also had to keep the loop
+  alive.
+
+Each was diagnosed and replaced with a valid mutation.
+
+### Mutation evidence for critical guarantees
+
+Each mechanism was temporarily broken on its own, and the code was restored
+afterwards.
+
+| Guarantee               | Mutation                                               | Checks that failed (and only these)                                                                                                                       |
+| ----------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Config race prevented   | Lock call replaced by a no-op                          | Both deterministic race tests, the REPEATABLE READ test, the busy-tenant test                                                                             |
+| Isolation level pinned  | `CONFIG_CHANGE_TX = {}`                                | The REPEATABLE READ test                                                                                                                                  |
+| Lock waits bounded      | `lock_timeout` not set                                 | The busy-tenant (`LockTimeoutError`) test                                                                                                                 |
+| Shutdown hooks run      | `enableShutdownHooks()` removed                        | Both "ran its shutdown hooks" runtime checks (connection checks still passed, as expected)                                                                |
+| Stuck shutdown detected | Worker swallows SIGTERM and keeps its event loop alive | "worker did not exit within 10s (killed)"; run finished in 39 s, exit 1, 0 orphans                                                                        |
+| Real process signalled  | `exec` removed (the original defect)                   | Both "PID is the node process" checks, both shutdown-hook checks, "no application process from this run remains"; cleanup killed the leftovers, 0 orphans |
+| Unsafe DB role refused  | Role guard's override forced on                        | "API refuses to start as the schema owner (superuser)"                                                                                                    |
+| Config tables guarded   | Probe file with dot, bracket and destructured access   | ESLint errors on all three                                                                                                                                |
+
+### Final review round: verification checks that could pass falsely
+
+A fresh-context review of `59ad30c..3deaa21` found no blockers, but two
+checks that could pass for the wrong reason, plus a Docker build-context gap.
+All three are fixed here. The other nits from that review remain
+non-blocking follow-ups.
+
+1. **Migration-history check (`verify-runtime.sh`).** It passed on _any_
+   psql failure: refused connection, wrong password, missing database or
+   container. It now:
+   - proves the same connection works (`SELECT 1`) first;
+   - passes only on PostgreSQL's permission error for that table (SQLSTATE
+     `42501`, `permission denied for table _prisma_migrations`);
+   - connects by service name rather than loopback, because the postgres
+     image trusts `127.0.0.1` inside the container, so a wrong password
+     could not fail there.
+
+   Built-in self-tests run on every run:
+   - with access temporarily granted, the check fails;
+   - with a wrong password, a missing database or a missing container, the
+     check fails;
+   - after the access is revoked again, the check passes.
+
+2. **Docker cleanup (`verify-docker.sh`).**
+   - **Before:** every cleanup command ended in `|| true`, the final state was
+     never checked, and the one-off `docker run --rm` containers were
+     untracked.
+   - **Labels:** every image and container the run creates now carries
+     `lip.verify.run=<project>`; compose resources carry the compose project
+     label.
+   - **Cleanup:** it removes only resources with those labels. It then lists
+     any remaining containers, volumes, networks and images (a Docker error
+     counts as remaining), and exits non-zero if anything remains.
+   - **Named containers:** one-off containers are named and labelled, so an
+     interrupted run leaves nothing cleanup cannot find.
+   - **Self-test:** it asserts the leftover detector sees this run's
+     containers, volume, network and images, plus a stopped probe container
+     that cleanup must then remove.
+   - **Pipe capture:** `cmd | grep -q` pipelines were replaced by captured
+     output, removing a possible false FAIL from SIGPIPE.
+3. **`.dockerignore`.** `.env` / `.env.*` matched only the repository root. A
+   developer's `apps/api/.env` would have been copied into the migrate image,
+   which contains the whole `/repo`, and loaded by `prisma.config.ts`. The
+   patterns are now `**/.env` / `**/.env.*`, and `verify-docker.sh` asserts
+   that neither image contains a `.env` file.
+
+Mutation evidence for these checks (each mutation on its own; the
+committed scripts were not modified):
+
+| Guarantee                   | Mutation                                                                        | Result                                                                                                                                       |
+| --------------------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Migration history denied    | `GRANT SELECT` on `_prisma_migrations` to `lip_app` before the check            | Main check FAIL: "app role CAN read migration history"; self-tests pass                                                                      |
+| Connection errors not proof | Default app-role password changed to a wrong one                                | Main check and the post-self-test check FAIL: "password authentication failed for user lip_api"                                              |
+| The original defect         | Precheck removed and any failure accepted (`return 0`)                          | The three self-tests FAIL (wrong password, missing database, missing container)                                                              |
+| No `.env` in images         | Old `.dockerignore` with a canary `apps/api/.env` (`LIP_DOCKERIGNORE_CANARY=1`) | "migrate image contains .env files: /repo/apps/api/.env"; with the fix and the same canary, both images pass                                 |
+| Cleanup proves nothing left | Removal of labelled containers and images skipped                               | Exit 1: "Cleanup FAILED: resources of lipdocker… remain" listing 3 containers (api, worker, probe) and 2 images; removed afterwards by label |
+| Leftover detector works     | Detector made to return nothing                                                 | "leftover detector misses: container volume network image probe-container"                                                                   |
+
+An earlier attempt at the wrong-password mutation was invalid: the edit
+commented out part of a `local` declaration and failed with an unbound
+variable. It was replaced by the valid one above.
+
+Local Docker verification in the previous round failed with `no space left on
+device`: the sandbox's Docker had used about 28 GB, leaving 513 MB free. Old
+verification images and the build cache were removed, and the Docker check
+then ran from an empty build cache. Only the base images were kept, to avoid
+Docker Hub rate limits.
