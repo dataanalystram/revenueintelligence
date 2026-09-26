@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { EnvSecretProvider } from '../../../platform/secrets';
-import { TenantSlugSchema, type TenantSlug } from '../tenant';
+import { TenantSlugSchema } from '../tenant';
 import { credentialSecretKey, CredentialNameSchema, isOwnedSecretKey } from './credentials';
 import { FieldMappingSchema } from './field-mappings';
 import {
@@ -11,7 +11,12 @@ import {
   FlowSchema,
   satisfiesAccess,
 } from './flows';
-import { IntegrationSettingsSchemas, isEnabled, parseIntegrationSettings } from './integrations';
+import {
+  IntegrationSettingsSchemas,
+  IntegrationSystemSchema,
+  isEnabled,
+  parseIntegrationSettings,
+} from './integrations';
 import { LeadSourceMappingSchema } from './lead-source-mappings';
 import { parsePolicyDocument } from './policies';
 import {
@@ -58,24 +63,47 @@ describe('credential secret keys', () => {
     expect(isOwnedSecretKey(slug('juniper'), 'hubspot.app.client_secret')).toBe(false);
   });
 
-  it('never map two different tenants onto the same environment variable', () => {
-    // Exhaustive over a set of adversarial slug/name pairs: the env provider
-    // folds . - _ together, so collisions would appear here if slugs allowed them.
-    const slugs = ['ab', 'abc', 'abcd', 'bc', 'a1', 'a1b'].map(slug);
-    const names = ['c', 'c_d', 'bc', 'b_c', 'token', 'c_token']
-      .map((n) => `x${n}`)
-      .map((n) => CredentialNameSchema.parse(n));
-    const owners = new Map<string, TenantSlug>();
+  it('map every (tenant, system, credential) to a distinct environment variable', () => {
+    // Exhaustive over every integration system and adversarial slugs/names.
+    // The env provider folds '.', '-' and '_' into '_', so a collision would
+    // show up here if slugs, system names or credential names allowed one.
+    const slugs = ['ab', 'abc', 'abcd', 'bc', 'a1', 'a1b', 'gainsight', 'hubspot'].map(slug);
+    const systems = IntegrationSystemSchema.options;
+    expect(systems).toEqual(['hubspot', 'sugar', 'gainsight_cs', 'gainsight_px', 'jev']);
+    const names = [
+      'xc',
+      'xc_d',
+      'xbc',
+      'xb_c',
+      'token',
+      'c_token',
+      'access_key',
+      'cs_access_key',
+      'px_access_key',
+      'px',
+      'cs',
+      'refresh_token',
+      'client_secret',
+      'sugar_password',
+      'jev_key',
+    ].map((n) => CredentialNameSchema.parse(n));
+
+    const owners = new Map<string, string>();
     for (const s of slugs) {
-      for (const system of ['hubspot', 'sugar'] as const) {
+      for (const system of systems) {
         for (const name of names) {
           const env = EnvSecretProvider.toEnvName(credentialSecretKey(s, system, name));
-          const owner = owners.get(env);
-          expect(owner === undefined || owner === s).toBe(true);
-          owners.set(env, s);
+          const owner = `${s}/${system}/${name}`;
+          const existing = owners.get(env);
+          expect(
+            existing === undefined || existing === owner,
+            `${env}: ${existing} vs ${owner}`,
+          ).toBe(true);
+          owners.set(env, owner);
         }
       }
     }
+    expect(owners.size).toBe(slugs.length * systems.length * names.length);
   });
 
   it.each(['', 'A', 'has-dash', '1abc', 'with space', 'x'])('rejects credential name %j', (n) => {

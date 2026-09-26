@@ -42,6 +42,22 @@ import { tenantClient, type TenantTransaction } from './tenant-database';
 /** Stored rows are re-validated on read, so bad data can never enter the application. */
 @Injectable()
 export class PrismaTenantConfigRepository {
+  /**
+   * Serialises configuration changes for one tenant until the transaction
+   * ends. Changes whose validity depends on other settings (flows need
+   * integration access; qualification modes need Jev) must take this lock
+   * before reading, so two concurrent admin requests cannot each validate
+   * against state the other is about to change (a check-then-act race).
+   *
+   * A transaction-scoped advisory lock: released automatically on commit or
+   * rollback, independent of which rows exist, and keyed per tenant so
+   * tenants never contend.
+   */
+  async lockTenantConfiguration(tx: TenantTransaction): Promise<void> {
+    await tenantClient(tx)
+      .$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`tenant-config:${tx.tenantId}`}, 0))`;
+  }
+
   // --- Integrations ---------------------------------------------------------
 
   async listIntegrations(tx: TenantTransaction): Promise<IntegrationConfig[]> {

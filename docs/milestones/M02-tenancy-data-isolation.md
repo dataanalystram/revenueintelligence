@@ -1,6 +1,6 @@
 # Milestone 2 — Tenants and data isolation
 
-- Status: **Complete — awaiting review**
+- Status: **Approved in principle; post-review follow-up applied (see end)**
 - Date: 2026-09-26
 - Branch: `claude/blissful-mendel-urbh4r` (restarted from `main` after PR #1 merged)
 
@@ -181,3 +181,42 @@ pnpm verify   (format, lint, typecheck, boundaries, unit, integration)
 - **Role names are cluster-wide:** environments must not share a PostgreSQL
   server with the same `lip_app`.
 - **Runtime image size** (~816 MB) remains an open M0 follow-up.
+
+## Post-review follow-up (2026-09-26)
+
+The independent review found no blockers and three issues. All are fixed,
+with evidence, in the follow-up commit.
+
+1. **Check-then-act race in `configureIntegration` / `setFlowMode`.**
+   Concurrent admin requests each validated against state the other was about
+   to change, so a flow could end up `active` while a required integration had
+   been lowered. The same race existed between disabling Jev and switching
+   qualification to `jev`/`hybrid`.
+   - **Fix:** every configuration change that validates across settings first
+     takes a per-tenant, transaction-scoped PostgreSQL advisory lock
+     (`lockTenantConfiguration`). It releases automatically at commit or
+     rollback, is independent of which rows exist, and never makes tenants
+     contend.
+   - **Additional defect found while fixing** (same invariant family):
+     `configureIntegration` never checked qualification mode, so Jev could be
+     disabled even _sequentially_ while qualification used it. It is now
+     refused.
+   - **Evidence** (`test/tenancy/config-concurrency.int.spec.ts`, 4 tests):
+     - The race is forced deterministically: an owner connection holds the
+       target rows so both requests complete their validation reads before
+       either writes.
+     - Against the unfixed code, all 4 tests failed (invalid states reached).
+     - With the fix, all 4 pass; exactly one request wins and the other is
+       refused.
+     - Removing only the lock makes the 3 race tests fail again.
+2. **Credential-key collision test extended** to every integration system
+   (`hubspot`, `sugar`, `gainsight_cs`, `gainsight_px`, `jev`, taken from the
+   schema). It now asserts that each environment variable maps to exactly one
+   (tenant, system, credential): 8 slugs × 5 systems × 15 adversarial names,
+   600 distinct names.
+3. **Migrate image runs as non-root.** The `migrate` stage now copies the
+   built workspace owned by `node`, runs as `USER node`, and calls the Prisma
+   CLI directly. No package manager or corepack download happens at runtime,
+   and `CHECKPOINT_DISABLE=1` stops the version-check call.
+   `pnpm verify:docker` asserts that both images run as `node` and that the
+   migrate job applies migrations.

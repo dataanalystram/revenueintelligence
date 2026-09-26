@@ -36,8 +36,10 @@ build() { docker build ${LIP_DOCKER_BUILD_ARGS:-} -f "$DOCKERFILE" --target "$1"
 echo "== Build images"
 build runtime && pass "runtime image builds" || { fail "runtime image build"; exit 1; }
 build migrate && pass "migrate image builds" || { fail "migrate image build"; exit 1; }
-user="$(docker run --rm --entrypoint id "$TAG-runtime" -un)"
-[[ "$user" == "node" ]] && pass "runtime image runs as non-root user '$user'" || fail "runtime image user is '$user'"
+for target in runtime migrate; do
+  user="$(docker run --rm --entrypoint id "$TAG-$target" -un)"
+  [[ "$user" == "node" ]] && pass "$target image runs as non-root user '$user'" || fail "$target image user is '$user'"
+done
 
 echo "== Run containers (host network, isolated ports)"
 compose up -d --wait postgres redis >/dev/null 2>&1 && pass "postgres and redis healthy" || { fail "dependencies"; exit 1; }

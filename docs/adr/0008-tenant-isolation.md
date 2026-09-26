@@ -87,6 +87,16 @@ any one of them cannot leak data.
   - has a foreign key to a tenant table without `tenant_id`.
     It was shown to catch a deliberately leaky table.
 
+### Configuration invariants under concurrency
+
+Configuration rules that span settings (a flow needs its integrations' access;
+`jev`/`hybrid` qualification needs the Jev integration) are validated inside
+the same transaction as the write. Such changes first take a per-tenant
+transaction-scoped advisory lock (`pg_advisory_xact_lock`), so concurrent
+admin requests for one tenant are serialised. Each one validates against the
+committed result of the previous one, and a check-then-act race cannot leave
+an invalid configuration. Tenants never contend with each other.
+
 ## Consequences
 
 - **Two database credentials** per environment: owner (migrations) and app
