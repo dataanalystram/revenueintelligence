@@ -324,8 +324,10 @@ directions (Contact → Lead, Company → Lead), which it did not sample before.
 It reads them on exactly the contacts and companies that the sampled Leads
 link to. A reciprocity check confirms each forward link reads back in
 reverse. The test fake now matches the live data: it serves reverse
-associations with HubSpot's paired type ids, and each Lead link carries both
-its labelled and its unlabelled type. Tests cover:
+associations with HubSpot's paired type ids, and its Lead links carry both
+the labelled and the unlabelled type. Live, both types were seen across the
+links; the report aggregates types, so "every link carries both" is the
+fake's modelling choice, not a live observation. Tests cover:
 
 - Lead pagination;
 - both reverse directions;

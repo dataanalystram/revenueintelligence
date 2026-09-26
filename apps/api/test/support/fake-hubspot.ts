@@ -26,7 +26,10 @@ export interface FakeAssociation {
   typeId: number;
   category: 'HUBSPOT_DEFINED' | 'USER_DEFINED' | 'INTEGRATOR_DEFINED';
   label: string | null;
-  /** Further types on the same link (live, HubSpot pairs a labelled type with an unlabelled one). */
+  /**
+   * Further types on the same link (live, labelled and unlabelled lead types
+   * were both seen). They share the link's `category`, as in today's data.
+   */
   alsoTypes?: readonly { typeId: number; label: string | null }[];
 }
 
@@ -500,8 +503,8 @@ function types(a: FakeAssociation): { typeId: number; label: string | null }[] {
  * A small, deterministic data set: 5 contacts, 3 companies, 3 leads with
  * associations. Association type ids 1 and 279 (contact to company), 580 + 610
  * (lead to company) and 578 + 608 (lead to contact) match the ids and labels
- * the live discovery of the test account reported on 2026-09-26, where each
- * lead link carried both its labelled and its unlabelled type.
+ * the live discovery of the test account reported on 2026-09-26 (both the
+ * labelled and the unlabelled lead types were seen; each fake link has both).
  */
 export function sampleData(): Pick<FakeHubSpotOptions, 'records' | 'associations'> {
   const contacts = [1, 2, 3, 4, 5].map((n) => ({
