@@ -368,3 +368,71 @@ afterwards.
 | Real process signalled  | `exec` removed (the original defect)                   | Both "PID is the node process" checks, both shutdown-hook checks, "no application process from this run remains"; cleanup killed the leftovers, 0 orphans |
 | Unsafe DB role refused  | Role guard's override forced on                        | "API refuses to start as the schema owner (superuser)"                                                                                                    |
 | Config tables guarded   | Probe file with dot, bracket and destructured access   | ESLint errors on all three                                                                                                                                |
+
+### Final review round: verification checks that could pass falsely
+
+A fresh-context review of `59ad30c..3deaa21` found no blockers, but two
+checks that could pass for the wrong reason, plus a Docker build-context gap.
+All three are fixed here. The other nits from that review remain
+non-blocking follow-ups.
+
+1. **Migration-history check (`verify-runtime.sh`).** It passed on _any_
+   psql failure: refused connection, wrong password, missing database or
+   container. It now:
+   - proves the same connection works (`SELECT 1`) first;
+   - passes only on PostgreSQL's permission error for that table (SQLSTATE
+     `42501`, `permission denied for table _prisma_migrations`);
+   - connects by service name rather than loopback, because the postgres
+     image trusts `127.0.0.1` inside the container, so a wrong password
+     could not fail there.
+
+   Built-in self-tests run on every run:
+   - with access temporarily granted, the check fails;
+   - with a wrong password, a missing database or a missing container, the
+     check fails;
+   - after the access is revoked again, the check passes.
+
+2. **Docker cleanup (`verify-docker.sh`).**
+   - **Before:** every cleanup command ended in `|| true`, the final state was
+     never checked, and the one-off `docker run --rm` containers were
+     untracked.
+   - **Labels:** every image and container the run creates now carries
+     `lip.verify.run=<project>`; compose resources carry the compose project
+     label.
+   - **Cleanup:** it removes only resources with those labels. It then lists
+     any remaining containers, volumes, networks and images (a Docker error
+     counts as remaining), and exits non-zero if anything remains.
+   - **Named containers:** one-off containers are named and labelled, so an
+     interrupted run leaves nothing cleanup cannot find.
+   - **Self-test:** it asserts the leftover detector sees this run's
+     containers, volume, network and images, plus a stopped probe container
+     that cleanup must then remove.
+   - **Pipe capture:** `cmd | grep -q` pipelines were replaced by captured
+     output, removing a possible false FAIL from SIGPIPE.
+3. **`.dockerignore`.** `.env` / `.env.*` matched only the repository root. A
+   developer's `apps/api/.env` would have been copied into the migrate image,
+   which contains the whole `/repo`, and loaded by `prisma.config.ts`. The
+   patterns are now `**/.env` / `**/.env.*`, and `verify-docker.sh` asserts
+   that neither image contains a `.env` file.
+
+Mutation evidence for these checks (each mutation on its own; the
+committed scripts were not modified):
+
+| Guarantee                   | Mutation                                                                        | Result                                                                                                                                       |
+| --------------------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Migration history denied    | `GRANT SELECT` on `_prisma_migrations` to `lip_app` before the check            | Main check FAIL: "app role CAN read migration history"; self-tests pass                                                                      |
+| Connection errors not proof | Default app-role password changed to a wrong one                                | Main check and the post-self-test check FAIL: "password authentication failed for user lip_api"                                              |
+| The original defect         | Precheck removed and any failure accepted (`return 0`)                          | The three self-tests FAIL (wrong password, missing database, missing container)                                                              |
+| No `.env` in images         | Old `.dockerignore` with a canary `apps/api/.env` (`LIP_DOCKERIGNORE_CANARY=1`) | "migrate image contains .env files: /repo/apps/api/.env"; with the fix and the same canary, both images pass                                 |
+| Cleanup proves nothing left | Removal of labelled containers and images skipped                               | Exit 1: "Cleanup FAILED: resources of lipdocker… remain" listing 3 containers (api, worker, probe) and 2 images; removed afterwards by label |
+| Leftover detector works     | Detector made to return nothing                                                 | "leftover detector misses: container volume network image probe-container"                                                                   |
+
+An earlier attempt at the wrong-password mutation was invalid: the edit
+commented out part of a `local` declaration and failed with an unbound
+variable. It was replaced by the valid one above.
+
+Local Docker verification in the previous round failed with `no space left on
+device`: the sandbox's Docker had used about 28 GB, leaving 513 MB free. Old
+verification images and the build cache were removed, and the Docker check
+then ran from an empty build cache. Only the base images were kept, to avoid
+Docker Hub rate limits.

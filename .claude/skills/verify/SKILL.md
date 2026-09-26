@@ -57,9 +57,12 @@ are kept, and their path printed).
 pnpm verify:docker
 ```
 
-This builds the `runtime` and `migrate` images, checks the runtime image runs
-as a non-root user, runs the migrate job, API, worker and provisioning CLI as
-containers, and checks readiness. Behind a TLS-intercepting proxy, pass extra
+This builds the `runtime` and `migrate` images and checks that both run as a
+non-root user and contain no `.env` files. It then runs the migrate job, API,
+worker and provisioning CLI as containers and checks readiness. Everything it
+creates carries a run-specific label; on exit it removes only those resources,
+and fails if any container, volume, network or image of the run remains.
+Behind a TLS-intercepting proxy, pass extra
 build arguments via `LIP_DOCKER_BUILD_ARGS` or an alternative Dockerfile via
 `LIP_DOCKERFILE`. Never commit such environment-specific changes.
 

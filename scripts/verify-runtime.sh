@@ -124,7 +124,40 @@ check "duplicate provisioning refused" bash -c "$(declare -f provision); API_DIR
 psql_as() { compose exec -T -e PGPASSWORD="$2" postgres psql -h 127.0.0.1 -U "$1" -d lip -Atc "$3"; }
 check "owner sees provisioned config rows" bash -c "[ \"\$(docker compose -p '$PROJECT' -f '$ROOT/docker-compose.yml' exec -T -e PGPASSWORD=lip postgres psql -h 127.0.0.1 -U lip -d lip -Atc 'SELECT count(*) FROM tenant_lead_source_mappings')\" -gt 0 ]"
 check "app role with no tenant set sees nothing (RLS)" bash -c "[ \"\$(docker compose -p '$PROJECT' -f '$ROOT/docker-compose.yml' exec -T -e PGPASSWORD=lip_api postgres psql -h 127.0.0.1 -U lip_api -d lip -Atc 'SELECT count(*) FROM tenant_lead_source_mappings')\" = 0 ]"
-check "app role cannot read migration history" bash -c "! docker compose -p '$PROJECT' -f '$ROOT/docker-compose.yml' exec -T -e PGPASSWORD=lip_api postgres psql -h 127.0.0.1 -U lip_api -d lip -Atc 'SELECT 1 FROM _prisma_migrations' 2>/dev/null"
+# Passes only on PostgreSQL's own permission error for this table (SQLSTATE
+# 42501), after the same connection has proved it works. A refused connection,
+# wrong password, missing database or missing container cannot pass it. It
+# connects by service name, not loopback, so password authentication applies
+# (the postgres image trusts 127.0.0.1 inside the container).
+app_sql() { compose exec -T -e PGPASSWORD="$2" "$1" psql -h postgres -U lip_api -d "$3" -v VERBOSITY=verbose -Atc "$4" 2>&1; }
+migration_history_denied() {
+  local service="${1:-postgres}" password="${2:-lip_api}" db="${3:-lip}" out
+  out="$(app_sql "$service" "$password" "$db" 'SELECT 1')" || { echo "app role could not run SELECT 1: $out"; return 1; }
+  if out="$(app_sql "$service" "$password" "$db" 'SELECT 1 FROM _prisma_migrations LIMIT 1')"; then
+    echo "app role CAN read migration history"; return 1
+  fi
+  echo "$out"
+  grep -q '42501' <<<"$out" && grep -q 'permission denied for table _prisma_migrations' <<<"$out"
+}
+check "app role cannot read migration history (SQLSTATE 42501)" migration_history_denied
+# Self-tests: the check must fail when access is granted and when the
+# connection itself fails, so a passing result means what it says.
+owner_sql() { compose exec -T -e PGPASSWORD=lip postgres psql -h 127.0.0.1 -U lip -d lip -v ON_ERROR_STOP=1 -Atc "$1"; }
+detects_granted_access() {
+  local detected=0
+  owner_sql 'GRANT SELECT ON TABLE "_prisma_migrations" TO lip_app' || return 1
+  migration_history_denied || detected=1
+  owner_sql 'REVOKE ALL ON TABLE "_prisma_migrations" FROM lip_app' || return 1
+  [[ $detected -eq 1 ]]
+}
+check "self-test: migration-history check fails if access is granted" detects_granted_access
+fails_on_wrong_password() { ! migration_history_denied postgres not-the-password lip; }
+fails_on_missing_database() { ! migration_history_denied postgres lip_api lip_no_such_db; }
+fails_on_missing_container() { ! migration_history_denied no_such_service lip_api lip; }
+check "self-test: migration-history check fails on a wrong password" fails_on_wrong_password
+check "self-test: migration-history check fails on a missing database" fails_on_missing_database
+check "self-test: migration-history check fails on a missing container" fails_on_missing_container
+check "app role is denied migration history again after the self-test" migration_history_denied
 
 log "7. Resilience"
 compose stop redis >/dev/null 2>&1

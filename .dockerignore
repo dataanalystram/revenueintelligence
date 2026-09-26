@@ -4,7 +4,9 @@
 **/src/generated
 .git
 .github
-.env
-.env.*
+# Local environment files anywhere in the tree (e.g. apps/api/.env) must never
+# reach an image; configuration is passed at run time.
+**/.env
+**/.env.*
 docs
 *.md
