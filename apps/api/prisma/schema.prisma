@@ -1,0 +1,16 @@
+// Prisma schema for the Lead Intelligence Platform.
+//
+// Milestone 0 intentionally defines no domain tables: the canonical domain
+// model (M1) and tenant model (M2) are introduced in their own milestones.
+// Every persistent integration record added later MUST carry a tenant_id.
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "cjs"
+  importFileExtension = ""
+}
+
+datasource db {
+  provider = "postgresql"
+}
