@@ -29,3 +29,4 @@ listed below. Nothing is scaffolded ahead of its milestone.
 4. The generated Prisma client may only be imported by `src/platform/database`
    and by `infrastructure/` folders inside modules (repositories).
 5. No circular dependencies.
+6. `domain` is pure: it imports only itself, `zod` and `node:crypto`.

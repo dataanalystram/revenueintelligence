@@ -16,10 +16,11 @@ See [docs/architecture.md](docs/architecture.md) for the design and
 
 ## Status
 
-| Milestone                                   | State                                                     |
-| ------------------------------------------- | --------------------------------------------------------- |
-| M0 — Repository / infrastructure foundation | ✅ Complete — [record](docs/milestones/M00-foundation.md) |
-| M1 — Canonical domain model                 | Not started (awaiting M0 review)                          |
+| Milestone                                   | State                                                                                  |
+| ------------------------------------------- | -------------------------------------------------------------------------------------- |
+| M0 — Repository / infrastructure foundation | ✅ Approved — [record](docs/milestones/M00-foundation.md)                              |
+| M1 — Canonical domain model                 | ✅ Complete, awaiting review — [record](docs/milestones/M01-canonical-domain-model.md) |
+| M2 — Tenant model / isolation               | Not started                                                                            |
 
 ## Stack
 

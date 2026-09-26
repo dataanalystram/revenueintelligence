@@ -30,6 +30,17 @@ module.exports = {
       },
     },
     {
+      name: 'domain-is-pure',
+      severity: 'error',
+      comment:
+        'The canonical domain model depends only on itself, zod and node:crypto: no framework, ' +
+        'persistence, platform or vendor code (ADR 0007).',
+      from: { path: '^src/modules/domain/', pathNot: '\\.spec\\.ts$' },
+      to: {
+        pathNot: ['^src/modules/domain/', 'node_modules/zod/', '^crypto$', '^node:crypto$'],
+      },
+    },
+    {
       name: 'hubspot-sdk-only-in-hubspot-connector',
       severity: 'error',
       comment: 'External systems are accessed only through connector modules.',
