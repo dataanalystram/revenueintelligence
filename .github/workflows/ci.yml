@@ -57,6 +57,14 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm verify:runtime
+      # verify-runtime.sh keeps its logs in /tmp/lip-verify.* when a check fails.
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-verification-logs
+          path: /tmp/lip-verify.*
+          retention-days: 7
+          if-no-files-found: ignore
 
   docker:
     name: Docker images build and start

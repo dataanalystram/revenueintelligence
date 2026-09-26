@@ -188,6 +188,19 @@ describe('HubSpotHttpClient', () => {
           expect.objectContaining({ kind: 'unsupported_endpoint' }),
         );
       }
+      // Dot segments, encoding, queries and fragments must not smuggle a legacy path.
+      for (const path of [
+        '/crm/objects/2026-09/../../v3/objects/companies',
+        '/crm/objects/2026-09/%2e%2e/%2e%2e/v3/objects/companies',
+        '/account-info/2026-09/../v3/details',
+        '/crm/objects/2026-09/contacts?x=/v3/',
+        '/crm/objects/2026-09/contacts#frag',
+        '/crm/objects/2026-09//contacts',
+      ]) {
+        expect(() => assertDateVersionedPath(path), path).toThrow(
+          expect.objectContaining({ kind: 'unsupported_endpoint' }),
+        );
+      }
       expect(() => assertDateVersionedPath('/account-info/2026-03/details')).not.toThrow();
       expect(() => assertDateVersionedPath('/crm/objects/2026-09/leads')).not.toThrow();
     });

@@ -48,6 +48,46 @@ describe('HubSpotReader (translation into vendor-neutral read models)', () => {
     });
   });
 
+  it('refuses a malformed account-info version before any request', async () => {
+    await expect(reader.getAccount('2026-09/../../account-info/v3')).rejects.toThrow(RangeError);
+    expect(fake.requests).toHaveLength(0);
+  });
+
+  it('keeps unexpected NO_ASSOCIATIONS_FOUND ids as failures, and falls back from empty fromObjectId', async () => {
+    fake.fail({
+      match: /batch\/read$/,
+      status: 207,
+      body: {
+        status: 'COMPLETE',
+        results: [],
+        errors: [
+          {
+            category: 'OBJECT_NOT_FOUND',
+            subCategory: 'crm.associations.NO_ASSOCIATIONS_FOUND',
+            message: 'not one of ours',
+            context: { fromObjectId: ['999'] },
+          },
+          {
+            category: 'OBJECT_NOT_FOUND',
+            subCategory: 'crm.associations.NO_ASSOCIATIONS_FOUND',
+            message: 'ids only',
+            context: { fromObjectId: [], ids: ['301'] },
+          },
+        ],
+      },
+    });
+    const result = await reader.readAssociations('contacts', ['301'], 'companies');
+    expect(result.withoutAssociations).toEqual(['301']);
+    expect(result.failures).toEqual([
+      {
+        category: 'OBJECT_NOT_FOUND',
+        subCategory: 'crm.associations.NO_ASSOCIATIONS_FOUND',
+        message: 'not one of ours',
+        ids: ['999'],
+      },
+    ]);
+  });
+
   it('reads account details', async () => {
     await expect(reader.getAccount()).resolves.toEqual({
       portalId: '4242',

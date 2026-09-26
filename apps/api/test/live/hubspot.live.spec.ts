@@ -40,6 +40,13 @@ if (missing.length > 0) {
       expect(TEST_ACCOUNT_TYPES).toContain(account.accountType);
     });
 
+    it('account info answers at the current date-based versions (2026-09, and documented 2026-03)', async () => {
+      for (const version of ['2026-09', '2026-03']) {
+        const account = await reader.getAccount(version);
+        expect(account.portalId, version).toBe(process.env[PORTAL_VAR]);
+      }
+    });
+
     it('reads contacts and companies with pagination', async () => {
       for (const type of ['contacts', 'companies'] as const) {
         const first = await reader.listRecords(type, { limit: 1 });

@@ -102,6 +102,9 @@ export class HubSpotReader {
 
   /** Account details, from the Account Information API (date-based version). */
   async getAccount(version: string = this.config.accountInfoApiVersion): Promise<HubSpotAccount> {
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(version)) {
+      throw new RangeError('HubSpot API versions are YYYY-MM');
+    }
     const d = await this.send(
       { method: 'GET', path: `/account-info/${version}/details` },
       HsAccountDetailsSchema,
@@ -226,6 +229,7 @@ export class HubSpotReader {
     const out: ExternalAssociation[] = [];
     const failures: AssociationReadFailure[] = [];
     const withoutAssociations: string[] = [];
+    const requested = new Set(ids);
     for (let i = 0; i < ids.length; i += ASSOCIATION_BATCH_SIZE) {
       let inputs = ids
         .slice(i, i + ASSOCIATION_BATCH_SIZE)
@@ -245,8 +249,15 @@ export class HubSpotReader {
           HsAssociationBatchReadSchema,
         );
         for (const e of batch.errors ?? []) {
-          const errorIds = e.context?.fromObjectId ?? e.context?.ids ?? [];
-          if (e.subCategory === NO_ASSOCIATIONS_FOUND && errorIds.length > 0) {
+          const fromIds = e.context?.fromObjectId ?? [];
+          const errorIds = fromIds.length > 0 ? fromIds : (e.context?.ids ?? []);
+          // Only "no associations" for records we actually asked about is a
+          // normal result; anything else stays a reported failure.
+          if (
+            e.subCategory === NO_ASSOCIATIONS_FOUND &&
+            errorIds.length > 0 &&
+            errorIds.every((id) => requested.has(id))
+          ) {
             for (const id of errorIds)
               if (!withoutAssociations.includes(id)) withoutAssociations.push(id);
             continue;

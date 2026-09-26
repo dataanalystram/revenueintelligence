@@ -47,8 +47,20 @@ export function assertReadOnlyRequest(req: Pick<HubSpotRequest, 'method' | 'path
 const DATE_VERSIONED_PATH =
   /^\/(?:crm\/(?:objects|properties|associations)|account-info)\/\d{4}-(?:0[1-9]|1[0-2])\//;
 
+/** Only plain path characters: no dot segments, encoding, query or fragment. */
+const PLAIN_PATH = /^(?:\/[A-Za-z0-9_-]+)+$/;
+
 export function assertDateVersionedPath(path: string): void {
-  if (DATE_VERSIONED_PATH.test(path)) return;
+  // Checked on the literal path, which must also be exactly what is sent:
+  // `..` or `%2e%2e` segments would otherwise be normalised by URL into a
+  // legacy path (e.g. /crm/objects/2026-09/../../v3/objects/companies).
+  if (
+    PLAIN_PATH.test(path) &&
+    DATE_VERSIONED_PATH.test(path) &&
+    new URL(path, 'https://api.hubapi.com').pathname === path
+  ) {
+    return;
+  }
   throw new HubSpotError(
     'unsupported_endpoint',
     `Refusing ${path}: only HubSpot date-based API versions are used`,

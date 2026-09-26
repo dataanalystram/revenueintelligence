@@ -178,8 +178,16 @@ log "7. Resilience"
 compose stop redis >/dev/null 2>&1
 check "Redis down → readiness 503, redis down" bash -c "for i in \$(seq 1 20); do out=\$(curl -sS -w '%{http_code}' '$API_URL/health/ready'); case \"\$out\" in *'\"redis\":{\"status\":\"down\"'*503) exit 0;; esac; sleep 0.5; done; exit 1"
 check "liveness stays 200 while not ready" bash -c "curl -fsS '$API_URL/health/live' >/dev/null"
-compose start redis >/dev/null 2>&1
-check "Redis back → readiness recovers" bash -c "for i in \$(seq 1 60); do curl -fsS '$API_URL/health/ready' >/dev/null 2>&1 && exit 0; sleep 0.5; done; exit 1"
+compose start redis >>"$WORK/checks.log" 2>&1 || echo "compose start redis failed" >>"$WORK/checks.log"
+redis_recovers() {
+  for _ in $(seq 1 60); do curl -fsS "$API_URL/health/ready" >/dev/null 2>&1 && return 0; sleep 0.5; done
+  # Not recovered within 30 s: keep enough to diagnose it (CI uploads these logs).
+  echo "--- readiness: $(curl -sS "$API_URL/health/ready" 2>&1)"
+  echo "--- redis container"; compose ps redis 2>&1; compose logs --tail 30 redis 2>&1
+  echo "--- api log (tail)"; tail -30 "$WORK/api.log"
+  return 1
+}
+check "Redis back → readiness recovers" redis_recovers
 check "API refuses to start as the schema owner (superuser)" bash -c "cd '$API_DIR' && ! DATABASE_URL='$OWNER_DB_URL' PORT=$(free_port) timeout 60 node dist/main.js >'$WORK/unsafe.log' 2>&1 && grep -q 'Refusing to use the database connection' '$WORK/unsafe.log'"
 
 # Milestone-specific runtime checks (have access to the variables above).
@@ -195,8 +203,11 @@ check "API PID is the node process" bash -c "[[ \"\$(ps -o args= -p $API_PID)\" 
 check "worker PID is the node process" bash -c "[[ \"\$(ps -o args= -p $WORKER_PID)\" == 'node dist/worker.js' ]]"
 pg_app_sessions() { compose exec -T -e PGPASSWORD=lip postgres psql -h 127.0.0.1 -U lip -d lip -Atc "SELECT count(*) FROM pg_stat_activity WHERE usename = 'lip_api'"; }
 redis_clients() { compose exec -T redis redis-cli CLIENT LIST | awk '!/cmd=client/ { n++ } END { print n + 0 }'; }
-curl -fsS "$API_URL/health/ready" >/dev/null   # ensure live DB and Redis connections exist
-before_pg="$(pg_app_sessions)"; before_redis="$(redis_clients)"
+# Ensure live DB and Redis connections exist. Not fatal: the check below
+# reports missing connections instead of aborting the remaining checks.
+curl -fsS "$API_URL/health/ready" >/dev/null 2>&1 || true
+# A failing probe counts as 0 so the check below fails instead of set -e aborting the run.
+before_pg="$(pg_app_sessions 2>/dev/null || echo 0)"; before_redis="$(redis_clients 2>/dev/null || echo 0)"
 [[ "$before_pg" -gt 0 && "$before_redis" -gt 0 ]] && pass "before shutdown: $before_pg app DB session(s), $before_redis Redis client(s)" \
   || fail "expected open connections before shutdown (db=$before_pg redis=$before_redis)"
 kill -TERM "$API_PID" "$WORKER_PID"

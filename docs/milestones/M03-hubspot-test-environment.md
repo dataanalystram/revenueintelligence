@@ -61,43 +61,59 @@ Reused from the paused M3 work (stash, inspected file by file):
 | Discovery findings documented                | ✅ `discovery-findings.md` with live evidence                    |
 | HubSpot test-account evidence                | ✅ `discovery-report.json`, `pnpm test:live` 5/5                 |
 
-## Evidence (local, before commit)
+## Evidence
+
+Final numbers are in the PR and the final report. At the live-validation
+commit (`31f3d4c`), from a fresh clone:
 
 ```
 pnpm verify
   format, lint, typecheck: clean
-  depcruise: no dependency violations found (155 modules, 521 dependencies cruised)
-  unit:        Test Files 24 passed (24)   Tests 317 passed (317)
+  depcruise: no dependency violations found (155 modules, 522 dependencies cruised)
+  unit:        Test Files 24 passed (24)   Tests 338 passed (338)
   integration: Test Files  9 passed (9)    Tests 107 passed (107)
-
 pnpm verify:runtime  → Summary: 47 passed, 0 failed   (39 core + 8 HubSpot)
-
-pnpm test:live       → 1 skipped: "HubSpot live tests: SKIPPED, missing
-                        TENANT_HSTEST_HUBSPOT_ACCESS_TOKEN and HUBSPOT_TEST_PORTAL_ID"
-vitest (live config) with no test files → "No test files found, exiting with code 1"
+pnpm verify:docker   → Summary: 12 passed, 0 failed; cleanup verified
+pnpm test:live       → Test Files 1 passed (1)  Tests 5 passed (5)   (developer test account)
+resources before/after: app_procs=0 lip_containers=0 all_containers=0 volumes=0
+                        compose_networks=0 lip_images=0 testcontainers=0
 ```
 
-The live HubSpot API is not reachable from this environment. The egress proxy
-denies `api.hubapi.com`, and no test-account token exists yet.
+`hubspot:discover --tenant hstest` (live, production path):
+
+```
+Account                149338734 (DEVELOPER_TEST)
+API version            2026-09
+contacts               6 read; 402 properties
+companies              6 read; 247 properties
+leads                  0 read; 132 properties
+Leads object           available: Leads object readable (0 record(s) read, 132 properties)
+Missing scopes         none reported
+```
+
+With no test files, the live config exits 1 ("No test files found").
+Without credentials, the suite skips and names the missing variables.
 
 ## Mutation evidence
 
 Each mechanism was broken on its own, and each file was restored and checked
 with `cmp` afterwards.
 
-| Guarantee                           | Mutation                                           | Checks that failed                                                                                                                 |
-| ----------------------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| Read-only transport                 | Guard returns early for every method               | The 5 read-only guard tests (POST/PUT/PATCH/DELETE, write-like batch paths)                                                        |
-| Read-only at runtime                | Guard bypassed **and** property reads sent as POST | Runtime "the connector made read requests only" (fake saw `POST /crm/properties/2026-09/{contacts,companies,leads}`) and discovery |
-| Only transient failures retried     | `retryable` always true                            | 401, 403, 404, daily-429, invalid-payload tests (retried when they must not be), read-only tests (`retryable` false)               |
-| Daily limit not retried             | `DAILY` treated as retryable                       | "429 daily limit → not retried"                                                                                                    |
-| Zod at the boundary                 | Schema validation bypassed                         | "missing a required field → invalid_payload"; association paging (id normalisation lost)                                           |
-| Token never leaks                   | Token appended to HTTP error messages              | "401 → … no token in the error", "never writes the token to logs or errors"                                                        |
-| Paging cannot loop                  | Repeated-cursor check removed                      | "refuses a paging cursor that does not advance"                                                                                    |
-| Disabled integration enforced       | `isEnabled` check skipped                          | "HubSpot disabled → integration_disabled", "disabling HubSpot takes effect immediately"                                            |
-| Tenant isolation of tokens          | Connector falls back to the last token it resolved | "each tenant reads with its own token only…" (B was served A's token)                                                              |
-| Token belongs to configured account | `portalId` comparison skipped                      | "a token for a different account … → account_mismatch"                                                                             |
-| Production accounts refused         | Account-type check skipped                         | "refuses a production (STANDARD) account unless explicitly allowed"                                                                |
+| Guarantee                           | Mutation                                              | Checks that failed                                                                                                                 |
+| ----------------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Read-only transport                 | Guard returns early for every method                  | The 5 read-only guard tests (POST/PUT/PATCH/DELETE, write-like batch paths)                                                        |
+| Read-only at runtime                | Guard bypassed **and** property reads sent as POST    | Runtime "the connector made read requests only" (fake saw `POST /crm/properties/2026-09/{contacts,companies,leads}`) and discovery |
+| Only transient failures retried     | `retryable` always true                               | 401, 403, 404, daily-429, invalid-payload tests (retried when they must not be), read-only tests (`retryable` false)               |
+| Daily limit not retried             | `DAILY` treated as retryable                          | "429 daily limit → not retried"                                                                                                    |
+| Zod at the boundary                 | Schema validation bypassed                            | "missing a required field → invalid_payload"; association paging (id normalisation lost)                                           |
+| Token never leaks                   | Token appended to HTTP error messages                 | "401 → … no token in the error", "never writes the token to logs or errors"                                                        |
+| Paging cannot loop                  | Repeated-cursor check removed                         | "refuses a paging cursor that does not advance"                                                                                    |
+| No legacy (v1–v4) calls (U8)        | Date-version guard removed from `send()`              | The 5 legacy GET reads from the API-version export are sent; their "refuses … before any request is sent" tests fail               |
+| No path traversal to legacy (U9)    | Dot-segment/encoding/URL-normalisation checks removed | "refuses legacy (non date-based) read paths" (`/crm/objects/2026-09/../../v3/...` would pass)                                      |
+| Disabled integration enforced       | `isEnabled` check skipped                             | "HubSpot disabled → integration_disabled", "disabling HubSpot takes effect immediately"                                            |
+| Tenant isolation of tokens          | Connector falls back to the last token it resolved    | "each tenant reads with its own token only…" (B was served A's token)                                                              |
+| Token belongs to configured account | `portalId` comparison skipped                         | "a token for a different account … → account_mismatch"                                                                             |
+| Production accounts refused         | Account-type check skipped                            | "refuses a production (STANDARD) account unless explicitly allowed"                                                                |
 
 Invalid mutation seen and discarded: the first runtime read-only mutation
 did not apply the POST change, because Prettier had re-wrapped the target
@@ -227,6 +243,56 @@ What the live run changed:
    shape, including numeric ids, and the fake reproduces it.
 3. **Confirmed association type ids** (578/608 lead↔contact, 580/610
    lead↔company, and their reverses) replaced the fake's placeholder.
+
+## Final review round
+
+A fresh-context review of `e540c64..31f3d4c` returned **PASS WITH NITS**,
+with three should-fix items, all fixed:
+
+1. **`..` or `%2e` segments could smuggle a legacy path past the date-version
+   guard**, because URL normalisation happened after the check. For example,
+   `getAccount('2026-09/../../account-info/v3')`. Fix:
+   - the guard now requires plain path segments and that URL normalisation
+     leaves the path unchanged;
+   - `getAccount` validates its version as `YYYY-MM`;
+   - traversal tests added; mutation U9 fails them.
+2. **The evidence block was stale.** Refreshed above; U8 and U9 are in the
+   mutation table.
+3. **The "`2026-03` answered live" claim was not in committed evidence.**
+   `pnpm test:live` now reads account info at `2026-09` and `2026-03` and
+   checks the portal id (6/6 live).
+
+Nits fixed:
+
+- The export has eight writes (it said nine).
+- A unit test covers the discovery probe when the versions differ, and when
+  a version does not answer.
+- An empty `fromObjectId` falls back to `ids`.
+- `NO_ASSOCIATIONS_FOUND` for an id that wasn't requested stays a failure.
+
+## CI: intermittent Redis recovery
+
+On `31f3d4c`, CI's runtime job failed once at "Redis back → readiness
+recovers": readiness stayed 503 for 30 s after Redis restarted.
+
+- It passed on the one permitted re-run of the same commit, in the fresh-clone
+  run of the same commit, and in every earlier CI and local run.
+- The runner's logs are not retrievable, so the cause is **unknown**. It is
+  not claimed as a flake.
+- The diff does not touch Redis or that check.
+
+Changes, so a recurrence can be diagnosed and does not hide other checks:
+
+- The check records `compose start` output, the readiness body, the Redis
+  container state and logs, and the API log tail.
+- CI uploads `/tmp/lip-verify.*` as an artifact when the job fails.
+- Two probes in the shutdown section no longer abort the run under `set -e`.
+
+Mutation: with Redis deliberately left stopped, the run completes with 45
+passed and 2 failed ("Redis back …" and "expected open connections before
+shutdown"). The diagnostics are in the log and no process remains. Before the
+fix, the same fault aborted the run after "worker PID is the node process".
+Tracked as technical-debt item 10.
 
 ## Open questions
 

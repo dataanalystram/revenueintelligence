@@ -44,7 +44,8 @@ The live run changed two assumptions:
 
 1. **The Account Information API answers at `2026-09`.** The connector first
    used `2026-03`, the latest version found in HubSpot's docs, and probed
-   `2026-09`: both returned 200. The default is now `2026-09`, so all
+   `2026-09`: both returned 200 (asserted by `pnpm test:live`, which reads account
+   info at both versions and checks the portal id). The default is now `2026-09`, so all
    connector calls use the current version.
 2. **A record with no associations is reported per record inside a 207.** It
    comes back as `OBJECT_NOT_FOUND` / `crm.associations.NO_ASSOCIATIONS_FOUND`
@@ -53,21 +54,21 @@ The live run changed two assumptions:
 
 ## Platform and API
 
-| Finding                                                                                                                                                                                                                                         | Status     |
-| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
-| Date-based API versions: `2026-03` was the first, `2026-09` is GA since 8 Sep 2026. Each version gets 18 months of support; releases come in March and September.                                                                               | Documented |
-| CRM paths: `/crm/objects/{v}/{type}`, `/crm/properties/{v}/{type}`, `/crm/associations/{v}/{from}/{to}/labels`                                                                                                                                  | Documented |
-| Record associations: `POST /crm/associations/{v}/{from}/{to}/batch/read` with `{inputs:[{id, after?}]}`, up to 500 associations per id per page                                                                                                 | Documented |
-| Account details: `/account-info/2026-09/details` (live; `2026-03` documented and also live). `accountType` is one of `STANDARD`, `DEVELOPER_TEST`, `SANDBOX`, `APP_DEVELOPER`. `/account-info/v3/details` is legacy (end of support 1 Sep 2027) | Live       |
-| Legacy apps and v1–v3 APIs go unsupported from September 2027                                                                                                                                                                                   | Documented |
-| From `2026-09`, admin-configured validation rules are enforced on CRM **writes** (relevant when writes are approved)                                                                                                                            | Documented |
-| Exact 2026-09 paths and response shapes as the connector uses them                                                                                                                                                                              | Live       |
+| Finding                                                                                                                                                                                                                                                               | Status     |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| Date-based API versions: `2026-03` was the first, `2026-09` is GA since 8 Sep 2026. Each version gets 18 months of support; releases come in March and September.                                                                                                     | Documented |
+| CRM paths: `/crm/objects/{v}/{type}`, `/crm/properties/{v}/{type}`, `/crm/associations/{v}/{from}/{to}/labels`                                                                                                                                                        | Documented |
+| Record associations: `POST /crm/associations/{v}/{from}/{to}/batch/read` with `{inputs:[{id, after?}]}`, up to 500 associations per id per page                                                                                                                       | Documented |
+| Account details: `/account-info/2026-09/details` (live; `2026-03` documented and also live, per `pnpm test:live`). `accountType` is one of `STANDARD`, `DEVELOPER_TEST`, `SANDBOX`, `APP_DEVELOPER`. `/account-info/v3/details` is legacy (end of support 1 Sep 2027) | Live       |
+| Legacy apps and v1–v3 APIs go unsupported from September 2027                                                                                                                                                                                                         | Documented |
+| From `2026-09`, admin-configured validation rules are enforced on CRM **writes** (relevant when writes are approved)                                                                                                                                                  | Documented |
+| Exact 2026-09 paths and response shapes as the connector uses them                                                                                                                                                                                                    | Live       |
 
 ## Historical API usage vs the connector's endpoints
 
 HubSpot's API-version export for the test account's Service Key
 ([evidence/service-key-api-versions-export.csv](evidence/service-key-api-versions-export.csv))
-shows 14 older v3/v4 endpoints called before this connector existed. Nine of
+shows 14 older v3/v4 endpoints called before this connector existed. Eight of
 them are **writes**: deletes, creates, batch upserts, property creation and
 association writes. The v3 endpoints end support on 1 Sep 2027 and the v4 ones
 on 1 Mar 2027.
