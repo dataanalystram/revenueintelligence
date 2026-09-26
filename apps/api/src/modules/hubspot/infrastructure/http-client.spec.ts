@@ -4,7 +4,12 @@ import { ALL_READ_SCOPES, FakeHubSpot, sampleData } from '../../../../test/suppo
 import { Secret } from '../../../platform/secrets';
 import { HubSpotError } from '../errors';
 import type { HubSpotConfig } from '../hubspot.config';
-import { assertReadOnlyRequest, HubSpotHttpClient, type HubSpotAuth } from './http-client';
+import {
+  assertDateVersionedPath,
+  assertReadOnlyRequest,
+  HubSpotHttpClient,
+  type HubSpotAuth,
+} from './http-client';
 import { SlidingWindowRateLimiter } from './rate-limiter';
 import { HsObjectPageSchema } from './schemas';
 
@@ -22,6 +27,7 @@ describe('HubSpotHttpClient', () => {
     const config: HubSpotConfig = {
       baseUrl: baseUrl ?? fake.url,
       apiVersion: '2026-09',
+      accountInfoApiVersion: '2026-03',
       timeoutMs: 2_000,
       maxRetries: 3,
       requestsPer10s: 90,
@@ -121,6 +127,69 @@ describe('HubSpotHttpClient', () => {
           path: '/crm/associations/2026-09/leads/contacts/batch/read',
         }),
       ).not.toThrow();
+    });
+  });
+
+  describe('historical endpoints from the HubSpot API-usage export', () => {
+    // Every endpoint in the Service Key's API-version export (older v3/v4 calls,
+    // many of them writes). None may be sent by the connector.
+    const EXPORT: readonly [string, string][] = [
+      ['DELETE', '/crm/v3/objects/companies/123'],
+      ['GET', '/account-info/v3/details'],
+      ['GET', '/crm/objects/v4/contacts/123/associations/companies'],
+      ['GET', '/crm/objects/v4/deals/123/associations/contacts'],
+      ['GET', '/crm/v3/objects/companies'],
+      ['GET', '/crm/v3/properties/contacts/email'],
+      ['POST', '/crm/objects/v3/deals/batch/create'],
+      ['POST', '/crm/v3/objects/companies'],
+      ['POST', '/crm/v3/objects/companies/batch/upsert'],
+      ['POST', '/crm/v3/objects/contacts/batch/upsert'],
+      ['POST', '/crm/v3/objects/contacts/search'],
+      ['POST', '/crm/v3/properties/contacts'],
+      ['PUT', '/crm/objects/v4/contacts/1/associations/default/companies/2'],
+      ['PUT', '/crm/objects/v4/deals/1/associations/default/contacts/2'],
+    ];
+
+    it.each(EXPORT)('refuses %s %s before any request is sent', async (method, path) => {
+      const err = await rejection(
+        client.send({ method: method as 'GET', path }, z.unknown(), auth),
+      );
+      expect(['read_only_violation', 'unsupported_endpoint']).toContain(err.kind);
+      expect(fake.requests).toHaveLength(0);
+    });
+
+    it('refuses the same writes on the current 2026-09 API version', () => {
+      for (const [method, path] of [
+        ['DELETE', '/crm/objects/2026-09/companies/123'],
+        ['POST', '/crm/objects/2026-09/companies'],
+        ['POST', '/crm/objects/2026-09/deals/batch/create'],
+        ['POST', '/crm/objects/2026-09/contacts/batch/upsert'],
+        ['POST', '/crm/objects/2026-09/contacts/search'],
+        ['POST', '/crm/properties/2026-09/contacts'],
+        ['PUT', '/crm/associations/2026-09/contacts/1/companies/2'],
+        ['PUT', '/crm/objects/2026-09/contacts/1/associations/default/companies/2'],
+      ] as const) {
+        expect(
+          () => assertReadOnlyRequest({ method: method as 'GET', path }),
+          `${method} ${path}`,
+        ).toThrow(expect.objectContaining({ kind: 'read_only_violation' }));
+      }
+    });
+
+    it('refuses legacy (non date-based) read paths', () => {
+      for (const path of [
+        '/account-info/v3/details',
+        '/crm/v3/objects/companies',
+        '/crm/v4/associations/contacts/companies/batch/read',
+        '/crm/objects/v4/contacts/1/associations/companies',
+        '/crm/objects/latest/contacts',
+      ]) {
+        expect(() => assertDateVersionedPath(path), path).toThrow(
+          expect.objectContaining({ kind: 'unsupported_endpoint' }),
+        );
+      }
+      expect(() => assertDateVersionedPath('/account-info/2026-03/details')).not.toThrow();
+      expect(() => assertDateVersionedPath('/crm/objects/2026-09/leads')).not.toThrow();
     });
   });
 

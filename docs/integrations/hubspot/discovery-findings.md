@@ -14,15 +14,56 @@ shapes. That proves our handling, not HubSpot's behaviour.
 
 ## Platform and API
 
-| Finding                                                                                                                                                           | Status       |
-| ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
-| Date-based API versions: `2026-03` was the first, `2026-09` is GA since 8 Sep 2026. Each version gets 18 months of support; releases come in March and September. | Documented   |
-| CRM paths: `/crm/objects/{v}/{type}`, `/crm/properties/{v}/{type}`, `/crm/associations/{v}/{from}/{to}/labels`                                                    | Documented   |
-| Record associations: `POST /crm/associations/{v}/{from}/{to}/batch/read` with `{inputs:[{id, after?}]}`, up to 500 associations per id per page                   | Documented   |
-| Account details: `/account-info/v3/details`; `accountType` is one of `STANDARD`, `DEVELOPER_TEST`, `SANDBOX`, `APP_DEVELOPER`                                     | Documented   |
-| Legacy apps and v1–v3 APIs go unsupported from September 2027                                                                                                     | Documented   |
-| From `2026-09`, admin-configured validation rules are enforced on CRM **writes** (relevant when writes are approved)                                              | Documented   |
-| Exact 2026-09 paths and response shapes as the connector uses them                                                                                                | Pending live |
+| Finding                                                                                                                                                                                                           | Status       |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
+| Date-based API versions: `2026-03` was the first, `2026-09` is GA since 8 Sep 2026. Each version gets 18 months of support; releases come in March and September.                                                 | Documented   |
+| CRM paths: `/crm/objects/{v}/{type}`, `/crm/properties/{v}/{type}`, `/crm/associations/{v}/{from}/{to}/labels`                                                                                                    | Documented   |
+| Record associations: `POST /crm/associations/{v}/{from}/{to}/batch/read` with `{inputs:[{id, after?}]}`, up to 500 associations per id per page                                                                   | Documented   |
+| Account details: `/account-info/2026-03/details` (date-based; `accountType` is one of `STANDARD`, `DEVELOPER_TEST`, `SANDBOX`, `APP_DEVELOPER`); `/account-info/v3/details` is legacy (end of support 1 Sep 2027) | Documented   |
+| Legacy apps and v1–v3 APIs go unsupported from September 2027                                                                                                                                                     | Documented   |
+| From `2026-09`, admin-configured validation rules are enforced on CRM **writes** (relevant when writes are approved)                                                                                              | Documented   |
+| Exact 2026-09 paths and response shapes as the connector uses them                                                                                                                                                | Pending live |
+
+## Historical API usage vs the connector's endpoints
+
+HubSpot's API-version export for the test account's Service Key
+([evidence/service-key-api-versions-export.csv](evidence/service-key-api-versions-export.csv))
+shows 14 older v3/v4 endpoints called before this connector existed. Nine of
+them are **writes**: deletes, creates, batch upserts, property creation and
+association writes. The v3 endpoints end support on 1 Sep 2027 and the v4 ones
+on 1 Mar 2027.
+
+| Historical call (export)                                                                | Kind  | Milestone 3 connector                                               |
+| --------------------------------------------------------------------------------------- | ----- | ------------------------------------------------------------------- |
+| `GET /account-info/v3/details`                                                          | read  | `GET /account-info/2026-03/details`                                 |
+| `GET /crm/v3/objects/companies`                                                         | read  | `GET /crm/objects/2026-09/companies` (and contacts, leads, `/{id}`) |
+| `GET /crm/v3/properties/{objectType}/{propertyName}`                                    | read  | `GET /crm/properties/2026-09/{objectType}` (list)                   |
+| `GET /crm/objects/v4/{contacts,deals}/{id}/associations/{toObjectType}`                 | read  | `POST /crm/associations/2026-09/{from}/{to}/batch/read`             |
+| (none)                                                                                  | read  | `GET /crm/associations/2026-09/{from}/{to}/labels`                  |
+| `POST /crm/v3/objects/{objectType}/search`                                              | read¹ | not used                                                            |
+| `DELETE /crm/v3/objects/companies/{id}`                                                 | write | refused by the transport                                            |
+| `POST /crm/v3/objects/companies`, `…/companies/batch/upsert`                            | write | refused                                                             |
+| `POST /crm/v3/objects/contacts/batch/upsert`, `POST /crm/objects/v3/deals/batch/create` | write | refused                                                             |
+| `POST /crm/v3/properties/{objectType}`                                                  | write | refused                                                             |
+| `PUT /crm/objects/v4/{contacts,deals}/{id}/associations/default/{type}/{id}`            | write | refused                                                             |
+
+¹ Search reads data, but through POST; the connector does not need it in M3.
+
+How this is enforced, not just intended:
+
+- The transport refuses every non-date-versioned path (`unsupported_endpoint`)
+  and every method or path outside the read allow-list
+  (`read_only_violation`), before a request is sent.
+- A unit test sends each export endpoint, plus the same writes on `2026-09`
+  paths, and asserts each is refused with no request made.
+- With the date-version guard removed, the five legacy GET reads from the
+  export get through and fail the test (mutation U8).
+- Discovery reports `endpointsUsed`: every method and path it called, with
+  ids templated. The live report is therefore direct evidence of the versions
+  in use.
+
+**No v3/v4 endpoint is used by Milestone 3.** The one former v3 dependency
+(account details) moved to the date-based Account Information API.
 
 ## Does the test environment expose the Lead object?
 

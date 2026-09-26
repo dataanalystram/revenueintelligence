@@ -6,7 +6,8 @@ import type {
 } from '../../domain';
 import { HubSpotError } from '../errors';
 import type { HubSpotConfig } from '../hubspot.config';
-import type { HubSpotAuth, HubSpotHttpClient } from './http-client';
+import type { z } from 'zod';
+import type { HubSpotAuth, HubSpotHttpClient, HubSpotRequest } from './http-client';
 import {
   toAssociationType,
   toFieldDefinition,
@@ -65,6 +66,8 @@ const MAX_ASSOCIATION_PAGES = 20;
  * budget; they never see another tenant's credentials.
  */
 export class HubSpotReader {
+  private readonly requestLog = new Map<string, number>();
+
   constructor(
     private readonly http: HubSpotHttpClient,
     private readonly config: HubSpotConfig,
@@ -75,12 +78,26 @@ export class HubSpotReader {
     return this.config.apiVersion;
   }
 
-  async getAccount(): Promise<HubSpotAccount> {
-    // Account information has no date-based version yet; v3 is current.
-    const d = await this.http.send(
-      { method: 'GET', path: '/account-info/v3/details' },
+  /** Every request this reader made, as `METHOD /path/with/{id}` → count. */
+  endpointsUsed(): Readonly<Record<string, number>> {
+    return Object.fromEntries(this.requestLog);
+  }
+
+  private async send<T>(req: HubSpotRequest, schema: z.ZodType<T>): Promise<T> {
+    const template = req.path
+      .split('/')
+      .map((segment) => (/^\d+$/.test(segment) ? '{id}' : segment))
+      .join('/');
+    const key = `${req.method} ${template}`;
+    this.requestLog.set(key, (this.requestLog.get(key) ?? 0) + 1);
+    return await this.http.send(req, schema, this.auth);
+  }
+
+  /** Account details, from the Account Information API (date-based version). */
+  async getAccount(version: string = this.config.accountInfoApiVersion): Promise<HubSpotAccount> {
+    const d = await this.send(
+      { method: 'GET', path: `/account-info/${version}/details` },
       HsAccountDetailsSchema,
-      this.auth,
     );
     return {
       portalId: String(d.portalId),
@@ -99,7 +116,7 @@ export class HubSpotReader {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
       throw new RangeError('limit must be an integer from 1 to 100');
     }
-    const page = await this.http.send(
+    const page = await this.send(
       {
         method: 'GET',
         path: `/crm/objects/${this.v}/${objectType}`,
@@ -111,7 +128,6 @@ export class HubSpotReader {
         },
       },
       HsObjectPageSchema,
-      this.auth,
     );
     const nextCursor = page.paging?.next?.after;
     if (nextCursor !== undefined && nextCursor === options.after) {
@@ -147,14 +163,13 @@ export class HubSpotReader {
   ): Promise<SnapshotFor[K] | undefined> {
     if (!/^\d{1,20}$/.test(id)) throw new RangeError('HubSpot record ids are numeric');
     try {
-      const o = await this.http.send(
+      const o = await this.send(
         {
           method: 'GET',
           path: `/crm/objects/${this.v}/${objectType}/${id}`,
           query: { properties: properties?.length ? properties : undefined, archived: 'false' },
         },
         HsObjectSchema,
-        this.auth,
       );
       return toRecordSnapshot(objectType, o);
     } catch (err) {
@@ -164,14 +179,13 @@ export class HubSpotReader {
   }
 
   async listProperties(objectType: HubSpotObjectType): Promise<ExternalFieldDefinition[]> {
-    const list = await this.http.send(
+    const list = await this.send(
       {
         method: 'GET',
         path: `/crm/properties/${this.v}/${objectType}`,
         query: { archived: 'false' },
       },
       HsPropertyListSchema,
-      this.auth,
     );
     return list.results.map((p) => toFieldDefinition(objectType, p));
   }
@@ -181,10 +195,9 @@ export class HubSpotReader {
     from: HubSpotObjectType,
     to: HubSpotObjectType,
   ): Promise<ExternalAssociationType[]> {
-    const list = await this.http.send(
+    const list = await this.send(
       { method: 'GET', path: `/crm/associations/${this.v}/${from}/${to}/labels` },
       HsAssociationLabelListSchema,
-      this.auth,
     );
     return list.results.map(toAssociationType);
   }
@@ -215,14 +228,13 @@ export class HubSpotReader {
             path,
           });
         }
-        const batch = await this.http.send(
+        const batch = await this.send(
           {
             method: 'POST',
             path,
             body: { inputs: inputs.map((x) => (x.after ? x : { id: x.id })) },
           },
           HsAssociationBatchReadSchema,
-          this.auth,
         );
         for (const e of batch.errors ?? []) {
           const failure = { category: e.category, message: e.message, ids: e.context?.ids ?? [] };

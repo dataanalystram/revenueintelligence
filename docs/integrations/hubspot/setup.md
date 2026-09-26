@@ -15,12 +15,16 @@ a customer's production account or token here.
 3. Note the test account's **account id** (portal id), shown in the account
    menu. It is not a secret.
 
-## 2. App with a static access token (read-only scopes)
+## 2. Service Key with read-only scopes
 
-Create an app **inside the test account**. Choose **private distribution** and
-**static auth**, using HubSpot's current developer platform: the HubSpot CLI
-(`hs project create`) or the in-app project creation. Grant **only** these
-read scopes:
+For this read-only, system-to-system discovery, use a **HubSpot Service Key**.
+It is an account-level credential for data-only REST integrations, in public
+beta since February 2026, and it replaces legacy private apps for this use.
+**Do not create a new legacy private app**: HubSpot stops supporting legacy
+apps in September 2027.
+
+In the test account: **Development → Keys → Service Keys** → create a key and
+grant **only** these read scopes:
 
 | Scope                        | Why                                          |
 | ---------------------------- | -------------------------------------------- |
@@ -31,26 +35,35 @@ read scopes:
 | `crm.schemas.companies.read` | Company properties (schema)                  |
 | `crm.schemas.leads.read`     | Lead properties, if HubSpot offers the scope |
 
-If HubSpot names a scope differently, discovery reports what it is missing:
-each 403 carries HubSpot's `requiredGranularScopes`. Add exactly those. Grant
-**no write scopes**. Install the app in the test account and copy its
-**access token** (the app's Auth page).
+Grant **no write scopes**. If HubSpot names a scope differently, discovery
+reports what is missing (each 403 carries HubSpot's `requiredGranularScopes`);
+add exactly those.
 
-A legacy _private app_ (Settings → Integrations → Private Apps) also yields a
-static token. HubSpot stops supporting legacy apps in September 2027, so prefer
-the project app.
+A Service Key is sent as `Authorization: Bearer <key>`, exactly like an app's
+static or OAuth access token. The platform therefore stores it as the tenant's
+generic `hubspot.access_token` credential. Nothing outside the credential
+store knows which kind of HubSpot credential it is.
+
+Service Keys cannot receive webhooks or use other developer-platform features.
+Long term:
+
+- **Service Key or static token:** isolated test and internal integrations,
+  such as this one.
+- **Projects-based app with OAuth:** Juniper and future multi-tenant customer
+  installs (M4/M16), including webhooks (M5).
 
 ## 3. Where to store the token and account id
 
 Never paste them into chat, issues, PRs or code.
 
-| Variable                             | Value                         | Secret? |
-| ------------------------------------ | ----------------------------- | ------- |
-| `TENANT_HSTEST_HUBSPOT_ACCESS_TOKEN` | the app's static access token | **yes** |
-| `HUBSPOT_TEST_PORTAL_ID`             | the test account id           | no      |
+| Variable                             | Value               | Secret? |
+| ------------------------------------ | ------------------- | ------- |
+| `TENANT_HSTEST_HUBSPOT_ACCESS_TOKEN` | the Service Key     | **yes** |
+| `HUBSPOT_TEST_PORTAL_ID`             | the test account id | no      |
 
-- **Claude Code cloud session:** environment menu in the session title bar →
-  **Edit** → environment variables. A new session picks them up.
+- **Claude Code cloud session (use this):** environment menu in the session
+  title bar → **Edit** → environment variables. Start a new session afterwards,
+  because running sessions do not see new values.
 - **Local machine:** `apps/api/.env` (git-ignored).
 
 `hstest` is the platform tenant that represents the test account. The variable

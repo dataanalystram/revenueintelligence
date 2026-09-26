@@ -35,6 +35,19 @@ describe('HubSpotReader (translation into vendor-neutral read models)', () => {
     await fake.stop();
   });
 
+  it('records the endpoints it used (date-based only, ids templated)', async () => {
+    await reader.getAccount();
+    await reader.listRecords('contacts', { limit: 2 });
+    await reader.getRecord('companies', '202');
+    await reader.readAssociations('leads', ['301'], 'contacts');
+    expect(reader.endpointsUsed()).toEqual({
+      'GET /account-info/2026-03/details': 1,
+      'GET /crm/objects/2026-09/contacts': 1,
+      'GET /crm/objects/2026-09/companies/{id}': 1,
+      'POST /crm/associations/2026-09/leads/contacts/batch/read': 1,
+    });
+  });
+
   it('reads account details', async () => {
     await expect(reader.getAccount()).resolves.toEqual({
       portalId: '4242',
@@ -228,6 +241,7 @@ describe('HubSpot process configuration', () => {
     expect(loadHubSpotConfig({})).toEqual({
       baseUrl: 'https://api.hubapi.com',
       apiVersion: '2026-09',
+      accountInfoApiVersion: '2026-03',
       timeoutMs: 15_000,
       maxRetries: 3,
       requestsPer10s: 90,

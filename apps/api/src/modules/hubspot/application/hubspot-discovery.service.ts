@@ -90,6 +90,14 @@ export interface HubSpotDiscoveryReport {
   };
   /** Union of the scopes HubSpot reported as missing. */
   readonly missingScopes: readonly string[];
+  /**
+   * Whether the Account Information API answers at each date-based version
+   * probed (the configured one and the CRM version), so the account-info
+   * version can be moved up with evidence.
+   */
+  readonly accountInfoVersions: Readonly<Record<string, Probe<Record<never, never>>>>;
+  /** Every HubSpot request discovery made (`METHOD /path/{id}` → count). */
+  readonly endpointsUsed: Readonly<Record<string, number>>;
 }
 
 export interface DiscoveryOptions {
@@ -201,6 +209,16 @@ export class HubSpotDiscoveryService {
       });
     }
 
+    const accountInfoVersions: Record<string, Probe<Record<never, never>>> = {
+      [this.config.accountInfoApiVersion]: { status: 'ok' },
+    };
+    if (this.config.apiVersion !== this.config.accountInfoApiVersion) {
+      accountInfoVersions[this.config.apiVersion] = await run(async () => {
+        await reader.getAccount(this.config.apiVersion);
+        return {};
+      });
+    }
+
     return {
       generatedAt: new Date().toISOString(),
       apiVersion: this.config.apiVersion,
@@ -211,6 +229,8 @@ export class HubSpotDiscoveryService {
       associationSamples,
       leadObject: leadAvailability(objects.leads.records, objects.leads.properties),
       missingScopes: [...missing].sort(),
+      accountInfoVersions,
+      endpointsUsed: reader.endpointsUsed(),
     };
   }
 

@@ -7,6 +7,7 @@ export type HubSpotErrorKind =
   | 'integration_disabled'
   | 'account_mismatch'
   | 'read_only_violation'
+  | 'unsupported_endpoint'
   | 'unauthorized'
   | 'forbidden'
   | 'not_found'

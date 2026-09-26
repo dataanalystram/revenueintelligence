@@ -44,16 +44,17 @@ worker and CLI). See [operations/database-roles.md](operations/database-roles.md
 
 Full steps: [integrations/hubspot/setup.md](integrations/hubspot/setup.md). In
 short: a free developer account, a **developer test account** (includes a
-Sales Hub Enterprise trial, so Leads exist), and a private-distribution app
-with **static auth** and **read-only scopes** installed in the test account.
+Sales Hub Enterprise trial, so Leads exist), and a **Service Key** with
+**read-only scopes** (Development → Keys → Service Keys). No legacy private app.
 
-| Variable                             | Where it comes from                                | Secret? |
-| ------------------------------------ | -------------------------------------------------- | ------- |
-| `TENANT_HSTEST_HUBSPOT_ACCESS_TOKEN` | The test app's static access token (its Auth page) | yes     |
-| `HUBSPOT_TEST_PORTAL_ID`             | The test account's id                              | no      |
+| Variable                             | Where it comes from                      | Secret? |
+| ------------------------------------ | ---------------------------------------- | ------- |
+| `TENANT_HSTEST_HUBSPOT_ACCESS_TOKEN` | The test account's read-only Service Key | yes     |
+| `HUBSPOT_TEST_PORTAL_ID`             | The test account's id                    | no      |
 
-`hstest` is the platform tenant that represents the test account. The token is
-its tenant credential `hubspot.access_token`, registered by
+`hstest` is the platform tenant that represents the test account. The key is
+its generic tenant credential `hubspot.access_token` (any bearer credential:
+Service Key, static app token or, later, OAuth access token), registered by
 `hubspot:configure`. The cloud environment must also allow outbound HTTPS to
 `api.hubapi.com` (environment settings → Network access).
 

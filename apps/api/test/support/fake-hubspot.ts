@@ -218,7 +218,9 @@ export class FakeHubSpot {
     res: ServerResponse,
   ): void {
     const p = url.pathname;
-    if (method === 'GET' && p === '/account-info/v3/details') {
+    // Date-based versions only: legacy paths such as /account-info/v3/details
+    // are deliberately not served, so any use of them fails tests.
+    if (method === 'GET' && /^\/account-info\/\d{4}-\d{2}\/details$/.test(p)) {
       return this.send(res, 200, {
         portalId: account.portalId,
         accountType: account.accountType,

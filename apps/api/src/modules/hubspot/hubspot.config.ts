@@ -24,6 +24,15 @@ export const HubSpotEnvSchema = z.object({
     .string()
     .regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'must be YYYY-MM')
     .default('2026-09'),
+  /**
+   * Date-based version of the Account Information API. `2026-03` is the latest
+   * version HubSpot documents for it; discovery probes whether HUBSPOT_API_VERSION
+   * is also available so this can be moved up with evidence.
+   */
+  HUBSPOT_ACCOUNT_INFO_API_VERSION: z
+    .string()
+    .regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'must be YYYY-MM')
+    .default('2026-03'),
   HUBSPOT_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(15_000),
   /** Retries after the first attempt, for retryable failures of read requests. */
   HUBSPOT_MAX_RETRIES: z.coerce.number().int().min(0).max(8).default(3),
@@ -38,6 +47,7 @@ export const HubSpotEnvSchema = z.object({
 export interface HubSpotConfig {
   readonly baseUrl: string;
   readonly apiVersion: string;
+  readonly accountInfoApiVersion: string;
   readonly timeoutMs: number;
   readonly maxRetries: number;
   readonly requestsPer10s: number;
@@ -55,6 +65,7 @@ export function loadHubSpotConfig(env: NodeJS.ProcessEnv = process.env): HubSpot
   return Object.freeze({
     baseUrl: e.HUBSPOT_API_BASE_URL.replace(/\/+$/, ''),
     apiVersion: e.HUBSPOT_API_VERSION,
+    accountInfoApiVersion: e.HUBSPOT_ACCOUNT_INFO_API_VERSION,
     timeoutMs: e.HUBSPOT_REQUEST_TIMEOUT_MS,
     maxRetries: e.HUBSPOT_MAX_RETRIES,
     requestsPer10s: e.HUBSPOT_REQUESTS_PER_10S,

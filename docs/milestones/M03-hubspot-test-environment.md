@@ -18,21 +18,21 @@ Out of scope, as instructed:
 
 ## What was built
 
-| Area                 | Implementation                                                                                                                                                                                                                          |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Connector module     | `src/modules/hubspot` (public API in `index.ts`), registered in the worker; ADR 0009                                                                                                                                                    |
-| API version          | `2026-09` (latest GA), `HUBSPOT_API_VERSION`; base URL must be https, or http only for a loopback fake                                                                                                                                  |
-| Authentication       | Static access token of a private app in the test account, as tenant credential `hubspot.access_token` → `TENANT_<SLUG>_HUBSPOT_ACCESS_TOKEN` via the SecretProvider                                                                     |
-| Tenant-scoped config | `HubSpotConnector.forTenant(ctx)`: integration must be enabled; only the tenant's own token; per-tenant rate budget. `connect(ctx)` also verifies the token's account equals the tenant's `portalId`                                    |
-| Reads                | Contacts, Companies, Leads (list with cursor paging, get by id); CRM properties; association labels; record associations (batch read with per-record paging); account details                                                           |
-| Read-only guarantee  | Transport refuses everything except GET and POST to the association batch-read path, before sending                                                                                                                                     |
-| Error handling       | 401, 403 (+ `requiredGranularScopes`), 404, 400, 429 (`DAILY` not retried; burst honours `Retry-After`), 5xx, timeout, network, invalid payload; bounded jittered retries of transient failures only                                    |
-| Validation           | Zod schemas for every HubSpot response; issue paths only in errors (no values)                                                                                                                                                          |
-| Read models          | `ExternalPersonSnapshot`, `ExternalCompanySnapshot`, `ExternalLeadSnapshot`, `ExternalFieldDefinition`, `ExternalAssociation[Type]` in `domain` (vendor-neutral; customer fields stay in `attributes`)                                  |
-| Discovery            | `HubSpotDiscoveryService` + `hubspot:discover` CLI: account, per-object records (pagination proof) and properties, association labels (6 directions), association samples, Lead availability, missing scopes. Refuses non-test accounts |
-| Setup                | `hubspot:configure` CLI: read-only access + credential reference; prints the variable name, never the token. Read-write is not offered                                                                                                  |
-| Live suite           | `pnpm test:live` (`test/live/hubspot.live.spec.ts`): fails with zero test files; skips with the missing variable names                                                                                                                  |
-| Runtime verification | `scripts/verify-runtime.d/20-hubspot.sh`: 8 checks against a local fake HubSpot, including "read requests only"                                                                                                                         |
+| Area                 | Implementation                                                                                                                                                                                                                                                                            |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Connector module     | `src/modules/hubspot` (public API in `index.ts`), registered in the worker; ADR 0009                                                                                                                                                                                                      |
+| API version          | `2026-09` for CRM objects, properties and associations; `2026-03` for the Account Information API (latest documented). The transport refuses any non-date-versioned (v1–v4) path                                                                                                          |
+| Authentication       | Generic bearer credential: tenant credential `hubspot.access_token` → `TENANT_<SLUG>_HUBSPOT_ACCESS_TOKEN` via the SecretProvider. For the developer test account it holds a read-only **Service Key** (no legacy private app); Juniper will use a projects-based app with OAuth (M4/M16) |
+| Tenant-scoped config | `HubSpotConnector.forTenant(ctx)`: integration must be enabled; only the tenant's own token; per-tenant rate budget. `connect(ctx)` also verifies the token's account equals the tenant's `portalId`                                                                                      |
+| Reads                | Contacts, Companies, Leads (list with cursor paging, get by id); CRM properties; association labels; record associations (batch read with per-record paging); account details                                                                                                             |
+| Read-only guarantee  | Transport refuses everything except GET and POST to the association batch-read path, before sending                                                                                                                                                                                       |
+| Error handling       | 401, 403 (+ `requiredGranularScopes`), 404, 400, 429 (`DAILY` not retried; burst honours `Retry-After`), 5xx, timeout, network, invalid payload; bounded jittered retries of transient failures only                                                                                      |
+| Validation           | Zod schemas for every HubSpot response; issue paths only in errors (no values)                                                                                                                                                                                                            |
+| Read models          | `ExternalPersonSnapshot`, `ExternalCompanySnapshot`, `ExternalLeadSnapshot`, `ExternalFieldDefinition`, `ExternalAssociation[Type]` in `domain` (vendor-neutral; customer fields stay in `attributes`)                                                                                    |
+| Discovery            | `HubSpotDiscoveryService` + `hubspot:discover` CLI: account, per-object records (pagination proof) and properties, association labels (6 directions), association samples, Lead availability, missing scopes. Refuses non-test accounts                                                   |
+| Setup                | `hubspot:configure` CLI: read-only access + credential reference; prints the variable name, never the token. Read-write is not offered                                                                                                                                                    |
+| Live suite           | `pnpm test:live` (`test/live/hubspot.live.spec.ts`): fails with zero test files; skips with the missing variable names                                                                                                                                                                    |
+| Runtime verification | `scripts/verify-runtime.d/20-hubspot.sh`: 8 checks against a local fake HubSpot, including "read requests only"                                                                                                                                                                           |
 
 Reused from the paused M3 work (stash, inspected file by file):
 
@@ -163,6 +163,35 @@ Nits fixed:
 
 Nits recorded as technical debt (items 8 and 9): the closed
 association-category enum, and the live suite not exercising the tenant path.
+
+## Service Key and API-version update
+
+After the first review, the owner created a read-only **Service Key** for the
+developer test account and supplied HubSpot's API-version export for it
+(`docs/integrations/hubspot/evidence/service-key-api-versions-export.csv`).
+It shows older v3/v4 calls, many of them writes. Changes:
+
+- **Setup and ADR 0009:**
+  - Service Key for this read-only discovery; no new legacy private app.
+  - The credential stays generic (`hubspot.access_token`).
+  - Long term: Service Key or static token for isolated test and internal
+    integrations; projects-based app with OAuth for Juniper and future
+    customers.
+- **Account details** moved from `/account-info/v3/details` (in the export,
+  end of support 1 Sep 2027) to the date-based `/account-info/2026-03/details`
+  (`HUBSPOT_ACCOUNT_INFO_API_VERSION`). Discovery probes whether `2026-09`
+  answers too.
+- **The transport refuses any non-date-versioned path** (`unsupported_endpoint`).
+  M3 now has no v3/v4 dependency at all.
+- **Tests:**
+  - Every endpoint in the export, and the same writes on `2026-09`, is
+    refused with no request sent.
+  - Mutation U8: with the guard removed, the five legacy GET reads fail these
+    tests.
+- **Discovery reports `endpointsUsed`**, and the fake no longer serves legacy
+  paths.
+- **Findings:** a historical-versus-current comparison is in
+  `discovery-findings.md`.
 
 ## Open questions / blocked
 

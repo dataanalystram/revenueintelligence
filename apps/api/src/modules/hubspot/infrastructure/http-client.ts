@@ -39,6 +39,23 @@ export function assertReadOnlyRequest(req: Pick<HubSpotRequest, 'method' | 'path
   );
 }
 
+/**
+ * Only HubSpot's date-based APIs (`/<api>/<YYYY-MM>/…`) may be called. Legacy
+ * v1–v4 paths go unsupported in 2027 and are refused outright, so a new legacy
+ * dependency cannot slip in unnoticed.
+ */
+const DATE_VERSIONED_PATH =
+  /^\/(?:crm\/(?:objects|properties|associations)|account-info)\/\d{4}-(?:0[1-9]|1[0-2])\//;
+
+export function assertDateVersionedPath(path: string): void {
+  if (DATE_VERSIONED_PATH.test(path)) return;
+  throw new HubSpotError(
+    'unsupported_endpoint',
+    `Refusing ${path}: only HubSpot date-based API versions are used`,
+    { path },
+  );
+}
+
 export interface HubSpotTransportLogger {
   warn(message: string, context: Record<string, unknown>): void;
 }
@@ -85,6 +102,7 @@ export class HubSpotHttpClient {
 
   async send<T>(req: HubSpotRequest, schema: z.ZodType<T>, auth: HubSpotAuth): Promise<T> {
     assertReadOnlyRequest(req);
+    assertDateVersionedPath(req.path);
     const maxAttempts = 1 + this.config.maxRetries;
     for (let attempt = 1; ; attempt += 1) {
       try {

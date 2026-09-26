@@ -29,8 +29,15 @@ platform changed substantially in 2025–2026:
    configuration, not tenant data). CRM paths are
    `/crm/objects/{v}/{type}`, `/crm/properties/{v}/{type}`,
    `/crm/associations/{v}/{from}/{to}/labels`, and
-   `POST /crm/associations/{v}/{from}/{to}/batch/read`. Account details use
-   `/account-info/v3/details`, which has no date-based version yet.
+   `POST /crm/associations/{v}/{from}/{to}/batch/read`. Account details use the
+   Account Information API's own date-based version,
+   `/account-info/{HUBSPOT_ACCOUNT_INFO_API_VERSION}/details`. It defaults to
+   `2026-03`, the latest version documented for that API. Discovery probes
+   whether `2026-09` also answers.
+
+   The transport **refuses any path that is not date-versioned**, so no v1–v4
+   dependency can be introduced. M3 uses no legacy endpoint.
+
 3. **Read-only by construction.** The transport refuses everything except GET
    and POST to an allow-listed batch _read_ path, before any request is sent.
    There are no write methods. Writes to customer systems need explicit approval
@@ -46,12 +53,19 @@ platform changed substantially in 2025–2026:
 
    Rate budgets are per tenant.
 
-5. **Authentication for M3: a static access token** from a private-distribution
-   app installed in the developer test account. HubSpot recommends this for
-   single-account apps, and it needs no public callback URL. OAuth, the
-   multi-account install that Juniper will use, arrives with the connector
-   abstraction (M4) and real validation (M16). The reader takes a `Secret`
-   token, so only the way the token is obtained changes.
+5. **Authentication: a generic bearer credential.** The connector resolves the
+   tenant credential `hubspot.access_token` and sends it as a bearer token. It
+   does not know or care which kind of HubSpot credential it is.
+   - **M3, developer test account:** a read-only **Service Key** (HubSpot, beta
+     since February 2026). It is account-level, needs no app, and replaces
+     legacy private apps for system-to-system data access. No new legacy
+     private app is created.
+   - **Isolated test and internal integrations:** a Service Key or an app's
+     static token, where appropriate.
+   - **Juniper and future customers:** a projects-based app with OAuth
+     (multi-tenant install, M4/M16). Webhooks need the app; Service Keys cannot
+     receive webhooks (M5). OAuth changes only how the token is obtained and
+     refreshed, not the connector.
 6. **Failure handling.** Every response is validated with Zod. Per-record
    failures in a 207 batch response are returned to the caller, never
    dropped. Errors are
