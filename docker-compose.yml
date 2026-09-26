@@ -1,0 +1,63 @@
+# Local development infrastructure.
+#   docker compose up -d postgres redis        # just the dependencies (typical)
+#   docker compose --profile app up --build    # also run migrate + api + worker in containers
+name: lead-intelligence
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: lip
+      POSTGRES_PASSWORD: lip
+      POSTGRES_DB: lip
+    ports: ['5432:5432']
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U lip -d lip']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    # AOF persistence so queued jobs survive a restart (matters from Milestone 6).
+    command: ['redis-server', '--appendonly', 'yes']
+    ports: ['6379:6379']
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  migrate:
+    profiles: [app]
+    build: { context: ., target: migrate }
+    environment: &app-env
+      DATABASE_URL: postgresql://lip:lip@postgres:5432/lip
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  api:
+    profiles: [app]
+    build: { context: ., target: runtime }
+    environment: *app-env
+    ports: ['3000:3000']
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+
+  worker:
+    profiles: [app]
+    build: { context: ., target: runtime }
+    command: ['node', 'dist/worker.js']
+    environment: *app-env
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+
+volumes:
+  pgdata:
+  redisdata:
