@@ -1,0 +1,225 @@
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { ALL_READ_SCOPES, FakeHubSpot, sampleData } from '../../../../test/support/fake-hubspot';
+import { Secret } from '../../../platform/secrets';
+import { HubSpotError } from '../errors';
+import { loadHubSpotConfig } from '../hubspot.config';
+import { HubSpotHttpClient } from './http-client';
+import { HubSpotReader } from './hubspot-reader';
+import { SlidingWindowRateLimiter } from './rate-limiter';
+import { backoffDelayMs, parseRetryAfterMs } from './retry';
+
+describe('HubSpotReader (translation into vendor-neutral read models)', () => {
+  let fake: FakeHubSpot;
+  let reader: HubSpotReader;
+
+  beforeEach(async () => {
+    fake = await new FakeHubSpot({
+      accounts: {
+        tok: {
+          portalId: 4242,
+          accountType: 'DEVELOPER_TEST',
+          scopes: ALL_READ_SCOPES,
+          leadsEnabled: true,
+        },
+      },
+      ...sampleData(),
+    }).start();
+    const config = loadHubSpotConfig({ HUBSPOT_API_BASE_URL: fake.url });
+    const http = new HubSpotHttpClient(config, new SlidingWindowRateLimiter(90), {
+      sleep: () => Promise.resolve(),
+    });
+    reader = new HubSpotReader(http, config, { tenantKey: 't', token: new Secret('tok') });
+  });
+
+  afterEach(async () => {
+    await fake.stop();
+  });
+
+  it('reads account details', async () => {
+    await expect(reader.getAccount()).resolves.toEqual({
+      portalId: '4242',
+      accountType: 'DEVELOPER_TEST',
+      timeZone: 'Europe/London',
+      currency: 'GBP',
+      dataHostingLocation: 'eu1',
+    });
+  });
+
+  it('maps contacts to person snapshots (normalised email, raw attributes kept)', async () => {
+    const page = await reader.listRecords('contacts', { limit: 100 });
+    expect(page.items).toHaveLength(5);
+    expect(page.nextCursor).toBeUndefined();
+    const first = page.items[0]!;
+    expect(first).toMatchObject({
+      ref: { system: 'hubspot', objectType: 'contacts', id: '101' },
+      email: 'person1@school1.example',
+      firstName: 'First1',
+      lastName: 'Last1',
+      jobTitle: 'Head of IT',
+      archived: false,
+    });
+    expect(first.createdAt).toEqual(new Date('2026-09-01T09:00:00.000Z'));
+    expect(first.attributes.fake_custom_field).toBe('x');
+    // An invalid address is not normalised into `email`, but the raw value stays visible.
+    const invalid = page.items[4]!;
+    expect(invalid.email).toBeUndefined();
+    expect(invalid.attributes.email).toBe('not-an-email');
+    expect(Object.isFrozen(first)).toBe(true);
+  });
+
+  it('maps companies (lower-cased domain) and leads', async () => {
+    const companies = await reader.listRecords('companies');
+    expect(companies.items[0]).toMatchObject({ name: 'School 1', domain: 'school1.example' });
+    const leads = await reader.listRecords('leads');
+    expect(leads.items.map((l) => l.ref)).toEqual([
+      { system: 'hubspot', objectType: 'leads', id: '301' },
+      { system: 'hubspot', objectType: 'leads', id: '302' },
+      { system: 'hubspot', objectType: 'leads', id: '303' },
+    ]);
+  });
+
+  it('paginates with HubSpot cursors until the last page', async () => {
+    const pages = [];
+    for await (const page of reader.iterateRecords('contacts', { limit: 2, maxPages: 10 }))
+      pages.push(page);
+    expect(pages.map((p) => p.items.map((i) => i.ref.id))).toEqual([
+      ['101', '102'],
+      ['103', '104'],
+      ['105'],
+    ]);
+    expect(pages.at(-1)!.nextCursor).toBeUndefined();
+    const cursors = fake.requests.map((r) => r.query.after);
+    expect(cursors[0]).toBeUndefined();
+    expect(cursors[1]).toBe(pages[0]!.nextCursor);
+    expect(cursors[2]).toBe(pages[1]!.nextCursor);
+  });
+
+  it('stops at maxPages', async () => {
+    let n = 0;
+    for await (const _page of reader.iterateRecords('contacts', { limit: 1, maxPages: 2 })) n += 1;
+    expect(n).toBe(2);
+    expect(fake.requests).toHaveLength(2);
+  });
+
+  it('refuses a paging cursor that does not advance', async () => {
+    fake.fail({
+      match: /contacts$/,
+      status: 200,
+      body: { results: [], paging: { next: { after: 'same' } } },
+    });
+    await expect(reader.listRecords('contacts', { after: 'same' })).rejects.toMatchObject({
+      kind: 'invalid_payload',
+    });
+  });
+
+  it('passes requested properties and validates page size', async () => {
+    await reader.listRecords('contacts', { limit: 5, properties: ['email', 'fake_custom_field'] });
+    expect(fake.requests[0]!.query).toMatchObject({
+      limit: '5',
+      properties: 'email,fake_custom_field',
+      archived: 'false',
+    });
+    await expect(reader.listRecords('contacts', { limit: 101 })).rejects.toThrow(RangeError);
+    await expect(reader.listRecords('contacts', { limit: 0 })).rejects.toThrow(RangeError);
+  });
+
+  it('getRecord: found, and 404 → undefined', async () => {
+    await expect(reader.getRecord('companies', '202')).resolves.toMatchObject({ name: 'School 2' });
+    await expect(reader.getRecord('companies', '999')).resolves.toBeUndefined();
+    await expect(reader.getRecord('companies', '../x')).rejects.toThrow(RangeError);
+  });
+
+  it('maps property definitions (vendor vs custom, picklist options)', async () => {
+    const fields = await reader.listProperties('contacts');
+    expect(fields.find((f) => f.name === 'fake_custom_field')).toMatchObject({
+      system: 'hubspot',
+      objectType: 'contacts',
+      vendorDefined: false,
+      type: 'string',
+    });
+    expect(fields.find((f) => f.name === 'lifecyclestage')).toMatchObject({
+      vendorDefined: true,
+      type: 'enumeration',
+      options: [
+        { value: 'lead', label: 'lead', hidden: false },
+        { value: 'customer', label: 'customer', hidden: false },
+      ],
+    });
+  });
+
+  it('maps association labels to vendor-neutral categories', async () => {
+    await expect(reader.listAssociationTypes('leads', 'companies')).resolves.toEqual([
+      { category: 'standard', typeId: 580, label: 'Primary' },
+    ]);
+  });
+
+  it('reads associations in batches and follows per-record paging', async () => {
+    const links = await reader.readAssociations('contacts', ['101', '102', '105'], 'companies');
+    expect(
+      links
+        .filter((l) => l.from.id === '101')
+        .map((l) => l.to.id)
+        .sort(),
+    ).toEqual(['201', '202', '203']);
+    expect(links.filter((l) => l.from.id === '102').map((l) => l.to.id)).toEqual(['202']);
+    expect(links.some((l) => l.from.id === '105')).toBe(false);
+    const posts = fake.requests.filter((r) => r.method === 'POST');
+    expect(posts).toHaveLength(2);
+    expect(posts[1]!.body).toEqual({ inputs: [{ id: '101', after: '2' }] });
+  });
+
+  it('surfaces classified errors from reads', async () => {
+    fake.fail({ match: /leads$/, status: 403, body: { category: 'MISSING_SCOPES' } });
+    const err = await reader.listRecords('leads').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(HubSpotError);
+    expect((err as HubSpotError).missingScopes).toBe(true);
+  });
+});
+
+describe('retry helpers', () => {
+  it('parses Retry-After seconds and HTTP dates, capped at 60 s', () => {
+    expect(parseRetryAfterMs('2')).toBe(2_000);
+    expect(parseRetryAfterMs('0.5')).toBe(500);
+    expect(parseRetryAfterMs('600')).toBe(60_000);
+    expect(
+      parseRetryAfterMs('Sat, 26 Sep 2026 12:00:10 GMT', () => Date.parse('2026-09-26T12:00:00Z')),
+    ).toBe(10_000);
+    expect(parseRetryAfterMs(null)).toBeUndefined();
+    expect(parseRetryAfterMs('soon')).toBeUndefined();
+  });
+
+  it('backs off exponentially with jitter, capped at 30 s', () => {
+    expect(backoffDelayMs(1, () => 0)).toBe(250);
+    expect(backoffDelayMs(1, () => 1)).toBe(500);
+    expect(backoffDelayMs(3, () => 1)).toBe(2_000);
+    expect(backoffDelayMs(20, () => 1)).toBe(30_000);
+  });
+});
+
+describe('HubSpot process configuration', () => {
+  it('defaults to the public API over https and the 2026-09 API version', () => {
+    expect(loadHubSpotConfig({})).toEqual({
+      baseUrl: 'https://api.hubapi.com',
+      apiVersion: '2026-09',
+      timeoutMs: 15_000,
+      maxRetries: 3,
+      requestsPer10s: 90,
+    });
+  });
+
+  it('allows plain http only for a loopback test server', () => {
+    expect(loadHubSpotConfig({ HUBSPOT_API_BASE_URL: 'http://127.0.0.1:9999/' }).baseUrl).toBe(
+      'http://127.0.0.1:9999',
+    );
+    expect(() => loadHubSpotConfig({ HUBSPOT_API_BASE_URL: 'http://api.hubapi.com' })).toThrow(
+      /https/,
+    );
+    expect(() => loadHubSpotConfig({ HUBSPOT_API_BASE_URL: 'http://10.0.0.5' })).toThrow(/https/);
+  });
+
+  it('rejects malformed versions and unsafe limits', () => {
+    expect(() => loadHubSpotConfig({ HUBSPOT_API_VERSION: 'v3' })).toThrow(/YYYY-MM/);
+    expect(() => loadHubSpotConfig({ HUBSPOT_REQUESTS_PER_10S: '500' })).toThrow();
+    expect(() => loadHubSpotConfig({ HUBSPOT_MAX_RETRIES: '50' })).toThrow();
+  });
+});

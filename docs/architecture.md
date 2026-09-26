@@ -21,16 +21,17 @@ per tenant ([ADR 0004](adr/0004-product-scope-and-fuelius-coexistence.md)).
 
 ## Key decisions
 
-| Topic              | Decision                                                                                                                   | ADR                                                         |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| Stack and versions | TypeScript 6, NestJS 12, Prisma 7, Zod 4, BullMQ                                                                           | [0001](adr/0001-stack-and-version-choices.md)               |
-| Hosting            | Cloud-neutral Docker images; preferred Azure Container Apps + PostgreSQL + Redis + Key Vault + App Insights; no Kubernetes | [0002](adr/0002-api-and-worker-process-roles.md)            |
-| Secrets            | `SecretProvider` abstraction; Key Vault first vault provider                                                               | [0003](adr/0003-secret-provider.md)                         |
-| Scope              | Full platform; coexist with or replace Fuelius per tenant                                                                  | [0004](adr/0004-product-scope-and-fuelius-coexistence.md)   |
-| Qualification      | Pluggable providers (rules / Jev / hybrid); humans override; policy separate                                               | [0005](adr/0005-qualification-architecture.md)              |
-| Lead creation      | HubSpot owns marketing-sourced Leads; platform owns intelligence-sourced Leads after duplicate checks; true origin kept    | [0006](adr/0006-lead-creation-ownership-and-attribution.md) |
-| Domain model       | Immutable canonical entities, Zod schemas, pure behaviour functions                                                        | [0007](adr/0007-canonical-domain-model.md)                  |
-| Tenant isolation   | PostgreSQL RLS + mandatory TenantContext/TenantTransaction + composite keys; app runs as a non-privileged role             | [0008](adr/0008-tenant-isolation.md)                        |
+| Topic              | Decision                                                                                                                            | ADR                                                         |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| Stack and versions | TypeScript 6, NestJS 12, Prisma 7, Zod 4, BullMQ                                                                                    | [0001](adr/0001-stack-and-version-choices.md)               |
+| Hosting            | Cloud-neutral Docker images; preferred Azure Container Apps + PostgreSQL + Redis + Key Vault + App Insights; no Kubernetes          | [0002](adr/0002-api-and-worker-process-roles.md)            |
+| Secrets            | `SecretProvider` abstraction; Key Vault first vault provider                                                                        | [0003](adr/0003-secret-provider.md)                         |
+| Scope              | Full platform; coexist with or replace Fuelius per tenant                                                                           | [0004](adr/0004-product-scope-and-fuelius-coexistence.md)   |
+| Qualification      | Pluggable providers (rules / Jev / hybrid); humans override; policy separate                                                        | [0005](adr/0005-qualification-architecture.md)              |
+| Lead creation      | HubSpot owns marketing-sourced Leads; platform owns intelligence-sourced Leads after duplicate checks; true origin kept             | [0006](adr/0006-lead-creation-ownership-and-attribution.md) |
+| Domain model       | Immutable canonical entities, Zod schemas, pure behaviour functions                                                                 | [0007](adr/0007-canonical-domain-model.md)                  |
+| Tenant isolation   | PostgreSQL RLS + mandatory TenantContext/TenantTransaction + composite keys; app runs as a non-privileged role                      | [0008](adr/0008-tenant-isolation.md)                        |
+| HubSpot connector  | Read-only by construction; tenant-scoped token via SecretProvider; API `2026-09`; Zod at the boundary; discovery refuses production | [0009](adr/0009-hubspot-read-connector.md)                  |
 
 ## 2. Architectural style: modular monolith
 

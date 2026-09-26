@@ -66,15 +66,18 @@ Behind a TLS-intercepting proxy, pass extra
 build arguments via `LIP_DOCKER_BUILD_ARGS` or an alternative Dockerfile via
 `LIP_DOCKERFILE`. Never commit such environment-specific changes.
 
-## 4. Live connector tests (none yet)
+## 4. Live connector tests
 
-No live test suite exists yet. The first connector milestone adds one
-(e.g. against a HubSpot developer test account), together with a
-`pnpm test:live` script. That script must **fail**, not pass, when it finds
-zero suites, and each suite must report which credentials are missing when it
-skips. Until then, report "live tests: not applicable (no connector yet)".
-Never present a skipped or empty live run as passing, and never print
-credential values.
+```bash
+pnpm test:live
+```
+
+Read-only suites against developer/test accounts only (HubSpot since M3:
+`apps/api/test/live/`). The command **fails** when it finds no test files. A
+suite without its credentials skips and names the missing variables. Report
+that as "live tests: not run (missing X)", never as passing. HubSpot also has
+a discovery run (`docs/integrations/hubspot/setup.md` §5) whose report is the
+test-account evidence. Never print credential values.
 
 ## 5. Fresh clone (mandatory before reporting a milestone complete)
 

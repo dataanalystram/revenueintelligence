@@ -37,8 +37,10 @@ tagged_pids() {
     [[ "$pid" == "$$" || "$pid" == "$BASHPID" ]] && continue
     # Processes can exit mid-scan: silence the redirection itself, not just tr.
     { tr '\0' '\n' <"$env"; } 2>/dev/null | grep -qx "LIP_VERIFY_RUN=$PROJECT" || continue
-    # Only application processes, not this script's own helper shells.
-    [[ "$({ tr '\0' ' ' <"/proc/$pid/cmdline"; } 2>/dev/null)" == node\ dist/* ]] && echo "$pid"
+    # Only application processes (and test fakes), not this script's own helper shells.
+    case "$({ tr '\0' ' ' <"/proc/$pid/cmdline"; } 2>/dev/null)" in
+      node\ dist/* | node\ *test/support/fake-*) echo "$pid" ;;
+    esac
   done
   return 0
 }

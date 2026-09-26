@@ -16,12 +16,12 @@ See [docs/architecture.md](docs/architecture.md) for the design and
 
 ## Status
 
-| Milestone                                           | State                                                                                  |
-| --------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| M0 — Repository / infrastructure foundation         | ✅ Approved — [record](docs/milestones/M00-foundation.md)                              |
-| M1 — Canonical domain model                         | ✅ Approved — [record](docs/milestones/M01-canonical-domain-model.md)                  |
-| M2 — Tenants and data isolation                     | ✅ Complete, awaiting review — [record](docs/milestones/M02-tenancy-data-isolation.md) |
-| M3 — HubSpot developer environment / read connector | Not started                                                                            |
+| Milestone                                           | State                                                                                                                                   |
+| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| M0 — Repository / infrastructure foundation         | ✅ Approved — [record](docs/milestones/M00-foundation.md)                                                                               |
+| M1 — Canonical domain model                         | ✅ Approved — [record](docs/milestones/M01-canonical-domain-model.md)                                                                   |
+| M2 — Tenants and data isolation                     | ✅ Approved — [record](docs/milestones/M02-tenancy-data-isolation.md)                                                                   |
+| M3 — HubSpot developer environment / read connector | ✅ Built, awaiting review; live discovery blocked on the test-account token — [record](docs/milestones/M03-hubspot-test-environment.md) |
 
 ## Stack
 
@@ -38,8 +38,8 @@ apps/api/                 Backend: one codebase, two process roles
   src/platform/           Cross-cutting infrastructure (config, secrets, logging,
                           database, redis, health, telemetry, http)
   src/modules/            Business modules / bounded contexts (added per milestone):
-                          domain (M1), tenancy + identity (M2)
-  src/cli/                Operational commands (tenant provisioning)
+                          domain (M1), tenancy + identity (M2), hubspot (M3, read-only)
+  src/cli/                Operational commands (tenant provisioning, HubSpot configure/discover)
   config/tenant-templates Tenant configuration templates (e.g. juniper.json)
   prisma/                 Schema and migrations
   test/                   Integration tests (real PostgreSQL + Redis via Testcontainers)
@@ -81,6 +81,7 @@ Run everything in containers instead: `docker compose --profile app up --build`.
 | `pnpm verify`              | All of the above                                                                                     |
 | `pnpm verify:runtime`      | Runs the real API and worker against PostgreSQL/Redis and checks behaviour end to end (needs Docker) |
 | `pnpm verify:docker`       | Builds the images and runs migrate, API, worker and CLI containers (needs Docker)                    |
+| `pnpm test:live`           | Read-only tests against the HubSpot developer test account (needs its token; never part of `verify`) |
 
 CI (`.github/workflows/ci.yml`) runs every gate, runtime verification and the
 Docker checks on each pull request. The full procedure used before a milestone
@@ -90,6 +91,8 @@ in `CLAUDE.md`.
 
 ## Credentials
 
-No external credentials are needed for Milestone 0. What is needed later, where
-to obtain it and where to put it is in [docs/credentials.md](docs/credentials.md).
+The HubSpot developer test account (Milestone 3) is set up as described in
+[docs/integrations/hubspot/setup.md](docs/integrations/hubspot/setup.md). What
+else is needed, where to obtain it and where to put it is in
+[docs/credentials.md](docs/credentials.md).
 Never commit credentials; `.env` files are git-ignored.
