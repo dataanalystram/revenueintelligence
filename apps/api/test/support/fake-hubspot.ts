@@ -395,15 +395,26 @@ export class FakeHubSpot {
     }
     const pageSize = 2;
     const results = [];
-    // Inputs that are not records of `from` are reported per input, with the
-    // whole response returned as 207 Multi-Status (as HubSpot batch APIs do).
+    // Per-input errors come back in a 207 Multi-Status, in the shape seen live
+    // on 2026-09-26: a record with no associations is a NO_ASSOCIATIONS_FOUND
+    // error with `context.fromObjectId`. Unknown ids are reported likewise.
+    const errors: unknown[] = [];
     const known = new Set((this.options.records?.[from as 'contacts'] ?? []).map((r) => r.id));
     const unknown = inputs.filter((input) => !known.has(input.id)).map((input) => input.id);
     for (const input of inputs.filter((i) => known.has(i.id))) {
       const links = (this.options.associations ?? []).filter(
         (a) => a.fromType === from && a.toType === to && a.fromId === input.id,
       );
-      if (links.length === 0) continue;
+      if (links.length === 0) {
+        errors.push({
+          status: 'error',
+          category: 'OBJECT_NOT_FOUND',
+          subCategory: 'crm.associations.NO_ASSOCIATIONS_FOUND',
+          message: `No ${to} is associated with ${from} ${input.id}.`,
+          context: { fromObjectId: [input.id], fromObjectType: [from], toObjectType: [to] },
+        });
+        continue;
+      }
       const start = input.after ? Number(input.after) : 0;
       const slice = links.slice(start, start + pageSize);
       results.push({
@@ -417,20 +428,18 @@ export class FakeHubSpot {
           : {}),
       });
     }
-    const errors = unknown.length
-      ? [
-          {
-            status: 'error',
-            category: 'OBJECT_NOT_FOUND',
-            message: 'Records not found',
-            context: { ids: unknown },
-          },
-        ]
-      : undefined;
-    this.send(res, errors ? 207 : 200, {
+    if (unknown.length) {
+      errors.push({
+        status: 'error',
+        category: 'OBJECT_NOT_FOUND',
+        message: 'Records not found',
+        context: { fromObjectId: unknown },
+      });
+    }
+    this.send(res, errors.length ? 207 : 200, {
       status: 'COMPLETE',
       results,
-      ...(errors ? { numErrors: errors.length, errors } : {}),
+      ...(errors.length ? { numErrors: errors.length, errors } : {}),
       startedAt: '2026-09-26T00:00:00Z',
       completedAt: '2026-09-26T00:00:01Z',
     });
@@ -445,8 +454,8 @@ export class FakeHubSpot {
 /**
  * A small, deterministic data set: 5 contacts, 3 companies, 3 leads with
  * associations. Association type ids 1 and 279 (contact to company) and 580
- * (lead to primary company) are HubSpot's published ids; 90001 is an
- * illustrative placeholder for lead to contact, whose id live discovery reports.
+ * (lead to primary company) and 578 (lead to primary contact) match the ids
+ * the live discovery of the test account reported on 2026-09-26.
  */
 export function sampleData(): Pick<FakeHubSpotOptions, 'records' | 'associations'> {
   const contacts = [1, 2, 3, 4, 5].map((n) => ({
@@ -474,7 +483,7 @@ export function sampleData(): Pick<FakeHubSpotOptions, 'records' | 'associations
         fromId: l.id,
         toType: 'contacts',
         toId: contacts[i]!.id,
-        typeId: 90001,
+        typeId: 578,
         category: 'HUBSPOT_DEFINED' as const,
         label: null,
       },

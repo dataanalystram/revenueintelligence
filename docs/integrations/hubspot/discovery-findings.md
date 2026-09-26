@@ -2,27 +2,66 @@
 
 Status legend:
 
+- **Live**: observed against the developer test account on 2026-09-26 (see
+  below).
 - **Documented**: stated in HubSpot's documentation or changelog.
 - **Reported**: community reports only, not authoritative.
-- **Pending live**: to be confirmed by `hubspot:discover` against the
-  developer test account, which is blocked on the test-account token and
-  network access (see setup.md).
 
-No finding here comes from a live HubSpot account yet. The connector's
-behaviour is proven against a local fake that reproduces HubSpot's documented
-shapes. That proves our handling, not HubSpot's behaviour.
+## Live evidence (2026-09-26)
+
+Run against the HubSpot developer test account with its read-only Service
+Key, through the production path: tenant `hstest`, integration `read_only`,
+token resolved via the SecretProvider, and `portalId` verified. Full report:
+[discovery-report.json](discovery-report.json). It holds schema, counts and
+record ids, no field values; it was checked not to contain the key.
+
+| Check                | Result                                                                                                                                                |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Account              | `149338734`, type `DEVELOPER_TEST`, data hosting `eu1`. Matches `HUBSPOT_TEST_PORTAL_ID`; non-test accounts are refused                               |
+| Authentication       | Service Key accepted as a bearer token; an invalid token gets 401 (`pnpm test:live`)                                                                  |
+| Contacts             | Readable: 6 read in 3 pages of 2 with HubSpot cursors (pagination verified, more pages exist); 402 properties, 0 custom                               |
+| Companies            | Readable: 6 read in 3 pages of 2 (pagination verified); 247 properties, 3 custom                                                                      |
+| Leads                | **Object available and readable**: the list call succeeds; the account has **0 Lead records**; 132 Lead properties readable                           |
+| Schemas / properties | Readable for all three objects; the default properties the connector relies on exist (`email`, `firstname`, `lastname`, `jobtitle`, `name`, `domain`) |
+| Association labels   | Readable in all six directions (below)                                                                                                                |
+| Record associations  | Contacts → Companies: 6 checked, 4 with associations (types 1 and 279), 2 without. Lead samples not exercised: no Lead records exist                  |
+| Missing scopes       | **None**: HubSpot returned no 403 for any call                                                                                                        |
+| 404                  | A non-existent contact id returns 404, mapped to "not found"                                                                                          |
+| Writes               | **None**: only `GET`, and `POST` to association batch **read**. The transport refuses anything else before sending                                    |
+| Legacy (v1–v4) calls | **None**: every call used a date-based version (list below)                                                                                           |
+
+**Endpoints and versions actually used** (from the report's `endpointsUsed`):
+
+```
+GET  /account-info/2026-09/details
+GET  /crm/objects/2026-09/{contacts,companies,leads}          (3 + 3 + 1 calls)
+GET  /crm/properties/2026-09/{contacts,companies,leads}
+GET  /crm/associations/2026-09/{leads,contacts,companies}/{…}/labels   (6 directions)
+POST /crm/associations/2026-09/contacts/companies/batch/read
+```
+
+The live run changed two assumptions:
+
+1. **The Account Information API answers at `2026-09`.** The connector first
+   used `2026-03`, the latest version found in HubSpot's docs, and probed
+   `2026-09`: both returned 200. The default is now `2026-09`, so all
+   connector calls use the current version.
+2. **A record with no associations is reported per record inside a 207.** It
+   comes back as `OBJECT_NOT_FOUND` / `crm.associations.NO_ASSOCIATIONS_FOUND`
+   with `context.fromObjectId`. The connector now reports these as "without
+   associations" rather than as failures, and the fake reproduces the shape.
 
 ## Platform and API
 
-| Finding                                                                                                                                                                                                           | Status       |
-| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
-| Date-based API versions: `2026-03` was the first, `2026-09` is GA since 8 Sep 2026. Each version gets 18 months of support; releases come in March and September.                                                 | Documented   |
-| CRM paths: `/crm/objects/{v}/{type}`, `/crm/properties/{v}/{type}`, `/crm/associations/{v}/{from}/{to}/labels`                                                                                                    | Documented   |
-| Record associations: `POST /crm/associations/{v}/{from}/{to}/batch/read` with `{inputs:[{id, after?}]}`, up to 500 associations per id per page                                                                   | Documented   |
-| Account details: `/account-info/2026-03/details` (date-based; `accountType` is one of `STANDARD`, `DEVELOPER_TEST`, `SANDBOX`, `APP_DEVELOPER`); `/account-info/v3/details` is legacy (end of support 1 Sep 2027) | Documented   |
-| Legacy apps and v1–v3 APIs go unsupported from September 2027                                                                                                                                                     | Documented   |
-| From `2026-09`, admin-configured validation rules are enforced on CRM **writes** (relevant when writes are approved)                                                                                              | Documented   |
-| Exact 2026-09 paths and response shapes as the connector uses them                                                                                                                                                | Pending live |
+| Finding                                                                                                                                                                                                                                         | Status     |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| Date-based API versions: `2026-03` was the first, `2026-09` is GA since 8 Sep 2026. Each version gets 18 months of support; releases come in March and September.                                                                               | Documented |
+| CRM paths: `/crm/objects/{v}/{type}`, `/crm/properties/{v}/{type}`, `/crm/associations/{v}/{from}/{to}/labels`                                                                                                                                  | Documented |
+| Record associations: `POST /crm/associations/{v}/{from}/{to}/batch/read` with `{inputs:[{id, after?}]}`, up to 500 associations per id per page                                                                                                 | Documented |
+| Account details: `/account-info/2026-09/details` (live; `2026-03` documented and also live). `accountType` is one of `STANDARD`, `DEVELOPER_TEST`, `SANDBOX`, `APP_DEVELOPER`. `/account-info/v3/details` is legacy (end of support 1 Sep 2027) | Live       |
+| Legacy apps and v1–v3 APIs go unsupported from September 2027                                                                                                                                                                                   | Documented |
+| From `2026-09`, admin-configured validation rules are enforced on CRM **writes** (relevant when writes are approved)                                                                                                                            | Documented |
+| Exact 2026-09 paths and response shapes as the connector uses them                                                                                                                                                                              | Live       |
 
 ## Historical API usage vs the connector's endpoints
 
@@ -35,7 +74,7 @@ on 1 Mar 2027.
 
 | Historical call (export)                                                                | Kind  | Milestone 3 connector                                               |
 | --------------------------------------------------------------------------------------- | ----- | ------------------------------------------------------------------- |
-| `GET /account-info/v3/details`                                                          | read  | `GET /account-info/2026-03/details`                                 |
+| `GET /account-info/v3/details`                                                          | read  | `GET /account-info/2026-09/details`                                 |
 | `GET /crm/v3/objects/companies`                                                         | read  | `GET /crm/objects/2026-09/companies` (and contacts, leads, `/{id}`) |
 | `GET /crm/v3/properties/{objectType}/{propertyName}`                                    | read  | `GET /crm/properties/2026-09/{objectType}` (list)                   |
 | `GET /crm/objects/v4/{contacts,deals}/{id}/associations/{toObjectType}`                 | read  | `POST /crm/associations/2026-09/{from}/{to}/batch/read`             |
@@ -59,38 +98,44 @@ How this is enforced, not just intended:
 - With the date-version guard removed, the five legacy GET reads from the
   export get through and fail the test (mutation U8).
 - Discovery reports `endpointsUsed`: every method and path it called, with
-  ids templated. The live report is therefore direct evidence of the versions
-  in use.
+  ids templated. The live report (above) confirms that only these date-based
+  reads were made.
 
 **No v3/v4 endpoint is used by Milestone 3.** The one former v3 dependency
 (account details) moved to the date-based Account Information API.
 
 ## Does the test environment expose the Lead object?
 
+- **Live: yes.** `GET /crm/objects/2026-09/leads` succeeds and 132 Lead
+  properties are readable with the read-only Service Key. The account
+  currently holds **no Lead records**, so no Lead data or Lead association
+  was read. To exercise those paths, create a Lead in the test account by hand;
+  the connector never writes.
 - **Documented:** Leads (`0-136`, path `leads`) require **Sales Hub
-  Professional or Enterprise**. A developer test account includes a 90-day
-  Sales Hub Enterprise trial, so Leads should be available there.
-- **Pending live:** discovery reports `leadObject.available` and, if not
-  available, the exact cause:
-  - `missing_scopes`, with the scope HubSpot requires, or
-  - `forbidden`/`not_found`, meaning the Leads object is not in the account's
-    subscription.
+  Professional or Enterprise**. The developer test account's Enterprise trial
+  provides them.
 - **Juniper dependency:** Juniper's own account must have Sales Hub Pro or
   Enterprise for the Leads-based design. To be confirmed with Juniper (M16).
 
 ## Lead ↔ Contact ↔ Company associations
 
+**Live** (association labels endpoint, all HubSpot-defined):
+
+| From → to         | Type ids and labels                                                                   |
+| ----------------- | ------------------------------------------------------------------------------------- |
+| Lead → Contact    | **578** Primary, **608** (unlabelled)                                                 |
+| Contact → Lead    | **579** "Lead with Primary Contact", **609** (unlabelled)                             |
+| Lead → Company    | **580** Primary, **610** (unlabelled)                                                 |
+| Company → Lead    | **581** "Lead with Primary Company", **611** (unlabelled)                             |
+| Contact → Company | **1** Primary, **279** (unlabelled), **931** "Billing Contact"                        |
+| Company → Contact | **2** "Contact with Primary Company", **280** (unlabelled), **930** "Billing Contact" |
+
 - **Documented:** a Lead must be associated with an existing Contact, and
-  can be associated with Companies.
-- **Reported** (HubSpot Community, output of the labels endpoint):
-  lead-to-company types are `lead_to_primary_company` (type id **580**) and
-  `lead_to_company` (**610**).
-- **Documented:** Contact → Company uses type **1** (Primary) and **279**
-  (unlabelled).
-- **Pending live:** discovery lists every association type in both directions
-  (lead↔contact, lead↔company, contact↔company) and samples real records. The
-  lead-to-contact type id is not yet confirmed; the fake uses an illustrative
-  placeholder.
+  can be associated with Companies. The live types confirm primary and
+  unlabelled associations in both directions.
+- **Live:** real Contact → Company associations were read (types 1 and 279).
+  Lead record associations could not be sampled because the account has no
+  Leads.
 - **Juniper dependency:** custom (user-defined) association labels are
   subscription-dependent. Juniper's labels, if any, appear in their
   discovery run (M16).
@@ -116,21 +161,23 @@ How this is enforced, not just intended:
 
 ## Scopes Juniper will eventually need
 
-| Scope                         | Purpose                                      | Milestone | Status                                         |
-| ----------------------------- | -------------------------------------------- | --------- | ---------------------------------------------- |
-| `crm.objects.contacts.read`   | Read contacts                                | M3, M16   | Documented                                     |
-| `crm.objects.companies.read`  | Read companies                               | M3, M16   | Documented                                     |
-| `crm.objects.leads.read`      | Read leads                                   | M3, M16   | Documented                                     |
-| `crm.schemas.contacts.read`   | Contact properties                           | M3, M16   | Documented                                     |
-| `crm.schemas.companies.read`  | Company properties                           | M3, M16   | Documented                                     |
-| `crm.schemas.leads.read`      | Lead properties                              | M3, M16   | Pending live (discovery reports the real name) |
-| `crm.objects.owners.read`     | Map HubSpot owners for routing/SLA           | M14, M16  | Documented; not requested yet                  |
-| `crm.objects.leads.write`     | Create intelligence-sourced Leads (ADR 0006) | M16+      | Needs explicit production-write approval       |
-| `crm.objects.contacts.write`  | Write back status/outcome fields             | M19       | Needs explicit approval                        |
-| `crm.objects.companies.write` | Write back account-level outcomes            | M19       | Needs explicit approval                        |
+| Scope                         | Purpose                                      | Milestone | Status                                               |
+| ----------------------------- | -------------------------------------------- | --------- | ---------------------------------------------------- |
+| `crm.objects.contacts.read`   | Read contacts                                | M3, M16   | Documented                                           |
+| `crm.objects.companies.read`  | Read companies                               | M3, M16   | Documented                                           |
+| `crm.objects.leads.read`      | Read leads                                   | M3, M16   | Documented                                           |
+| `crm.schemas.contacts.read`   | Contact properties                           | M3, M16   | Documented                                           |
+| `crm.schemas.companies.read`  | Company properties                           | M3, M16   | Documented                                           |
+| `crm.schemas.leads.read`      | Lead properties                              | M3, M16   | Live: Lead properties readable with the key's scopes |
+| `crm.objects.owners.read`     | Map HubSpot owners for routing/SLA           | M14, M16  | Documented; not requested yet                        |
+| `crm.objects.leads.write`     | Create intelligence-sourced Leads (ADR 0006) | M16+      | Needs explicit production-write approval             |
+| `crm.objects.contacts.write`  | Write back status/outcome fields             | M19       | Needs explicit approval                              |
+| `crm.objects.companies.write` | Write back account-level outcomes            | M19       | Needs explicit approval                              |
 
-The M3 app gets only the read scopes. Write scopes are listed so Juniper can
-plan, not requested.
+The M3 Service Key has only read scopes: HubSpot reported **no missing scope**
+for any call in the live run. HubSpot does not expose a key's granted scopes
+through these APIs; the scopes above are the ones the calls require. Write
+scopes are listed so Juniper can plan, not requested.
 
 ## What may depend on Juniper's subscription
 
@@ -159,10 +206,12 @@ tier.
   [Associate records](https://developers.hubspot.com/docs/api-reference/latest/crm/associations/associate-records/guide),
   [Webhooks guide](https://developers.hubspot.com/docs/api-reference/latest/webhooks/guide),
   [Authentication overview](https://developers.hubspot.com/docs/apps/developer-platform/build-apps/authentication/overview),
+  [Service keys](https://developers.hubspot.com/docs/apps/developer-platform/build-apps/authentication/account-service-keys),
+  [Account information API](https://developers.hubspot.com/docs/api-reference/latest/account/account-information/guide),
   [Account types](https://developers.hubspot.com/docs/getting-started/account-types)
 - HubSpot Community: [Project webhook for leads creation not triggering](https://community.hubspot.com/t5/APIs-Integrations/Project-webhook-for-leads-creation-not-triggering/m-p/1241645),
   [Lead to primary company association](https://community.hubspot.com/t5/CRM/Lead-to-Primary-Company-Association-Creating-leads-via-the-API/m-p/1065159)
 
 The HubSpot documentation host is blocked by this environment's network
-policy. Findings were gathered through web search result summaries and should
-be re-read at the source when access allows.
+policy. Documented findings were gathered through web search result summaries;
+the live section above is first-hand.

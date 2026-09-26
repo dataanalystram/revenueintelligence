@@ -25,14 +25,15 @@ export const HubSpotEnvSchema = z.object({
     .regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'must be YYYY-MM')
     .default('2026-09'),
   /**
-   * Date-based version of the Account Information API. `2026-03` is the latest
-   * version HubSpot documents for it; discovery probes whether HUBSPOT_API_VERSION
-   * is also available so this can be moved up with evidence.
+   * Date-based version of the Account Information API, configurable separately
+   * because API groups do not always ship a version at the same time. `2026-09`
+   * was confirmed live on 2026-09-26 (2026-03 is also documented); discovery
+   * probes the CRM version whenever the two differ.
    */
   HUBSPOT_ACCOUNT_INFO_API_VERSION: z
     .string()
     .regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'must be YYYY-MM')
-    .default('2026-03'),
+    .default('2026-09'),
   HUBSPOT_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(15_000),
   /** Retries after the first attempt, for retryable failures of read requests. */
   HUBSPOT_MAX_RETRIES: z.coerce.number().int().min(0).max(8).default(3),

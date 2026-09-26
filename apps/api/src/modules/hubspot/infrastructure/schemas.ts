@@ -84,9 +84,19 @@ export const HsAssociationBatchReadSchema = z.object({
       z.object({
         message: z.string().optional(),
         category: z.string().optional(),
-        /** e.g. `{ ids: ["123"] }`: which inputs the error applies to. Other keys are ignored. */
+        /** e.g. `crm.associations.NO_ASSOCIATIONS_FOUND` (seen live). */
+        subCategory: z.string().optional(),
+        /**
+         * Which inputs the error applies to. Live HubSpot sends
+         * `{ fromObjectId: ["123"], fromObjectType: [...], toObjectType: [...] }`;
+         * `ids` is accepted too. Other keys are ignored; malformed values are
+         * dropped rather than failing the batch.
+         */
         context: z
-          .object({ ids: z.array(z.string()).optional().catch(undefined) })
+          .object({
+            fromObjectId: z.array(HsObjectIdSchema).optional().catch(undefined),
+            ids: z.array(HsObjectIdSchema).optional().catch(undefined),
+          })
           .optional()
           .catch(undefined),
       }),

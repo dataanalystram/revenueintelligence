@@ -181,7 +181,7 @@ describe('HubSpot connector (tenant-scoped)', () => {
       expect(err.kind).toBe('account_mismatch');
       expect((await rejection(connector.connect(t))).kind).toBe('account_mismatch');
       // Only the account check was made; no data was read with the wrong token.
-      expect(fake.requests.every((r) => r.path === '/account-info/2026-03/details')).toBe(true);
+      expect(fake.requests.every((r) => r.path === '/account-info/2026-09/details')).toBe(true);
       expect(err.message).toContain('2002');
     });
 
@@ -234,16 +234,24 @@ describe('HubSpot connector (tenant-scoped)', () => {
       });
 
       // Only current date-based endpoints, and the report lists each one used.
-      expect(report.accountInfoVersions).toEqual({
-        '2026-03': { status: 'ok' },
-        '2026-09': { status: 'ok' },
+      expect(report.accountInfoVersions).toEqual({ '2026-09': { status: 'ok' } });
+      const contactCompany = report.associationSamples.find(
+        (x) => x.from === 'contacts' && x.to === 'companies',
+      )!;
+      // Contacts 104 and 105 have no company: reported as such, not as failures.
+      expect(contactCompany.result).toMatchObject({
+        status: 'ok',
+        recordsChecked: 5,
+        recordsWithAssociations: 3,
+        recordsWithoutAssociations: 2,
+        failures: [],
       });
       expect(
         Object.keys(report.endpointsUsed).every((e) =>
           /^(GET|POST) \/[\w-]+(\/[\w-]+)?\/\d{4}-\d{2}\//.test(e),
         ),
       ).toBe(true);
-      expect(report.endpointsUsed['GET /account-info/2026-03/details']).toBeGreaterThan(0);
+      expect(report.endpointsUsed['GET /account-info/2026-09/details']).toBeGreaterThan(0);
       expect(fake.requests.every((r) => /\/\d{4}-\d{2}\//.test(r.path))).toBe(true);
       // Only reads were made; the report carries no record field values.
       expect(fake.requests.every((r) => r.method === 'GET' || r.path.endsWith('/batch/read'))).toBe(
@@ -285,7 +293,7 @@ describe('HubSpot connector (tenant-scoped)', () => {
       expect(err.kind).toBe('account_mismatch');
       expect(err.message).toContain('STANDARD');
       // Only the account check was made: no records or schema were read.
-      expect(fake.requests.map((r) => r.path)).toEqual(['/account-info/2026-03/details']);
+      expect(fake.requests.map((r) => r.path)).toEqual(['/account-info/2026-09/details']);
 
       await expect(
         discovery.discover(t, { allowedAccountTypes: ['STANDARD'] }),

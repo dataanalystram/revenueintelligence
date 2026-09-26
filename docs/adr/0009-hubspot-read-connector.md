@@ -32,8 +32,8 @@ platform changed substantially in 2025–2026:
    `POST /crm/associations/{v}/{from}/{to}/batch/read`. Account details use the
    Account Information API's own date-based version,
    `/account-info/{HUBSPOT_ACCOUNT_INFO_API_VERSION}/details`. It defaults to
-   `2026-03`, the latest version documented for that API. Discovery probes
-   whether `2026-09` also answers.
+   `2026-09`, confirmed live on 2026-09-26 (`2026-03` is documented too).
+   Discovery probes the CRM version whenever the two differ.
 
    The transport **refuses any path that is not date-versioned**, so no v1–v4
    dependency can be introduced. M3 uses no legacy endpoint.

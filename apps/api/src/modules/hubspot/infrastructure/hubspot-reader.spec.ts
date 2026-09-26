@@ -41,7 +41,7 @@ describe('HubSpotReader (translation into vendor-neutral read models)', () => {
     await reader.getRecord('companies', '202');
     await reader.readAssociations('leads', ['301'], 'contacts');
     expect(reader.endpointsUsed()).toEqual({
-      'GET /account-info/2026-03/details': 1,
+      'GET /account-info/2026-09/details': 1,
       'GET /crm/objects/2026-09/contacts': 1,
       'GET /crm/objects/2026-09/companies/{id}': 1,
       'POST /crm/associations/2026-09/leads/contacts/batch/read': 1,
@@ -167,12 +167,14 @@ describe('HubSpotReader (translation into vendor-neutral read models)', () => {
   });
 
   it('reads associations in batches and follows per-record paging', async () => {
-    const { associations: links, failures } = await reader.readAssociations(
-      'contacts',
-      ['101', '102', '105'],
-      'companies',
-    );
+    const {
+      associations: links,
+      withoutAssociations,
+      failures,
+    } = await reader.readAssociations('contacts', ['101', '102', '105'], 'companies');
     expect(failures).toEqual([]);
+    // Contact 105 has no companies: HubSpot's NO_ASSOCIATIONS_FOUND, not a failure.
+    expect(withoutAssociations).toEqual(['105']);
     expect(
       links
         .filter((l) => l.from.id === '101')
@@ -190,8 +192,49 @@ describe('HubSpotReader (translation into vendor-neutral read models)', () => {
     const result = await reader.readAssociations('leads', ['301', '999'], 'contacts');
     expect(result.associations.map((a) => a.from.id)).toEqual(['301']);
     expect(result.failures).toEqual([
-      { category: 'OBJECT_NOT_FOUND', message: 'Records not found', ids: ['999'] },
+      {
+        category: 'OBJECT_NOT_FOUND',
+        subCategory: undefined,
+        message: 'Records not found',
+        ids: ['999'],
+      },
     ]);
+    expect(result.withoutAssociations).toEqual([]);
+  });
+
+  it('parses the live NO_ASSOCIATIONS_FOUND shape (numeric fromObjectId tolerated)', async () => {
+    fake.fail({
+      match: /batch\/read$/,
+      status: 207,
+      body: {
+        status: 'COMPLETE',
+        results: [],
+        numErrors: 2,
+        errors: [
+          {
+            status: 'error',
+            category: 'OBJECT_NOT_FOUND',
+            subCategory: 'crm.associations.NO_ASSOCIATIONS_FOUND',
+            message: 'No company is associated with contact 301.',
+            context: {
+              fromObjectId: ['301'],
+              fromObjectType: ['contact'],
+              toObjectType: ['company'],
+            },
+          },
+          {
+            status: 'error',
+            category: 'OBJECT_NOT_FOUND',
+            subCategory: 'crm.associations.NO_ASSOCIATIONS_FOUND',
+            message: 'No company is associated with contact 302.',
+            context: { fromObjectId: [302] },
+          },
+        ],
+      },
+    });
+    const result = await reader.readAssociations('contacts', ['301', '302'], 'companies');
+    expect(result.withoutAssociations).toEqual(['301', '302']);
+    expect(result.failures).toEqual([]);
   });
 
   it('tolerates an unfamiliar error context shape in a 207 response', async () => {
@@ -205,7 +248,9 @@ describe('HubSpotReader (translation into vendor-neutral read models)', () => {
       },
     });
     const result = await reader.readAssociations('leads', ['301'], 'contacts');
-    expect(result.failures).toEqual([{ category: 'SOMETHING_NEW', message: 'x', ids: [] }]);
+    expect(result.failures).toEqual([
+      { category: 'SOMETHING_NEW', subCategory: undefined, message: 'x', ids: [] },
+    ]);
   });
 
   it('surfaces classified errors from reads', async () => {
@@ -241,7 +286,7 @@ describe('HubSpot process configuration', () => {
     expect(loadHubSpotConfig({})).toEqual({
       baseUrl: 'https://api.hubapi.com',
       apiVersion: '2026-09',
-      accountInfoApiVersion: '2026-03',
+      accountInfoApiVersion: '2026-09',
       timeoutMs: 15_000,
       maxRetries: 3,
       requestsPer10s: 90,

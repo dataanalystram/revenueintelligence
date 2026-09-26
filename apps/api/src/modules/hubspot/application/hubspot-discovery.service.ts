@@ -53,11 +53,14 @@ export interface AssociationLabelsProbe {
 export interface AssociationSampleProbe {
   readonly recordsChecked: number;
   readonly recordsWithAssociations: number;
+  /** Records HubSpot reported as having no associations of this type. */
+  readonly recordsWithoutAssociations: number;
   readonly associations: number;
   readonly typesSeen: readonly ExternalAssociationType[];
   /** Per-record failures HubSpot reported inside the batch response. */
   readonly failures: readonly {
     readonly category: string | undefined;
+    readonly subCategory: string | undefined;
     readonly message: string | undefined;
     readonly records: number;
   }[];
@@ -286,18 +289,24 @@ export class HubSpotDiscoveryService {
     ids: readonly string[],
     to: HubSpotObjectType,
   ): Promise<AssociationSampleProbe> {
-    const { associations: links, failures } = ids.length
+    const {
+      associations: links,
+      withoutAssociations,
+      failures,
+    } = ids.length
       ? await reader.readAssociations(from, ids, to)
-      : { associations: [], failures: [] };
+      : { associations: [], withoutAssociations: [], failures: [] };
     const types = new Map<string, ExternalAssociationType>();
     for (const link of links) for (const t of link.types) types.set(`${t.category}:${t.typeId}`, t);
     return {
       recordsChecked: ids.length,
       recordsWithAssociations: new Set(links.map((l) => l.from.id)).size,
+      recordsWithoutAssociations: withoutAssociations.length,
       associations: links.length,
       typesSeen: [...types.values()].sort((a, b) => a.typeId - b.typeId),
       failures: failures.map((f) => ({
         category: f.category,
+        subCategory: f.subCategory,
         message: f.message,
         records: f.ids.length,
       })),

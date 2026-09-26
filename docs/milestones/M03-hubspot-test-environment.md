@@ -21,7 +21,7 @@ Out of scope, as instructed:
 | Area                 | Implementation                                                                                                                                                                                                                                                                            |
 | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Connector module     | `src/modules/hubspot` (public API in `index.ts`), registered in the worker; ADR 0009                                                                                                                                                                                                      |
-| API version          | `2026-09` for CRM objects, properties and associations; `2026-03` for the Account Information API (latest documented). The transport refuses any non-date-versioned (v1–v4) path                                                                                                          |
+| API version          | `2026-09` for every call: CRM objects, properties, associations and the Account Information API (confirmed live). The transport refuses any non-date-versioned (v1–v4) path                                                                                                               |
 | Authentication       | Generic bearer credential: tenant credential `hubspot.access_token` → `TENANT_<SLUG>_HUBSPOT_ACCESS_TOKEN` via the SecretProvider. For the developer test account it holds a read-only **Service Key** (no legacy private app); Juniper will use a projects-based app with OAuth (M4/M16) |
 | Tenant-scoped config | `HubSpotConnector.forTenant(ctx)`: integration must be enabled; only the tenant's own token; per-tenant rate budget. `connect(ctx)` also verifies the token's account equals the tenant's `portalId`                                                                                      |
 | Reads                | Contacts, Companies, Leads (list with cursor paging, get by id); CRM properties; association labels; record associations (batch read with per-record paging); account details                                                                                                             |
@@ -46,20 +46,20 @@ Reused from the paused M3 work (stash, inspected file by file):
 
 ## Definition of Done
 
-| Item                                         | Status                                                      |
-| -------------------------------------------- | ----------------------------------------------------------- |
-| Current HubSpot app/project setup documented | ✅ `docs/integrations/hubspot/setup.md`                     |
-| Authentication for the test environment      | ✅ implemented and tested against the fake; ⛔ live pending |
-| Secret-provider integration                  | ✅ tenant credential → SecretProvider (integration tests)   |
-| Tenant-scoped HubSpot config                 | ✅ enabled check, own token only, portalId check            |
-| Read Contacts / Companies / Leads            | ✅ fake; ⛔ live pending                                    |
-| Read properties / associations               | ✅ fake; ⛔ live pending                                    |
-| Pagination                                   | ✅ objects and associations                                 |
-| 401/403, 404, 429, 5xx/retry behaviour       | ✅ unit + integration                                       |
-| Zod validation at the boundary               | ✅                                                          |
-| Vendor-neutral read models                   | ✅                                                          |
-| Discovery findings documented                | ✅ `discovery-findings.md` (research); ⛔ live run pending  |
-| HubSpot test-account evidence                | ⛔ **blocked**: test-account token and network access       |
+| Item                                         | Status                                                           |
+| -------------------------------------------- | ---------------------------------------------------------------- |
+| Current HubSpot app/project setup documented | ✅ `docs/integrations/hubspot/setup.md`                          |
+| Authentication for the test environment      | ✅ fake and **live** (Service Key accepted; invalid token → 401) |
+| Secret-provider integration                  | ✅ tenant credential → SecretProvider (integration tests)        |
+| Tenant-scoped HubSpot config                 | ✅ enabled check, own token only, portalId check                 |
+| Read Contacts / Companies / Leads            | ✅ fake and **live** (Leads available, 0 records in the account) |
+| Read properties / associations               | ✅ fake and **live**                                             |
+| Pagination                                   | ✅ objects and associations                                      |
+| 401/403, 404, 429, 5xx/retry behaviour       | ✅ unit + integration                                            |
+| Zod validation at the boundary               | ✅                                                               |
+| Vendor-neutral read models                   | ✅                                                               |
+| Discovery findings documented                | ✅ `discovery-findings.md` with live evidence                    |
+| HubSpot test-account evidence                | ✅ `discovery-report.json`, `pnpm test:live` 5/5                 |
 
 ## Evidence (local, before commit)
 
@@ -179,6 +179,7 @@ It shows older v3/v4 calls, many of them writes. Changes:
     customers.
 - **Account details** moved from `/account-info/v3/details` (in the export,
   end of support 1 Sep 2027) to the date-based `/account-info/2026-03/details`
+  (later `2026-09`, after the live run proved it)
   (`HUBSPOT_ACCOUNT_INFO_API_VERSION`). Discovery probes whether `2026-09`
   answers too.
 - **The transport refuses any non-date-versioned path** (`unsupported_endpoint`).
@@ -193,20 +194,50 @@ It shows older v3/v4 calls, many of them writes. Changes:
 - **Findings:** a historical-versus-current comparison is in
   `discovery-findings.md`.
 
-## Open questions / blocked
+## Live validation (2026-09-26)
 
-1. **Blocked on the user (not Juniper):**
-   - A HubSpot developer test account and an app token, stored as
-     `TENANT_HSTEST_HUBSPOT_ACCESS_TOKEN`, plus `HUBSPOT_TEST_PORTAL_ID`.
-   - Network access to `api.hubapi.com`.
+Run in a session with the owner-configured environment:
+`TENANT_HSTEST_HUBSPOT_ACCESS_TOKEN` (read-only Service Key, never printed or
+logged), `HUBSPOT_TEST_PORTAL_ID`, and network access to `api.hubapi.com`.
+Presence was checked by name only.
 
-   With both, run setup.md §5. The discovery report and `pnpm test:live`
-   become the test-account evidence.
+- **`pnpm test:live`: 5/5 passed.** Authenticates against the expected test
+  account (portal id matches, type `DEVELOPER_TEST`); reads Contacts and
+  Companies with pagination; reads Leads; 404 for a missing record; 401 for an
+  invalid token.
+- **Discovery via the production path:** `hubspot:configure` (read-only) then
+  `hubspot:discover` against tenant `hstest`. Account `149338734` matched.
+  - Contacts: 6 read, 402 properties. Companies: 6 read, 247 properties.
+  - Leads: available, 0 records, 132 properties.
+  - Association labels in six directions.
+  - Contact → Company associations: 4 with, 2 without.
+  - No missing scopes.
+  - Only date-based `GET`, plus `POST …/batch/read`.
 
+  Details and the endpoint list are in `discovery-findings.md`; the full
+  report is in `discovery-report.json`.
+
+What the live run changed:
+
+1. **Account info moved to `2026-09`.** It was on `2026-03`; `2026-09`
+   answered live, so every call now uses `2026-09`.
+2. **"No associations" is not a failure.** HubSpot reports it per record in
+   a 207 (`crm.associations.NO_ASSOCIATIONS_FOUND`, `context.fromObjectId`).
+   The connector now counts these separately. The schema accepts the live
+   shape, including numeric ids, and the fake reproduces it.
+3. **Confirmed association type ids** (578/608 lead↔contact, 580/610
+   lead↔company, and their reverses) replaced the fake's placeholder.
+
+## Open questions
+
+1. **No Lead records** exist in the test account, so Lead data and Lead
+   record associations were not read live, only the object, schema and
+   association types. A Lead created by hand in the test account would
+   exercise them; the connector does not write.
 2. **Lead webhooks:** not confirmed on the current app model (community
    reports say they do not fire). To be tested in M5; the design must not
-   depend on them until then.
-3. **`crm.schemas.leads.read`:** the exact scope name is confirmed by
-   discovery's `requiredGranularScopes`.
-4. **Juniper-dependent:** Sales Hub tier (Leads object), rate-limit tier,
-   custom association labels. These are answered by their discovery run at M16.
+   depend on them until then. Service Keys cannot receive webhooks; M5 needs
+   the projects-based app.
+3. **Juniper-dependent:** Sales Hub tier (Leads object), rate-limit tier and
+   custom association labels. These are answered by Juniper's discovery run
+   at M16.

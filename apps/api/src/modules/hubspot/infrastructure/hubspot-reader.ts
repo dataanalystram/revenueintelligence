@@ -45,6 +45,7 @@ export interface ListOptions {
 /** A per-input failure HubSpot reported in a batch association read. */
 export interface AssociationReadFailure {
   readonly category: string | undefined;
+  readonly subCategory: string | undefined;
   readonly message: string | undefined;
   /** Input record ids the failure applies to, when HubSpot says. */
   readonly ids: readonly string[];
@@ -52,8 +53,14 @@ export interface AssociationReadFailure {
 
 export interface AssociationReadResult {
   readonly associations: ExternalAssociation[];
+  /** Input records HubSpot says have no associations of this type (not a failure). */
+  readonly withoutAssociations: string[];
+  /** Any other per-record error HubSpot reported. */
   readonly failures: AssociationReadFailure[];
 }
+
+/** HubSpot's per-record "no associations" result inside a 207 (seen live). */
+const NO_ASSOCIATIONS_FOUND = 'crm.associations.NO_ASSOCIATIONS_FOUND';
 
 /** Largest id list per association batch read (HubSpot allows 1,000). */
 const ASSOCIATION_BATCH_SIZE = 100;
@@ -218,6 +225,7 @@ export class HubSpotReader {
     const path = `/crm/associations/${this.v}/${from}/${to}/batch/read`;
     const out: ExternalAssociation[] = [];
     const failures: AssociationReadFailure[] = [];
+    const withoutAssociations: string[] = [];
     for (let i = 0; i < ids.length; i += ASSOCIATION_BATCH_SIZE) {
       let inputs = ids
         .slice(i, i + ASSOCIATION_BATCH_SIZE)
@@ -237,7 +245,18 @@ export class HubSpotReader {
           HsAssociationBatchReadSchema,
         );
         for (const e of batch.errors ?? []) {
-          const failure = { category: e.category, message: e.message, ids: e.context?.ids ?? [] };
+          const errorIds = e.context?.fromObjectId ?? e.context?.ids ?? [];
+          if (e.subCategory === NO_ASSOCIATIONS_FOUND && errorIds.length > 0) {
+            for (const id of errorIds)
+              if (!withoutAssociations.includes(id)) withoutAssociations.push(id);
+            continue;
+          }
+          const failure = {
+            category: e.category,
+            subCategory: e.subCategory,
+            message: e.message,
+            ids: errorIds,
+          };
           // The same record can fail again on a later paging round: report it once.
           const key = JSON.stringify(failure);
           if (!failures.some((f) => JSON.stringify(f) === key)) failures.push(failure);
@@ -257,6 +276,6 @@ export class HubSpotReader {
         inputs = next;
       }
     }
-    return { associations: out, failures };
+    return { associations: out, withoutAssociations, failures };
   }
 }
