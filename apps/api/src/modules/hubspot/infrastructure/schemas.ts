@@ -80,7 +80,14 @@ export const HsAssociationBatchReadSchema = z.object({
     }),
   ),
   errors: z
-    .array(z.object({ message: z.string().optional(), category: z.string().optional() }))
+    .array(
+      z.object({
+        message: z.string().optional(),
+        category: z.string().optional(),
+        /** e.g. `{ ids: ["123"] }`: which inputs the error applies to. */
+        context: z.record(z.string(), z.array(z.string())).optional(),
+      }),
+    )
     .optional(),
 });
 

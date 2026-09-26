@@ -11,8 +11,8 @@ import { fail, withHubSpotContext } from './hubspot-context';
  *   pnpm --filter @lip/api hubspot:discover --tenant hstest --out discovery.json
  *
  * Refuses accounts that are not developer test or sandbox accounts unless
- * `--allow-account-type <TYPE>` is given. The report holds schema and counts
- * only, never record field values.
+ * `--allow-account-type <TYPE>` is given. The report holds schema, counts and
+ * sampled record ids, never record field values.
  */
 async function main(): Promise<void> {
   const { values } = parseArgs({

@@ -20,6 +20,8 @@ export { HUBSPOT_CONFIG, loadHubSpotConfig, type HubSpotConfig } from './hubspot
 export { HubSpotModule } from './hubspot.module';
 export {
   HubSpotReader,
+  type AssociationReadFailure,
+  type AssociationReadResult,
   type HubSpotAccount,
   type ListOptions,
 } from './infrastructure/hubspot-reader';

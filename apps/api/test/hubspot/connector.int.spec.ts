@@ -133,10 +133,12 @@ describe('HubSpot connector (tenant-scoped)', () => {
       expect(fake.requests).toHaveLength(0);
     });
 
-    it('connect() without a configured account id → not_configured', async () => {
+    it('no configured account id → not_configured, before any request', async () => {
       const t = await provisionTenant(h, 'hsnoportal');
       await enable(t, undefined, TOKEN_A);
+      expect((await rejection(connector.forTenant(t))).kind).toBe('not_configured');
       expect((await rejection(connector.connect(t))).kind).toBe('not_configured');
+      expect(fake.requests).toHaveLength(0);
     });
   });
 
@@ -150,22 +152,29 @@ describe('HubSpot connector (tenant-scoped)', () => {
       const readerA = await connector.forTenant(a);
       await expect(readerA.getAccount()).resolves.toMatchObject({ portalId: '1001' });
       expect(fake.requests.at(-1)!.authorization).toBe(`Bearer ${TOKEN_A}`);
+      const requestsWithA = fake.requests.length;
 
       // B's own secret is not set: B must not fall back to A's token.
       expect((await rejection(connector.forTenant(b))).kind).toBe('not_configured');
+      expect(fake.requests).toHaveLength(requestsWithA);
 
       setToken(b, TOKEN_B);
       const readerB = await connector.forTenant(b);
       await expect(readerB.getAccount()).resolves.toMatchObject({ portalId: '2002' });
       expect(fake.requests.at(-1)!.authorization).toBe(`Bearer ${TOKEN_B}`);
-      expect(fake.requests.filter((r) => r.authorization === `Bearer ${TOKEN_A}`)).toHaveLength(1);
+      expect(
+        fake.requests.slice(requestsWithA).every((r) => r.authorization === `Bearer ${TOKEN_B}`),
+      ).toBe(true);
     });
 
     it("a token for a different account than the tenant's configured one → account_mismatch", async () => {
       const t = await provisionTenant(h, 'hsmismatch');
       await enable(t, '1001', TOKEN_B); // B's token belongs to account 2002
-      const err = await rejection(connector.connect(t));
+      const err = await rejection(connector.forTenant(t));
       expect(err.kind).toBe('account_mismatch');
+      expect((await rejection(connector.connect(t))).kind).toBe('account_mismatch');
+      // Only the account check was made; no data was read with the wrong token.
+      expect(fake.requests.every((r) => r.path === '/account-info/v3/details')).toBe(true);
       expect(err.message).toContain('2002');
     });
 

@@ -44,6 +44,8 @@ export interface FakeFault {
   rawBody?: string;
   headers?: Record<string, string>;
   delayMs?: number;
+  /** Send the status and headers, then stall this long before the body. */
+  stallBodyMs?: number;
   /** How many matching requests to fail (default 1). */
   times?: number;
 }
@@ -170,8 +172,15 @@ export class FakeHubSpot {
       fault.times = (fault.times ?? 1) - 1;
       if (fault.times <= 0) this.faults.splice(this.faults.indexOf(fault), 1);
       if (fault.delayMs) await new Promise((r) => setTimeout(r, fault.delayMs));
-      if (!res.destroyed) {
+      if (fault.stallBodyMs && !res.destroyed) {
         res.writeHead(fault.status, { 'content-type': 'application/json', ...fault.headers });
+        res.flushHeaders();
+        await new Promise((r) => setTimeout(r, fault.stallBodyMs));
+      }
+      if (!res.destroyed) {
+        if (!res.headersSent) {
+          res.writeHead(fault.status, { 'content-type': 'application/json', ...fault.headers });
+        }
         res.end(
           fault.rawBody ??
             JSON.stringify(fault.body ?? { status: 'error', message: 'injected fault' }),
@@ -384,7 +393,11 @@ export class FakeHubSpot {
     }
     const pageSize = 2;
     const results = [];
-    for (const input of inputs) {
+    // Inputs that are not records of `from` are reported per input, with the
+    // whole response returned as 207 Multi-Status (as HubSpot batch APIs do).
+    const known = new Set((this.options.records?.[from as 'contacts'] ?? []).map((r) => r.id));
+    const unknown = inputs.filter((input) => !known.has(input.id)).map((input) => input.id);
+    for (const input of inputs.filter((i) => known.has(i.id))) {
       const links = (this.options.associations ?? []).filter(
         (a) => a.fromType === from && a.toType === to && a.fromId === input.id,
       );
@@ -402,9 +415,20 @@ export class FakeHubSpot {
           : {}),
       });
     }
-    this.send(res, 200, {
+    const errors = unknown.length
+      ? [
+          {
+            status: 'error',
+            category: 'OBJECT_NOT_FOUND',
+            message: 'Records not found',
+            context: { ids: unknown },
+          },
+        ]
+      : undefined;
+    this.send(res, errors ? 207 : 200, {
       status: 'COMPLETE',
       results,
+      ...(errors ? { numErrors: errors.length, errors } : {}),
       startedAt: '2026-09-26T00:00:00Z',
       completedAt: '2026-09-26T00:00:01Z',
     });

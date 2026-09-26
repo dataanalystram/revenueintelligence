@@ -20,7 +20,15 @@ FAILED=0
 API_PID=""
 WORKER_PID=""
 
-free_port() { node -e "const s=require('net').createServer();s.listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})"; }
+# A currently free port, other than any given as arguments: ports picked
+# before anything binds them could otherwise be handed out twice.
+free_port() {
+  local p
+  while :; do
+    p="$(node -e "const s=require('net').createServer();s.listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})")"
+    [[ " $* " == *" $p "* ]] || { echo "$p"; return; }
+  done
+}
 log() { printf '\n== %s\n' "$*"; }
 pass() { PASSED=$((PASSED + 1)); printf '  PASS  %s\n' "$*"; }
 fail() { FAILED=$((FAILED + 1)); printf '  FAIL  %s\n' "$*"; }
@@ -67,8 +75,8 @@ cleanup() {
 trap cleanup EXIT
 
 export LIP_POSTGRES_PORT="${LIP_VERIFY_PG_PORT:-$(free_port)}"
-export LIP_REDIS_PORT="${LIP_VERIFY_REDIS_PORT:-$(free_port)}"
-API_PORT="$(free_port)"
+export LIP_REDIS_PORT="${LIP_VERIFY_REDIS_PORT:-$(free_port "$LIP_POSTGRES_PORT")}"
+API_PORT="$(free_port "$LIP_POSTGRES_PORT" "$LIP_REDIS_PORT")"
 API_URL="http://127.0.0.1:$API_PORT"
 OWNER_DB_URL="postgresql://lip:lip@127.0.0.1:$LIP_POSTGRES_PORT/lip"
 # Development-only credentials created by docker/postgres/init/01-app-role.sql.

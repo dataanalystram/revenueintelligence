@@ -272,6 +272,12 @@ describe('HubSpotHttpClient', () => {
       expect(err).toMatchObject({ kind: 'timeout', details: { attempts: 2 } });
     });
 
+    it('a response body that stalls after the headers → timeout', async () => {
+      fake.fail({ match: /contacts$/, status: 200, stallBodyMs: 400, times: 10 });
+      const err = await rejection(listContacts(makeClient({ timeoutMs: 150, maxRetries: 0 })));
+      expect(err).toMatchObject({ kind: 'timeout', details: { status: 200, attempts: 1 } });
+    });
+
     it('connection refused → network error, retried', async () => {
       const url = fake.url;
       await fake.stop();

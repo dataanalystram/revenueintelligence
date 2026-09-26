@@ -154,7 +154,12 @@ describe('HubSpotReader (translation into vendor-neutral read models)', () => {
   });
 
   it('reads associations in batches and follows per-record paging', async () => {
-    const links = await reader.readAssociations('contacts', ['101', '102', '105'], 'companies');
+    const { associations: links, failures } = await reader.readAssociations(
+      'contacts',
+      ['101', '102', '105'],
+      'companies',
+    );
+    expect(failures).toEqual([]);
     expect(
       links
         .filter((l) => l.from.id === '101')
@@ -166,6 +171,14 @@ describe('HubSpotReader (translation into vendor-neutral read models)', () => {
     const posts = fake.requests.filter((r) => r.method === 'POST');
     expect(posts).toHaveLength(2);
     expect(posts[1]!.body).toEqual({ inputs: [{ id: '101', after: '2' }] });
+  });
+
+  it('returns per-record failures from a 207 multi-status batch read, never dropping them', async () => {
+    const result = await reader.readAssociations('leads', ['301', '999'], 'contacts');
+    expect(result.associations.map((a) => a.from.id)).toEqual(['301']);
+    expect(result.failures).toEqual([
+      { category: 'OBJECT_NOT_FOUND', message: 'Records not found', ids: ['999'] },
+    ]);
   });
 
   it('surfaces classified errors from reads', async () => {

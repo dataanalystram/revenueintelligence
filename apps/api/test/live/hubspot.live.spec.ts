@@ -58,7 +58,9 @@ if (missing.length > 0) {
         await reader.listProperties('leads');
       } catch (err) {
         expect(err).toBeInstanceOf(HubSpotError);
-        expect(['forbidden', 'not_found', 'bad_request']).toContain((err as HubSpotError).kind);
+        // Not in the subscription (403/404) or a missing scope (403). A 400
+        // would mean our request is wrong, which must fail this test.
+        expect(['forbidden', 'not_found']).toContain((err as HubSpotError).kind);
       }
     });
 

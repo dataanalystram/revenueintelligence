@@ -22,7 +22,15 @@ FAILED=0
 RUN_LABEL="lip.verify.run=$PROJECT"
 COMPOSE_LABEL="com.docker.compose.project=$PROJECT"
 
-free_port() { node -e "const s=require('net').createServer();s.listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})"; }
+# A currently free port, other than any given as arguments: ports picked
+# before anything binds them could otherwise be handed out twice.
+free_port() {
+  local p
+  while :; do
+    p="$(node -e "const s=require('net').createServer();s.listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})")"
+    [[ " $* " == *" $p "* ]] || { echo "$p"; return; }
+  done
+}
 pass() { PASSED=$((PASSED + 1)); printf '  PASS  %s\n' "$*"; }
 fail() { FAILED=$((FAILED + 1)); printf '  FAIL  %s\n' "$*"; }
 compose() { docker compose -p "$PROJECT" -f "$ROOT/docker-compose.yml" "$@"; }
@@ -58,8 +66,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-export LIP_POSTGRES_PORT="$(free_port)" LIP_REDIS_PORT="$(free_port)"
-API_PORT="$(free_port)"
+LIP_POSTGRES_PORT="$(free_port)"
+LIP_REDIS_PORT="$(free_port "$LIP_POSTGRES_PORT")"
+export LIP_POSTGRES_PORT LIP_REDIS_PORT
+API_PORT="$(free_port "$LIP_POSTGRES_PORT" "$LIP_REDIS_PORT")"
 # shellcheck disable=SC2086
 build() { docker build ${LIP_DOCKER_BUILD_ARGS:-} --label "$RUN_LABEL" -f "$DOCKERFILE" --target "$1" -t "$TAG-$1" "$ROOT" >/dev/null; }
 # One-off containers are named and labelled, so an interrupted run still

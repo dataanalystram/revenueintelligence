@@ -41,6 +41,19 @@ export interface ListOptions {
   readonly properties?: readonly string[];
 }
 
+/** A per-input failure HubSpot reported in a batch association read. */
+export interface AssociationReadFailure {
+  readonly category: string | undefined;
+  readonly message: string | undefined;
+  /** Input record ids the failure applies to, when HubSpot says. */
+  readonly ids: readonly string[];
+}
+
+export interface AssociationReadResult {
+  readonly associations: ExternalAssociation[];
+  readonly failures: AssociationReadFailure[];
+}
+
 /** Largest id list per association batch read (HubSpot allows 1,000). */
 const ASSOCIATION_BATCH_SIZE = 100;
 /** Safety bound on association pages followed per record. */
@@ -176,17 +189,22 @@ export class HubSpotReader {
     return list.results.map(toAssociationType);
   }
 
-  /** Associations of the given records to records of another type (all pages). */
+  /**
+   * Associations of the given records to records of another type (all pages).
+   * HubSpot reports per-input failures inside a successful (207) response;
+   * they are returned as `failures`, never silently dropped.
+   */
   async readAssociations(
     from: HubSpotObjectType,
     ids: readonly string[],
     to: HubSpotObjectType,
-  ): Promise<ExternalAssociation[]> {
+  ): Promise<AssociationReadResult> {
     for (const id of ids) {
       if (!/^\d{1,20}$/.test(id)) throw new RangeError('HubSpot record ids are numeric');
     }
     const path = `/crm/associations/${this.v}/${from}/${to}/batch/read`;
     const out: ExternalAssociation[] = [];
+    const failures: AssociationReadFailure[] = [];
     for (let i = 0; i < ids.length; i += ASSOCIATION_BATCH_SIZE) {
       let inputs = ids
         .slice(i, i + ASSOCIATION_BATCH_SIZE)
@@ -206,6 +224,9 @@ export class HubSpotReader {
           HsAssociationBatchReadSchema,
           this.auth,
         );
+        for (const e of batch.errors ?? []) {
+          failures.push({ category: e.category, message: e.message, ids: e.context?.ids ?? [] });
+        }
         const next: typeof inputs = [];
         for (const result of batch.results) {
           for (const link of result.to) {
@@ -221,6 +242,6 @@ export class HubSpotReader {
         inputs = next;
       }
     }
-    return out;
+    return { associations: out, failures };
   }
 }

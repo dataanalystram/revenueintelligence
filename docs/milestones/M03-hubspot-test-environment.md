@@ -104,6 +104,46 @@ did not apply the POST change, because Prettier had re-wrapped the target
 lines. Only the guard was bypassed, so the check correctly passed. It was
 redone with the edit confirmed (`grep -c MUTATION` = 1 per file).
 
+## Independent review
+
+A fresh-context review of `d2c77bb..eaf604b` returned **PASS WITH NITS**: no
+blockers and two should-fix items, both fixed.
+
+1. **Per-record errors in a 207 batch association response were silently
+   dropped.** `readAssociations` now returns `{ associations, failures }`, and
+   discovery reports the failures per sample. The fake returns 207 with
+   per-input errors for unknown ids, and a unit test covers it.
+2. **`forTenant()` returned a reader without checking the token's account.**
+   It now verifies `portalId` before returning, the same as `connect()`. Tests
+   cover `forTenant` refusing a token for the wrong account, and refusing a
+   tenant with no `portalId` before any request.
+
+Nits fixed:
+
+- The report is described accurately (it includes sampled record ids).
+- The live Leads test no longer accepts a 400.
+- A test covers a response body that stalls after the headers (timeout).
+- The Node engine is now `>=22.18.0`, which the directly-run TypeScript fake
+  needs.
+- A `\u2014` escape introduced by a scripted `package.json` edit is removed.
+
+Mutation evidence for the two fixes:
+
+| Mutation                                              | Checks that failed                                                                                                      |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Per-record 207 failures ignored                       | "returns per-record failures from a 207 multi-status batch read, never dropping them"                                   |
+| `forTenant` builds a reader without the account check | "a token for a different account … → account_mismatch", "no configured account id → not_configured, before any request" |
+
+While re-verifying, a runtime run failed because `free_port` gave the API the
+port it had just given Redis: ports picked before anything binds them can
+repeat. This predates M3. `free_port` now excludes ports already chosen in the
+run, in both verification scripts. Proof: with a stubbed port picker that
+returns 5000, 5000, 5001, the second pick is 5001; with the exclusion removed,
+it is 5000 again.
+
+Nits recorded as technical debt (items 8 and 9): the closed
+association-category enum, and the live suite not exercising the tenant path.
+
 ## Open questions / blocked
 
 1. **Blocked on the user (not Juniper):**

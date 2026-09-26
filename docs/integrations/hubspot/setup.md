@@ -77,7 +77,9 @@ pnpm test:live
 - `hubspot:configure` sets the tenant's HubSpot integration to **read_only**
   and registers the credential reference. It never reads or prints the token.
 - `hubspot:discover` refuses anything but a developer test or sandbox account.
-- The report contains schema and counts only. It is safe to commit, and it
-  becomes the evidence in the M3 record.
+- The report contains schema, counts and sampled record **ids**, never record
+  field values. For the test account it is safe to commit, and it becomes the
+  evidence in the M3 record. Review a report from a customer account before
+  sharing it: property names and picklist values are the customer's schema.
 - For richer evidence, add a few Contacts, Companies and Leads (with
   associations) to the test account first.

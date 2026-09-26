@@ -35,18 +35,26 @@ platform changed substantially in 2025–2026:
    and POST to an allow-listed batch _read_ path, before any request is sent.
    There are no write methods. Writes to customer systems need explicit approval
    and a later milestone.
-4. **Tenant-scoped access.** `HubSpotConnector.forTenant(ctx)` requires the
-   tenant's HubSpot integration to be enabled and resolves only that tenant's
-   `hubspot.access_token` credential, through `TenantCredentialsService` and the
-   `SecretProvider` (ADR 0003, 0008). `connect(ctx)` also checks that the token
-   belongs to the tenant's configured `portalId`. Rate budgets are per tenant.
+4. **Tenant-scoped access.** `HubSpotConnector.forTenant(ctx)` (and
+   `connect(ctx)`, which also returns the account) does three things before
+   returning a reader:
+   - requires the tenant's HubSpot integration to be enabled, with a
+     configured `portalId`;
+   - resolves only that tenant's `hubspot.access_token` credential, through
+     `TenantCredentialsService` and the `SecretProvider` (ADR 0003, 0008);
+   - verifies that the token belongs to that `portalId`.
+
+   Rate budgets are per tenant.
+
 5. **Authentication for M3: a static access token** from a private-distribution
    app installed in the developer test account. HubSpot recommends this for
    single-account apps, and it needs no public callback URL. OAuth, the
    multi-account install that Juniper will use, arrives with the connector
    abstraction (M4) and real validation (M16). The reader takes a `Secret`
    token, so only the way the token is obtained changes.
-6. **Failure handling.** Every response is validated with Zod. Errors are
+6. **Failure handling.** Every response is validated with Zod. Per-record
+   failures in a 207 batch response are returned to the caller, never
+   dropped. Errors are
    classified as 401, 403 (with HubSpot's `requiredGranularScopes`), 404, 400,
    429 (`DAILY` is never retried; burst limits honour `Retry-After`), 5xx,
    timeout, network or invalid payload. Only transient failures are retried,
@@ -54,7 +62,8 @@ platform changed substantially in 2025–2026:
    record values.
 7. **Discovery refuses production.** `hubspot:discover` runs only against
    `DEVELOPER_TEST` or `SANDBOX` accounts unless explicitly overridden. Its
-   report holds schema and counts, never record field values.
+   report holds schema, counts and sampled record ids, never record field
+   values.
 
 ## Consequences
 

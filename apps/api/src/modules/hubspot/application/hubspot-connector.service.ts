@@ -35,7 +35,18 @@ export class HubSpotConnector {
     private readonly http: HubSpotHttpClient,
   ) {}
 
+  /**
+   * A reader bound to this tenant's HubSpot account. Before returning, it
+   * proves the token belongs to the account configured for the tenant
+   * (settings.portalId), so a token for the wrong account (e.g. production
+   * instead of the test account) is never used.
+   */
   async forTenant(ctx: TenantContext): Promise<HubSpotReader> {
+    return (await this.connect(ctx)).reader;
+  }
+
+  /** forTenant, also returning the verified account details. */
+  async connect(ctx: TenantContext): Promise<VerifiedHubSpotConnection> {
     let integration;
     try {
       integration = await this.tenantConfig.getIntegration(ctx, 'hubspot');
@@ -47,6 +58,13 @@ export class HubSpotConnector {
     }
     if (!isEnabled(integration)) {
       throw new HubSpotError('integration_disabled', 'HubSpot is disabled for this tenant');
+    }
+    const expected = integration.settings.portalId;
+    if (!expected) {
+      throw new HubSpotError(
+        'not_configured',
+        'The HubSpot account id (portalId) must be configured for this tenant',
+      );
     }
     let token;
     try {
@@ -60,24 +78,7 @@ export class HubSpotConnector {
       }
       throw err;
     }
-    return new HubSpotReader(this.http, this.config, { tenantKey: ctx.tenantId, token });
-  }
-
-  /**
-   * Like forTenant, but first proves the token belongs to the HubSpot account
-   * configured for this tenant (settings.portalId), so a token for the wrong
-   * account (e.g. production instead of the test account) is never used.
-   */
-  async connect(ctx: TenantContext): Promise<VerifiedHubSpotConnection> {
-    const reader = await this.forTenant(ctx);
-    const integration = await this.tenantConfig.getIntegration(ctx, 'hubspot');
-    const expected = integration.settings.portalId;
-    if (!expected) {
-      throw new HubSpotError(
-        'not_configured',
-        'The HubSpot account id (portalId) must be configured for this tenant',
-      );
-    }
+    const reader = new HubSpotReader(this.http, this.config, { tenantKey: ctx.tenantId, token });
     const account = await reader.getAccount();
     if (account.portalId !== expected) {
       throw new HubSpotError(
