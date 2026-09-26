@@ -13,7 +13,7 @@ apps/api/src/generated/
 !.env.example
 *.pem
 *.key
-secrets/
+/secrets/
 
 # OS / editor
 .DS_Store
