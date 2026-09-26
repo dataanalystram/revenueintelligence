@@ -14,7 +14,22 @@
 
 The HubSpot → Sugar handover (the Fuelius brief) is the operational pipeline.
 The Gainsight signal and qualification work (the Labs working doc) adds new
-ways of discovering and qualifying Leads on top of that pipeline.
+ways of discovering and qualifying Leads on top of that pipeline. We build the
+full platform. The Fuelius documents are the requirements baseline, and the
+platform can either coexist with or replace an existing Fuelius integration,
+per tenant ([ADR 0004](adr/0004-product-scope-and-fuelius-coexistence.md)).
+
+## Key decisions
+
+| Topic              | Decision                                                                                                                   | ADR                                                         |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| Stack and versions | TypeScript 6, NestJS 12, Prisma 7, Zod 4, BullMQ                                                                           | [0001](adr/0001-stack-and-version-choices.md)               |
+| Hosting            | Cloud-neutral Docker images; preferred Azure Container Apps + PostgreSQL + Redis + Key Vault + App Insights; no Kubernetes | [0002](adr/0002-api-and-worker-process-roles.md)            |
+| Secrets            | `SecretProvider` abstraction; Key Vault first vault provider                                                               | [0003](adr/0003-secret-provider.md)                         |
+| Scope              | Full platform; coexist with or replace Fuelius per tenant                                                                  | [0004](adr/0004-product-scope-and-fuelius-coexistence.md)   |
+| Qualification      | Pluggable providers (rules / Jev / hybrid); humans override; policy separate                                               | [0005](adr/0005-qualification-architecture.md)              |
+| Lead creation      | HubSpot owns marketing-sourced Leads; platform owns intelligence-sourced Leads after duplicate checks; true origin kept    | [0006](adr/0006-lead-creation-ownership-and-attribution.md) |
+| Domain model       | Immutable canonical entities, Zod schemas, pure behaviour functions                                                        | [0007](adr/0007-canonical-domain-model.md)                  |
 
 ## 2. Architectural style: modular monolith
 
@@ -35,9 +50,22 @@ separate functions or services. See [ADR 0002](adr/0002-api-and-worker-process-r
 ```
 src/
   platform/     config · secrets · logging · database · redis · health · telemetry · http
-  modules/      domain · tenancy · hubspot · sugar · gainsight · crossref · mapping ·
-                sync · identity · signals · qualification · policy · audit
+  modules/      domain · tenancy · hubspot · sugar · gainsight · identity · signals ·
+                qualification · policy · orchestration · sync · crossref · mapping · audit
 ```
+
+| Module                          | Role                                                                                                                                                             |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `domain`                        | Canonical entities: Person, Company, LeadCandidate, Lead, MarketingSignal, ProductSignal, AccountSignal, QualificationDecision, HumanOverride, SalesOutcome (M1) |
+| `hubspot`, `sugar`, `gainsight` | Connectors: the only code that knows vendor payloads                                                                                                             |
+| `identity`                      | Resolve the same person/company across systems                                                                                                                   |
+| `signals`                       | Aggregate signals into LeadCandidates; duplicate/requalification checks                                                                                          |
+| `qualification`                 | `QualificationProvider` implementations and mode selection                                                                                                       |
+| `policy`                        | SLA, routing and sequence eligibility from the effective decision                                                                                                |
+| `orchestration`                 | Drives a Lead's journey across modules                                                                                                                           |
+| `sync` / `crossref` / `mapping` | Queues, idempotency, external-ID links, tenant field mappings                                                                                                    |
+| `audit`                         | Append-only history of decisions, overrides and outbound writes                                                                                                  |
+| `tenancy`                       | Tenants, per-tenant configuration and credentials                                                                                                                |
 
 Rules, enforced in CI by dependency-cruiser (`apps/api/.dependency-cruiser.cjs`):
 
@@ -73,12 +101,40 @@ are translated into canonical types.
 | AI never acts directly                 | The qualification provider classifies; deterministic policy code decides SLA, routing and CRM actions |
 | Unknown customer schema is not guessed | Sugar field names are configuration (field-mapping engine), not code                                  |
 
-## 5. Tenancy
+## 5. Tenancy and productisation
 
 Juniper is tenant #1. From M2 every persistent integration record carries a
 `tenant_id`, every query is tenant-scoped, and credentials are stored per
 tenant through the secret provider. HubSpot OAuth is implemented as a
 multi-account app so future customers install the same app.
+
+Tenant-specific, never hard-coded:
+
+- credentials and enabled integrations (including coexistence switches)
+- field mappings, picklist translations and lead source mappings
+  (e.g. HubSpot "Recent conversion" values → canonical channels)
+- product catalogue keys
+- qualification mode (rules / Jev / hybrid), rule thresholds and ruleset versions
+- SLA policy, routing and sequence rules, requalification cool-off windows
+- disqualification reason codes and lead type values
+
+## 5a. Qualification and human overrides
+
+See [ADR 0005](adr/0005-qualification-architecture.md). Providers classify
+(HOT / WARM / COLD / NEEDS_REVIEW). An active human override always wins, and
+later automated results are recorded but never applied over it. Deterministic
+policy code turns the effective decision into SLAs and routing.
+
+## 5b. Traceability: "What happened to Lead X?"
+
+Every signal carries a `correlationId` that is propagated to the
+LeadCandidate, qualification decisions, the Lead, outbound writes, audit
+records, logs and traces. One id reconstructs the journey:
+
+```
+source signal → HubSpot Lead → enrichment → qualification (+ overrides)
+  → policy / routing → Sugar Lead → stage changes → sales outcome
+```
 
 ## 6. Configuration and secrets
 

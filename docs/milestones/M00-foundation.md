@@ -1,6 +1,6 @@
 # Milestone 0 — Repository / infrastructure foundation
 
-- Status: **Complete — awaiting review**
+- Status: **Complete — approved**
 - Date: 2026-09-26
 - Branch: `claude/blissful-mendel-urbh4r`
 
@@ -131,13 +131,21 @@ These don't block M0. They need an answer before the milestone in brackets.
    example, Fuelius configures HubSpot workflows and Sugar fields while this
    platform does sync and intelligence)?
 
-## Open questions for the reviewer
+## Review outcome (2026-09-26)
 
-- What exactly is **"TypeSafe AI/Jev"**? Is Jev an internal model or service,
-  or should M12 use a provider abstraction over a hosted LLM (for example
-  Claude via the Anthropic SDK) with structured, schema-validated output?
-- Target hosting platform (decides the vault `SecretProvider`, managed Postgres/Redis).
-- Confirm the pinned TypeScript 6 / Prisma 7 choices.
+M0 was approved. The open questions were answered and recorded as ADRs:
+
+- Hosting: cloud-neutral Docker, Azure Container Apps preferred, no Kubernetes → ADR 0002.
+- Scope and Fuelius: full platform; coexist or replace per tenant → ADR 0004.
+- Jev: an external hosted service behind an adapter, one of several pluggable
+  providers (rules / Jev / hybrid) → ADR 0005.
+- Temperature ownership: human overrides take precedence → ADR 0005.
+- Lead creation: HubSpot for marketing sources, the platform for intelligence
+  signals, after duplicate checks → ADR 0006.
+
+A post-review CI run exposed a defect: an unanchored `secrets/` rule in
+`.gitignore` had kept `src/platform/secrets` out of the commit. It was fixed
+in `89a455f`, and the full suite was re-verified from a clean clone.
 
 ## Follow-ups (non-blocking)
 

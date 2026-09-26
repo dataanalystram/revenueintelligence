@@ -20,9 +20,11 @@ its own Sugar and Gainsight instances).
 - `EnvSecretProvider` maps keys to environment variables
   (`hubspot.app.client_secret` → `HUBSPOT_APP_CLIENT_SECRET`). It serves local
   development, CI and simple deployments.
-- Vault providers (Azure Key Vault, AWS Secrets Manager, HashiCorp Vault) are
-  added behind the same interface once the hosting target is known, and
-  selected with `SECRETS_PROVIDER`.
+- Vault providers are added behind the same interface and selected with
+  `SECRETS_PROVIDER`. **Azure Key Vault is the first one** (preferred hosting,
+  ADR 0002). It authenticates with a managed identity, so no bootstrap secret
+  is needed. AWS Secrets Manager or a customer's vault can follow for other
+  deployments.
 - OAuth tokens obtained at runtime (HubSpot refresh tokens per installed
   account) will be stored encrypted and tenant-scoped (Milestone 2/3). The
   design for that is part of those milestones.
