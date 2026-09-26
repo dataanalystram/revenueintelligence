@@ -52,7 +52,6 @@ describe('tenant configuration invariants under concurrent admin requests', () =
 
   /** Runs two admin operations with both forced past their reads before either writes. */
   async function race<A, B>(
-    harness: TenancyHarness,
     ctx: TenantContext,
     lockSql: string[],
     first: () => Promise<A>,
@@ -63,7 +62,6 @@ describe('tenant configuration invariants under concurrent admin requests', () =
     try {
       await admin.query('BEGIN');
       for (const sql of lockSql) await admin.query(sql, [ctx.tenantId]);
-      void harness;
       const results = Promise.allSettled([first(), second()]);
       // Both requests must be blocked before the blocker is released: without the
       // fix both wait on the held rows after validating; with it, one waits on
@@ -82,7 +80,6 @@ describe('tenant configuration invariants under concurrent admin requests', () =
     await h.config.configureIntegration(ctx, 'sugar', { access: 'read_write' });
 
     const [lower, activate] = await race(
-      h,
       ctx,
       [
         "SELECT 1 FROM tenant_integrations WHERE tenant_id = $1 AND system = 'sugar' FOR UPDATE",
@@ -114,7 +111,6 @@ describe('tenant configuration invariants under concurrent admin requests', () =
     const { version } = await h.config.getQualificationConfig(ctx);
 
     const [disable, hybrid] = await race(
-      h,
       ctx,
       [
         "SELECT 1 FROM tenant_integrations WHERE tenant_id = $1 AND system = 'jev' FOR UPDATE",
@@ -193,7 +189,6 @@ describe('tenant configuration invariants under concurrent admin requests', () =
       await rr.config.configureIntegration(ctx, 'hubspot', { access: 'read_write' });
       await rr.config.configureIntegration(ctx, 'sugar', { access: 'read_write' });
       const [lower, activate] = await race(
-        rr,
         ctx,
         [
           "SELECT 1 FROM tenant_integrations WHERE tenant_id = $1 AND system = 'sugar' FOR UPDATE",

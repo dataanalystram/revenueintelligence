@@ -27,12 +27,40 @@ fail() { FAILED=$((FAILED + 1)); printf '  FAIL  %s\n' "$*"; }
 check() { local name="$1"; shift; if "$@" >>"$WORK/checks.log" 2>&1; then pass "$name"; else fail "$name"; fi; }
 compose() { docker compose -p "$PROJECT" -f "$ROOT/docker-compose.yml" "$@"; }
 
+# Every process this run starts inherits LIP_VERIFY_RUN, so it can be found and
+# stopped even if PID tracking is wrong (Linux: /proc/<pid>/environ).
+export LIP_VERIFY_RUN="$PROJECT"
+tagged_pids() {
+  local env pid
+  for env in /proc/[0-9]*/environ; do
+    pid="${env#/proc/}"; pid="${pid%/environ}"
+    [[ "$pid" == "$$" || "$pid" == "$BASHPID" ]] && continue
+    # Processes can exit mid-scan: silence the redirection itself, not just tr.
+    { tr '\0' '\n' <"$env"; } 2>/dev/null | grep -qx "LIP_VERIFY_RUN=$PROJECT" || continue
+    # Only application processes, not this script's own helper shells.
+    [[ "$({ tr '\0' ' ' <"/proc/$pid/cmdline"; } 2>/dev/null)" == node\ dist/* ]] && echo "$pid"
+  done
+  return 0
+}
+
 cleanup() {
-  local code=$?
+  local code=$? leftover
   [[ -n "$API_PID" ]] && kill "$API_PID" 2>/dev/null || true
   [[ -n "$WORKER_PID" ]] && kill "$WORKER_PID" 2>/dev/null || true
+  leftover="$(tagged_pids | tr '\n' ' ')"
+  if [[ -n "${leftover// /}" ]]; then
+    echo "Cleanup: killing leftover application processes from this run: $leftover"
+    # shellcheck disable=SC2086
+    kill -KILL $leftover 2>/dev/null || true
+    code=1
+  fi
   compose down -v --remove-orphans >/dev/null 2>&1 || true
+  local label="com.docker.compose.project=$PROJECT"
+  if [[ -n "$(docker ps -aq --filter "label=$label")$(docker volume ls -q --filter "label=$label")$(docker network ls -q --filter "label=$label")" ]]; then
+    echo "Cleanup FAILED: containers, volumes or networks of $PROJECT remain"; code=1
+  fi
   if [[ $code -eq 0 && $FAILED -eq 0 ]]; then rm -rf "$WORK"; else echo "Logs kept in $WORK"; fi
+  exit "$code"
 }
 trap cleanup EXIT
 
@@ -152,6 +180,8 @@ check "worker ran its shutdown hooks (Application shut down cleanly)" grep -q 'A
 # kernel closes its sockets; the log-line checks above are what prove an orderly
 # shutdown.)
 check "no app DB sessions left after shutdown" bash -c "for i in \$(seq 1 20); do [ \"\$(docker compose -p '$PROJECT' -f '$ROOT/docker-compose.yml' exec -T -e PGPASSWORD=lip postgres psql -h 127.0.0.1 -U lip -d lip -Atc \"SELECT count(*) FROM pg_stat_activity WHERE usename = 'lip_api'\")\" = 0 ] && exit 0; sleep 0.25; done; exit 1"
+no_tagged_processes() { [[ -z "$(tagged_pids)" ]]; }
+check "no application process from this run remains (by run tag)" no_tagged_processes
 check "no app Redis clients left after shutdown" bash -c "[ \"\$(docker compose -p '$PROJECT' -f '$ROOT/docker-compose.yml' exec -T redis redis-cli CLIENT LIST | awk '!/cmd=client/ { n++ } END { print n + 0 }')\" = 0 ]"
 
 printf '\n== Summary: %d passed, %d failed\n' "$PASSED" "$FAILED"

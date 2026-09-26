@@ -305,3 +305,66 @@ It found five minor issues, all fixed:
 
 A unit test was also added for the lock-timeout (55P03) error mapping, which
 had been covered only by an integration test.
+
+## Verification defects and operational learning
+
+The most important lesson of this follow-up: **a passing verification script
+is not evidence until the script itself has been seen to fail.**
+
+### The false graceful-shutdown check
+
+- **The defect.** `verify-runtime.sh` started the API and worker as
+  `( cd … && node … ) &` and recorded `$!`, the PID of the wrapper subshell.
+  SIGTERM killed the wrapper, which exited 143, and the script reported
+  "exited cleanly". Node never received the signal. The report also wrongly
+  attributed code 143 to Nest re-raising the signal.
+- **How it was found.** It passed locally, from a fresh clone, and on CI. It
+  was caught only by the independent reviewer, who found the node processes
+  still running. Six orphaned API/worker pairs from earlier runs were
+  stopped; all six exited within 5 s of a real SIGTERM.
+- **The fix, in layers:**
+  1. `exec node`, so the recorded PID is node's own. A check asserts that
+     the PID's command line is `node dist/main.js` / `node dist/worker.js`.
+  2. The app's own `onApplicationShutdown` hook logs
+     `Application shut down cleanly` (`LifecycleLogger`), and the script
+     asserts it. This is the check that proves an orderly shutdown. The
+     connection-count checks only prove nothing is left behind, because a
+     dead process's sockets close anyway.
+  3. A process that does not exit within 10 s is recorded as FAIL and
+     SIGKILLed, so a shutdown regression fails the run instead of hanging it.
+  4. Every process the run starts carries the environment tag
+     `LIP_VERIFY_RUN=<project>`. Cleanup kills anything tagged even if PID
+     tracking is wrong. A final check asserts no tagged process remains.
+     Cleanup also verifies the compose project's containers, volumes and
+     networks are gone, and exits non-zero otherwise.
+
+### Invalid failures seen along the way
+
+These are recorded because they nearly passed as evidence:
+
+- A run "failed" because the Docker daemon had died, not because of the
+  mutation under test.
+- A role-guard mutation failed the TypeScript build, not the guard check.
+- A lock-removal mutation (`false AND pg_advisory_xact_lock(…)`) was a SQL
+  type error that failed every test, including tests unrelated to the lock.
+- A "stuck worker" mutation that only swallowed SIGTERM did not get stuck:
+  node exits once its event loop is empty. It also had to keep the loop
+  alive.
+
+Each was diagnosed and replaced with a valid mutation.
+
+### Mutation evidence for critical guarantees
+
+Each mechanism was temporarily broken on its own, and the code was restored
+afterwards.
+
+| Guarantee               | Mutation                                               | Checks that failed (and only these)                                                                                                                       |
+| ----------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Config race prevented   | Lock call replaced by a no-op                          | Both deterministic race tests, the REPEATABLE READ test, the busy-tenant test                                                                             |
+| Isolation level pinned  | `CONFIG_CHANGE_TX = {}`                                | The REPEATABLE READ test                                                                                                                                  |
+| Lock waits bounded      | `lock_timeout` not set                                 | The busy-tenant (`LockTimeoutError`) test                                                                                                                 |
+| Shutdown hooks run      | `enableShutdownHooks()` removed                        | Both "ran its shutdown hooks" runtime checks (connection checks still passed, as expected)                                                                |
+| Stuck shutdown detected | Worker swallows SIGTERM and keeps its event loop alive | "worker did not exit within 10s (killed)"; run finished in 39 s, exit 1, 0 orphans                                                                        |
+| Real process signalled  | `exec` removed (the original defect)                   | Both "PID is the node process" checks, both shutdown-hook checks, "no application process from this run remains"; cleanup killed the leftovers, 0 orphans |
+| Unsafe DB role refused  | Role guard's override forced on                        | "API refuses to start as the schema owner (superuser)"                                                                                                    |
+| Config tables guarded   | Probe file with dot, bracket and destructured access   | ESLint errors on all three                                                                                                                                |

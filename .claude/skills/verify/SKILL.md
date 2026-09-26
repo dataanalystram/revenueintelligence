@@ -85,7 +85,18 @@ tmp="$(mktemp -d)" && git clone -q "$(git rev-parse --show-toplevel)" "$tmp/repo
 
 Commit first; the clone only sees committed work.
 
-## 6. Report
+## 6. Validate the checks themselves (critical guarantees)
+
+A check that has never been seen to fail proves nothing: the original runtime
+shutdown check passed while testing a wrapper shell. For each safety or
+verification guarantee a change adds or touches, temporarily break the
+mechanism and confirm the matching check fails _for that reason_. Look at the
+failing check's name and output; a build error or a stopped dependency is not
+a valid result. Then restore the code and confirm it passes again. Current
+mutation evidence is recorded in `docs/milestones/M02-tenancy-data-isolation.md`.
+Mutation-test critical guarantees, not everything.
+
+## 7. Report
 
 For each layer: the command, pass/fail, and key numbers (tests passed per
 suite, runtime checks passed). Also include CI status on the PR once pushed,

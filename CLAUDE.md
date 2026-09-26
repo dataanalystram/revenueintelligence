@@ -12,6 +12,11 @@ evidence, security and reproducibility beat speed.
   Run the `verify` skill (`.claude/skills/verify/SKILL.md`), which covers
   `pnpm verify`, runtime verification, Docker and a **fresh-clone run**. The
   fresh-clone run is mandatory before a milestone is reported complete.
+- **Prove critical checks can fail.** For safety and verification guarantees
+  (tenant isolation, role guard, locking, shutdown, cleanup), temporarily break
+  the mechanism and show that the check fails for the right reason. A failure
+  caused by something else (build error, Docker down) is not evidence. A
+  passing script that has never been seen to fail is not evidence either.
 - Record each milestone in `docs/milestones/Mxx-*.md` (scope, Definition of
   Done, evidence, open questions). Architectural decisions go in `docs/adr/`.
 - After scripted/bulk edits (sed, python, regex replace), **confirm each edit
