@@ -59,24 +59,25 @@ Reused from the paused M3 work (stash, inspected file by file):
 | Zod validation at the boundary               | ✅                                                               |
 | Vendor-neutral read models                   | ✅                                                               |
 | Discovery findings documented                | ✅ `discovery-findings.md` with live evidence                    |
-| HubSpot test-account evidence                | ✅ `discovery-report.json`, `pnpm test:live` 5/5                 |
+| HubSpot test-account evidence                | ✅ `discovery-report.json`, `pnpm test:live` 6/6                 |
 
 ## Evidence
 
-Final numbers are in the PR and the final report. At the live-validation
-commit (`31f3d4c`), from a fresh clone:
+From a fresh clone of `f906ad8` (the last code change; the final commit only
+adds this evidence and a one-line fallback fix in `verify-runtime.sh`):
 
 ```
 pnpm verify
   format, lint, typecheck: clean
-  depcruise: no dependency violations found (155 modules, 522 dependencies cruised)
-  unit:        Test Files 24 passed (24)   Tests 338 passed (338)
+  depcruise: no dependency violations found (156 modules, 532 dependencies cruised)
+  unit:        Test Files 25 passed (25)   Tests 343 passed (343)
   integration: Test Files  9 passed (9)    Tests 107 passed (107)
 pnpm verify:runtime  → Summary: 47 passed, 0 failed   (39 core + 8 HubSpot)
+pnpm test:live       → Test Files 1 passed (1)  Tests 6 passed (6)   (developer test account)
 pnpm verify:docker   → Summary: 12 passed, 0 failed; cleanup verified
-pnpm test:live       → Test Files 1 passed (1)  Tests 5 passed (5)   (developer test account)
 resources before/after: app_procs=0 lip_containers=0 all_containers=0 volumes=0
                         compose_networks=0 lip_images=0 testcontainers=0
+GitHub CI on f906ad8: all 4 jobs passed
 ```
 
 `hubspot:discover --tenant hstest` (live, production path):
@@ -269,6 +270,24 @@ Nits fixed:
   a version does not answer.
 - An empty `fromObjectId` falls back to `ids`.
 - `NO_ASSOCIATIONS_FOUND` for an id that wasn't requested stays a failure.
+
+A last fresh-context review of `31f3d4c..f906ad8` returned **PASS WITH NITS**
+with no should-fix items:
+
+- The path guard held against every bypass tried: `..`, `%2e`, `%2F`,
+  backslashes, Unicode dots, trailing slash or newline, `//`, `?` and `#`.
+- Every path the connector sends still passes.
+
+Nits fixed in the final commit:
+
+- A shutdown probe fallback could yield `0\n0`.
+- This evidence block, and the live count (6/6), were stale.
+
+Nits left:
+
+- The requested-id filter spans the whole call, not each 1,000-id batch.
+- An error entry mixing requested and unrequested ids is kept as a failure
+  (fails safe).
 
 ## CI: intermittent Redis recovery
 

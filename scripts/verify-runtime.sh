@@ -207,7 +207,8 @@ redis_clients() { compose exec -T redis redis-cli CLIENT LIST | awk '!/cmd=clien
 # reports missing connections instead of aborting the remaining checks.
 curl -fsS "$API_URL/health/ready" >/dev/null 2>&1 || true
 # A failing probe counts as 0 so the check below fails instead of set -e aborting the run.
-before_pg="$(pg_app_sessions 2>/dev/null || echo 0)"; before_redis="$(redis_clients 2>/dev/null || echo 0)"
+before_pg="$(pg_app_sessions 2>/dev/null || true)"; before_redis="$(redis_clients 2>/dev/null || true)"
+before_pg="${before_pg:-0}"; before_redis="${before_redis:-0}"
 [[ "$before_pg" -gt 0 && "$before_redis" -gt 0 ]] && pass "before shutdown: $before_pg app DB session(s), $before_redis Redis client(s)" \
   || fail "expected open connections before shutdown (db=$before_pg redis=$before_redis)"
 kill -TERM "$API_PID" "$WORKER_PID"
