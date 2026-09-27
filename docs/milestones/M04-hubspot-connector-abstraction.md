@@ -200,3 +200,24 @@ exposed a real bug:
    Technical-debt item 12.
 4. Key rotation for `PLATFORM_TOKEN_ENCRYPTION_KEY` (technical-debt item 11)
    before production.
+
+## Final evidence
+
+From a fresh clone of `429527e` (the last code change; the final commit only
+adds this section):
+
+```
+pnpm install --frozen-lockfile → exit 0
+pnpm verify
+  format, lint, typecheck: clean
+  depcruise: no dependency violations found (175 modules, 638 dependencies cruised)
+  unit:        Test Files 29 passed (29)   Tests 368 passed (368)
+  integration: Test Files 11 passed (11)   Tests 141 passed (141)
+pnpm verify:runtime → Summary: 62 passed, 0 failed   (39 core + 8 HubSpot + 15 OAuth)
+pnpm test:live      → Test Files 2 passed (2)   Tests 10 passed (10)   (developer test account)
+pnpm verify:docker  → attempt 1: Docker Hub 429 before any build (cleanup verified);
+                      attempt 2: Summary: 12 passed, 0 failed; cleanup verified
+resources before/after: app_procs=0 lip_containers=0 all_containers=0 volumes=0
+                        compose_networks=0 lip_images=0 testcontainers=0
+GitHub CI on 429527e: all 4 jobs passed
+```
