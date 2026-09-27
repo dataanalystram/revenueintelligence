@@ -262,9 +262,11 @@ which is git-ignored. Then render and upload the app (7.3) and allowlist the
 account (7.4).
 
 ```bash
-# Terminal 2: the API
+# Terminal 2: the API. The app reads process environment variables only
+# (it does not load .env itself), so export them in every terminal:
+set -a; source apps/api/.env; set +a
 pnpm --filter @lip/api start          # http://localhost:3000, runs as lip_api
-# Terminal 3: install and inspect (7.5)
+# Terminal 3: the same `set -a; source apps/api/.env; set +a`, then 7.5
 ```
 
 Send back only safe outputs: `hubspot:webhook-report` JSON, the callback's
