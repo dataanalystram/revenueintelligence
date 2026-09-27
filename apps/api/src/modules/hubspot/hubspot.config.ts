@@ -67,6 +67,24 @@ export const HubSpotEnvSchema = z.object({
     .optional(),
   /** Must match the app's configured redirect URL exactly. */
   HUBSPOT_APP_REDIRECT_URI: secureUrl.optional(),
+
+  // --- Webhooks (ADR 0011). Optional: without them the webhook endpoint answers 503.
+  /** The app's numeric id; every webhook event must carry it. */
+  HUBSPOT_APP_ID: z
+    .string()
+    .regex(/^[0-9]{1,20}$/, 'must be the numeric HubSpot app id')
+    .optional(),
+  /**
+   * The public URL HubSpot delivers webhooks to, exactly as configured in the
+   * app (webhooks-hsmeta.json targetUrl). Signatures are computed over this
+   * URL, never over the request's Host header, which a client controls.
+   */
+  HUBSPOT_WEBHOOK_TARGET_URL: secureUrl
+    .refine((value) => {
+      const url = new URL(value);
+      return url.search === '' && url.hash === '' && url.username === '' && url.password === '';
+    }, 'must not contain a query string, fragment or credentials')
+    .optional(),
 });
 
 export interface HubSpotConfig {
@@ -82,6 +100,10 @@ export interface HubSpotConfig {
     readonly timeoutMs: number;
     readonly clientId: string | undefined;
     readonly redirectUri: string | undefined;
+  };
+  readonly webhooks: {
+    readonly appId: string | undefined;
+    readonly targetUrl: string | undefined;
   };
 }
 
@@ -107,6 +129,10 @@ export function loadHubSpotConfig(env: NodeJS.ProcessEnv = process.env): HubSpot
       timeoutMs: e.HUBSPOT_OAUTH_TIMEOUT_MS,
       clientId: e.HUBSPOT_APP_CLIENT_ID,
       redirectUri: e.HUBSPOT_APP_REDIRECT_URI,
+    }),
+    webhooks: Object.freeze({
+      appId: e.HUBSPOT_APP_ID,
+      targetUrl: e.HUBSPOT_WEBHOOK_TARGET_URL,
     }),
   });
 }

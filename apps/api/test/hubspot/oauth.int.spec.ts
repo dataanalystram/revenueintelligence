@@ -34,6 +34,8 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
   /** A second, independent application instance (own pool, own caches): another process. */
   let h2: TenancyHarness;
   let fake: FakeHubSpot;
+  /** Revokes the wrong-account install tests caused (the only legitimate ones). */
+  let mismatchRevokes = 0;
   const envSet = new Map<string, string | undefined>();
 
   const STATIC_TOKEN = 'service-key-for-static-tenant';
@@ -234,10 +236,31 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
       await configureOAuth(t, '3003');
       const { state } = await states().issue(t, 'hubspot');
       const code = fake.issueCode(4004); // the user installed into another account
+      const revokesBefore = fake.oauthCalls.revoke;
       const err = await hubspotRejection(oauth().completeInstall({ code, state }));
       expect(err.kind).toBe('account_mismatch');
+      expect(err.message).toMatch(/nothing was stored and the grant was revoked/);
       expect(await tokenRow(t)).toBeUndefined();
       await expect(grants().get(t, 'hubspot')).resolves.toBeUndefined();
+      // The refused grant was given back to HubSpot: exactly one revoke, and no
+      // refresh token for the foreign account remains valid.
+      expect(fake.oauthCalls.revoke - revokesBefore).toBe(1);
+      mismatchRevokes += 1;
+      expect(fake.activeRefreshTokens(4004)).toBe(0);
+    });
+
+    it('if HubSpot refuses the revoke, the install is still refused and nothing is stored', async () => {
+      const t = await provisionTenant(h, 'oamisrv');
+      await configureOAuth(t, '3003');
+      const { state } = await states().issue(t, 'hubspot');
+      const code = fake.issueCode(4004);
+      fake.fail({ match: /^POST \/oauth\/2026-03\/token\/revoke$/, status: 503 });
+      const err = await hubspotRejection(oauth().completeInstall({ code, state }));
+      // Attempted once (the injected fault answered it, so the fake's counter is unchanged).
+      expect(fake.requests.filter((r) => r.path === '/oauth/2026-03/token/revoke')).toHaveLength(1);
+      expect(err.kind).toBe('account_mismatch');
+      expect(err.message).toMatch(/nothing was stored and the grant was NOT revoked/);
+      expect(await tokenRow(t)).toBeUndefined();
     });
 
     it('the tenant-bound state installs only into the tenant it was issued for', async () => {
@@ -638,10 +661,16 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
           (r.method === 'POST' &&
             /^\/crm\/associations\/\d{4}-\d{2}\/\w+\/\w+\/batch\/read$/.test(r.path)) ||
           (r.method === 'POST' && r.path === '/oauth/2026-09/token') ||
+          // Only ever for a refused wrong-account install (counted by those tests).
+          (r.method === 'POST' && r.path === '/oauth/2026-03/token/revoke') ||
           (r.method === 'GET' && /^\/oauth\/\d+\/authorize$/.test(r.path));
         expect(ok, `${r.method} ${r.path}`).toBe(true);
       }
       expect(fake.requests.some((r) => r.path === '/oauth/2026-09/token')).toBe(true);
+      // Installs, refreshes, reinstalls and revoked grants never caused a revoke:
+      // only the wrong-account installs did, once each.
+      // (oauthCalls is cumulative over the whole file; the request log is reset per test.)
+      expect(fake.oauthCalls.revoke).toBe(mismatchRevokes);
     });
   });
 });

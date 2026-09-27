@@ -6,6 +6,7 @@ import { TenantRegistryService } from './application/tenant-registry.service';
 import { PrismaTenantConfigRepository } from './infrastructure/prisma-tenant-config.repository';
 import { PrismaTenantRegistryRepository } from './infrastructure/prisma-tenant-registry.repository';
 import { EncryptedDatabaseOAuthGrantStore } from './infrastructure/encrypted-oauth-grant.store';
+import { OAuthAccountRouter } from './infrastructure/oauth-account-router';
 import { TenantDatabase } from './infrastructure/tenant-database';
 import { TENANT_OAUTH_GRANT_STORE } from './oauth/oauth-grants';
 import { OAuthStateService } from './oauth/oauth-state.service';
@@ -20,6 +21,7 @@ import { OAuthStateService } from './oauth/oauth-state.service';
     TenantConfigService,
     TenantCredentialsService,
     OAuthStateService,
+    OAuthAccountRouter,
     { provide: TENANT_OAUTH_GRANT_STORE, useClass: EncryptedDatabaseOAuthGrantStore },
   ],
   exports: [
@@ -29,6 +31,7 @@ import { OAuthStateService } from './oauth/oauth-state.service';
     TenantConfigService,
     TenantCredentialsService,
     OAuthStateService,
+    OAuthAccountRouter,
     TENANT_OAUTH_GRANT_STORE,
   ],
 })

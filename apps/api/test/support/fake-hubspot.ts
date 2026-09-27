@@ -154,7 +154,7 @@ export class FakeHubSpot {
   /** OAuth: refresh token → account portal id. */
   private readonly refreshTokens = new Map<string, number>();
   /** OAuth calls received, by grant type. */
-  readonly oauthCalls = { authorizationCode: 0, refreshToken: 0 };
+  readonly oauthCalls = { authorizationCode: 0, refreshToken: 0, revoke: 0 };
   private reverseHidden: ((a: FakeAssociation) => boolean) | undefined;
   private server: Server | undefined;
   private readonly options: FakeHubSpotOptions;
@@ -185,6 +185,16 @@ export class FakeHubSpot {
   /** OAuth: this access token stops working (401), e.g. revoked by the user. */
   revokeAccessToken(token: string): void {
     delete this.options.accounts[token];
+  }
+
+  /** OAuth: whether this refresh token still works (not revoked, not replaced). */
+  isRefreshTokenActive(token: string): boolean {
+    return this.refreshTokens.has(token);
+  }
+
+  /** OAuth: how many refresh tokens currently work, per account. */
+  activeRefreshTokens(portalId: number): number {
+    return [...this.refreshTokens.values()].filter((p) => p === portalId).length;
   }
 
   /** OAuth: every refresh token stops working (the user uninstalled the app). */
@@ -350,6 +360,23 @@ export class FakeHubSpot {
       location.searchParams.set('code', code);
       location.searchParams.set('state', q.get('state')!);
       res.writeHead(302, { location: location.toString() });
+      res.end();
+      return;
+    }
+    if (method === 'POST' && url.pathname === '/oauth/2026-03/token/revoke') {
+      // HubSpot's date-versioned refresh-token revoke (form: token, client_id, client_secret).
+      this.oauthCalls.revoke += 1;
+      const form = new URLSearchParams(raw);
+      if (
+        form.get('client_id') !== app.clientId ||
+        form.get('client_secret') !== app.clientSecret
+      ) {
+        return this.send(res, 401, { status: 'error', message: 'Invalid client credentials' });
+      }
+      if (!this.refreshTokens.delete(form.get('token') ?? '')) {
+        return this.send(res, 400, { status: 'BAD_REQUEST', message: 'Invalid token' });
+      }
+      res.writeHead(204);
       res.end();
       return;
     }

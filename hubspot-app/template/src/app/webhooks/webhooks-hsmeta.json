@@ -1,0 +1,59 @@
+{
+  "uid": "lip_lead_intelligence_dev_webhooks",
+  "type": "webhooks",
+  "config": {
+    "settings": {
+      "targetUrl": "{{HUBSPOT_WEBHOOK_TARGET_URL}}",
+      "maxConcurrentRequests": 10
+    },
+    "subscriptions": {
+      "crmObjects": [
+        { "subscriptionType": "object.creation", "objectType": "contact", "active": true },
+        {
+          "subscriptionType": "object.propertyChange",
+          "objectType": "contact",
+          "propertyName": "email",
+          "active": true
+        },
+        {
+          "subscriptionType": "object.propertyChange",
+          "objectType": "contact",
+          "propertyName": "lifecyclestage",
+          "active": true
+        },
+        {
+          "subscriptionType": "object.propertyChange",
+          "objectType": "contact",
+          "propertyName": "hs_lead_status",
+          "active": true
+        },
+        { "subscriptionType": "object.creation", "objectType": "company", "active": true },
+        {
+          "subscriptionType": "object.propertyChange",
+          "objectType": "company",
+          "propertyName": "name",
+          "active": true
+        },
+        {
+          "subscriptionType": "object.propertyChange",
+          "objectType": "company",
+          "propertyName": "domain",
+          "active": true
+        },
+        {
+          "subscriptionType": "object.propertyChange",
+          "objectType": "company",
+          "propertyName": "lifecyclestage",
+          "active": true
+        },
+        { "subscriptionType": "object.creation", "objectType": "lead", "active": true },
+        {
+          "subscriptionType": "object.propertyChange",
+          "objectType": "lead",
+          "propertyName": "hs_pipeline_stage",
+          "active": true
+        }
+      ]
+    }
+  }
+}

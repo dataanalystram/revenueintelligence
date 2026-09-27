@@ -103,6 +103,7 @@ describe('HubSpot OAuth callback endpoint (API process)', () => {
     expect(res.text).not.toContain(params.get('code')!);
     expect(res.text).not.toContain(params.get('state')!);
     expect(await storedGrants(t)).toBe(1);
+    expect(fake.oauthCalls.revoke).toBe(0); // a successful install never revokes anything
   });
 
   it('replaying the same callback is refused (single-use state)', async () => {
@@ -158,14 +159,22 @@ describe('HubSpot OAuth callback endpoint (API process)', () => {
     expect(await storedGrants(t)).toBe(0);
   });
 
-  it('an install into a different HubSpot account → 409, nothing stored', async () => {
+  it('an install into a different HubSpot account → 409, nothing stored, the grant revoked', async () => {
     const t = await oauthTenant('cbmism');
     const { state } = await h.app.get(OAuthStateService).issue(t, 'hubspot');
+    const revokes = fake.oauthCalls.revoke;
     const res = await request(http)
       .get('/oauth/hubspot/callback')
       .query({ code: fake.issueCode(4004, APP.redirectUri), state })
       .expect(409);
     expect(res.body).toEqual({ status: 'error', reason: 'account_mismatch' });
     expect(await storedGrants(t)).toBe(0);
+    expect(fake.oauthCalls.revoke - revokes).toBe(1);
+    expect(fake.activeRefreshTokens(4004)).toBe(0);
+  });
+
+  it('no other refusal revokes anything (declined, bad state, bad response, suspended)', () => {
+    // Runs last: every earlier refusal in this file happened before the grant check.
+    expect(fake.requests.filter((r) => r.path === '/oauth/2026-03/token/revoke')).toHaveLength(1);
   });
 });

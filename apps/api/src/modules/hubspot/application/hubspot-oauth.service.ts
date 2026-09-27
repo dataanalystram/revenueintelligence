@@ -13,7 +13,7 @@ import {
   type TenantContext,
   type TenantOAuthGrantStore,
 } from '../../tenancy';
-import { HubSpotError } from '../errors';
+import { HubSpotError, isHubSpotError } from '../errors';
 import { HUBSPOT_CONFIG, type HubSpotConfig } from '../hubspot.config';
 import { HUBSPOT_OAUTH_SCOPES, HubSpotOAuthClient } from '../infrastructure/oauth-client';
 
@@ -97,9 +97,11 @@ export class HubSpotOAuthService {
       redirectUri: app.redirectUri,
     });
     if (tokens.accountId !== portalId) {
+      // Refused: nothing is stored, and the grant HubSpot just issued is given back.
+      const revoked = await this.revokeRefusedGrant(tokens.refreshToken, app);
       throw new HubSpotError(
         'account_mismatch',
-        `The app was installed in HubSpot account ${tokens.accountId ?? 'unknown'}, but this tenant is configured for ${portalId}; nothing was stored`,
+        `The app was installed in HubSpot account ${tokens.accountId ?? 'unknown'}, but this tenant is configured for ${portalId}; nothing was stored and the grant was ${revoked ? 'revoked' : 'NOT revoked'}`,
       );
     }
     if (!tokens.refreshToken) {
@@ -119,6 +121,39 @@ export class HubSpotOAuthService {
     this.rejected.delete(ctx.tenantId);
     this.logger.log({ msg: 'HubSpot app installed', tenantId: ctx.tenantId, accountId: portalId });
     return { tenantId: ctx.tenantId, tenantSlug: ctx.tenantSlug, accountId: portalId };
+  }
+
+  /**
+   * The one approved non-read call (ADR 0011): revokes the refresh token of a
+   * grant `completeInstall` has just refused because HubSpot issued it for a
+   * different account. The grant was never stored and is not usable by the
+   * platform; revoking it means it does not stay valid at HubSpot either.
+   * Best effort: a failure is logged (never the token) and reported in the
+   * refusal, and the install is refused either way.
+   */
+  private async revokeRefusedGrant(
+    refreshToken: Secret | undefined,
+    app: { clientId: string; clientSecret: Secret },
+  ): Promise<boolean> {
+    if (!refreshToken) return false;
+    try {
+      await this.client.revokeRefreshToken({
+        refreshToken,
+        clientId: app.clientId,
+        clientSecret: app.clientSecret,
+      });
+      this.logger.warn({ msg: 'Refused HubSpot grant for another account revoked', revoked: true });
+      return true;
+    } catch (err) {
+      if (!isHubSpotError(err)) throw err;
+      this.logger.warn({
+        msg: 'Refused HubSpot grant for another account could NOT be revoked',
+        revoked: false,
+        kind: err.kind,
+        status: err.details.status,
+      });
+      return false;
+    }
   }
 
   /**

@@ -5,7 +5,7 @@ import helmet from 'helmet';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
 import type { AppConfig } from './platform/config';
-import { AllExceptionsFilter } from './platform/http';
+import { AllExceptionsFilter, rawRequestBody } from './platform/http';
 
 /**
  * Builds the configured HTTP application. Shared by main.ts and the
@@ -19,6 +19,8 @@ export async function createApiApp(config: AppConfig): Promise<INestApplication>
   });
   app.useLogger(app.get(Logger));
   app.use(helmet());
+  // Webhook routes get their body as raw bytes (signature verification), size-limited.
+  app.use('/webhooks', rawRequestBody());
   app.disable('x-powered-by');
   app.useGlobalFilters(new AllExceptionsFilter());
   app.enableShutdownHooks();

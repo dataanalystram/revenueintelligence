@@ -26,7 +26,37 @@ export {
 } from './application/hubspot-oauth.service';
 export { HUBSPOT_OBJECT_FOR_KIND, HubSpotCrmReader } from './application/hubspot-crm-reader';
 export { HubSpotModule, HubSpotOAuthHttpModule } from './hubspot.module';
-export { HUBSPOT_OAUTH_SCOPES, assertOAuthTokenRequest } from './infrastructure/oauth-client';
+export {
+  HUBSPOT_OAUTH_REVOKE_PATH,
+  HUBSPOT_OAUTH_SCOPES,
+  assertOAuthRequest,
+} from './infrastructure/oauth-client';
+export {
+  HubSpotWebhookService,
+  type UnroutableReason,
+  type WebhookOutcome,
+  type WebhookRequest,
+} from './application/hubspot-webhook.service';
+export {
+  WebhookReceiptRepository,
+  type RecordedDeliveries,
+  type WebhookReceiptSummary,
+} from './infrastructure/webhook-receipt.repository';
+export {
+  SIGNATURE_V3_HEADER,
+  TIMESTAMP_HEADER,
+  WEBHOOK_MAX_AGE_MS,
+  WEBHOOK_MAX_FUTURE_SKEW_MS,
+  externalRequestUri,
+  signatureV3,
+  signedUri,
+  verifySignatureV3,
+} from './infrastructure/webhook-signature';
+export {
+  WEBHOOK_MAX_EVENTS,
+  parseWebhookBatch,
+  type WebhookEvent,
+} from './infrastructure/webhook-events';
 export {
   HubSpotReader,
   type AssociationReadFailure,
