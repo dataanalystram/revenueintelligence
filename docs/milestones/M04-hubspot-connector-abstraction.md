@@ -174,6 +174,22 @@ inactive tenants (409) no longer surface as 500 in the callback; only the
 canonical signature spelling verifies (M15); ADR and runbook note that the API
 now loads the HubSpot module and that a failed callback burns the install link.
 
+A second fresh-context review of the fix commit (`4f7a913..7decfb8`) returned
+**PASS WITH NITS**. It confirmed the four fixes and asked for one test, which
+exposed a real bug:
+
+- **Suspended tenant at the callback** returned `400 invalid_state`, because
+  state redemption turned every tenant-context error into "unknown or used".
+  Now only a missing tenant or malformed id does; a suspended tenant gets
+  `409 tenant_not_ready`. The new test failed before the fix (400) and passes
+  after.
+- Nits fixed: the rejected-token mark is a SHA-256 digest, never the token; it
+  is cleared only when a refresh produced a different token, and a rejected
+  token is never cached (closes a narrow race where a pending refresh could
+  re-cache a just-rejected token); a test proves a caller succeeds after a
+  failed shared refresh.
+- Mutations M1, M2, M3 and M14 re-run after these changes: still caught.
+
 ## Open questions (for M5)
 
 1. Does HubSpot rotate refresh tokens on refresh? Both cases are handled and

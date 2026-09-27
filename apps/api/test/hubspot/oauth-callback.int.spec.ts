@@ -149,6 +149,15 @@ describe('HubSpot OAuth callback endpoint (API process)', () => {
     expect(await storedGrants(t)).toBe(0);
   });
 
+  it('a callback for a suspended tenant → 409 tenant_not_ready (not 500), nothing stored', async () => {
+    const t = await oauthTenant('cbsusp');
+    const query = await consent(t);
+    await h.registry.suspend(t.tenantId);
+    const res = await request(http).get(`/oauth/hubspot/callback${query}`).expect(409);
+    expect(res.body).toEqual({ status: 'error', reason: 'tenant_not_ready' });
+    expect(await storedGrants(t)).toBe(0);
+  });
+
   it('an install into a different HubSpot account → 409, nothing stored', async () => {
     const t = await oauthTenant('cbmism');
     const { state } = await h.app.get(OAuthStateService).issue(t, 'hubspot');

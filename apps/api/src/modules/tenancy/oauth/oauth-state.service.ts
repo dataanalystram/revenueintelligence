@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { TokenCipherSource } from '../../../platform/crypto';
 import { TenantIdSchema } from '../../domain';
 import { TenantContextService } from '../application/tenant-context.service';
+import { InvalidTenantContextError, TenantNotFoundError } from '../errors';
 import { TenantDatabase, tenantClient } from '../infrastructure/tenant-database';
 import type { TenantContext } from '../tenant-context';
 import { OAUTH_SYSTEMS, type OAuthSystem } from './oauth-grants';
@@ -109,8 +110,13 @@ export class OAuthStateService {
     let ctx: TenantContext;
     try {
       ctx = await this.contexts.forTenantId(claims.t);
-    } catch {
-      throw new OAuthStateError('unknown_or_used');
+    } catch (err) {
+      // A tenant that no longer exists: the state can never be redeemed. A
+      // suspended tenant is a different answer (TenantInactiveError), kept as is.
+      if (err instanceof TenantNotFoundError || err instanceof InvalidTenantContextError) {
+        throw new OAuthStateError('unknown_or_used');
+      }
+      throw err;
     }
     const consumed = await this.db.transaction(ctx, async (tx) => {
       const rows = await tenantClient(tx).$queryRaw<{ n: number }[]>`

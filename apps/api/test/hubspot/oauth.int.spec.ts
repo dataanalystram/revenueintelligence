@@ -571,6 +571,21 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
       expect(fake.oauthCalls.refreshToken - refreshes).toBe(1);
     });
 
+    it('after a failed shared refresh, the next caller refreshes and succeeds', async () => {
+      const t = await provisionTenant(h, 'oarefail');
+      await configureOAuth(t, '3003');
+      await install(t);
+      await expireAccessToken(t);
+      fake.fail({
+        match: /^POST \/oauth\/2026-09\/token$/,
+        status: 503,
+        body: { message: 'down' },
+      });
+      const failed = await hubspotRejection(oauth(h).accessToken(t, '3003'));
+      expect(failed.kind).toBe('server_error');
+      await expect(oauth(h).accessToken(t, '3003')).resolves.toBeInstanceOf(Secret);
+    });
+
     it('both tokens revoked → reauthorization_required after one re-authentication attempt', async () => {
       const t = await provisionTenant(h, 'oarevall');
       await configureOAuth(t, '3003');

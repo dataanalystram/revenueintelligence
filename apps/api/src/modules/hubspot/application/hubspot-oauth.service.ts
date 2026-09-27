@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { TokenDecryptionError, TokenKeyError } from '../../../platform/crypto';
 import { SECRET_PROVIDER, Secret, type SecretProvider } from '../../../platform/secrets';
@@ -54,7 +55,11 @@ export class HubSpotOAuthService {
   private readonly cache = new Map<string, CachedToken>();
   /** One pending refresh per tenant in this process (the advisory lock covers other processes). */
   private readonly inflight = new Map<string, Promise<CachedToken>>();
-  /** Access tokens HubSpot rejected with 401 (revoked, or replaced by a reinstall). Memory only. */
+  /**
+   * SHA-256 digest of the access token HubSpot last rejected with 401 (revoked,
+   * or replaced by a reinstall), per tenant. A digest, so the token itself is
+   * never held outside a redacting Secret. Memory only.
+   */
   private readonly rejected = new Map<string, string>();
 
   constructor(
@@ -156,7 +161,7 @@ export class HubSpotOAuthService {
   invalidate(ctx: TenantContext, rejected: Secret): void {
     const cached = this.cache.get(ctx.tenantId);
     if (cached && cached.token.reveal() === rejected.reveal()) this.cache.delete(ctx.tenantId);
-    this.rejected.set(ctx.tenantId, rejected.reveal());
+    this.rejected.set(ctx.tenantId, digest(rejected));
   }
 
   private async refreshUnderLock(
@@ -201,7 +206,10 @@ export class HubSpotOAuthService {
         };
       }),
     );
-    this.rejected.delete(ctx.tenantId);
+    // Clear the mark only when the refresh produced a different token: a
+    // pending refresh that read the grant before a concurrent 401 may return
+    // the very token that was just rejected.
+    if (!this.isRejected(ctx, refreshed.token)) this.rejected.delete(ctx.tenantId);
     return refreshed;
   }
 
@@ -240,11 +248,11 @@ export class HubSpotOAuthService {
   }
 
   private isRejected(ctx: TenantContext, token: Secret): boolean {
-    return this.rejected.get(ctx.tenantId) === token.reveal();
+    return this.rejected.get(ctx.tenantId) === digest(token);
   }
 
   private remember(ctx: TenantContext, token: CachedToken): Secret {
-    this.cache.set(ctx.tenantId, token);
+    if (!this.isRejected(ctx, token.token)) this.cache.set(ctx.tenantId, token);
     return token.token;
   }
 
@@ -319,4 +327,8 @@ export class HubSpotOAuthService {
       throw err;
     }
   }
+}
+
+function digest(token: Secret): string {
+  return createHash('sha256').update(token.reveal(), 'utf8').digest('hex');
 }
