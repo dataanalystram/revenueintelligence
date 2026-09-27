@@ -157,7 +157,10 @@ describe('HubSpot connector (tenant-scoped)', () => {
       await enable(b, '2002');
 
       const readerA = await connector.forTenant(a);
-      await expect(readerA.getAccount()).resolves.toMatchObject({ portalId: '1001' });
+      await expect(readerA.getAccount()).resolves.toMatchObject({
+        system: 'hubspot',
+        accountId: '1001',
+      });
       expect(fake.requests.at(-1)!.authorization).toBe(`Bearer ${TOKEN_A}`);
       const requestsWithA = fake.requests.length;
 
@@ -167,7 +170,10 @@ describe('HubSpot connector (tenant-scoped)', () => {
 
       setToken(b, TOKEN_B);
       const readerB = await connector.forTenant(b);
-      await expect(readerB.getAccount()).resolves.toMatchObject({ portalId: '2002' });
+      await expect(readerB.getAccount()).resolves.toMatchObject({
+        system: 'hubspot',
+        accountId: '2002',
+      });
       expect(fake.requests.at(-1)!.authorization).toBe(`Bearer ${TOKEN_B}`);
       expect(
         fake.requests.slice(requestsWithA).every((r) => r.authorization === `Bearer ${TOKEN_B}`),

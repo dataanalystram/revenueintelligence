@@ -48,7 +48,10 @@ describe('database migrations and schema guard', () => {
           'SELECT migration_name, finished_at FROM _prisma_migrations ORDER BY migration_name',
         ),
       );
-      expect(rows.map((r) => r.migration_name)).toEqual(['20260926120000_tenancy_and_identity']);
+      expect(rows.map((r) => r.migration_name)).toEqual([
+        '20260926120000_tenancy_and_identity',
+        '20260927120000_oauth_tokens_and_states',
+      ]);
       expect(rows.every((r) => r.finished_at !== null)).toBe(true);
     });
 
@@ -129,9 +132,11 @@ describe('database migrations and schema guard', () => {
           'persons',
           'companies',
           'person_external_refs',
+          'tenant_oauth_tokens',
+          'tenant_oauth_states',
         ]),
       );
-      expect(tables.length).toBeGreaterThanOrEqual(14);
+      expect(tables.length).toBeGreaterThanOrEqual(16);
     });
 
     it('every table has row-level security enabled and forced', () => {

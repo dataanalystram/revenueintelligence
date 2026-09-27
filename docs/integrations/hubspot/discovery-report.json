@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-26T23:19:46.576Z",
+  "generatedAt": "2026-09-27T11:48:52.770Z",
   "apiVersion": "2026-09",
   "apiHost": "api.hubapi.com",
   "account": {
@@ -30199,13 +30199,13 @@
         "types": [
           {
             "category": "standard",
-            "typeId": 608,
-            "label": null
+            "typeId": 578,
+            "label": "Primary"
           },
           {
             "category": "standard",
-            "typeId": 578,
-            "label": "Primary"
+            "typeId": 608,
+            "label": null
           }
         ]
       }
@@ -30237,13 +30237,13 @@
         "types": [
           {
             "category": "standard",
-            "typeId": 579,
-            "label": "Lead with Primary Contact"
+            "typeId": 609,
+            "label": null
           },
           {
             "category": "standard",
-            "typeId": 609,
-            "label": null
+            "typeId": 579,
+            "label": "Lead with Primary Contact"
           }
         ]
       }
@@ -30256,13 +30256,13 @@
         "types": [
           {
             "category": "standard",
-            "typeId": 581,
-            "label": "Lead with Primary Company"
+            "typeId": 611,
+            "label": null
           },
           {
             "category": "standard",
-            "typeId": 611,
-            "label": null
+            "typeId": 581,
+            "label": "Lead with Primary Company"
           }
         ]
       }
@@ -30275,6 +30275,11 @@
         "types": [
           {
             "category": "standard",
+            "typeId": 931,
+            "label": "Billing Contact"
+          },
+          {
+            "category": "standard",
             "typeId": 1,
             "label": "Primary"
           },
@@ -30282,11 +30287,6 @@
             "category": "standard",
             "typeId": 279,
             "label": null
-          },
-          {
-            "category": "standard",
-            "typeId": 931,
-            "label": "Billing Contact"
           }
         ]
       }
@@ -30299,11 +30299,6 @@
         "types": [
           {
             "category": "standard",
-            "typeId": 2,
-            "label": "Contact with Primary Company"
-          },
-          {
-            "category": "standard",
             "typeId": 280,
             "label": null
           },
@@ -30311,6 +30306,11 @@
             "category": "standard",
             "typeId": 930,
             "label": "Billing Contact"
+          },
+          {
+            "category": "standard",
+            "typeId": 2,
+            "label": "Contact with Primary Company"
           }
         ]
       }
@@ -30480,5 +30480,14 @@
     "POST /crm/associations/2026-09/contacts/companies/batch/read": 1,
     "POST /crm/associations/2026-09/contacts/leads/batch/read": 1,
     "POST /crm/associations/2026-09/companies/leads/batch/read": 1
+  },
+  "readThrough": {
+    "port": "CrmReader",
+    "system": "hubspot",
+    "objectKinds": {
+      "contacts": "person",
+      "companies": "company",
+      "leads": "lead"
+    }
   }
 }

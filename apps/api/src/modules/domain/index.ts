@@ -7,6 +7,8 @@
  */
 export * from './attribution';
 export * from './company';
+export * from './connector-error';
+export * from './crm-reader';
 export * from './email';
 export * from './external-ref';
 export * from './external-snapshots';

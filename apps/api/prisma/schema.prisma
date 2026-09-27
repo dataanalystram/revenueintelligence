@@ -36,6 +36,8 @@ model Tenant {
   integrations        TenantIntegration[]
   flowSettings        TenantFlowSetting[]
   credentialRefs      TenantCredentialRef[]
+  oauthTokens         TenantOAuthToken[]
+  oauthStates         TenantOAuthState[]
   qualificationConfig TenantQualificationConfig?
   products            TenantProduct[]
   fieldMappings       TenantFieldMapping[]
@@ -98,6 +100,44 @@ model TenantCredentialRef {
 
   @@id([tenantId, system, name])
   @@map("tenant_credential_refs")
+}
+
+/// An OAuth grant a tenant gave the platform by installing its app (ADR 0010).
+/// Token columns hold AES-256-GCM ciphertext ("v1:…", bound to tenant, system
+/// and column), never a token: a CHECK constraint rejects anything else.
+model TenantOAuthToken {
+  tenantId             String    @map("tenant_id") @db.Uuid
+  /// hubspot (later: other OAuth-based systems)
+  system               String
+  /// The external account the grant belongs to (HubSpot: portal id).
+  accountId            String    @map("account_id")
+  refreshTokenEnc      String    @map("refresh_token_enc")
+  /// Shared short-lived access token, so one refresh serves every process.
+  accessTokenEnc       String?   @map("access_token_enc")
+  accessTokenExpiresAt DateTime? @map("access_token_expires_at") @db.Timestamptz(3)
+  scopes               String[]  @default([])
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt            DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, system])
+  @@map("tenant_oauth_tokens")
+}
+
+/// A pending OAuth install: redeemed exactly once, by an atomic DELETE (ADR 0010).
+/// Stores only a hash of the state's nonce.
+model TenantOAuthState {
+  tenantId  String   @map("tenant_id") @db.Uuid
+  nonceHash String   @map("nonce_hash")
+  system    String
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(3)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, nonceHash])
+  @@map("tenant_oauth_states")
 }
 
 model TenantQualificationConfig {

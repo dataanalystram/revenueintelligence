@@ -3,9 +3,10 @@
 `scripts/verify-runtime.sh` sources every `*.sh` file in this directory, in
 name order, after its core checks and before shutdown.
 
-| File            | Milestone | Checks                                                                  |
-| --------------- | --------- | ----------------------------------------------------------------------- |
-| `20-hubspot.sh` | M3        | HubSpot CLIs against a local fake: read-only setup, discovery, refusals |
+| File                  | Milestone | Checks                                                                                                                                           |
+| --------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `20-hubspot.sh`       | M3        | HubSpot CLIs against a local fake: read-only setup, discovery, refusals                                                                          |
+| `30-hubspot-oauth.sh` | M4        | OAuth install via a second API process: callback, single-use state, encrypted grant, CrmReader discovery, one refresh across processes, no leaks |
 
 Conventions for a check file (e.g. `20-hubspot.sh`):
 

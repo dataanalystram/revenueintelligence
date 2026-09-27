@@ -89,3 +89,5 @@ platform changed substantially in 2025–2026:
   life (about March 2028), re-running the live tests.
 - Lead webhooks, OAuth install and writes are open items (see
   `docs/integrations/hubspot/discovery-findings.md`).
+- Milestone 4 put this connector behind the vendor-neutral `CrmReader` port
+  and added the OAuth token source and encrypted grant storage (ADR 0010).

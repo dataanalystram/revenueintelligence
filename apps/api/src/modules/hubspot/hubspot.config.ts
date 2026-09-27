@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+/** Upper bound of HUBSPOT_OAUTH_TIMEOUT_MS; the refresh lock budget depends on it (ADR 0010). */
+export const HUBSPOT_OAUTH_MAX_TIMEOUT_MS = 20_000;
+
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]']);
 
 /**
@@ -7,15 +10,14 @@ const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]']);
  * data). Tenants cannot change the API host, which rules out SSRF through
  * tenant configuration.
  */
+/** HTTPS, or plain HTTP only for a loopback fake server (tests, runtime verification). */
+const secureUrl = z.url().refine((value) => {
+  const url = new URL(value);
+  return url.protocol === 'https:' || (url.protocol === 'http:' && LOOPBACK.has(url.hostname));
+}, 'must use https (http is allowed only for a loopback test server)');
+
 export const HubSpotEnvSchema = z.object({
-  HUBSPOT_API_BASE_URL: z
-    .url()
-    .default('https://api.hubapi.com')
-    .refine((value) => {
-      const url = new URL(value);
-      // Plain HTTP only for a loopback fake server (tests, runtime verification).
-      return url.protocol === 'https:' || (url.protocol === 'http:' && LOOPBACK.has(url.hostname));
-    }, 'must use https (http is allowed only for a loopback test server)'),
+  HUBSPOT_API_BASE_URL: secureUrl.default('https://api.hubapi.com'),
   /**
    * HubSpot date-based API version used for CRM endpoints (/YYYY-MM/). Versions
    * are locked once GA; bump deliberately and re-run the live tests.
@@ -43,6 +45,28 @@ export const HubSpotEnvSchema = z.object({
    * lowest tier.
    */
   HUBSPOT_REQUESTS_PER_10S: z.coerce.number().int().min(1).max(190).default(90),
+
+  // --- OAuth app (ADR 0010). Optional: only tenants using `auth: oauth` need them.
+  /** Date-based version of HubSpot's OAuth API (`/oauth/{version}/token`). */
+  HUBSPOT_OAUTH_API_VERSION: z
+    .string()
+    .regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'must be YYYY-MM')
+    .default('2026-09'),
+  /** HubSpot's consent page; the account id is appended (`…/oauth/{portalId}/authorize`). */
+  HUBSPOT_OAUTH_AUTHORIZE_BASE_URL: secureUrl.default('https://app.hubspot.com/oauth'),
+  HUBSPOT_OAUTH_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(HUBSPOT_OAUTH_MAX_TIMEOUT_MS)
+    .default(10_000),
+  /** The projects-based app's client id (not a secret; the client secret is a SecretProvider value). */
+  HUBSPOT_APP_CLIENT_ID: z
+    .string()
+    .regex(/^[A-Za-z0-9-]{8,64}$/)
+    .optional(),
+  /** Must match the app's configured redirect URL exactly. */
+  HUBSPOT_APP_REDIRECT_URI: secureUrl.optional(),
 });
 
 export interface HubSpotConfig {
@@ -52,6 +76,13 @@ export interface HubSpotConfig {
   readonly timeoutMs: number;
   readonly maxRetries: number;
   readonly requestsPer10s: number;
+  readonly oauth: {
+    readonly apiVersion: string;
+    readonly authorizeBaseUrl: string;
+    readonly timeoutMs: number;
+    readonly clientId: string | undefined;
+    readonly redirectUri: string | undefined;
+  };
 }
 
 export const HUBSPOT_CONFIG = Symbol('HUBSPOT_CONFIG');
@@ -70,5 +101,12 @@ export function loadHubSpotConfig(env: NodeJS.ProcessEnv = process.env): HubSpot
     timeoutMs: e.HUBSPOT_REQUEST_TIMEOUT_MS,
     maxRetries: e.HUBSPOT_MAX_RETRIES,
     requestsPer10s: e.HUBSPOT_REQUESTS_PER_10S,
+    oauth: Object.freeze({
+      apiVersion: e.HUBSPOT_OAUTH_API_VERSION,
+      authorizeBaseUrl: e.HUBSPOT_OAUTH_AUTHORIZE_BASE_URL.replace(/\/+$/, ''),
+      timeoutMs: e.HUBSPOT_OAUTH_TIMEOUT_MS,
+      clientId: e.HUBSPOT_APP_CLIENT_ID,
+      redirectUri: e.HUBSPOT_APP_REDIRECT_URI,
+    }),
   });
 }

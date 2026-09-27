@@ -67,6 +67,23 @@ module.exports = {
       to: { path: 'node_modules/@hubspot/' },
     },
     {
+      name: 'business-code-uses-crm-port',
+      severity: 'error',
+      comment:
+        'Business code reaches a CRM only through CRM_CONNECTOR / CrmReader (src/modules/crm, ADR 0010). ' +
+        'Only the connector itself, the composition roots and the CLI may import a CRM connector module.',
+      from: {
+        path: '^src/',
+        pathNot: [
+          '^src/modules/hubspot/',
+          '^src/cli/',
+          '^src/app\\.module\\.ts$',
+          '^src/worker\\.module\\.ts$',
+        ],
+      },
+      to: { path: '^src/modules/hubspot/' },
+    },
+    {
       name: 'gainsight-access-only-in-gainsight-connector',
       severity: 'error',
       from: { pathNot: '^src/modules/gainsight/' },

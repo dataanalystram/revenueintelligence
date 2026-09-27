@@ -53,6 +53,15 @@ The live run changed two assumptions:
    with `context.fromObjectId`. The connector now reports these as "without
    associations" rather than as failures, and the fake reproduces the shape.
 
+## Re-run through the CrmReader port (2026-09-27, Milestone 4)
+
+`discovery-report.json` was regenerated live after M4, when discovery started
+reading only through the vendor-neutral `CrmReader` port (ADR 0010). The
+report records this as `readThrough: { port: "CrmReader", system: "hubspot" }`
+with the kind mapping (contacts → person, companies → company, leads → lead).
+Every count, page, association type and reciprocity result is identical to the
+M3 run above; no endpoint changed.
+
 ## Platform and API
 
 | Finding                                                                                                                                                                                                                                                               | Status     |

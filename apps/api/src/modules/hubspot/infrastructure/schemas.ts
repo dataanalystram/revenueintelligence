@@ -50,7 +50,8 @@ export type HsPropertyDefinition = z.infer<typeof HsPropertyDefinitionSchema>;
 export const HsPropertyListSchema = z.object({ results: z.array(HsPropertyDefinitionSchema) });
 
 export const HsAssociationTypeSchema = z.object({
-  category: z.enum(['HUBSPOT_DEFINED', 'USER_DEFINED', 'INTEGRATOR_DEFINED']),
+  /** Open: a category HubSpot adds later maps to `other` instead of failing the read. */
+  category: z.string().min(1),
   typeId: z.number().int(),
   label: z.string().nullable().optional(),
 });
