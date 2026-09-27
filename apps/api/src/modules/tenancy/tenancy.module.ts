@@ -5,7 +5,10 @@ import { TenantCredentialsService } from './application/tenant-credentials.servi
 import { TenantRegistryService } from './application/tenant-registry.service';
 import { PrismaTenantConfigRepository } from './infrastructure/prisma-tenant-config.repository';
 import { PrismaTenantRegistryRepository } from './infrastructure/prisma-tenant-registry.repository';
+import { EncryptedDatabaseOAuthGrantStore } from './infrastructure/encrypted-oauth-grant.store';
 import { TenantDatabase } from './infrastructure/tenant-database';
+import { TENANT_OAUTH_GRANT_STORE } from './oauth/oauth-grants';
+import { OAuthStateService } from './oauth/oauth-state.service';
 
 @Module({
   providers: [
@@ -16,6 +19,8 @@ import { TenantDatabase } from './infrastructure/tenant-database';
     TenantRegistryService,
     TenantConfigService,
     TenantCredentialsService,
+    OAuthStateService,
+    { provide: TENANT_OAUTH_GRANT_STORE, useClass: EncryptedDatabaseOAuthGrantStore },
   ],
   exports: [
     TenantDatabase,
@@ -23,6 +28,8 @@ import { TenantDatabase } from './infrastructure/tenant-database';
     TenantRegistryService,
     TenantConfigService,
     TenantCredentialsService,
+    OAuthStateService,
+    TENANT_OAUTH_GRANT_STORE,
   ],
 })
 export class TenancyModule {}

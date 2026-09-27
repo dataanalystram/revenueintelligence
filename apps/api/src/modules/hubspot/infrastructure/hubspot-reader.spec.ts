@@ -5,6 +5,8 @@ import { HubSpotError } from '../errors';
 import { loadHubSpotConfig } from '../hubspot.config';
 import { HubSpotHttpClient } from './http-client';
 import { HubSpotReader } from './hubspot-reader';
+import { toAssociationType } from './mappers';
+import { HsAssociationTypeSchema } from './schemas';
 import { SlidingWindowRateLimiter } from './rate-limiter';
 import { backoffDelayMs, parseRetryAfterMs } from './retry';
 
@@ -331,6 +333,13 @@ describe('HubSpot process configuration', () => {
       timeoutMs: 15_000,
       maxRetries: 3,
       requestsPer10s: 90,
+      oauth: {
+        apiVersion: '2026-09',
+        authorizeBaseUrl: 'https://app.hubspot.com/oauth',
+        timeoutMs: 10_000,
+        clientId: undefined,
+        redirectUri: undefined,
+      },
     });
   });
 
@@ -348,5 +357,31 @@ describe('HubSpot process configuration', () => {
     expect(() => loadHubSpotConfig({ HUBSPOT_API_VERSION: 'v3' })).toThrow(/YYYY-MM/);
     expect(() => loadHubSpotConfig({ HUBSPOT_REQUESTS_PER_10S: '500' })).toThrow();
     expect(() => loadHubSpotConfig({ HUBSPOT_MAX_RETRIES: '50' })).toThrow();
+  });
+});
+
+describe('association categories (technical debt #8)', () => {
+  it('maps known HubSpot categories, and a category HubSpot adds later to `other` instead of failing', () => {
+    expect(toAssociationType({ category: 'HUBSPOT_DEFINED', typeId: 1, label: 'Primary' })).toEqual(
+      {
+        category: 'standard',
+        typeId: 1,
+        label: 'Primary',
+      },
+    );
+    expect(toAssociationType({ category: 'USER_DEFINED', typeId: 9, label: null }).category).toBe(
+      'user_defined',
+    );
+    expect(toAssociationType({ category: 'INTEGRATOR_DEFINED', typeId: 9 }).category).toBe(
+      'integrator_defined',
+    );
+    expect(toAssociationType({ category: 'SOME_FUTURE_CATEGORY', typeId: 9 }).category).toBe(
+      'other',
+    );
+    // Inherited object keys are not categories.
+    expect(toAssociationType({ category: 'toString', typeId: 9 }).category).toBe('other');
+    expect(HsAssociationTypeSchema.safeParse({ category: 'NEW_KIND', typeId: 3 }).success).toBe(
+      true,
+    );
   });
 });

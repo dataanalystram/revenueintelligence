@@ -7,6 +7,7 @@ import { HubSpotHttpClient } from '../infrastructure/http-client';
 import { HubSpotReader } from '../infrastructure/hubspot-reader';
 import { SlidingWindowRateLimiter } from '../infrastructure/rate-limiter';
 import type { HubSpotConnector } from './hubspot-connector.service';
+import { HubSpotCrmReader } from './hubspot-crm-reader';
 import { HubSpotDiscoveryService } from './hubspot-discovery.service';
 
 describe('HubSpotDiscoveryService (account-info version probe)', () => {
@@ -39,7 +40,7 @@ describe('HubSpotDiscoveryService (account-info version probe)', () => {
           tenantKey: 't',
           token: new Secret('tok'),
         });
-        return { reader, account: await reader.getAccount() };
+        return { reader: new HubSpotCrmReader(reader), account: await reader.getAccount() };
       },
     } as unknown as HubSpotConnector;
     return new HubSpotDiscoveryService(connector, config);
@@ -75,5 +76,15 @@ describe('HubSpotDiscoveryService (account-info version probe)', () => {
     const report = await discovery({}).discover(ctx);
     expect(report.accountInfoVersions).toEqual({ '2026-09': { status: 'ok' } });
     expect(report.endpointsUsed['GET /account-info/2026-09/details']).toBe(1);
+  });
+
+  it('reads through the vendor-neutral CrmReader port, keyed by canonical kind', async () => {
+    const report = await discovery({}).discover(ctx);
+    expect(report.readThrough).toEqual({
+      port: 'CrmReader',
+      system: 'hubspot',
+      objectKinds: { contacts: 'person', companies: 'company', leads: 'lead' },
+    });
+    expect(report.objects.leads.records).toMatchObject({ status: 'ok', recordsRead: 3 });
   });
 });

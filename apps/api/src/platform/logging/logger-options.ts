@@ -30,6 +30,16 @@ export const REDACT_PATHS = [
   '*.api_key',
 ];
 
+/**
+ * Request log records never carry query strings: they can hold one-time
+ * credentials (the OAuth callback's `code` and `state`). Only the path is kept.
+ */
+export function serializeRequest(req: Record<string, unknown>): Record<string, unknown> {
+  const { query: _query, ...rest } = req;
+  const url = typeof rest.url === 'string' ? rest.url.split('?')[0] : rest.url;
+  return { ...rest, url };
+}
+
 /** Reuses a well-formed inbound request id, otherwise generates one. */
 export function resolveRequestId(req: IncomingMessage, res: ServerResponse): string {
   const inbound = req.headers[REQUEST_ID_HEADER];
@@ -46,6 +56,9 @@ export function buildLoggerParams(config: AppConfig): Params {
       base: { service: config.telemetry.serviceName, env: config.nodeEnv },
       redact: { paths: REDACT_PATHS, censor: '[REDACTED]' },
       genReqId: resolveRequestId,
+      // Applied after pino-http's standard request serializer.
+      wrapSerializers: true,
+      serializers: { req: serializeRequest },
       customLogLevel: (_req, res, err) => {
         if (err || res.statusCode >= 500) return 'error';
         if (res.statusCode >= 400) return 'warn';

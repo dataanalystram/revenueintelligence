@@ -82,7 +82,16 @@ export const ExternalFieldDefinitionSchema = z
   .readonly();
 export type ExternalFieldDefinition = z.infer<typeof ExternalFieldDefinitionSchema>;
 
-export const AssociationCategorySchema = z.enum(['standard', 'user_defined', 'integrator_defined']);
+/**
+ * `other` is the fallback for a category the external system adds later, so
+ * reads keep working (the raw category is not needed by business code).
+ */
+export const AssociationCategorySchema = z.enum([
+  'standard',
+  'user_defined',
+  'integrator_defined',
+  'other',
+]);
 
 export const ExternalAssociationTypeSchema = z
   .object({

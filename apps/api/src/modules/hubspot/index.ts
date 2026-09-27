@@ -1,7 +1,8 @@
 /**
- * HubSpot connector (read-only in Milestone 3). Business code obtains a
- * tenant-bound reader from `HubSpotConnector.forTenant(ctx)` and works with
- * vendor-neutral read models; HubSpot payloads never leave this module.
+ * HubSpot connector (read-only). Business code does NOT import this module: it
+ * injects `CRM_CONNECTOR` (src/modules/crm) and works with the vendor-neutral
+ * `CrmReader`. Only composition roots (app/worker modules) and the CLI import
+ * it (dependency-cruiser enforces this). HubSpot payloads never leave it.
  */
 export {
   HUBSPOT_ACCESS_TOKEN,
@@ -17,7 +18,15 @@ export {
 } from './application/hubspot-discovery.service';
 export { HubSpotError, isHubSpotError, type HubSpotErrorKind } from './errors';
 export { HUBSPOT_CONFIG, loadHubSpotConfig, type HubSpotConfig } from './hubspot.config';
-export { HubSpotModule } from './hubspot.module';
+export {
+  ACCESS_TOKEN_SKEW_MS,
+  HUBSPOT_APP_CLIENT_SECRET,
+  HubSpotOAuthService,
+  type CompletedInstall,
+} from './application/hubspot-oauth.service';
+export { HUBSPOT_OBJECT_FOR_KIND, HubSpotCrmReader } from './application/hubspot-crm-reader';
+export { HubSpotModule, HubSpotOAuthHttpModule } from './hubspot.module';
+export { HUBSPOT_OAUTH_SCOPES, assertOAuthTokenRequest } from './infrastructure/oauth-client';
 export {
   HubSpotReader,
   type AssociationReadFailure,

@@ -29,6 +29,13 @@ export {
   tenantClient,
   type TenantTransaction,
 } from './infrastructure/tenant-database';
+export * from './oauth/oauth-grants';
+export {
+  OAUTH_STATE_TTL_MS,
+  OAuthStateError,
+  OAuthStateService,
+  type OAuthStateFailure,
+} from './oauth/oauth-state.service';
 export { TenancyModule } from './tenancy.module';
 export * from './tenant';
 export { assertTenantContext, isTenantContext, TenantContext } from './tenant-context';

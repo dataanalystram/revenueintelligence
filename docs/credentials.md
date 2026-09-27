@@ -58,20 +58,33 @@ Service Key, static app token or, later, OAuth access token), registered by
 `hubspot:configure`. The cloud environment must also allow outbound HTTPS to
 `api.hubapi.com` (environment settings → Network access).
 
-### M4–M5 — OAuth app and webhooks (planned)
+### M4 — OAuth architecture (built; nothing to set for M4)
 
-Juniper will install our app through OAuth, so M4 adds an OAuth-authenticated
-project app:
+M4 builds the complete OAuth install and refresh flow and tests it against a
+local fake HubSpot ([ADR 0010](adr/0010-crm-connector-port-and-oauth.md)).
+**No new credentials were needed for M4**: tests generate their own keys, and
+the live checks keep using the test account's Service Key.
 
-| Variable                    | Where it comes from                                                                             |
-| --------------------------- | ----------------------------------------------------------------------------------------------- |
-| `HUBSPOT_APP_ID`            | App ID shown on the project app's overview                                                      |
-| `HUBSPOT_APP_CLIENT_ID`     | App → Auth tab                                                                                  |
-| `HUBSPOT_APP_CLIENT_SECRET` | App → Auth tab (also used to verify webhook signatures)                                         |
-| `HUBSPOT_APP_REDIRECT_URI`  | We choose it, e.g. `http://localhost:3000/oauth/hubspot/callback`; it must match the app config |
+When the first real install happens (M5), the environment needs:
+
+| Variable                        | Where it comes from                                                                        | Secret? |
+| ------------------------------- | ------------------------------------------------------------------------------------------ | ------- |
+| `HUBSPOT_APP_CLIENT_ID`         | The projects-based app → Auth                                                              | no      |
+| `HUBSPOT_APP_CLIENT_SECRET`     | The projects-based app → Auth (also verifies webhook signatures, M5)                       | **yes** |
+| `HUBSPOT_APP_REDIRECT_URI`      | We choose it (the public callback, `…/oauth/hubspot/callback`); must match the app exactly | no      |
+| `PLATFORM_TOKEN_ENCRYPTION_KEY` | Generated once per environment: `openssl rand -base64 32`                                  | **yes** |
+
+`PLATFORM_TOKEN_ENCRYPTION_KEY` encrypts every tenant's stored OAuth tokens
+(AES-256-GCM) and signs install states. Losing or changing it makes stored
+grants unreadable, and those tenants must reinstall the app. Tenants' refresh
+and access tokens are never set by hand: the platform stores them, encrypted,
+in `tenant_oauth_tokens` when a tenant installs the app.
+
+### M5 — Webhooks (planned)
 
 Webhooks need a public HTTPS URL. For local testing we will use a tunnel
-(for example `cloudflared` or `ngrok`); that is decided at M5.
+(for example `cloudflared` or `ngrok`); that is decided at M5, together with
+the first real OAuth install.
 
 ### M10 — Gainsight CS (read-only)
 

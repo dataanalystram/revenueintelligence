@@ -1,19 +1,19 @@
 import { Inject, Injectable } from '@nestjs/common';
-import type {
-  ExternalAssociation,
-  ExternalAssociationType,
-  ExternalFieldDefinition,
+import {
+  CRM_OBJECT_KINDS,
+  type CrmObjectKind,
+  type CrmReader,
+  type ExternalAssociation,
+  type ExternalAssociationType,
+  type ExternalFieldDefinition,
 } from '../../domain';
 import type { TenantContext } from '../../tenancy';
 import { HubSpotError } from '../errors';
 import { HUBSPOT_CONFIG, type HubSpotConfig } from '../hubspot.config';
-import type { HubSpotAccount, HubSpotReader } from '../infrastructure/hubspot-reader';
-import {
-  HUBSPOT_DEFAULT_PROPERTIES,
-  HUBSPOT_OBJECT_TYPES,
-  type HubSpotObjectType,
-} from '../infrastructure/mappers';
+import type { HubSpotAccount } from '../infrastructure/hubspot-reader';
+import { HUBSPOT_DEFAULT_PROPERTIES, type HubSpotObjectType } from '../infrastructure/mappers';
 import { HubSpotConnector } from './hubspot-connector.service';
+import { HUBSPOT_OBJECT_FOR_KIND } from './hubspot-crm-reader';
 
 /**
  * Outcome of one discovery probe. A probe that HubSpot refuses is a finding
@@ -112,6 +112,15 @@ export interface HubSpotDiscoveryReport {
   readonly accountInfoVersions: Readonly<Record<string, Probe<Record<never, never>>>>;
   /** Every HubSpot request discovery made (`METHOD /path/{id}` → count). */
   readonly endpointsUsed: Readonly<Record<string, number>>;
+  /**
+   * How discovery read the account: through the vendor-neutral CrmReader port
+   * (ADR 0010), asking for canonical kinds mapped to these HubSpot objects.
+   */
+  readonly readThrough: {
+    readonly port: 'CrmReader';
+    readonly system: string;
+    readonly objectKinds: Readonly<Record<HubSpotObjectType, CrmObjectKind>>;
+  };
 }
 
 export interface DiscoveryOptions {
@@ -127,26 +136,30 @@ export interface DiscoveryOptions {
 
 export const TEST_ACCOUNT_TYPES = ['DEVELOPER_TEST', 'SANDBOX'] as const;
 
-const LABEL_PAIRS: readonly (readonly [HubSpotObjectType, HubSpotObjectType])[] = [
-  ['leads', 'contacts'],
-  ['leads', 'companies'],
-  ['contacts', 'leads'],
-  ['companies', 'leads'],
-  ['contacts', 'companies'],
-  ['companies', 'contacts'],
+type KindPair = readonly [CrmObjectKind, CrmObjectKind];
+
+const LABEL_PAIRS: readonly KindPair[] = [
+  ['lead', 'person'],
+  ['lead', 'company'],
+  ['person', 'lead'],
+  ['company', 'lead'],
+  ['person', 'company'],
+  ['company', 'person'],
 ];
 
-const SAMPLE_PAIRS: readonly (readonly [HubSpotObjectType, HubSpotObjectType])[] = [
-  ['leads', 'contacts'],
-  ['leads', 'companies'],
-  ['contacts', 'companies'],
+const SAMPLE_PAIRS: readonly KindPair[] = [
+  ['lead', 'person'],
+  ['lead', 'company'],
+  ['person', 'company'],
 ];
 
 /** Reverse of the Lead pairs: sampled from the records the Leads link to. */
-const REVERSE_PAIRS: readonly (readonly [HubSpotObjectType, HubSpotObjectType])[] = [
-  ['contacts', 'leads'],
-  ['companies', 'leads'],
+const REVERSE_PAIRS: readonly KindPair[] = [
+  ['person', 'lead'],
+  ['company', 'lead'],
 ];
+
+const native = (kind: CrmObjectKind): HubSpotObjectType => HUBSPOT_OBJECT_FOR_KIND[kind];
 
 /** Read-only discovery of a tenant's HubSpot account: objects, schema, associations. */
 @Injectable()
@@ -192,44 +205,46 @@ export class HubSpotDiscoveryService {
       }
     };
 
+    // Every read below goes through the vendor-neutral CrmReader port.
+    const crm: CrmReader = reader;
     const objects = {} as Record<
       HubSpotObjectType,
       { records: Probe<RecordsProbe>; properties: Probe<PropertiesProbe> }
     >;
-    for (const type of HUBSPOT_OBJECT_TYPES) {
-      objects[type] = {
-        records: await run(() => this.probeRecords(reader, type, pageSize, maxPages)),
-        properties: await run(() => this.probeProperties(reader, type)),
+    for (const kind of CRM_OBJECT_KINDS) {
+      objects[native(kind)] = {
+        records: await run(() => this.probeRecords(crm, kind, pageSize, maxPages)),
+        properties: await run(() => this.probeProperties(crm, kind)),
       };
     }
 
     const associationLabels = [];
     for (const [from, to] of LABEL_PAIRS) {
       associationLabels.push({
-        from,
-        to,
-        result: await run(async () => ({ types: await reader.listAssociationTypes(from, to) })),
+        from: native(from),
+        to: native(to),
+        result: await run(async () => ({ types: await crm.listAssociationTypes(from, to) })),
       });
     }
 
     const associationSamples = [];
     const forwardLinks = new Map<string, ExternalAssociation[]>();
     for (const [from, to] of SAMPLE_PAIRS) {
-      const source = objects[from].records;
+      const source = objects[native(from)].records;
       const ids = source.status === 'ok' ? source.sampleIds : [];
       associationSamples.push({
-        from,
-        to,
+        from: native(from),
+        to: native(to),
         result:
           source.status === 'ok'
             ? await run(async () => {
-                const { probe, links } = await this.probeAssociations(reader, from, ids, to);
+                const { probe, links } = await this.probeAssociations(crm, from, ids, to);
                 forwardLinks.set(`${from}->${to}`, links);
-                return { ...probe, sampledFrom: `sampled ${from} records` };
+                return { ...probe, sampledFrom: `sampled ${native(from)} records` };
               })
             : ({
                 status: 'error',
-                message: `not probed: reading ${from} failed (${source.status})`,
+                message: `not probed: reading ${native(from)} failed (${source.status})`,
               } as const),
       });
     }
@@ -238,23 +253,26 @@ export class HubSpotDiscoveryService {
     for (const [from, to] of REVERSE_PAIRS) {
       const forward = forwardLinks.get(`${to}->${from}`);
       associationSamples.push({
-        from,
-        to,
+        from: native(from),
+        to: native(to),
         result: forward
           ? await run(async () => {
               const ids = [...new Set(forward.map((l) => l.to.id))];
-              const { probe, links } = await this.probeAssociations(reader, from, ids, to);
+              const { probe, links } = await this.probeAssociations(crm, from, ids, to);
               const reverse = new Set(links.map((l) => `${l.from.id}->${l.to.id}`));
               return {
                 ...probe,
-                sampledFrom: `${from} linked from sampled ${to}`,
+                sampledFrom: `${native(from)} linked from sampled ${native(to)}`,
                 reciprocal: {
                   forwardLinks: forward.length,
                   confirmed: forward.filter((l) => reverse.has(`${l.to.id}->${l.from.id}`)).length,
                 },
               };
             })
-          : ({ status: 'error', message: `not probed: ${to} → ${from} was not read` } as const),
+          : ({
+              status: 'error',
+              message: `not probed: ${native(to)} → ${native(from)} was not read`,
+            } as const),
       });
     }
 
@@ -263,7 +281,7 @@ export class HubSpotDiscoveryService {
     };
     if (this.config.apiVersion !== this.config.accountInfoApiVersion) {
       accountInfoVersions[this.config.apiVersion] = await run(async () => {
-        await reader.getAccount(this.config.apiVersion);
+        await reader.probeAccountInfoVersion(this.config.apiVersion);
         return {};
       });
     }
@@ -280,20 +298,31 @@ export class HubSpotDiscoveryService {
       missingScopes: [...missing].sort(),
       accountInfoVersions,
       endpointsUsed: reader.endpointsUsed(),
+      readThrough: {
+        port: 'CrmReader',
+        system: crm.system,
+        objectKinds: Object.fromEntries(CRM_OBJECT_KINDS.map((k) => [native(k), k])) as Record<
+          HubSpotObjectType,
+          CrmObjectKind
+        >,
+      },
     };
   }
 
   private async probeRecords(
-    reader: HubSpotReader,
-    type: HubSpotObjectType,
+    crm: CrmReader,
+    kind: CrmObjectKind,
     pageSize: number,
     maxPages: number,
   ): Promise<RecordsProbe> {
+    const type = native(kind);
     const ids: string[] = [];
     let pagesRead = 0;
     let morePages = false;
     let paginationVerified = false;
-    for await (const page of reader.iterateRecords(type, { limit: pageSize, maxPages })) {
+    let after: string | undefined;
+    for (let n = 0; n < maxPages; n += 1) {
+      const page = await crm.listRecords(kind, { limit: pageSize, after });
       pagesRead += 1;
       const fresh = page.items.map((r) => r.ref.id).filter((id) => !ids.includes(id));
       if (pagesRead > 1 && fresh.length > 0) paginationVerified = true;
@@ -302,6 +331,8 @@ export class HubSpotDiscoveryService {
       }
       ids.push(...fresh);
       morePages = page.nextCursor !== undefined;
+      if (!page.nextCursor) break;
+      after = page.nextCursor;
     }
     return {
       pageSize,
@@ -313,11 +344,9 @@ export class HubSpotDiscoveryService {
     };
   }
 
-  private async probeProperties(
-    reader: HubSpotReader,
-    type: HubSpotObjectType,
-  ): Promise<PropertiesProbe> {
-    const fields = await reader.listProperties(type);
+  private async probeProperties(crm: CrmReader, kind: CrmObjectKind): Promise<PropertiesProbe> {
+    const type = native(kind);
+    const fields = await crm.listFieldDefinitions(kind);
     const names = new Set(fields.map((f) => f.name));
     return {
       total: fields.length,
@@ -330,10 +359,10 @@ export class HubSpotDiscoveryService {
   }
 
   private async probeAssociations(
-    reader: HubSpotReader,
-    from: HubSpotObjectType,
+    crm: CrmReader,
+    from: CrmObjectKind,
     ids: readonly string[],
-    to: HubSpotObjectType,
+    to: CrmObjectKind,
   ): Promise<{
     probe: Omit<AssociationSampleProbe, 'sampledFrom' | 'reciprocal'>;
     links: ExternalAssociation[];
@@ -343,7 +372,7 @@ export class HubSpotDiscoveryService {
       withoutAssociations,
       failures,
     } = ids.length
-      ? await reader.readAssociations(from, ids, to)
+      ? await crm.readAssociations(from, ids, to)
       : { associations: [], withoutAssociations: [], failures: [] };
     const types = new Map<string, ExternalAssociationType>();
     for (const link of links) for (const t of link.types) types.set(`${t.category}:${t.typeId}`, t);

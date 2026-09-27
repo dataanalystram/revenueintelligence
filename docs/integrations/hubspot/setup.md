@@ -96,3 +96,27 @@ pnpm test:live
   sharing it: property names and picklist values are the customer's schema.
 - For richer evidence, add a few Contacts, Companies and Leads (with
   associations) to the test account first.
+
+## 6. OAuth app installs (Milestone 4 architecture; first real install at M5)
+
+Customer tenants (Juniper and later) authenticate through the projects-based
+app's OAuth install instead of a Service Key ([ADR 0010](../../adr/0010-crm-connector-port-and-oauth.md)).
+M4 builds and tests the whole flow against a local fake; the steps below are
+what M5 will run for real, once the app and a public callback URL exist.
+
+```bash
+pnpm --filter @lip/api hubspot:configure --tenant <slug> --portal-id <account id> --auth oauth
+pnpm --filter @lip/api hubspot:install-url --tenant <slug>   # open the printed URL, consent
+# HubSpot redirects to GET /oauth/hubspot/callback on the API → grant stored encrypted
+pnpm --filter @lip/api hubspot:discover --tenant <slug>       # reads through the CrmReader port
+```
+
+- The install link targets the configured account, requests **read-only
+  scopes only**, and carries a signed state that works once and expires after
+  10 minutes.
+- The callback stores nothing unless the account HubSpot reports equals the
+  tenant's `portalId`.
+- Needs `HUBSPOT_APP_CLIENT_ID`, `HUBSPOT_APP_CLIENT_SECRET`,
+  `HUBSPOT_APP_REDIRECT_URI` and `PLATFORM_TOKEN_ENCRYPTION_KEY` (see
+  [credentials](../../credentials.md)). Static-token tenants such as `hstest`
+  need none of them.

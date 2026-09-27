@@ -1,7 +1,8 @@
-import type { IncomingMessage, ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { Writable } from 'node:stream';
 import pino from 'pino';
-import type { Options } from 'pino-http';
+import { pinoHttp, type Options } from 'pino-http';
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../config';
 import { buildLoggerParams, REQUEST_ID_HEADER, resolveRequestId } from './logger-options';
@@ -85,6 +86,36 @@ describe('buildLoggerParams', () => {
     }
     expect(serialised).toContain('application/json');
     expect(serialised).toContain('integration-user');
+  });
+
+  it('request logs never contain query strings (OAuth code and state)', async () => {
+    const lines: string[] = [];
+    const stream = new Writable({
+      write(chunk: Buffer, _enc, done) {
+        lines.push(chunk.toString());
+        done();
+      },
+    });
+    const middleware = pinoHttp({ ...options, logger: pino({ level: 'info' }, stream) });
+    const server = createServer((req, res) => {
+      middleware(req, res);
+      res.end('ok');
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    try {
+      const { port } = server.address() as AddressInfo;
+      await (
+        await fetch(
+          `http://127.0.0.1:${port}/oauth/hubspot/callback?code=one-time-code-XYZ&state=signed.state`,
+        )
+      ).text();
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+    const logged = lines.join('\n');
+    expect(logged).toContain('/oauth/hubspot/callback');
+    expect(logged).not.toContain('one-time-code-XYZ');
+    expect(logged).not.toContain('signed.state');
   });
 
   it('logs 5xx as error, 4xx as warn and everything else as info', () => {

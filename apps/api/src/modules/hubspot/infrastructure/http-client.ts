@@ -14,10 +14,14 @@ export interface HubSpotRequest {
   readonly body?: unknown;
 }
 
-/** Who the request is for: the tenant (rate-limit key) and its token. */
+/**
+ * Who the request is for: the tenant (rate-limit key) and its bearer token.
+ * `token` may be a provider, called for every attempt, so an OAuth access
+ * token that expires during a long read is refreshed transparently.
+ */
 export interface HubSpotAuth {
   readonly tenantKey: string;
-  readonly token: Secret;
+  readonly token: Secret | (() => Promise<Secret>);
 }
 
 /**
@@ -145,13 +149,14 @@ export class HubSpotHttpClient {
     auth: HubSpotAuth,
   ): Promise<T> {
     await this.limiter.acquire(auth.tenantKey);
+    const token = typeof auth.token === 'function' ? await auth.token() : auth.token;
     let response: Response;
     try {
       response = await this.fetchFn(this.url(req), {
         method: req.method,
         headers: {
           accept: 'application/json',
-          authorization: `Bearer ${auth.token.reveal()}`,
+          authorization: `Bearer ${token.reveal()}`,
           ...(req.body === undefined ? {} : { 'content-type': 'application/json' }),
         },
         body: req.body === undefined ? undefined : JSON.stringify(req.body),

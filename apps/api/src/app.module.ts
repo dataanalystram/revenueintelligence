@@ -1,4 +1,5 @@
 import { Module, type DynamicModule } from '@nestjs/common';
+import { HubSpotOAuthHttpModule } from './modules/hubspot';
 import { IdentityModule } from './modules/identity';
 import { TenancyModule } from './modules/tenancy';
 import type { AppConfig } from './platform/config';
@@ -11,7 +12,13 @@ export class AppModule {
   static forRoot(config?: AppConfig): DynamicModule {
     return {
       module: AppModule,
-      imports: [PlatformModule.forRoot(config), HealthModule, TenancyModule, IdentityModule],
+      imports: [
+        PlatformModule.forRoot(config),
+        HealthModule,
+        TenancyModule,
+        IdentityModule,
+        HubSpotOAuthHttpModule,
+      ],
     };
   }
 }

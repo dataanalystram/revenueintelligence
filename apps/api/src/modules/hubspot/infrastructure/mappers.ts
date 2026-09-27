@@ -97,10 +97,7 @@ export function toFieldDefinition(
   });
 }
 
-const CATEGORY: Record<
-  z.infer<typeof HsAssociationTypeSchema>['category'],
-  z.infer<typeof AssociationCategorySchema>
-> = {
+const CATEGORY: Readonly<Record<string, z.infer<typeof AssociationCategorySchema>>> = {
   HUBSPOT_DEFINED: 'standard',
   USER_DEFINED: 'user_defined',
   INTEGRATOR_DEFINED: 'integrator_defined',
@@ -109,5 +106,6 @@ const CATEGORY: Record<
 export function toAssociationType(
   t: z.infer<typeof HsAssociationTypeSchema>,
 ): ExternalAssociationType {
-  return { category: CATEGORY[t.category], typeId: t.typeId, label: t.label ?? null };
+  const category = Object.hasOwn(CATEGORY, t.category) ? CATEGORY[t.category]! : 'other';
+  return { category, typeId: t.typeId, label: t.label ?? null };
 }

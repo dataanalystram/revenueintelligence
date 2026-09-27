@@ -28,6 +28,12 @@ export const IntegrationSettingsSchemas = {
       .string()
       .regex(/^\d{1,20}$/)
       .optional(),
+    /**
+     * How the connector authenticates (ADR 0010). `static_token` (the default,
+     * also when absent): the tenant credential `hubspot.access_token`, e.g. a
+     * Service Key. `oauth`: the grant stored when the tenant installed the app.
+     */
+    auth: z.enum(['static_token', 'oauth']).optional(),
   }),
   sugar: z.strictObject({
     baseUrl: httpsUrl.optional(),

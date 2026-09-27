@@ -74,9 +74,14 @@ export class TenantDatabase {
   async transaction<T>(
     context: TenantContext,
     work: (tx: TenantTransaction) => Promise<T>,
-    options: { isolationLevel?: Prisma.TransactionIsolationLevel } = {},
+    options: {
+      isolationLevel?: Prisma.TransactionIsolationLevel;
+      /** Overrides DATABASE_TRANSACTION_TIMEOUT_MS (e.g. work that includes one external call). */
+      timeoutMs?: number;
+    } = {},
   ): Promise<T> {
     assertTenantContext(context);
+    const { timeoutMs, ...rest } = options;
     return this.prisma.$transaction(
       async (client) => {
         const status = await bindTenant(client, context.tenantId);
@@ -84,7 +89,7 @@ export class TenantDatabase {
         if (status !== 'active') throw new TenantInactiveError(context.tenantId, status);
         return runBound(client, { id: context.tenantId, slug: context.tenantSlug }, work);
       },
-      { timeout: this.config.database.transactionTimeoutMs, ...options },
+      { timeout: timeoutMs ?? this.config.database.transactionTimeoutMs, ...rest },
     );
   }
 

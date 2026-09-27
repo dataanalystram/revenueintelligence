@@ -5,10 +5,18 @@
  * supports one-off fault injection. It is NOT evidence of how the real HubSpot
  * API behaves: that comes from the live discovery run against a test account.
  *
+ * It also fakes HubSpot's OAuth app flow (M4): the consent page
+ * (`GET /oauth/{portalId}/authorize`, answered with the redirect HubSpot sends
+ * after the user consents) and the date-versioned token endpoint
+ * (`POST /oauth/{YYYY-MM}/token`: authorization-code exchange and refresh).
+ * Codes are single-use; refresh calls are counted, and can be delayed, so
+ * tests can prove that concurrent processes refresh only once.
+ *
  * Self-contained (node: built-ins only, no TypeScript-only runtime syntax) so
  * Node can run it directly:
  *   node apps/api/test/support/fake-hubspot.ts --port 0 --token <t> --portal-id 123
  */
+import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
 export interface FakeRecord {
@@ -63,8 +71,23 @@ export interface FakeRequestLog {
   authorization: string | undefined;
 }
 
+export interface FakeOAuthApp {
+  clientId: string;
+  clientSecret: string;
+  redirectUri: string;
+  /** Lifetime of issued access tokens (HubSpot: 1800 s). */
+  accessTokenTtlSeconds?: number;
+  /** Delay before answering a refresh (widens race windows in concurrency tests). */
+  refreshDelayMs?: number;
+  /** Issue a new refresh token on every refresh (HubSpot may or may not; both are handled). */
+  rotateRefreshTokens?: boolean;
+  /** Simulate the user installing into a different account than the link targets. */
+  consentPortalId?: number;
+}
+
 export interface FakeHubSpotOptions {
   accounts: Record<string, FakeAccount>;
+  oauth?: FakeOAuthApp;
   /** Called for every request received (the standalone mode prints them). */
   onRequest?: (entry: FakeRequestLog) => void;
   records?: Partial<Record<'contacts' | 'companies' | 'leads', FakeRecord[]>>;
@@ -126,6 +149,12 @@ const REVERSE_TYPES: Record<number, [number, string | null]> = {
 export class FakeHubSpot {
   readonly requests: FakeRequestLog[] = [];
   private readonly faults: FakeFault[] = [];
+  /** OAuth: authorization code → the account it grants and the redirect it was issued for. */
+  private readonly codes = new Map<string, { portalId: number; redirectUri: string }>();
+  /** OAuth: refresh token → account portal id. */
+  private readonly refreshTokens = new Map<string, number>();
+  /** OAuth calls received, by grant type. */
+  readonly oauthCalls = { authorizationCode: 0, refreshToken: 0 };
   private reverseHidden: ((a: FakeAssociation) => boolean) | undefined;
   private server: Server | undefined;
   private readonly options: FakeHubSpotOptions;
@@ -138,6 +167,24 @@ export class FakeHubSpot {
     const address = this.server?.address();
     if (!address || typeof address === 'string') throw new Error('fake HubSpot is not listening');
     return `http://127.0.0.1:${address.port}`;
+  }
+
+  /** OAuth: issues an authorization code directly (tests that skip the consent page). */
+  issueCode(portalId: number, redirectUri = this.options.oauth?.redirectUri ?? ''): string {
+    const code = `code-${randomBytes(12).toString('hex')}`;
+    this.codes.set(code, { portalId, redirectUri });
+    return code;
+  }
+
+  /** OAuth: changes the fake app's behaviour (e.g. refresh-token rotation) mid-test. */
+  configureOAuth(patch: Partial<FakeOAuthApp>): void {
+    if (!this.options.oauth) throw new Error('OAuth not enabled on this fake');
+    Object.assign(this.options.oauth, patch);
+  }
+
+  /** OAuth: every refresh token stops working (the user uninstalled the app). */
+  revokeRefreshTokens(): void {
+    this.refreshTokens.clear();
   }
 
   /** Fails the next matching request(s) with the given response. */
@@ -213,6 +260,8 @@ export class FakeHubSpot {
       return;
     }
 
+    if (/^\/oauth\//.test(url.pathname)) return this.oauthRoute(method, url, raw, res);
+
     const token = /^Bearer (.+)$/.exec(req.headers.authorization ?? '')?.[1];
     const account = token ? this.options.accounts[token] : undefined;
     if (!account) {
@@ -269,6 +318,91 @@ export class FakeHubSpot {
       message: 'Not found',
       category: 'OBJECT_NOT_FOUND',
     });
+  }
+
+  /**
+   * OAuth endpoints. Only the date-versioned token path is served, so a legacy
+   * `/oauth/v1/token` call fails tests.
+   */
+  private oauthRoute(method: string, url: URL, raw: string, res: ServerResponse): void {
+    const app = this.options.oauth;
+    if (!app) return this.send(res, 404, { status: 'error', message: 'OAuth not enabled' });
+    const authorize = /^\/oauth\/(\d+)\/authorize$/.exec(url.pathname);
+    if (method === 'GET' && authorize) {
+      const q = url.searchParams;
+      const scopes = (q.get('scope') ?? '').split(' ').filter(Boolean);
+      if (
+        q.get('client_id') !== app.clientId ||
+        q.get('redirect_uri') !== app.redirectUri ||
+        !q.get('state') ||
+        scopes.length === 0 ||
+        scopes.some((scope) => !scope.endsWith('.read'))
+      ) {
+        return this.send(res, 400, { status: 'error', message: 'Invalid authorize request' });
+      }
+      const code = this.issueCode(app.consentPortalId ?? Number(authorize[1]), app.redirectUri);
+      const location = new URL(app.redirectUri);
+      location.searchParams.set('code', code);
+      location.searchParams.set('state', q.get('state')!);
+      res.writeHead(302, { location: location.toString() });
+      res.end();
+      return;
+    }
+    if (method !== 'POST' || !/^\/oauth\/\d{4}-(0[1-9]|1[0-2])\/token$/.test(url.pathname)) {
+      return this.send(res, 404, { status: 'error', message: 'Not found' });
+    }
+    const form = new URLSearchParams(raw);
+    const bad = (message: string, status = 400): void =>
+      this.send(res, status, { status: 'BAD_REQUEST', message, error: 'invalid_grant' });
+    if (form.get('client_id') !== app.clientId || form.get('client_secret') !== app.clientSecret) {
+      return bad('Invalid client credentials', 401);
+    }
+    const grantType = form.get('grant_type');
+    let portalId: number;
+    let refreshToken: string | undefined;
+    if (grantType === 'authorization_code') {
+      this.oauthCalls.authorizationCode += 1;
+      const issued = this.codes.get(form.get('code') ?? '');
+      if (!issued || issued.redirectUri !== form.get('redirect_uri')) {
+        return bad('Invalid or already used authorization code');
+      }
+      this.codes.delete(form.get('code')!); // single-use
+      portalId = issued.portalId;
+      refreshToken = `refresh-${randomBytes(16).toString('hex')}`;
+      this.refreshTokens.set(refreshToken, portalId);
+    } else if (grantType === 'refresh_token') {
+      this.oauthCalls.refreshToken += 1;
+      const current = form.get('refresh_token') ?? '';
+      const owner = this.refreshTokens.get(current);
+      if (owner === undefined) return bad('Invalid refresh token');
+      portalId = owner;
+      if (app.rotateRefreshTokens) {
+        this.refreshTokens.delete(current);
+        refreshToken = `refresh-${randomBytes(16).toString('hex')}`;
+        this.refreshTokens.set(refreshToken, portalId);
+      }
+    } else {
+      return bad('Unsupported grant_type');
+    }
+    const template = Object.values(this.options.accounts).find((a) => a.portalId === portalId);
+    const accessToken = `access-${randomBytes(16).toString('hex')}`;
+    this.options.accounts[accessToken] = template
+      ? { ...template, scopes: [...template.scopes] }
+      : { portalId, accountType: 'DEVELOPER_TEST', scopes: ALL_READ_SCOPES, leadsEnabled: true };
+    const answer = (): void =>
+      this.send(res, 200, {
+        token_type: 'bearer',
+        access_token: accessToken,
+        ...(refreshToken ? { refresh_token: refreshToken } : {}),
+        expires_in: app.accessTokenTtlSeconds ?? 1800,
+        hub_id: portalId,
+        scopes: ALL_READ_SCOPES.slice(0, 5),
+      });
+    if (grantType === 'refresh_token' && app.refreshDelayMs) {
+      setTimeout(answer, app.refreshDelayMs);
+      return;
+    }
+    answer();
   }
 
   private denied(
@@ -597,7 +731,28 @@ if (process.argv[1]?.endsWith('fake-hubspot.ts')) {
       },
     },
     ...sampleData(),
-    onRequest: (r) => process.stdout.write(`request ${r.method} ${r.path}\n`),
+    ...(args.includes('--oauth-client-id')
+      ? {
+          oauth: {
+            clientId: arg('oauth-client-id', ''),
+            clientSecret: arg('oauth-client-secret', ''),
+            redirectUri: arg('oauth-redirect-uri', ''),
+            accessTokenTtlSeconds: Number(arg('access-ttl', '1800')),
+            refreshDelayMs: Number(arg('refresh-delay-ms', '0')),
+            ...(args.includes('--consent-portal-id')
+              ? { consentPortalId: Number(arg('consent-portal-id', '0')) }
+              : {}),
+          },
+        }
+      : {}),
+    // Paths only (plus the OAuth grant type): never codes, tokens or secrets.
+    onRequest: (r) => {
+      const grant =
+        typeof r.body === 'string' && r.path.startsWith('/oauth/')
+          ? ` grant=${new URLSearchParams(r.body).get('grant_type') ?? '-'}`
+          : '';
+      process.stdout.write(`request ${r.method} ${r.path}${grant}\n`);
+    },
   });
   void fake.start(Number(arg('port', '0'))).then(() => {
     process.stdout.write(`fake HubSpot listening on ${fake.url}\n`);

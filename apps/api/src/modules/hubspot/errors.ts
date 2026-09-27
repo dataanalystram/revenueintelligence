@@ -1,22 +1,10 @@
+import { ConnectorError, type ConnectorErrorKind } from '../domain';
+
 /**
  * Classified HubSpot failures. Callers branch on `kind` and `retryable`, never
  * on HTTP details. Messages never contain credentials.
  */
-export type HubSpotErrorKind =
-  | 'not_configured'
-  | 'integration_disabled'
-  | 'account_mismatch'
-  | 'read_only_violation'
-  | 'unsupported_endpoint'
-  | 'unauthorized'
-  | 'forbidden'
-  | 'not_found'
-  | 'bad_request'
-  | 'rate_limited'
-  | 'server_error'
-  | 'timeout'
-  | 'network'
-  | 'invalid_payload';
+export type HubSpotErrorKind = ConnectorErrorKind;
 
 export interface HubSpotErrorDetails {
   readonly status?: number;
@@ -34,13 +22,14 @@ export interface HubSpotErrorDetails {
   readonly path?: string;
 }
 
-export class HubSpotError extends Error {
+/** A ConnectorError with HubSpot diagnostics; business code needs only ConnectorError. */
+export class HubSpotError extends ConnectorError {
   constructor(
-    readonly kind: HubSpotErrorKind,
+    kind: HubSpotErrorKind,
     message: string,
     readonly details: HubSpotErrorDetails = {},
   ) {
-    super(message);
+    super(kind, message);
     this.name = 'HubSpotError';
   }
 
@@ -48,7 +37,7 @@ export class HubSpotError extends Error {
    * Only transient failures are retried. A daily rate limit will not clear by
    * retrying, and 4xx errors (auth, scopes, not found, bad request) never do.
    */
-  get retryable(): boolean {
+  override get retryable(): boolean {
     if (this.kind === 'rate_limited') return this.details.policyName?.toUpperCase() !== 'DAILY';
     return this.kind === 'server_error' || this.kind === 'timeout' || this.kind === 'network';
   }

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { ALL_READ_SCOPES, FakeHubSpot, sampleData } from '../../../../test/support/fake-hubspot';
 import { Secret } from '../../../platform/secrets';
 import { HubSpotError } from '../errors';
-import type { HubSpotConfig } from '../hubspot.config';
+import { loadHubSpotConfig, type HubSpotConfig } from '../hubspot.config';
 import {
   assertDateVersionedPath,
   assertReadOnlyRequest,
@@ -25,6 +25,7 @@ describe('HubSpotHttpClient', () => {
 
   function makeClient(over: Partial<HubSpotConfig> = {}, baseUrl?: string): HubSpotHttpClient {
     const config: HubSpotConfig = {
+      ...loadHubSpotConfig({}),
       baseUrl: baseUrl ?? fake.url,
       apiVersion: '2026-09',
       accountInfoApiVersion: '2026-03',
