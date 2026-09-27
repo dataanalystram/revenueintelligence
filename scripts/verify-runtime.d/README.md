@@ -1,7 +1,11 @@
 # Milestone-specific runtime checks
 
 `scripts/verify-runtime.sh` sources every `*.sh` file in this directory, in
-name order, after its core checks and before shutdown. There are none yet.
+name order, after its core checks and before shutdown.
+
+| File            | Milestone | Checks                                                                  |
+| --------------- | --------- | ----------------------------------------------------------------------- |
+| `20-hubspot.sh` | M3        | HubSpot CLIs against a local fake: read-only setup, discovery, refusals |
 
 Conventions for a check file (e.g. `20-hubspot.sh`):
 

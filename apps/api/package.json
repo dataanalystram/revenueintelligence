@@ -18,7 +18,10 @@
     "prisma:migrate:dev": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
     "test:coverage": "vitest run --config vitest.config.mts --coverage",
-    "tenant:provision": "node dist/cli/provision-tenant.js"
+    "tenant:provision": "node dist/cli/provision-tenant.js",
+    "hubspot:configure": "node dist/cli/hubspot-configure.js",
+    "hubspot:discover": "node dist/cli/hubspot-discovery.js",
+    "test:live": "vitest run --config vitest.live.config.mts"
   },
   "dependencies": {
     "@nestjs/common": "^12.1.0",

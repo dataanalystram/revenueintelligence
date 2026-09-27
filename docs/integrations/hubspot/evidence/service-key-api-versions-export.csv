@@ -1,0 +1,15 @@
+API,API Endpoint,Version in Use,End of Support,API Calls
+/crm/v3/objects/companies/{companyId},DELETE /crm/v3/objects/companies/{companyId},v3,1 September 2027,1
+/account-info/v3/details,GET /account-info/v3/details,v3,1 September 2027,1
+/crm/objects/v4/contacts/{objectId}/associations/{toObjectType},GET /crm/objects/v4/contacts/{objectId}/associations/{toObjectType},v4,1 March 2027,2
+/crm/objects/v4/deals/{objectId}/associations/{toObjectType},GET /crm/objects/v4/deals/{objectId}/associations/{toObjectType},v4,1 March 2027,1
+/crm/v3/objects/companies,GET /crm/v3/objects/companies,v3,1 September 2027,1
+/crm/v3/properties/{objectType}/{propertyName},GET /crm/v3/properties/{objectType}/{propertyName},v3,1 September 2027,1
+/crm/objects/v3/deals/batch/create,POST /crm/objects/v3/deals/batch/create,v3,1 September 2027,1
+/crm/v3/objects/companies,POST /crm/v3/objects/companies,v3,1 September 2027,2
+/crm/v3/objects/companies/batch/upsert,POST /crm/v3/objects/companies/batch/upsert,v3,1 September 2027,1
+/crm/v3/objects/contacts/batch/upsert,POST /crm/v3/objects/contacts/batch/upsert,v3,1 September 2027,2
+/crm/v3/objects/{objectType}/search,POST /crm/v3/objects/{objectType}/search,v3,1 September 2027,1
+/crm/v3/properties/{objectType},POST /crm/v3/properties/{objectType},v3,1 September 2027,1
+/crm/objects/v4/contacts/{fromObjectId}/associations/default/{toObjectType}/{toObjectId},PUT /crm/objects/v4/contacts/{fromObjectId}/associations/default/{toObjectType}/{toObjectId},v4,1 March 2027,13
+/crm/objects/v4/deals/{fromObjectId}/associations/default/{toObjectType}/{toObjectId},PUT /crm/objects/v4/deals/{fromObjectId}/associations/default/{toObjectType}/{toObjectId},v4,1 March 2027,5

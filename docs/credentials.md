@@ -1,6 +1,8 @@
 # Credentials: what is needed, when, and where to put it
 
-**Milestone 0 needs no external credentials.** Nothing below blocks current work.
+**Milestone 3 needs one credential that you create yourself:** a HubSpot
+developer test account app token (see M3 below). No Juniper credentials are
+needed until M16.
 
 ## Where to put credentials
 
@@ -38,22 +40,28 @@ worker and CLI). See [operations/database-roles.md](operations/database-roles.md
 
 ## By milestone
 
-### M3–M5 — HubSpot developer environment (we create this ourselves; no Juniper access needed)
+### M3 — HubSpot developer test account (we create this ourselves; no Juniper access needed)
 
-We build against a **HubSpot developer test account** using the current
-**Projects-based developer platform**. The steps below reflect HubSpot's platform
-as documented today and are re-checked at the start of M3:
+Full steps: [integrations/hubspot/setup.md](integrations/hubspot/setup.md). In
+short: a free developer account, a **developer test account** (includes a
+Sales Hub Enterprise trial, so Leads exist), and a **Service Key** with
+**read-only scopes** (Development → Keys → Service Keys). No legacy private app.
 
-1. Create a free developer account at <https://developers.hubspot.com>.
-2. In the developer account, create a **developer test account**. Give it a
-   Sales Hub / Marketing Hub Enterprise trial so the **Leads** object and
-   Sequences are available.
-3. Install the HubSpot CLI (`npm i -g @hubspot/cli`), run `hs account auth`,
-   then `hs project create` to create a project containing an app that uses
-   **OAuth** authentication. (The project files will live in this repo from
-   M3, so these steps are scripted then.)
-4. After `hs project upload`, open the app in the developer account. The
-   **Auth** tab shows the Client ID and Client secret.
+| Variable                             | Where it comes from                      | Secret? |
+| ------------------------------------ | ---------------------------------------- | ------- |
+| `TENANT_HSTEST_HUBSPOT_ACCESS_TOKEN` | The test account's read-only Service Key | yes     |
+| `HUBSPOT_TEST_PORTAL_ID`             | The test account's id                    | no      |
+
+`hstest` is the platform tenant that represents the test account. The key is
+its generic tenant credential `hubspot.access_token` (any bearer credential:
+Service Key, static app token or, later, OAuth access token), registered by
+`hubspot:configure`. The cloud environment must also allow outbound HTTPS to
+`api.hubapi.com` (environment settings → Network access).
+
+### M4–M5 — OAuth app and webhooks (planned)
+
+Juniper will install our app through OAuth, so M4 adds an OAuth-authenticated
+project app:
 
 | Variable                    | Where it comes from                                                                             |
 | --------------------------- | ----------------------------------------------------------------------------------------------- |
@@ -61,7 +69,6 @@ as documented today and are re-checked at the start of M3:
 | `HUBSPOT_APP_CLIENT_ID`     | App → Auth tab                                                                                  |
 | `HUBSPOT_APP_CLIENT_SECRET` | App → Auth tab (also used to verify webhook signatures)                                         |
 | `HUBSPOT_APP_REDIRECT_URI`  | We choose it, e.g. `http://localhost:3000/oauth/hubspot/callback`; it must match the app config |
-| `HUBSPOT_TEST_ACCOUNT_ID`   | Portal ID of the developer test account                                                         |
 
 Webhooks need a public HTTPS URL. For local testing we will use a tunnel
 (for example `cloudflared` or `ngrok`); that is decided at M5.

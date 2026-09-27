@@ -9,6 +9,7 @@ export * from './attribution';
 export * from './company';
 export * from './email';
 export * from './external-ref';
+export * from './external-snapshots';
 export * from './lead';
 export * from './lead-candidate';
 export * from './person';

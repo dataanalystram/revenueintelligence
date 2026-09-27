@@ -20,7 +20,18 @@ FAILED=0
 API_PID=""
 WORKER_PID=""
 
-free_port() { node -e "const s=require('net').createServer();s.listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})"; }
+# A currently free port, other than any given as arguments: ports picked
+# before anything binds them could otherwise be handed out twice.
+free_port() {
+  local p _
+  for _ in $(seq 1 20); do
+    p="$(node -e "const s=require('net').createServer();s.listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})")" || p=""
+    [[ "$p" =~ ^[0-9]+$ ]] || { echo "free_port: could not get a free port" >&2; return 1; }
+    [[ " $* " == *" $p "* ]] || { echo "$p"; return 0; }
+  done
+  echo "free_port: no distinct free port after 20 attempts" >&2
+  return 1
+}
 log() { printf '\n== %s\n' "$*"; }
 pass() { PASSED=$((PASSED + 1)); printf '  PASS  %s\n' "$*"; }
 fail() { FAILED=$((FAILED + 1)); printf '  FAIL  %s\n' "$*"; }
@@ -37,8 +48,10 @@ tagged_pids() {
     [[ "$pid" == "$$" || "$pid" == "$BASHPID" ]] && continue
     # Processes can exit mid-scan: silence the redirection itself, not just tr.
     { tr '\0' '\n' <"$env"; } 2>/dev/null | grep -qx "LIP_VERIFY_RUN=$PROJECT" || continue
-    # Only application processes, not this script's own helper shells.
-    [[ "$({ tr '\0' ' ' <"/proc/$pid/cmdline"; } 2>/dev/null)" == node\ dist/* ]] && echo "$pid"
+    # Only application processes (and test fakes), not this script's own helper shells.
+    case "$({ tr '\0' ' ' <"/proc/$pid/cmdline"; } 2>/dev/null)" in
+      node\ dist/* | node\ *test/support/fake-*) echo "$pid" ;;
+    esac
   done
   return 0
 }
@@ -64,9 +77,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-export LIP_POSTGRES_PORT="${LIP_VERIFY_PG_PORT:-$(free_port)}"
-export LIP_REDIS_PORT="${LIP_VERIFY_REDIS_PORT:-$(free_port)}"
-API_PORT="$(free_port)"
+# Assigned before export so that a failing free_port stops the script (set -e).
+LIP_POSTGRES_PORT="${LIP_VERIFY_PG_PORT:-$(free_port "${LIP_VERIFY_REDIS_PORT:-}")}"
+LIP_REDIS_PORT="${LIP_VERIFY_REDIS_PORT:-$(free_port "$LIP_POSTGRES_PORT")}"
+export LIP_POSTGRES_PORT LIP_REDIS_PORT
+API_PORT="$(free_port "$LIP_POSTGRES_PORT" "$LIP_REDIS_PORT")"
 API_URL="http://127.0.0.1:$API_PORT"
 OWNER_DB_URL="postgresql://lip:lip@127.0.0.1:$LIP_POSTGRES_PORT/lip"
 # Development-only credentials created by docker/postgres/init/01-app-role.sql.
@@ -163,8 +178,16 @@ log "7. Resilience"
 compose stop redis >/dev/null 2>&1
 check "Redis down → readiness 503, redis down" bash -c "for i in \$(seq 1 20); do out=\$(curl -sS -w '%{http_code}' '$API_URL/health/ready'); case \"\$out\" in *'\"redis\":{\"status\":\"down\"'*503) exit 0;; esac; sleep 0.5; done; exit 1"
 check "liveness stays 200 while not ready" bash -c "curl -fsS '$API_URL/health/live' >/dev/null"
-compose start redis >/dev/null 2>&1
-check "Redis back → readiness recovers" bash -c "for i in \$(seq 1 60); do curl -fsS '$API_URL/health/ready' >/dev/null 2>&1 && exit 0; sleep 0.5; done; exit 1"
+compose start redis >>"$WORK/checks.log" 2>&1 || echo "compose start redis failed" >>"$WORK/checks.log"
+redis_recovers() {
+  for _ in $(seq 1 60); do curl -fsS "$API_URL/health/ready" >/dev/null 2>&1 && return 0; sleep 0.5; done
+  # Not recovered within 30 s: keep enough to diagnose it (CI uploads these logs).
+  echo "--- readiness: $(curl -sS "$API_URL/health/ready" 2>&1)"
+  echo "--- redis container"; compose ps redis 2>&1; compose logs --tail 30 redis 2>&1
+  echo "--- api log (tail)"; tail -30 "$WORK/api.log"
+  return 1
+}
+check "Redis back → readiness recovers" redis_recovers
 check "API refuses to start as the schema owner (superuser)" bash -c "cd '$API_DIR' && ! DATABASE_URL='$OWNER_DB_URL' PORT=$(free_port) timeout 60 node dist/main.js >'$WORK/unsafe.log' 2>&1 && grep -q 'Refusing to use the database connection' '$WORK/unsafe.log'"
 
 # Milestone-specific runtime checks (have access to the variables above).
@@ -180,8 +203,12 @@ check "API PID is the node process" bash -c "[[ \"\$(ps -o args= -p $API_PID)\" 
 check "worker PID is the node process" bash -c "[[ \"\$(ps -o args= -p $WORKER_PID)\" == 'node dist/worker.js' ]]"
 pg_app_sessions() { compose exec -T -e PGPASSWORD=lip postgres psql -h 127.0.0.1 -U lip -d lip -Atc "SELECT count(*) FROM pg_stat_activity WHERE usename = 'lip_api'"; }
 redis_clients() { compose exec -T redis redis-cli CLIENT LIST | awk '!/cmd=client/ { n++ } END { print n + 0 }'; }
-curl -fsS "$API_URL/health/ready" >/dev/null   # ensure live DB and Redis connections exist
-before_pg="$(pg_app_sessions)"; before_redis="$(redis_clients)"
+# Ensure live DB and Redis connections exist. Not fatal: the check below
+# reports missing connections instead of aborting the remaining checks.
+curl -fsS "$API_URL/health/ready" >/dev/null 2>&1 || true
+# A failing probe counts as 0 so the check below fails instead of set -e aborting the run.
+before_pg="$(pg_app_sessions 2>/dev/null || true)"; before_redis="$(redis_clients 2>/dev/null || true)"
+before_pg="${before_pg:-0}"; before_redis="${before_redis:-0}"
 [[ "$before_pg" -gt 0 && "$before_redis" -gt 0 ]] && pass "before shutdown: $before_pg app DB session(s), $before_redis Redis client(s)" \
   || fail "expected open connections before shutdown (db=$before_pg redis=$before_redis)"
 kill -TERM "$API_PID" "$WORKER_PID"
