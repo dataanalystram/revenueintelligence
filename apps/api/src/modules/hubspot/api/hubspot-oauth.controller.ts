@@ -2,6 +2,7 @@ import { Controller, Get, HttpStatus, Logger, Query, Res } from '@nestjs/common'
 import type { Response } from 'express';
 import { z } from 'zod';
 import { HubSpotOAuthService } from '../application/hubspot-oauth.service';
+import { LockTimeoutError, TenantInactiveError, TenantNotFoundError } from '../../tenancy';
 import { isHubSpotError } from '../errors';
 
 const CallbackQuerySchema = z.object({
@@ -56,6 +57,12 @@ export class HubSpotOAuthController {
       });
       return { status: 'installed', tenant: done.tenantSlug, accountId: done.accountId };
     } catch (err) {
+      if (err instanceof LockTimeoutError) {
+        return this.fail(res, HttpStatus.SERVICE_UNAVAILABLE, 'busy');
+      }
+      if (err instanceof TenantInactiveError || err instanceof TenantNotFoundError) {
+        return this.fail(res, HttpStatus.CONFLICT, 'tenant_not_ready');
+      }
       if (!isHubSpotError(err)) throw err;
       this.logger.warn({
         msg: 'HubSpot OAuth install refused',
@@ -73,8 +80,8 @@ export class HubSpotOAuthController {
           return this.fail(res, HttpStatus.CONFLICT, 'tenant_not_ready');
         case 'bad_request':
         case 'reauthorization_required':
-        case 'invalid_payload':
           return this.fail(res, HttpStatus.BAD_REQUEST, 'code_rejected');
+        case 'invalid_payload':
         case 'server_error':
         case 'timeout':
         case 'network':

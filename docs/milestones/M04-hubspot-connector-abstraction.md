@@ -132,6 +132,16 @@ identical, 0 markers left). Every mutation failed for the intended reason:
 | M11 | Business code imports the HubSpot module          | dependency-cruiser: `error business-code-uses-crm-port: src/modules/identity/index.ts → src/modules/hubspot/index.ts`                       |
 | M12 | Read-only HTTP guard weakened (any POST)          | Read-only guard tests (POST to objects, write-like batch paths, 2026-09 writes) and "CRM transport still refuses the OAuth endpoint"        |
 
+Mutations added for the independent-review fixes (same procedure):
+
+| #   | Mechanism broken                                          | Failed test(s) and reason                                                                                          |
+| --- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| M13 | In-process single-flight refresh removed                  | "20 concurrent callers in one process share one locked refresh": `withLockedGrant` called **20** times, expected 1 |
+| M14 | 401 re-authentication hook removed                        | Reinstall-in-another-process, revoked-access-token and both-revoked tests: stale token → `unauthorized`            |
+| M15 | Signature compared as decoded bytes                       | A non-canonical spelling of the signature (same bytes) verified                                                    |
+| M16 | Refresh transaction timeout below lock wait + HTTP + save | Timing-budget test: `expected 50000 to be less than or equal to 30000`                                             |
+| M10 | (re-run after single-flight) lock removed                 | Still caught: two instances → **2** refreshes, expected 1                                                          |
+
 Runtime mutations (one `pnpm verify:runtime`, both restored and rebuilt after):
 
 | Broken                                 | Runtime check that failed                                                       | Evidence                                              |
@@ -141,6 +151,28 @@ Runtime mutations (one `pnpm verify:runtime`, both restored and rebuilt after):
 
 Result: `Summary: 60 passed, 2 failed`, exactly these two. The work directory
 of that run (it held fake codes) was deleted.
+
+## Independent review
+
+A fresh-context review of `b87bf6e..4f7a913` returned **PASS WITH NITS**. It
+confirmed all eight owner requirements in code (no plaintext tokens, RLS,
+single-use state, one refresh across processes, read-only, static tenants
+unchanged, boundary, scope) and found three should-fix items, all fixed:
+
+1. **Refresh transaction could time out after HubSpot issued new tokens**
+   (lock wait 25 s + HTTP 20 s > transaction 30 s; a rotated refresh token
+   could be lost). Fixed: 20 s + 20 s + 10 s ≤ 50 s, enforced by a unit test
+   (M16).
+2. **Concurrent refreshes in one process could exhaust the connection pool.**
+   Fixed: one pending refresh per tenant per process (M13).
+3. **Stale in-process token after a reinstall or revocation**, never evicted on 401. Fixed: a 401 invalidates the cached token and retries once with the
+   stored or refreshed one (M14).
+
+Nits, all fixed: the transport no longer retries a failing token provider;
+a malformed HubSpot token response is 502 (not 400); lock timeouts (503) and
+inactive tenants (409) no longer surface as 500 in the callback; only the
+canonical signature spelling verifies (M15); ADR and runbook note that the API
+now loads the HubSpot module and that a failed callback burns the install link.
 
 ## Open questions (for M5)
 

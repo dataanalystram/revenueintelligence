@@ -141,9 +141,25 @@ cache it in memory; it lives at most `expires_in` (about 30 minutes).
 (the same pattern as the tenant-configuration lock), **re-reads** the grant (a
 previous holder's refresh is visible), refreshes only if still expired, and
 saves the new tokens. The lock is transaction-scoped: released on commit,
-rollback or a crashed process. Lock wait 25 s; the locked transaction may run
-30 s; the OAuth HTTP timeout is at most 20 s. A rejected refresh token maps to
+rollback or a crashed process. A rejected refresh token maps to
 `reauthorization_required` (the tenant must reinstall), never a silent failure.
+
+- **Timing budget.** The transaction timeout runs from when the transaction
+  opens, so it must cover a waiter's worst case: lock wait 20 s + the OAuth
+  HTTP timeout (at most 20 s, `HUBSPOT_OAUTH_MAX_TIMEOUT_MS`) + 10 s for the
+  save ≤ the locked transaction's 50 s. A unit test enforces the inequality, so
+  HubSpot can never issue new tokens after the transaction has rolled back (a
+  rotated refresh token would otherwise be lost).
+- **In-process single flight.** Concurrent callers in one process share one
+  pending refresh, so they do not each hold a pooled connection while waiting
+  for the advisory lock.
+- **401 recovery.** For OAuth tenants the transport calls `invalidate` when
+  HubSpot rejects an access token with 401 (revoked, or replaced by a reinstall
+  handled in another process), then retries the request once with a freshly
+  provided token: the stored grant is read again, and refreshed if the stored
+  access token is the rejected one. A second 401 is returned as `unauthorized`.
+- The token is obtained once per request, outside the transport's retry loop,
+  so a failed refresh is never retried by the transport.
 
 ## Consequences
 
@@ -152,7 +168,13 @@ rollback or a crashed process. Lock wait 25 s; the locked transaction may run
   losing or changing it makes stored grants unreadable (reinstall). Key
   rotation (a key id in the format) is a follow-up before production.
 - Refresh holds one database connection for the duration of one HTTP call, per
-  tenant, about every 30 minutes. Acceptable at the expected scale.
+  tenant and process, about every 30 minutes. Acceptable at the expected scale.
+- The API process now loads the HubSpot module (for the callback): a malformed
+  `HUBSPOT_*` or `HUBSPOT_OAUTH_*` variable stops the API from starting, as it
+  already did for the worker.
+- The state is redeemed before the code exchange, so a HubSpot outage during
+  the callback burns that install link: the admin requests a new one
+  (`hubspot:install-url`).
 - Tokens for a tenant installed into the wrong account are never stored; the
   unused grant is not revoked at HubSpot (revocation would add an endpoint; to
   decide in M5).

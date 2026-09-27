@@ -97,8 +97,11 @@ export class TokenCipher {
 
   /** Constant-time check of a signature produced by `sign`. */
   verify(data: string, signature: string): boolean {
-    const expected = Buffer.from(this.sign(data), 'base64url');
-    const actual = Buffer.from(signature, 'base64url');
+    // Compare the canonical base64url text, not decoded bytes: decoding is
+    // lenient about the unused bits of the last character, so several
+    // spellings would otherwise verify.
+    const expected = Buffer.from(this.sign(data), 'utf8');
+    const actual = Buffer.from(signature, 'utf8');
     return actual.length === expected.length && timingSafeEqual(actual, expected);
   }
 }

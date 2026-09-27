@@ -16,12 +16,19 @@ export interface HubSpotRequest {
 
 /**
  * Who the request is for: the tenant (rate-limit key) and its bearer token.
- * `token` may be a provider, called for every attempt, so an OAuth access
- * token that expires during a long read is refreshed transparently.
+ * `token` may be a provider, called once per request, so an OAuth access token
+ * that expires during a long read is refreshed transparently. Token failures
+ * are not retried by the transport (the provider decides).
  */
 export interface HubSpotAuth {
   readonly tenantKey: string;
   readonly token: Secret | (() => Promise<Secret>);
+  /**
+   * Called when HubSpot rejects the token with 401 (e.g. revoked, or replaced
+   * by a reinstall in another process). The request is then retried once with
+   * a freshly provided token.
+   */
+  readonly onUnauthorized?: (rejected: Secret) => Promise<void> | void;
 }
 
 /**
@@ -120,11 +127,20 @@ export class HubSpotHttpClient {
     assertReadOnlyRequest(req);
     assertDateVersionedPath(req.path);
     const maxAttempts = 1 + this.config.maxRetries;
+    let token = await resolveToken(auth);
+    let reauthenticated = false;
     for (let attempt = 1; ; attempt += 1) {
       try {
-        return await this.attempt(req, schema, auth);
+        return await this.attempt(req, schema, auth.tenantKey, token);
       } catch (err) {
         if (!(err instanceof HubSpotError)) throw err;
+        if (err.kind === 'unauthorized' && auth.onUnauthorized && !reauthenticated) {
+          reauthenticated = true;
+          await auth.onUnauthorized(token);
+          token = await resolveToken(auth);
+          attempt -= 1; // a re-authentication is not a retry of a transient failure
+          continue;
+        }
         if (!err.retryable || attempt >= maxAttempts) {
           throw new HubSpotError(err.kind, err.message, { ...err.details, attempts: attempt });
         }
@@ -146,10 +162,10 @@ export class HubSpotHttpClient {
   private async attempt<T>(
     req: HubSpotRequest,
     schema: z.ZodType<T>,
-    auth: HubSpotAuth,
+    tenantKey: string,
+    token: Secret,
   ): Promise<T> {
-    await this.limiter.acquire(auth.tenantKey);
-    const token = typeof auth.token === 'function' ? await auth.token() : auth.token;
+    await this.limiter.acquire(tenantKey);
     let response: Response;
     try {
       response = await this.fetchFn(this.url(req), {
@@ -258,4 +274,8 @@ export class HubSpotHttpClient {
     }
     return url.toString();
   }
+}
+
+async function resolveToken(auth: HubSpotAuth): Promise<Secret> {
+  return typeof auth.token === 'function' ? await auth.token() : auth.token;
 }

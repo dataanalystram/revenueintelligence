@@ -140,6 +140,15 @@ describe('HubSpot OAuth callback endpoint (API process)', () => {
     expect(await storedGrants(t)).toBe(0);
   });
 
+  it('a malformed token response from HubSpot → 502 (upstream fault), nothing stored', async () => {
+    const t = await oauthTenant('cbbadresp');
+    const query = await consent(t);
+    fake.fail({ match: /^POST \/oauth\//, status: 200, body: { unexpected: true } });
+    const res = await request(http).get(`/oauth/hubspot/callback${query}`).expect(502);
+    expect(res.body).toEqual({ status: 'error', reason: 'hubspot_unavailable' });
+    expect(await storedGrants(t)).toBe(0);
+  });
+
   it('an install into a different HubSpot account → 409, nothing stored', async () => {
     const t = await oauthTenant('cbmism');
     const { state } = await h.app.get(OAuthStateService).issue(t, 'hubspot');

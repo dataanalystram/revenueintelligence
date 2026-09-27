@@ -72,11 +72,18 @@ export class HubSpotConnector implements CrmConnector {
         'The HubSpot account id (portalId) must be configured for this tenant',
       );
     }
-    const token =
+    const hubspot = new HubSpotReader(
+      this.http,
+      this.config,
       integration.settings.auth === 'oauth'
-        ? await this.oauthTokenProvider(ctx, expected)
-        : await this.staticToken(ctx);
-    const hubspot = new HubSpotReader(this.http, this.config, { tenantKey: ctx.tenantId, token });
+        ? {
+            tenantKey: ctx.tenantId,
+            token: await this.oauthTokenProvider(ctx, expected),
+            // A 401 means the access token was revoked or replaced (reinstall): drop it, retry once.
+            onUnauthorized: (rejected) => this.oauth.invalidate(ctx, rejected),
+          }
+        : { tenantKey: ctx.tenantId, token: await this.staticToken(ctx) },
+    );
     const account = await hubspot.getAccount();
     if (account.portalId !== expected) {
       throw new HubSpotError(

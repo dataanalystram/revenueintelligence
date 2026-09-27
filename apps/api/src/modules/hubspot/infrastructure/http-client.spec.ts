@@ -221,6 +221,61 @@ describe('HubSpotHttpClient', () => {
       );
     });
 
+    it('401 with a re-authentication hook: the hook runs once, then one retry with a fresh token', async () => {
+      const rejected: string[] = [];
+      let next = 'wrong-token';
+      const reauth: HubSpotAuth = {
+        tenantKey: 'tenant-a',
+        token: () => Promise.resolve(new Secret(next)),
+        onUnauthorized: (t) => {
+          rejected.push(t.reveal());
+          next = TOKEN;
+        },
+      };
+      await expect(
+        client.send({ method: 'GET', path: CONTACTS }, HsObjectPageSchema, reauth),
+      ).resolves.toBeDefined();
+      expect(rejected).toEqual(['wrong-token']);
+      expect(fake.requests.map((r) => r.authorization)).toEqual([
+        'Bearer wrong-token',
+        `Bearer ${TOKEN}`,
+      ]);
+    });
+
+    it('401 again after re-authentication → unauthorized (no loop)', async () => {
+      let calls = 0;
+      const stillBad: HubSpotAuth = {
+        tenantKey: 'tenant-a',
+        token: () => Promise.resolve(new Secret('wrong-token')),
+        onUnauthorized: () => {
+          calls += 1;
+        },
+      };
+      const err = await rejection(
+        client.send({ method: 'GET', path: CONTACTS }, HsObjectPageSchema, stillBad),
+      );
+      expect(err.kind).toBe('unauthorized');
+      expect(calls).toBe(1);
+      expect(fake.requests).toHaveLength(2);
+    });
+
+    it('a failing token provider is not retried by the transport', async () => {
+      let calls = 0;
+      const failing: HubSpotAuth = {
+        tenantKey: 'tenant-a',
+        token: () => {
+          calls += 1;
+          return Promise.reject(new HubSpotError('server_error', 'refresh failed'));
+        },
+      };
+      const err = await rejection(
+        client.send({ method: 'GET', path: CONTACTS }, HsObjectPageSchema, failing),
+      );
+      expect(err.kind).toBe('server_error');
+      expect(calls).toBe(1);
+      expect(fake.requests).toHaveLength(0);
+    });
+
     it('403 MISSING_SCOPES → forbidden with the required scopes, not retried', async () => {
       const noScopes: HubSpotAuth = {
         tenantKey: 'tenant-a',

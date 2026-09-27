@@ -182,6 +182,11 @@ export class FakeHubSpot {
     Object.assign(this.options.oauth, patch);
   }
 
+  /** OAuth: this access token stops working (401), e.g. revoked by the user. */
+  revokeAccessToken(token: string): void {
+    delete this.options.accounts[token];
+  }
+
   /** OAuth: every refresh token stops working (the user uninstalled the app). */
   revokeRefreshTokens(): void {
     this.refreshTokens.clear();

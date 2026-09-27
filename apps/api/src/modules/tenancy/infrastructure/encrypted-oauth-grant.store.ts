@@ -6,12 +6,17 @@ import { translateDatabaseError } from './prisma-errors';
 import { TenantDatabase, tenantClient, type TenantTransaction } from './tenant-database';
 
 /**
- * How long a caller waits for another process's refresh, and how long the
- * locked transaction may run. A refresh is one HTTP call with its own timeout
- * (HUBSPOT_OAUTH_TIMEOUT_MS, at most 20 s), so both bounds sit above it.
+ * Timing budget of the locked refresh (ADR 0010). The transaction timeout runs
+ * from when the transaction opens, so it must cover the worst case of a
+ * waiter: the whole lock wait, then one HTTP call (its timeout is at most
+ * 20 s, HUBSPOT_OAUTH_TIMEOUT_MS), then the save. Otherwise HubSpot could issue
+ * new tokens after the transaction was already rolled back, and a rotated
+ * refresh token would be lost. A unit test enforces
+ * LOCK_WAIT + max HTTP timeout + margin <= LOCKED_TRANSACTION.
  */
-const LOCK_WAIT_MS = 25_000;
-const LOCKED_TRANSACTION_MS = 30_000;
+export const OAUTH_GRANT_LOCK_WAIT_MS = 20_000;
+export const OAUTH_GRANT_SAVE_MARGIN_MS = 10_000;
+export const OAUTH_GRANT_LOCKED_TRANSACTION_MS = 50_000;
 
 type Column = 'refresh_token' | 'access_token';
 
@@ -58,7 +63,7 @@ export class EncryptedDatabaseOAuthGrantStore implements TenantOAuthGrantStore {
       ctx,
       async (tx) => {
         const client = tenantClient(tx);
-        await client.$queryRaw`SELECT set_config('lock_timeout', ${`${LOCK_WAIT_MS}ms`}, true)`;
+        await client.$queryRaw`SELECT set_config('lock_timeout', ${`${OAUTH_GRANT_LOCK_WAIT_MS}ms`}, true)`;
         try {
           // Transaction-scoped: released on commit or rollback, in every process.
           await client.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`oauth-grant:${system}:${tx.tenantId}`}, 0))`;
@@ -71,7 +76,7 @@ export class EncryptedDatabaseOAuthGrantStore implements TenantOAuthGrantStore {
         if (save) await this.write(tx, cipher, system, save);
         return result;
       },
-      { timeoutMs: LOCKED_TRANSACTION_MS },
+      { timeoutMs: OAUTH_GRANT_LOCKED_TRANSACTION_MS },
     );
   }
 

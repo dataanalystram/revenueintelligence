@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { CRM_CONNECTOR, type CrmConnector } from '../../src/modules/crm';
 import {
   HUBSPOT_OAUTH_SCOPES,
@@ -511,6 +511,76 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
       const err = await hubspotRejection(oauth().accessToken(t, '3003'));
       expect(err.kind).toBe('reauthorization_required');
       expect(err.message).not.toMatch(/refresh-/);
+    });
+  });
+
+  describe('refresh within one process, and 401 recovery', () => {
+    it('20 concurrent callers in one process share one locked refresh (one pooled connection)', async () => {
+      const t = await provisionTenant(h, 'oaflight');
+      await configureOAuth(t, '3003');
+      await install(t);
+      await expireAccessToken(t);
+      const spy = vi.spyOn(grants(h), 'withLockedGrant');
+      const refreshes = fake.oauthCalls.refreshToken;
+      try {
+        const tokens = await Promise.all(
+          Array.from({ length: 20 }, () => oauth(h).accessToken(t, '3003')),
+        );
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(fake.oauthCalls.refreshToken - refreshes).toBe(1);
+        expect(new Set(tokens.map((x) => x.reveal())).size).toBe(1);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('after a reinstall handled by another process, a 401 makes this process pick up the new grant', async () => {
+      const t = await provisionTenant(h, 'oareinst');
+      await configureOAuth(t, '3003');
+      await install(t);
+      const crm = await connector(h).forTenant(t); // h now caches the first access token
+      await crm.listRecords('person', { limit: 1 });
+      const first = fake.requests.at(-1)!.authorization!.slice('Bearer '.length);
+
+      // The customer reinstalls; the callback runs in another API instance (h2).
+      const { url } = await oauth(h2).installUrl(t);
+      const back = new URL((await fetch(url, { redirect: 'manual' })).headers.get('location')!);
+      await oauth(h2).completeInstall({
+        code: back.searchParams.get('code')!,
+        state: back.searchParams.get('state')!,
+      });
+      fake.revokeAccessToken(first); // HubSpot revoked the old grant's token
+      const refreshes = fake.oauthCalls.refreshToken;
+
+      await expect(crm.listRecords('person', { limit: 1 })).resolves.toBeDefined();
+      const second = fake.requests.at(-1)!.authorization!.slice('Bearer '.length);
+      expect(second).not.toBe(first);
+      expect(second).toBe((await grants().get(t, 'hubspot'))!.accessToken!.token.reveal());
+      expect(fake.oauthCalls.refreshToken).toBe(refreshes); // the stored new token was reused
+    });
+
+    it('a revoked access token with a valid refresh token → 401, one refresh, success', async () => {
+      const t = await provisionTenant(h, 'oarevacc');
+      await configureOAuth(t, '3003');
+      await install(t);
+      const crm = await connector(h).forTenant(t);
+      await crm.listRecords('company', { limit: 1 });
+      fake.revokeAccessToken(fake.requests.at(-1)!.authorization!.slice('Bearer '.length));
+      const refreshes = fake.oauthCalls.refreshToken;
+      await expect(crm.listRecords('company', { limit: 1 })).resolves.toBeDefined();
+      expect(fake.oauthCalls.refreshToken - refreshes).toBe(1);
+    });
+
+    it('both tokens revoked → reauthorization_required after one re-authentication attempt', async () => {
+      const t = await provisionTenant(h, 'oarevall');
+      await configureOAuth(t, '3003');
+      await install(t);
+      const crm = await connector(h).forTenant(t);
+      await crm.listRecords('lead', { limit: 1 });
+      fake.revokeAccessToken(fake.requests.at(-1)!.authorization!.slice('Bearer '.length));
+      fake.revokeRefreshTokens();
+      const err = await hubspotRejection(crm.listRecords('lead', { limit: 1 }));
+      expect(err.kind).toBe('reauthorization_required');
     });
   });
 

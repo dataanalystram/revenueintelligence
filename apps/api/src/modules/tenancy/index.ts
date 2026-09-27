@@ -29,6 +29,11 @@ export {
   tenantClient,
   type TenantTransaction,
 } from './infrastructure/tenant-database';
+export {
+  OAUTH_GRANT_LOCKED_TRANSACTION_MS,
+  OAUTH_GRANT_LOCK_WAIT_MS,
+  OAUTH_GRANT_SAVE_MARGIN_MS,
+} from './infrastructure/encrypted-oauth-grant.store';
 export * from './oauth/oauth-grants';
 export {
   OAUTH_STATE_TTL_MS,

@@ -74,6 +74,12 @@ describe('TokenCipher (AES-256-GCM, ADR 0010)', () => {
     const flipped = `${sig.slice(0, -1)}${sig.endsWith('A') ? 'B' : 'A'}`;
     expect(cipher.verify('payload', flipped)).toBe(false);
     expect(cipher.verify('payload', 'short')).toBe(false);
+    // Only the canonical spelling: the last character's unused bits must match too.
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    const alias = alphabet[alphabet.indexOf(sig.at(-1)!) ^ 1]!;
+    const aliasSig = `${sig.slice(0, -1)}${alias}`;
+    expect(Buffer.from(aliasSig, 'base64url')).toEqual(Buffer.from(sig, 'base64url'));
+    expect(cipher.verify('payload', aliasSig)).toBe(false);
     expect(new TokenCipher(key()).verify('payload', sig)).toBe(false);
   });
 

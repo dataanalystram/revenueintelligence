@@ -116,6 +116,9 @@ pnpm --filter @lip/api hubspot:discover --tenant <slug>       # reads through th
   10 minutes.
 - The callback stores nothing unless the account HubSpot reports equals the
   tenant's `portalId`.
+- A link is burned by its first callback, even a failed one (for example
+  HubSpot unavailable during the code exchange): request a new one with
+  `hubspot:install-url`.
 - Needs `HUBSPOT_APP_CLIENT_ID`, `HUBSPOT_APP_CLIENT_SECRET`,
   `HUBSPOT_APP_REDIRECT_URI` and `PLATFORM_TOKEN_ENCRYPTION_KEY` (see
   [credentials](../../credentials.md)). Static-token tenants such as `hstest`

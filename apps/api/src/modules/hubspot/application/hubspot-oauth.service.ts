@@ -52,6 +52,10 @@ export interface CompletedInstall {
 export class HubSpotOAuthService {
   private readonly logger = new Logger(HubSpotOAuthService.name);
   private readonly cache = new Map<string, CachedToken>();
+  /** One pending refresh per tenant in this process (the advisory lock covers other processes). */
+  private readonly inflight = new Map<string, Promise<CachedToken>>();
+  /** Access tokens HubSpot rejected with 401 (revoked, or replaced by a reinstall). Memory only. */
+  private readonly rejected = new Map<string, string>();
 
   constructor(
     private readonly tenantConfig: TenantConfigService,
@@ -107,6 +111,7 @@ export class HubSpotOAuthService {
     };
     await this.guarded(() => this.grants.put(ctx, 'hubspot', grant));
     this.cache.delete(ctx.tenantId);
+    this.rejected.delete(ctx.tenantId);
     this.logger.log({ msg: 'HubSpot app installed', tenantId: ctx.tenantId, accountId: portalId });
     return { tenantId: ctx.tenantId, tenantSlug: ctx.tenantSlug, accountId: portalId };
   }
@@ -118,17 +123,50 @@ export class HubSpotOAuthService {
    */
   async accessToken(ctx: TenantContext, expectedAccountId: string): Promise<Secret> {
     const cached = this.cache.get(ctx.tenantId);
-    if (cached && cached.accountId === expectedAccountId && this.fresh(cached.expiresAt)) {
+    if (
+      cached &&
+      cached.accountId === expectedAccountId &&
+      this.fresh(cached.expiresAt) &&
+      !this.isRejected(ctx, cached.token)
+    ) {
       return cached.token;
     }
     const stored = await this.guarded(() => this.grants.get(ctx, 'hubspot'));
-    const valid = this.usable(stored, expectedAccountId);
+    const valid = this.usable(ctx, stored, expectedAccountId);
     if (valid) return this.remember(ctx, valid);
 
+    // Concurrent callers in this process share one refresh, so they never hold
+    // one pooled connection each while waiting for the advisory lock.
+    let pending = this.inflight.get(ctx.tenantId);
+    if (!pending) {
+      pending = this.refreshUnderLock(ctx, expectedAccountId).finally(() =>
+        this.inflight.delete(ctx.tenantId),
+      );
+      this.inflight.set(ctx.tenantId, pending);
+    }
+    return this.remember(ctx, await pending);
+  }
+
+  /**
+   * HubSpot rejected this access token (401): it was revoked, or the app was
+   * reinstalled and a new grant stored by another process. Forget it, so the
+   * next `accessToken` reads the stored grant again and refreshes if the stored
+   * access token is this same rejected one.
+   */
+  invalidate(ctx: TenantContext, rejected: Secret): void {
+    const cached = this.cache.get(ctx.tenantId);
+    if (cached && cached.token.reveal() === rejected.reveal()) this.cache.delete(ctx.tenantId);
+    this.rejected.set(ctx.tenantId, rejected.reveal());
+  }
+
+  private async refreshUnderLock(
+    ctx: TenantContext,
+    expectedAccountId: string,
+  ): Promise<CachedToken> {
     const refreshed = await this.guarded(() =>
       this.grants.withLockedGrant(ctx, 'hubspot', async (current) => {
         // Another process may have refreshed while this one waited for the lock.
-        const nowValid = this.usable(current, expectedAccountId);
+        const nowValid = this.usable(ctx, current, expectedAccountId);
         if (nowValid) return { result: nowValid };
         const grant = current!;
         const app = await this.app();
@@ -163,16 +201,22 @@ export class HubSpotOAuthService {
         };
       }),
     );
-    return this.remember(ctx, refreshed);
+    this.rejected.delete(ctx.tenantId);
+    return refreshed;
   }
 
   /** Test and operator hook: forget this process's cached access tokens. */
   clearCache(): void {
     this.cache.clear();
+    this.rejected.clear();
   }
 
-  /** A stored grant's access token if it belongs to the expected account and is still fresh. */
+  /**
+   * A stored grant's access token if it belongs to the expected account, is
+   * still fresh and was not rejected by HubSpot.
+   */
   private usable(
+    ctx: TenantContext,
     grant: OAuthGrant | undefined,
     expectedAccountId: string,
   ): CachedToken | undefined {
@@ -189,10 +233,14 @@ export class HubSpotOAuthService {
       );
     }
     const access = grant.accessToken;
-    if (access && this.fresh(access.expiresAt)) {
+    if (access && this.fresh(access.expiresAt) && !this.isRejected(ctx, access.token)) {
       return { token: access.token, expiresAt: access.expiresAt, accountId: grant.accountId };
     }
     return undefined;
+  }
+
+  private isRejected(ctx: TenantContext, token: Secret): boolean {
+    return this.rejected.get(ctx.tenantId) === token.reveal();
   }
 
   private remember(ctx: TenantContext, token: CachedToken): Secret {

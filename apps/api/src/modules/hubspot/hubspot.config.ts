@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+/** Upper bound of HUBSPOT_OAUTH_TIMEOUT_MS; the refresh lock budget depends on it (ADR 0010). */
+export const HUBSPOT_OAUTH_MAX_TIMEOUT_MS = 20_000;
+
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]']);
 
 /**
@@ -51,7 +54,12 @@ export const HubSpotEnvSchema = z.object({
     .default('2026-09'),
   /** HubSpot's consent page; the account id is appended (`…/oauth/{portalId}/authorize`). */
   HUBSPOT_OAUTH_AUTHORIZE_BASE_URL: secureUrl.default('https://app.hubspot.com/oauth'),
-  HUBSPOT_OAUTH_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(20_000).default(10_000),
+  HUBSPOT_OAUTH_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(HUBSPOT_OAUTH_MAX_TIMEOUT_MS)
+    .default(10_000),
   /** The projects-based app's client id (not a secret; the client secret is a SecretProvider value). */
   HUBSPOT_APP_CLIENT_ID: z
     .string()
