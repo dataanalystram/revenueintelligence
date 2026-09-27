@@ -123,3 +123,118 @@ pnpm --filter @lip/api hubspot:discover --tenant <slug>       # reads through th
   `HUBSPOT_APP_REDIRECT_URI` and `PLATFORM_TOKEN_ENCRYPTION_KEY` (see
   [credentials](../../credentials.md)). Static-token tenants such as `hstest`
   need none of them.
+
+## 7. Milestone 5: the projects-based app
+
+The first real install of the app, and its webhooks ([ADR 0011](../../adr/0011-hubspot-webhooks-and-routing.md)).
+Everything here is read-only towards the CRM: the app requests read scopes
+only, and the platform only records webhook receipts (identifiers, never
+values).
+
+### 7.1 Public HTTPS URL
+
+HubSpot needs a public HTTPS URL for the OAuth redirect and the webhook
+target. In development this is a tunnel to the API (port 3000 by default).
+The hostname is **never committed**: it goes into two environment variables
+and into the rendered app (7.3).
+
+| Option                              | Command                                                          | Credentials               |
+| ----------------------------------- | ---------------------------------------------------------------- | ------------------------- |
+| Cloudflare Quick Tunnel (preferred) | `cloudflared tunnel --no-autoupdate --url http://localhost:3000` | none                      |
+| ngrok (fallback)                    | `ngrok http 3000`                                                | `NGROK_AUTHTOKEN` (yours) |
+
+A Quick Tunnel prints `https://<random>.trycloudflare.com`; the name changes
+every time the tunnel starts. **Whenever it changes**, update
+`HUBSPOT_APP_REDIRECT_URI` and `HUBSPOT_WEBHOOK_TARGET_URL`, re-render and
+re-upload the app (7.3); deliveries signed for the old URL are refused.
+
+The M5 spike result for the Claude Code cloud environment is recorded in the
+[M5 record](../../milestones/M05-hubspot-webhooks.md#tunnel-spike): at the
+time of writing its network policy refused both providers' hosts.
+
+### 7.2 HubSpot CLI
+
+On the machine that uploads the app (any machine with Node 22):
+
+```bash
+npm install -g @hubspot/cli@latest
+hs --version
+hs account auth        # authenticate the DEVELOPER account (not the test account)
+```
+
+`hs account auth` opens HubSpot in the browser to create a personal access
+key for the developer account and stores it in the CLI's own config file
+(`~/.hscli/config.yml` or `hubspot.config.yml`). That key is yours: do not
+commit it, paste it into chat, or put it into this repository.
+
+### 7.3 Render and upload the app
+
+From the repository root, with the tunnel's hostname:
+
+```bash
+export HUBSPOT_APP_REDIRECT_URI=https://<host>/oauth/hubspot/callback
+export HUBSPOT_WEBHOOK_TARGET_URL=https://<host>/webhooks/hubspot
+node hubspot-app/render.mjs          # writes hubspot-app/build/ (git-ignored)
+cd hubspot-app/build
+hs project upload
+```
+
+Expected: the CLI uploads project `lip-lead-intelligence-dev`, reports a
+successful build and deploy, and prints a link to the project in the
+developer account. If the build fails, copy the error text (it contains no
+secrets) into the conversation: for example if HubSpot requires the `oauth`
+scope, or names the Leads object type differently in webhook subscriptions.
+
+What the app contains (`hubspot-app/template/`):
+
+| Setting             | Value                                                                                                                                                                                  |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Distribution / auth | `private` / `oauth`                                                                                                                                                                    |
+| Required scopes     | `crm.objects.contacts.read`, `crm.objects.companies.read`, `crm.objects.leads.read`, `crm.schemas.contacts.read`, `crm.schemas.companies.read` (no write scope; `oauth` not requested) |
+| Redirect URL        | `https://<host>/oauth/hubspot/callback`                                                                                                                                                |
+| Webhook target URL  | `https://<host>/webhooks/hubspot`, max 10 concurrent requests                                                                                                                          |
+| Contact webhooks    | creation; property change of `email`, `lifecyclestage`, `hs_lead_status`                                                                                                               |
+| Company webhooks    | creation; property change of `name`, `domain`, `lifecyclestage`                                                                                                                        |
+| Lead webhooks       | creation; property change of `hs_pipeline_stage`                                                                                                                                       |
+
+### 7.4 Allow the test account and copy the app's ids
+
+In the developer account: **Development → Projects → lip-lead-intelligence-dev
+→ LIP Lead Intelligence (dev)**.
+
+1. **Distribution** tab → add the test account **149338734** as an approved
+   (allowlisted) account. A private app can only be installed in allowlisted
+   accounts.
+2. **Auth** tab: the **Client ID** and **Client secret**. The app's **App ID**
+   is shown on the app's overview (and in its URL).
+
+Set them in the cloud environment (environment menu in the session title bar
+→ **Edit** → environment variables), never in chat:
+
+| Variable                        | Value                                                 | Secret? |
+| ------------------------------- | ----------------------------------------------------- | ------- |
+| `HUBSPOT_APP_ID`                | App ID                                                | no      |
+| `HUBSPOT_APP_CLIENT_ID`         | Client ID                                             | no      |
+| `HUBSPOT_APP_CLIENT_SECRET`     | Client secret                                         | **yes** |
+| `HUBSPOT_APP_REDIRECT_URI`      | `https://<host>/oauth/hubspot/callback` (same as 7.3) | no      |
+| `HUBSPOT_WEBHOOK_TARGET_URL`    | `https://<host>/webhooks/hubspot` (same as 7.3)       | no      |
+| `PLATFORM_TOKEN_ENCRYPTION_KEY` | `openssl rand -base64 32`, generated once and kept    | **yes** |
+
+Keep `TENANT_HSTEST_HUBSPOT_ACCESS_TOKEN` and `HUBSPOT_TEST_PORTAL_ID`
+unchanged: `hstest` keeps using the Service Key.
+
+### 7.5 Install into the test account
+
+A separate OAuth tenant represents the same test account; `hstest` stays on
+its static token, and the two coexist.
+
+```bash
+pnpm --filter @lip/api tenant:provision --slug hsoauth --name "HubSpot test account (OAuth)"
+pnpm --filter @lip/api hubspot:configure --tenant hsoauth --portal-id "$HUBSPOT_TEST_PORTAL_ID" --auth oauth
+pnpm --filter @lip/api hubspot:install-url --tenant hsoauth   # open the URL, choose the test account, consent
+pnpm --filter @lip/api hubspot:discover --tenant hsoauth --out /tmp/oauth-discovery.json
+pnpm --filter @lip/api hubspot:webhook-report --tenant hsoauth
+```
+
+Webhooks go only to `hsoauth` (the tenant holding the grant), never to
+`hstest`.

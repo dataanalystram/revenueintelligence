@@ -144,6 +144,8 @@ describe('HubSpot webhook intake (API process)', () => {
     infra = await startInfrastructure();
     app = await createApiApp(infra.config);
     await app.init();
+    // Listening once: supertest otherwise starts a listener per request (20 concurrent ones below).
+    await app.listen(0, '127.0.0.1');
     http = app.getHttpServer() as App;
     h = await startTenancy(infra.config);
 

@@ -65,14 +65,24 @@ local fake HubSpot ([ADR 0010](adr/0010-crm-connector-port-and-oauth.md)).
 **No new credentials were needed for M4**: tests generate their own keys, and
 the live checks keep using the test account's Service Key.
 
-When the first real install happens (M5), the environment needs:
+### M5 — Real app install and webhooks
 
-| Variable                        | Where it comes from                                                                        | Secret? |
-| ------------------------------- | ------------------------------------------------------------------------------------------ | ------- |
-| `HUBSPOT_APP_CLIENT_ID`         | The projects-based app → Auth                                                              | no      |
-| `HUBSPOT_APP_CLIENT_SECRET`     | The projects-based app → Auth (also verifies webhook signatures, M5)                       | **yes** |
-| `HUBSPOT_APP_REDIRECT_URI`      | We choose it (the public callback, `…/oauth/hubspot/callback`); must match the app exactly | no      |
-| `PLATFORM_TOKEN_ENCRYPTION_KEY` | Generated once per environment: `openssl rand -base64 32`                                  | **yes** |
+M5 installs the projects-based app for real in the developer test account and
+receives its webhooks ([ADR 0011](adr/0011-hubspot-webhooks-and-routing.md)).
+Exact steps: [integrations/hubspot/setup.md](integrations/hubspot/setup.md#milestone-5-the-projects-based-app).
+
+| Variable                        | Where it comes from                                                                       | Secret? |
+| ------------------------------- | ----------------------------------------------------------------------------------------- | ------- |
+| `HUBSPOT_APP_ID`                | The app's page in the developer account (App ID)                                          | no      |
+| `HUBSPOT_APP_CLIENT_ID`         | The app → Auth tab (Client ID)                                                            | no      |
+| `HUBSPOT_APP_CLIENT_SECRET`     | The app → Auth tab (Client secret). Also the key HubSpot signs webhooks with              | **yes** |
+| `HUBSPOT_APP_REDIRECT_URI`      | `https://<public host>/oauth/hubspot/callback`; must match the app's redirect URL exactly | no      |
+| `HUBSPOT_WEBHOOK_TARGET_URL`    | `https://<public host>/webhooks/hubspot`; must match the app's webhook target URL exactly | no      |
+| `PLATFORM_TOKEN_ENCRYPTION_KEY` | Generated once per environment: `openssl rand -base64 32`                                 | **yes** |
+
+`<public host>` is the tunnel hostname in development (a Cloudflare Quick
+Tunnel `*.trycloudflare.com` name changes every time the tunnel starts; see
+the setup guide). It is never committed.
 
 `PLATFORM_TOKEN_ENCRYPTION_KEY` encrypts every tenant's stored OAuth tokens
 (AES-256-GCM) and signs install states. Losing or changing it makes stored
@@ -80,11 +90,9 @@ grants unreadable, and those tenants must reinstall the app. Tenants' refresh
 and access tokens are never set by hand: the platform stores them, encrypted,
 in `tenant_oauth_tokens` when a tenant installs the app.
 
-### M5 — Webhooks (planned)
-
-Webhooks need a public HTTPS URL. For local testing we will use a tunnel
-(for example `cloudflared` or `ngrok`); that is decided at M5, together with
-the first real OAuth install.
+The M3 variables (`TENANT_HSTEST_HUBSPOT_ACCESS_TOKEN`, `HUBSPOT_TEST_PORTAL_ID`)
+stay unchanged: tenant `hstest` keeps using the Service Key alongside the
+OAuth tenant.
 
 ### M10 — Gainsight CS (read-only)
 
