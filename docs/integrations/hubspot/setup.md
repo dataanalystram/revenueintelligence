@@ -238,3 +238,35 @@ pnpm --filter @lip/api hubspot:webhook-report --tenant hsoauth
 
 Webhooks go only to `hsoauth` (the tenant holding the grant), never to
 `hstest`.
+
+### 7.6 Fallback: tunnel and API on a local machine
+
+Use this if the cloud environment cannot run a tunnel (M5 spike: its egress
+policy refused `api.trycloudflare.com` and ngrok's hosts). Everything runs on
+your machine; nothing inbound is opened (the tunnel connects outbound).
+
+```bash
+git clone https://github.com/laxmanprasadsomaraju/Garethtasktest && cd Garethtasktest
+git checkout claude/blissful-mendel-urbh4r
+corepack enable && pnpm install
+docker compose up -d postgres redis
+pnpm --filter @lip/api prisma:migrate:deploy
+pnpm --filter @lip/api build
+
+# Terminal 1: the tunnel (prints https://<random>.trycloudflare.com)
+cloudflared tunnel --no-autoupdate --url http://localhost:3000
+```
+
+Put the variables from 7.4 (with this tunnel's hostname) into `apps/api/.env`,
+which is git-ignored. Then render and upload the app (7.3) and allowlist the
+account (7.4).
+
+```bash
+# Terminal 2: the API
+pnpm --filter @lip/api start          # http://localhost:3000, runs as lip_api
+# Terminal 3: install and inspect (7.5)
+```
+
+Send back only safe outputs: `hubspot:webhook-report` JSON, the callback's
+response body (`{"status":"installed",…}`), and HTTP status codes. Never send
+tokens, the client secret or webhook bodies.
