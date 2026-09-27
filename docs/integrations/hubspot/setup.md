@@ -154,7 +154,7 @@ time of writing its network policy refused both providers' hosts.
 
 ### 7.2 HubSpot CLI
 
-On the machine that uploads the app (any machine with Node 22):
+On the machine that uploads the app (Node **>=22.18.0**):
 
 ```bash
 npm install -g @hubspot/cli@latest
@@ -191,11 +191,23 @@ What the app contains (`hubspot-app/template/`):
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Distribution / auth | `private` / `oauth`                                                                                                                                                                    |
 | Required scopes     | `crm.objects.contacts.read`, `crm.objects.companies.read`, `crm.objects.leads.read`, `crm.schemas.contacts.read`, `crm.schemas.companies.read` (no write scope; `oauth` not requested) |
+| Permitted URLs      | `permittedUrls`: `fetch: ["https://api.hubapi.com"]`, `iframe: []`, `img: []` (static; required by the 2026.03 schema, see below)                                                      |
 | Redirect URL        | `https://<host>/oauth/hubspot/callback`                                                                                                                                                |
 | Webhook target URL  | `https://<host>/webhooks/hubspot`, max 10 concurrent requests                                                                                                                          |
 | Contact webhooks    | creation; property change of `email`, `lifecyclestage`, `hs_lead_status`                                                                                                               |
 | Company webhooks    | creation; property change of `name`, `domain`, `lifecyclestage`                                                                                                                        |
 | Lead webhooks       | creation; property change of `hs_pipeline_stage`                                                                                                                                       |
+
+`config.permittedUrls` is **required** by HubSpot's 2026.03 project
+validation (the first real upload failed with `Missing required field:
+'config.permittedUrls'`). It is the allow-list for UI extensions (cards,
+settings pages): URLs they may call with `hubspot.fetch`, load in iframes or
+use as images, as fully qualified HTTPS URLs. This app has no UI extensions,
+so the lists have no effect; the value is HubSpot's own template default.
+The OAuth redirect URL and the webhook target URL do **not** belong there,
+and neither does the tunnel host. `render.mjs` refuses any rendered app whose
+`permittedUrls` differs from this value, and requires the redirect and
+webhook URLs to use the same host.
 
 ### 7.4 Allow the test account and copy the app's ids
 
@@ -243,32 +255,37 @@ Webhooks go only to `hsoauth` (the tenant holding the grant), never to
 
 Use this if the cloud environment cannot run a tunnel (M5 spike: its egress
 policy refused `api.trycloudflare.com` and ngrok's hosts). Everything runs on
-your machine; nothing inbound is opened (the tunnel connects outbound).
+your machine; nothing inbound is opened (the tunnel connects outbound). The
+tunnel is for M5 testing only; it is not the production deployment.
+
+Prerequisites: Docker, Node **>=22.18.0** (`node --version`), `corepack enable`.
 
 ```bash
 git clone https://github.com/laxmanprasadsomaraju/Garethtasktest && cd Garethtasktest
 git checkout claude/blissful-mendel-urbh4r
 corepack enable && pnpm install
-docker compose up -d postgres redis
+cp .env.example apps/api/.env          # BEFORE migrating: holds MIGRATION_DATABASE_URL / DATABASE_URL
+docker compose up -d postgres redis    # first start also creates the app login role lip_api
+set -a; source apps/api/.env; set +a   # the app and CLIs read process env only; repeat in every terminal
 pnpm --filter @lip/api prisma:migrate:deploy
 pnpm --filter @lip/api build
 
-# Terminal 1: the tunnel (prints https://<random>.trycloudflare.com)
-cloudflared tunnel --no-autoupdate --url http://localhost:3000
+# Terminal 1: the tunnel to port 3000, either
+ngrok http 3000                                                  # prints https://<name>.ngrok-free.app
+cloudflared tunnel --no-autoupdate --url http://localhost:3000   # or: https://<random>.trycloudflare.com
 ```
 
-Put the variables from 7.4 (with this tunnel's hostname) into `apps/api/.env`,
-which is git-ignored. Then render and upload the app (7.3) and allowlist the
-account (7.4).
+Put the variables from 7.4 (with the tunnel's hostname) into `apps/api/.env`
+(git-ignored). Then render and upload the app (7.3) and allowlist the account
+(7.4).
 
 ```bash
-# Terminal 2: the API. The app reads process environment variables only
-# (it does not load .env itself), so export them in every terminal:
+# Terminal 2: the API
 set -a; source apps/api/.env; set +a
-pnpm --filter @lip/api start          # http://localhost:3000, runs as lip_api
+pnpm --filter @lip/api start 2>&1 | tee /tmp/lip-api.log   # http://localhost:3000, runs as lip_api
 # Terminal 3: the same `set -a; source apps/api/.env; set +a`, then 7.5
 ```
 
 Send back only safe outputs: `hubspot:webhook-report` JSON, the callback's
 response body (`{"status":"installed",…}`), and HTTP status codes. Never send
-tokens, the client secret or webhook bodies.
+tokens, the client secret, the tunnel authtoken or webhook bodies.

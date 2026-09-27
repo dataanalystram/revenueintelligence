@@ -17,6 +17,11 @@
       ],
       "optionalScopes": [],
       "conditionallyRequiredScopes": []
+    },
+    "permittedUrls": {
+      "fetch": ["https://api.hubapi.com"],
+      "iframe": [],
+      "img": []
     }
   }
 }

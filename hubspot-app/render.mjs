@@ -4,11 +4,18 @@
 //
 //   HUBSPOT_APP_REDIRECT_URI=https://<host>/oauth/hubspot/callback \
 //   HUBSPOT_WEBHOOK_TARGET_URL=https://<host>/webhooks/hubspot \
-//   node hubspot-app/render.mjs
+//   node hubspot-app/render.mjs            # writes build/
+//   node hubspot-app/render.mjs --check    # validates only
+//   node hubspot-app/render.mjs --print    # prints the rendered JSON files (tests)
 //
-// The public host (e.g. a Cloudflare Quick Tunnel hostname) changes between
+// The public host (a tunnel hostname in development) changes between
 // sessions, so it is never committed: build/ is git-ignored. Re-render and
 // re-upload whenever it changes. No secrets are involved.
+//
+// The rendered output is checked against an exact allow-list before anything
+// is written: the host may appear only as the OAuth redirect URL and the
+// webhook target URL; `permittedUrls` must be exactly the approved static
+// value; scopes must be read-only; distribution private; auth OAuth.
 import {
   cpSync,
   mkdirSync,
@@ -19,6 +26,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 const root = dirname(fileURLToPath(import.meta.url));
@@ -29,6 +37,24 @@ const EXPECTED_PATHS = {
   HUBSPOT_APP_REDIRECT_URI: '/oauth/hubspot/callback',
   HUBSPOT_WEBHOOK_TARGET_URL: '/webhooks/hubspot',
 };
+
+/**
+ * `config.permittedUrls` (required by the 2026.03 project schema): the URLs a
+ * UI extension (card, settings page) may reach with hubspot.fetch, iframes and
+ * images. This app has no UI extension, so the lists have no effect; the value
+ * is HubSpot's own template default (hubspot-project-components,
+ * 2026.03/components/app/oauth-private). It is static: the tunnel host never
+ * belongs here (HubSpot calls the webhook target and redirects the browser to
+ * the redirect URL; neither is a UI-extension request).
+ */
+export const APPROVED_PERMITTED_URLS = Object.freeze({
+  fetch: ['https://api.hubapi.com'],
+  iframe: [],
+  img: [],
+});
+
+export const APP_META = 'src/app/app-hsmeta.json';
+export const WEBHOOKS_META = 'src/app/webhooks/webhooks-hsmeta.json';
 
 export function publicUrls(env) {
   const values = {};
@@ -47,14 +73,60 @@ export function publicUrls(env) {
     }
     values[name] = url.toString();
   }
+  const hosts = new Set(Object.values(values).map((v) => new URL(v).host));
+  if (hosts.size !== 1) {
+    throw new Error(
+      'HUBSPOT_APP_REDIRECT_URI and HUBSPOT_WEBHOOK_TARGET_URL must use the same host',
+    );
+  }
   return values;
 }
 
+/** Substitutes known placeholders; values are JSON-escaped, so they cannot break out of a string. */
 export function render(text, values) {
   return text.replace(/\{\{([A-Z_]+)\}\}/g, (match, name) => {
     if (!(name in values)) throw new Error(`unknown placeholder ${match}`);
-    return values[name];
+    return JSON.stringify(values[name]).slice(1, -1);
   });
+}
+
+/**
+ * Checks the rendered project (a map of relative path → parsed JSON) against
+ * the allow-list. Throws on anything unexpected.
+ */
+export function validateRendered(rendered, values) {
+  const app = rendered[APP_META];
+  const hooks = rendered[WEBHOOKS_META];
+  if (!app || !hooks) throw new Error(`missing ${!app ? APP_META : WEBHOOKS_META}`);
+  const cfg = app.config ?? {};
+  const fail = (msg) => {
+    throw new Error(`rendered app is not allowed: ${msg}`);
+  };
+  if (cfg.distribution !== 'private') fail('distribution must be private');
+  if (cfg.auth?.type !== 'oauth') fail('auth.type must be oauth');
+  if (!isDeepStrictEqual(cfg.auth?.redirectUrls, [values.HUBSPOT_APP_REDIRECT_URI])) {
+    fail('auth.redirectUrls must be exactly [HUBSPOT_APP_REDIRECT_URI]');
+  }
+  const scopes = [
+    ...(cfg.auth?.requiredScopes ?? []),
+    ...(cfg.auth?.optionalScopes ?? []),
+    ...(cfg.auth?.conditionallyRequiredScopes ?? []),
+  ];
+  if (scopes.length === 0 || scopes.some((s) => !/^crm\.(objects|schemas)\.\w+\.read$/.test(s))) {
+    fail('only crm.*.read scopes are allowed');
+  }
+  if (!isDeepStrictEqual(cfg.permittedUrls, { ...APPROVED_PERMITTED_URLS })) {
+    fail('config.permittedUrls must be exactly the approved static value');
+  }
+  if (hooks.config?.settings?.targetUrl !== values.HUBSPOT_WEBHOOK_TARGET_URL) {
+    fail('webhooks settings.targetUrl must be exactly HUBSPOT_WEBHOOK_TARGET_URL');
+  }
+  // The environment's host appears in exactly those two places, nowhere else.
+  const host = new URL(values.HUBSPOT_WEBHOOK_TARGET_URL).host;
+  const occurrences = Object.values(rendered)
+    .map((json) => JSON.stringify(json).split(host).length - 1)
+    .reduce((a, b) => a + b, 0);
+  if (occurrences !== 2) fail(`the public host must appear exactly twice (found ${occurrences})`);
 }
 
 function files(dir) {
@@ -64,24 +136,35 @@ function files(dir) {
   });
 }
 
+/** Renders every JSON file of the template in memory and validates the result. */
+export function renderProject(values, dir = template) {
+  const rendered = {};
+  for (const file of files(dir)) {
+    if (!file.endsWith('.json')) continue;
+    rendered[relative(dir, file).split('\\').join('/')] = JSON.parse(
+      render(readFileSync(file, 'utf8'), values),
+    );
+  }
+  validateRendered(rendered, values);
+  return rendered;
+}
+
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const values = publicUrls(process.env);
+  const rendered = renderProject(values);
+  if (process.argv.includes('--print')) {
+    process.stdout.write(`${JSON.stringify(rendered, null, 2)}\n`);
+    process.exit(0);
+  }
   if (process.argv.includes('--check')) {
-    // Validate and render in memory only (tests); build/ is left untouched.
-    for (const file of files(template)) {
-      if (file.endsWith('.json')) JSON.parse(render(readFileSync(file, 'utf8'), values));
-    }
     process.stdout.write(`OK for ${new URL(values.HUBSPOT_WEBHOOK_TARGET_URL).host}\n`);
     process.exit(0);
   }
   rmSync(build, { recursive: true, force: true });
   mkdirSync(build, { recursive: true });
   cpSync(template, build, { recursive: true });
-  for (const file of files(build)) {
-    if (!file.endsWith('.json')) continue;
-    const rendered = render(readFileSync(file, 'utf8'), values);
-    JSON.parse(rendered); // still valid JSON
-    writeFileSync(file, rendered);
+  for (const [path, json] of Object.entries(rendered)) {
+    writeFileSync(join(build, path), `${JSON.stringify(json, null, 2)}\n`);
   }
   process.stdout.write(
     `Rendered ${relative(process.cwd(), build)} for ${new URL(values.HUBSPOT_WEBHOOK_TARGET_URL).host}\n` +

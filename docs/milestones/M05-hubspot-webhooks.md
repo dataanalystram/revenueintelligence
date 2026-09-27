@@ -152,6 +152,76 @@ local echo server (records method, raw URL, headers, body hash).
 Preservation proof is therefore still owed and will be run through whichever
 tunnel becomes available (same echo-server procedure, then the API).
 
+## Live findings
+
+### 1. HubSpot upload validation: `config.permittedUrls` is required (2026-09-28)
+
+First real `hs project upload` (local Mac, ngrok; HubSpot CLI authenticated to
+the developer account; project `lip-lead-intelligence-dev`) failed:
+
+```text
+Project validation failed:
+
+Encountered the following errors for build/src/app/app-hsmeta.json:
+- Missing required field: 'config.permittedUrls'
+```
+
+Not a tunnel issue: a template/schema gap.
+
+- **Where the rule lives**: the CLI does not ship the schema. `@hubspot/cli`
+  8.15.0 → `@hubspot/project-parsing-lib` 0.23.3 fetches it per account from
+  HubSpot at upload time (`project-components-external/project-schemas/v3/{platformVersion}`).
+  developers.hubspot.com is blocked from the cloud session, so the schema was
+  confirmed from HubSpot's own repositories and packages.
+- **Structure**: every official app template in
+  [HubSpot/hubspot-project-components](https://github.com/HubSpot/hubspot-project-components)
+  (commit `233e986`, 2026-09-08) declares
+  `"permittedUrls": {"fetch": ["https://api.hubapi.com"], "iframe": [], "img": []}`.
+  That covers 2025.2, 2026.03, 2026.09 and 2027.03-beta, and each of
+  static-private, oauth-private and oauth-marketplace. HubSpot's typings
+  (`@hubspot/ui-extensions-dev-server` 2.2.2,
+  `UnifiedAppComponent.config.permittedUrls`) define exactly
+  `{ fetch: string[]; iframe: string[]; img: string[] }`.
+- **Meaning**: the allow-list for UI extensions (cards, settings pages):
+  URLs they may call with `hubspot.fetch`, load in iframes or use as images.
+  HubSpot's template guidance (`2026.03/defaultFiles/AGENTS.md`): entries are
+  fully qualified HTTPS URLs, not `localhost`. The dev server flattens all
+  three lists into the extension's allowed URLs. No example uses wildcards,
+  and nothing documents them.
+- **For this app**: no UI extensions, so the lists have no effect. OAuth
+  redirect URLs stay in `auth.redirectUrls`, and the webhook target stays in
+  `webhooks-hsmeta.json` `settings.targetUrl`. The tunnel host is not added.
+- **Fix**: static `permittedUrls` identical to HubSpot's oauth-private
+  template. `render.mjs` now validates the rendered project against an
+  allow-list:
+  - `permittedUrls` is exactly that value;
+  - redirect URLs and the target URL are exactly the two environment URLs,
+    on one host;
+  - that host appears exactly twice;
+  - scopes are `crm.*.read` only;
+  - distribution is private, auth is OAuth.
+
+  Substituted values are JSON-escaped.
+
+- **Mutation proofs** (`hubspot-app.spec.ts`; each failed, each restored byte-identical):
+
+  | #   | Mutation                                  | Failed test(s)                                                                                     |
+  | --- | ----------------------------------------- | -------------------------------------------------------------------------------------------------- |
+  | P1  | `permittedUrls` removed from the template | "declares config.permittedUrls…", render, generated app, "never commits a public host", allow-list |
+  | P2  | tunnel host rendered into `fetch`         | "declares…", render refuses, generated app, allow-list                                             |
+  | P3  | placeholder values not JSON-escaped       | "extra URLs cannot be injected…"                                                                   |
+  | P4  | `permittedUrls` allow-list check removed  | "a template that widens permittedUrls… is refused"                                                 |
+  | P5  | host-occurrence check removed             | same (host added to the description)                                                               |
+  | P6  | write scopes allowed                      | same (`crm.objects.contacts.write`)                                                                |
+
+- **Not proven**: whether HubSpot would also accept an empty `fetch` list. No
+  official example has one, so the template default was kept rather than guessed.
+- **Gates after the fix**: `pnpm verify` passes (unit 33 files / 397 tests,
+  integration 12 files / 171 tests). `pnpm verify:runtime` passes (85 passed,
+  0 failed).
+- **Also observed**: HubSpot did not report the missing `oauth` scope or the
+  optional `support` block (both present in the official template) as errors.
+
 ## Open questions
 
 1. **Tunnel**: allow `api.trycloudflare.com` in the environment's network
@@ -162,8 +232,8 @@ tunnel becomes available (same echo-server procedure, then the API).
    changelog and blog quote. A "2026-09" OAuth token page exists but could not
    be read here, and no source quotes `2026-09/token/revoke`. Kept at
    `2026-03` (GA, documented); switch if the 2026-09 page documents it.
-3. **`oauth` scope**: not requested. The upload or the install will show
-   whether HubSpot requires it.
+3. **`oauth` scope**: not requested. The first upload's validation did not
+   ask for it; the install will show whether HubSpot requires it.
 4. **Leads object type in webhook subscriptions**: `lead` is used; the upload
    validates it.
 5. **Webhooks Journal**: probed only if Lead webhooks do not deliver. It needs
