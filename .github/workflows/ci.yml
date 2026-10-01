@@ -73,8 +73,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
+      # No pnpm cache: this job installs nothing on the host (the images do),
+      # so a cache miss would leave no store to save and fail the post step.
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
-          cache: pnpm
       - run: pnpm verify:docker

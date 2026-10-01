@@ -25,10 +25,12 @@ version remained unclear, the documented `2026-03` endpoint is used;
 - **Date**: 2026-10-01.
 - **Method of verification**: web search over HubSpot's official developer
   documentation. A direct fetch of `developers.hubspot.com` is blocked by
-  this environment's network egress policy (`EGRESS_BLOCKED`), and no HubSpot
-  credentials exist in this container, so a live check against test account
-  149338734 was not possible here. Evidence is therefore the documentation
-  as indexed by search, quoted from result titles and summaries.
+  this environment's network egress policy (`EGRESS_BLOCKED`). The table
+  below is the documentation as indexed by search, quoted from result titles
+  and summaries. (This record first said no HubSpot credentials existed in
+  the container; that was wrong: the test account's static token is
+  provided to the live suite. The live confirmation below was added once
+  this was noticed, after the code was written from the documentation.)
 
 | #   | Source (official HubSpot documentation)                                                                                                                            | Observed                                                                                                                                                                                                    |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -51,11 +53,26 @@ not re-versioned in `2026-09`. All other reads stay on the existing
 `2026-09` paths. If HubSpot later documents a `2026-09` search path, moving
 to it is a separate, evidenced change to this ADR and the allow-list.
 
-**To be confirmed live** (owner-run, read-only, test account 149338734, as
-part of the M6 live evidence): one search call per object type returns 200
-with `results`, `paging` and `total`, and an unsupported path returns an
-error. The result is recorded in the milestone record; until then the
-evidence above is documentation-only.
+**Confirmed live** (2026-10-01, read-only, developer test account
+149338734, static token, `pnpm test:live`):
+
+- `test/live/hubspot-crm.live.spec.ts` "Gate 1 (ADR 0015): the verified
+  2026-03 search answers for contacts and companies": both searches return
+  results, a `total` and oldest-first ordering through the exact allow-list
+  and body validator;
+- `test/live/context.live.spec.ts`: backfill (36 companies, 103 contacts)
+  and a reconciliation over `POST /crm/objects/2026-03/{contacts|companies}/search`
+  complete with no failures and no dead letters, the state hash is unchanged
+  by a second backfill and by the reconciliation, and every recorded request
+  was a `GET` or an allow-listed read `POST`;
+- three consecutive runs: 14/14 tests passed; no token or email address in
+  the output.
+
+That live run also found two defects, fixed before review: record reads did
+not request `jobtitle` (HubSpot returns only default properties unless asked,
+while search requested it, so reconciliation and webhooks disagreed), and a
+person created concurrently with its company could stay unlinked. See the
+M6 record.
 
 ## Decision: reconciliation search
 

@@ -16,6 +16,7 @@ import {
   type HubSpotSearchObject,
 } from './http-client';
 import {
+  HUBSPOT_DEFAULT_PROPERTIES,
   toAssociationType,
   toFieldDefinition,
   toRecordSnapshot,
@@ -31,6 +32,21 @@ import {
   HsPropertyListSchema,
   HsSearchPageSchema,
 } from './schemas';
+
+/**
+ * Properties to request on a record read. HubSpot returns only its own
+ * defaults when none are named, and those omit canonical fields (e.g.
+ * `jobtitle`, found live in M6), so the canonical properties are always
+ * requested, together with any the caller names. Every read path (get, list,
+ * search) therefore sees the same canonical fields.
+ */
+function propertiesFor(
+  objectType: HubSpotObjectType,
+  extra?: readonly string[],
+): string[] | undefined {
+  const all = [...new Set([...HUBSPOT_DEFAULT_PROPERTIES[objectType], ...(extra ?? [])])];
+  return all.length ? all : undefined;
+}
 
 /** The HubSpot account (portal) a token belongs to. */
 export interface HubSpotAccount {
@@ -154,7 +170,7 @@ export class HubSpotReader {
         query: {
           limit: String(limit),
           after: options.after,
-          properties: options.properties?.length ? options.properties : undefined,
+          properties: propertiesFor(objectType, options.properties),
           archived: 'false',
         },
       },
@@ -198,7 +214,7 @@ export class HubSpotReader {
         {
           method: 'GET',
           path: `/crm/objects/${this.v}/${objectType}/${id}`,
-          query: { properties: properties?.length ? properties : undefined, archived: 'false' },
+          query: { properties: propertiesFor(objectType, properties), archived: 'false' },
         },
         HsObjectSchema,
       );

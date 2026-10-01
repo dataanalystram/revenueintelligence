@@ -135,6 +135,14 @@ export class ContextIngestionService {
     meta: IngestMeta,
   ): Promise<IngestResult> {
     await this.store.lockRef(tx, obs.kind, obs.ref);
+    if (obs.kind === 'person' && obs.presence === 'present' && obs.companyLinks) {
+      // Serialises with the primary company's own ingestion, so whichever
+      // commits second sees the other: no person is left waiting for a company
+      // created concurrently. Taken before any row is written, so the
+      // company's link step never waits on this transaction (no deadlock).
+      const { link } = primaryCompanyLink(obs.companyLinks);
+      if (link) await this.store.lockRef(tx, 'company', link.company);
+    }
     const stored = await this.store.findRef(tx, obs.kind, obs.ref);
     const decision = decideApply(stored, obs);
     const none: IngestResult = { decision, changed: false, unknownCompanies: [] };

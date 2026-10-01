@@ -57,6 +57,9 @@ one entry, re-upload and report); that the app's scopes are still exactly
 
 ## 2. Gate 1 confirmation: the search endpoint (read-only)
 
+Already confirmed by `pnpm test:live` (static token, ADR 0015); repeat it
+here through the OAuth tenant.
+
 ```bash
 pnpm --silent --filter @lip/api context:reconcile --tenant hsoauth --kind all --since 2026-01-01T00:00:00Z --execute
 ```

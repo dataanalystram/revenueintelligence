@@ -330,6 +330,83 @@ describe('context processing: webhook receipts → canonical context', () => {
       );
       expect(raceConflicts).toHaveLength(pairs.length);
     });
+    it('a person and its company ingested at the same time end up linked, whichever commits first', async () => {
+      // Force the race: an admin session holds the relationships table, so the
+      // person stops after inserting its person (company not found yet). The
+      // company is then ingested while the person is still uncommitted.
+      const company = { system: 'hubspot', objectType: 'companies', id: '7790' } as const;
+      const person = { system: 'hubspot', objectType: 'contacts', id: '7791' } as const;
+      const admin = new Client({ connectionString: c.infra.adminUrl });
+      await admin.connect();
+      let personDone: Promise<unknown> | undefined;
+      let companyDone: Promise<unknown> | undefined;
+      try {
+        await admin.query('BEGIN');
+        await admin.query('LOCK TABLE tenant_source_relationships IN SHARE MODE');
+        personDone = c.ingestion.ingest(
+          a,
+          {
+            kind: 'person',
+            presence: 'present',
+            ref: person,
+            observedAt: new Date(),
+            sourceUpdatedAt: new Date('2026-09-10T00:00:00Z'),
+            fields: { email: 'linked@race.example' as never },
+            companyLinks: [{ company, typeId: 1, category: 'standard', primary: true }],
+          },
+          { cause: 'resync', correlationId: randomUUID() },
+        );
+        const waiting = async (locktype: string, relation?: string) => {
+          const [row] = await c.sql<{ n: number }>(
+            `SELECT count(*)::int AS n FROM pg_locks WHERE NOT granted AND locktype = $1 ${
+              relation ? `AND relation = '${relation}'::regclass` : ''
+            }`,
+            [locktype],
+          );
+          return row!.n > 0;
+        };
+        await c.until(
+          () => waiting('relation', 'tenant_source_relationships'),
+          20_000,
+          'person blocked',
+        );
+        let companyFinished = false;
+        companyDone = c.ingestion
+          .ingest(
+            a,
+            {
+              kind: 'company',
+              presence: 'present',
+              ref: company,
+              observedAt: new Date(),
+              sourceUpdatedAt: new Date('2026-09-10T00:00:00Z'),
+              fields: { name: 'Race School' },
+            },
+            { cause: 'resync', correlationId: randomUUID() },
+          )
+          .finally(() => {
+            companyFinished = true;
+          });
+        // Either the company waits for the person (advisory lock), or it commits first.
+        await c.until(
+          async () => companyFinished || (await waiting('advisory')),
+          20_000,
+          'company waiting or finished',
+        );
+      } finally {
+        await admin.query('COMMIT').catch(() => undefined);
+        await admin.end();
+      }
+      await Promise.all([personDone, companyDone]);
+      const [row] = await c.sql<{ linked: boolean }>(
+        `SELECT p.company_id = cr.company_id AS linked
+           FROM person_external_refs pr JOIN persons p ON p.tenant_id = pr.tenant_id AND p.id = pr.person_id,
+                company_external_refs cr
+          WHERE pr.tenant_id = $1 AND pr.external_id = $2 AND cr.tenant_id = $1 AND cr.external_id = $3`,
+        [a.tenantId, person.id, company.id],
+      );
+      expect(row?.linked).toBe(true);
+    });
   });
 
   describe('eligibility: only routable contact/company events create context', () => {

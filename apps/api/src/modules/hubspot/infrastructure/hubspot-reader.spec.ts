@@ -182,7 +182,11 @@ describe('HubSpotReader (translation into vendor-neutral read models)', () => {
   });
 
   it('maps contacts to person snapshots (normalised email, raw attributes kept)', async () => {
-    const page = await reader.listRecords('contacts', { limit: 100 });
+    // A custom property is returned only when requested (as by HubSpot).
+    const page = await reader.listRecords('contacts', {
+      limit: 100,
+      properties: ['fake_custom_field'],
+    });
     expect(page.items).toHaveLength(5);
     expect(page.nextCursor).toBeUndefined();
     const first = page.items[0]!;
@@ -248,15 +252,28 @@ describe('HubSpotReader (translation into vendor-neutral read models)', () => {
     });
   });
 
-  it('passes requested properties and validates page size', async () => {
+  it('passes requested properties (with the canonical ones) and validates page size', async () => {
     await reader.listRecords('contacts', { limit: 5, properties: ['email', 'fake_custom_field'] });
     expect(fake.requests[0]!.query).toMatchObject({
       limit: '5',
-      properties: 'email,fake_custom_field',
+      properties: 'email,firstname,lastname,jobtitle,fake_custom_field',
       archived: 'false',
     });
     await expect(reader.listRecords('contacts', { limit: 101 })).rejects.toThrow(RangeError);
     await expect(reader.listRecords('contacts', { limit: 0 })).rejects.toThrow(RangeError);
+  });
+
+  it('always requests the canonical properties: HubSpot omits non-default ones (jobtitle) otherwise', async () => {
+    await reader.listRecords('contacts');
+    await reader.getRecord('contacts', '101');
+    await reader.getRecord('companies', '202');
+    await reader.listRecords('leads');
+    expect(fake.requests.map((r) => r.query.properties)).toEqual([
+      'email,firstname,lastname,jobtitle',
+      'email,firstname,lastname,jobtitle',
+      'name,domain',
+      undefined,
+    ]);
   });
 
   it('getRecord: found, and 404 → undefined', async () => {

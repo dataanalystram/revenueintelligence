@@ -114,6 +114,24 @@ export const ALL_READ_SCOPES = [
   'crm.schemas.leads.read',
 ];
 
+/**
+ * Like HubSpot: without a `properties` parameter, record reads return only
+ * these defaults (observed live in M6: `jobtitle` is not one of them); with
+ * it, the requested properties. Both always carry the timestamps and the id.
+ */
+const DEFAULT_PROPERTIES: Partial<Record<string, readonly string[]>> = {
+  contacts: ['firstname', 'lastname', 'email'],
+  companies: ['name', 'domain'],
+};
+const ALWAYS_RETURNED = ['createdate', 'lastmodifieddate', 'hs_lastmodifieddate', 'hs_object_id'];
+
+function requestedProperties(url: URL): string[] {
+  return url.searchParams
+    .getAll('properties')
+    .flatMap((v) => v.split(','))
+    .filter(Boolean);
+}
+
 const OBJECT_SCOPE: Record<string, string> = {
   contacts: 'crm.objects.contacts.read',
   companies: 'crm.objects.companies.read',
@@ -344,7 +362,7 @@ export class FakeHubSpot {
     let m = /^\/crm\/objects\/[\w-]+\/(\w+)$/.exec(p);
     if (method === 'GET' && m) return this.listObjects(m[1]!, url, account, res);
     m = /^\/crm\/objects\/[\w-]+\/(\w+)\/(\w+)$/.exec(p);
-    if (method === 'GET' && m) return this.getObject(m[1]!, m[2]!, account, res);
+    if (method === 'GET' && m) return this.getObject(m[1]!, m[2]!, url, account, res);
     m = /^\/crm\/properties\/[\w-]+\/(\w+)$/.exec(p);
     if (method === 'GET' && m) return this.listProperties(m[1]!, account, res);
     // CRM search: only the version verified at Gate 1 (ADR 0015) is served, so a
@@ -523,7 +541,7 @@ export class FakeHubSpot {
         ? Buffer.from(String(start + limit)).toString('base64url')
         : undefined;
     this.send(res, 200, {
-      results: slice.map((r) => this.object(r)),
+      results: slice.map((r) => this.object(r, type, requestedProperties(url))),
       ...(next ? { paging: { next: { after: next, link: `?after=${next}` } } } : {}),
     });
   }
@@ -575,7 +593,7 @@ export class FakeHubSpot {
     const next = offset + limit < matches.length ? String(offset + limit) : undefined;
     this.send(res, 200, {
       total: matches.length,
-      results: slice.map((r) => this.object(r)),
+      results: slice.map((r) => this.object(r, type, b?.properties ?? [])),
       ...(next ? { paging: { next: { after: next } } } : {}),
     });
   }
@@ -643,7 +661,13 @@ export class FakeHubSpot {
     all.push(...links);
   }
 
-  private getObject(type: string, id: string, account: FakeAccount, res: ServerResponse): void {
+  private getObject(
+    type: string,
+    id: string,
+    url: URL,
+    account: FakeAccount,
+    res: ServerResponse,
+  ): void {
     if (this.denied(type, OBJECT_SCOPE[type], account, res)) return;
     const record = (this.options.records?.[type as 'contacts'] ?? []).find((r) => r.id === id);
     if (!record) {
@@ -653,13 +677,18 @@ export class FakeHubSpot {
         category: 'OBJECT_NOT_FOUND',
       });
     }
-    this.send(res, 200, this.object(record));
+    this.send(res, 200, this.object(record, type, requestedProperties(url)));
   }
 
-  private object(r: FakeRecord): unknown {
+  private object(r: FakeRecord, type: string, requested: readonly string[]): unknown {
+    const defaults = DEFAULT_PROPERTIES[type];
+    const visible =
+      defaults && new Set([...(requested.length ? requested : defaults), ...ALWAYS_RETURNED]);
     return {
       id: r.id,
-      properties: r.properties,
+      properties: visible
+        ? Object.fromEntries(Object.entries(r.properties).filter(([k]) => visible.has(k)))
+        : r.properties,
       createdAt: r.createdAt ?? '2026-09-01T09:00:00.000Z',
       updatedAt: r.updatedAt ?? '2026-09-02T09:00:00.000Z',
       archived: false,
