@@ -61,6 +61,11 @@ evidence, recorded in the milestone record once collected).
   signature must be canonical base64 of 32 bytes). v1/v2 headers are never
   accepted, even when correct. Timestamps older than **5 minutes** or more than
   **60 seconds** in the future are refused.
+  The 60-second future-timestamp rejection is platform security hardening
+  added by Revenue Opportunity Intelligence. It is not a HubSpot-documented
+  webhook requirement. HubSpot documents stale-request rejection (5 minutes);
+  the future-skew limit is our additional protection against implausible or
+  replayed timestamps.
 - **URI reconstruction** from `HUBSPOT_WEBHOOK_TARGET_URL` (scheme, host,
   path) plus the query string as received. The `Host` header is never used: a
   client controls it, and behind a tunnel it is not the public host anyway.
