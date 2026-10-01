@@ -25,6 +25,37 @@ const company = (over: Partial<CompanyInput> = {}) =>
     ...over,
   });
 
+describe('M6 identity rules (ADR 0014)', () => {
+  it('a person may have no email; display falls back to undefined, never a placeholder', () => {
+    const p = person({ primaryEmail: undefined });
+    expect(p.primaryEmail).toBeUndefined();
+    expect(personDisplayName(p)).toBeUndefined();
+    expect(personEmails(p)).toEqual([]);
+    expect(person({ primaryEmail: undefined, firstName: 'Ann' }).firstName).toBe('Ann');
+  });
+
+  it('an invalid email is still refused when present', () => {
+    expect(() => person({ primaryEmail: 'not-an-email' })).toThrow();
+  });
+
+  it('a company may have no name, but never a blank one', () => {
+    expect(company({ name: undefined }).name).toBeUndefined();
+    expect(() => company({ name: '   ' })).toThrow();
+  });
+
+  it('record state defaults to active; merged requires mergedIntoId and never self', () => {
+    expect(company().recordState).toBe('active');
+    expect(person().recordState).toBe('active');
+    expect(() => company({ recordState: 'merged' })).toThrow(/mergedIntoId/);
+    expect(() => person({ mergedIntoId: ids.otherPerson })).toThrow(/mergedIntoId/);
+    expect(() => company({ recordState: 'merged', mergedIntoId: ids.company })).toThrow(/itself/);
+    expect(company({ recordState: 'merged', mergedIntoId: ids.otherCompany }).mergedIntoId).toBe(
+      ids.otherCompany,
+    );
+    expect(company({ recordState: 'inactive' }).recordState).toBe('inactive');
+  });
+});
+
 describe('EmailAddress', () => {
   it('normalises case and whitespace', () => {
     const email = EmailAddressSchema.parse('  Sarah.Jones@Juniper.EXAMPLE ');

@@ -7,6 +7,9 @@ import { loadHubSpotConfig, type HubSpotConfig } from '../hubspot.config';
 import {
   assertDateVersionedPath,
   assertReadOnlyRequest,
+  HUBSPOT_SEARCH_API_VERSION,
+  HUBSPOT_SEARCH_PATH,
+  HUBSPOT_SEARCH_PROPERTIES,
   HubSpotHttpClient,
   type HubSpotAuth,
 } from './http-client';
@@ -114,6 +117,7 @@ describe('HubSpotHttpClient', () => {
         '/crm/associations/2026-09/leads/contacts/batch/create',
         '/crm/objects/2026-09/leads/batch/read',
         '/crm/objects/2026-09/leads/search',
+        '/crm/objects/2026-09/contacts/search',
         '/crm/associations/2026-09/leads/contacts/batch/read/extra',
       ]) {
         expect(() => assertReadOnlyRequest({ method: 'POST', path }), path).toThrow(HubSpotError);
@@ -128,6 +132,185 @@ describe('HubSpotHttpClient', () => {
           path: '/crm/associations/2026-09/leads/contacts/batch/read',
         }),
       ).not.toThrow();
+    });
+  });
+
+  describe('CRM search allow-list (M6, Gate 1: ADR 0015)', () => {
+    const since = '1759300000000';
+    const body = (object: 'contacts' | 'companies' = 'contacts') => {
+      const modified = object === 'contacts' ? 'lastmodifieddate' : 'hs_lastmodifieddate';
+      return {
+        filterGroups: [{ filters: [{ propertyName: modified, operator: 'GTE', value: since }] }],
+        sorts: [{ propertyName: modified, direction: 'ASCENDING' }],
+        properties: object === 'contacts' ? ['email', 'lastmodifieddate'] : ['name', modified],
+        limit: 100,
+      };
+    };
+    const search = (object: string, b: unknown = body()) => ({
+      method: 'POST' as const,
+      path: `/crm/objects/2026-03/${object}/search`,
+      body: b,
+    });
+
+    it('allows exactly the verified 2026-03 contacts and companies search with a read body', () => {
+      expect(() => assertReadOnlyRequest(search('contacts'))).not.toThrow();
+      expect(() => assertReadOnlyRequest(search('companies', body('companies')))).not.toThrow();
+      expect(() =>
+        assertReadOnlyRequest(search('contacts', { ...body(), after: '200' })),
+      ).not.toThrow();
+    });
+
+    it('the allow-list is exactly the expected set (breadth check)', () => {
+      expect(HUBSPOT_SEARCH_PATH.source).toBe(
+        '^\\/crm\\/objects\\/2026-03\\/(contacts|companies)\\/search$',
+      );
+      expect(HUBSPOT_SEARCH_API_VERSION).toBe('2026-03');
+      expect(Object.keys(HUBSPOT_SEARCH_PROPERTIES).sort()).toEqual(['companies', 'contacts']);
+    });
+
+    it('refuses search on other objects, versions and path variants', () => {
+      for (const path of [
+        '/crm/objects/2026-09/contacts/search',
+        '/crm/objects/2026-09/companies/search',
+        '/crm/objects/2026-03/leads/search',
+        '/crm/objects/2026-03/deals/search',
+        '/crm/objects/2026-03/tickets/search',
+        '/crm/objects/2026-03/contacts/search/',
+        '/crm/objects/2026-03/Contacts/search',
+        '/crm/objects/2026-03/contacts/search/extra',
+        '/crm/objects/2026-03/contacts/../companies/search',
+        '/crm/objects/2026-03/contacts%2Fsearch',
+        '/crm/v3/objects/contacts/search',
+        '/crm/objects/2026-03/0-1/search',
+      ]) {
+        expect(() => assertReadOnlyRequest({ method: 'POST', path, body: body() }), path).toThrow(
+          HubSpotError,
+        );
+      }
+    });
+
+    it('refuses every known CRM write path even with a valid search body', () => {
+      for (const version of ['2026-03', '2026-09']) {
+        for (const object of ['contacts', 'companies']) {
+          for (const suffix of [
+            '',
+            '/batch/create',
+            '/batch/update',
+            '/batch/upsert',
+            '/batch/archive',
+            '/merge',
+            '/gdpr-delete',
+            '/123',
+            '/search/batch/create',
+          ]) {
+            const path = `/crm/objects/${version}/${object}${suffix}`;
+            expect(
+              () => assertReadOnlyRequest({ method: 'POST', path, body: body() }),
+              path,
+            ).toThrow(HubSpotError);
+          }
+        }
+      }
+    });
+
+    it('refuses PUT/PATCH/DELETE to the search path', () => {
+      for (const method of ['PUT', 'PATCH', 'DELETE']) {
+        expect(() =>
+          assertReadOnlyRequest({ ...search('contacts'), method: method as 'POST' }),
+        ).toThrow(HubSpotError);
+      }
+    });
+
+    it('refuses search bodies that are not a modified-since read', () => {
+      const bad: unknown[] = [
+        undefined,
+        {},
+        { ...body(), inputs: [{ id: '1' }] },
+        { ...body(), properties: { email: 'x@example.com' } },
+        { ...body(), properties: ['hs_object_id', 'secret_custom_field'] },
+        { ...body(), limit: 201 },
+        { ...body(), limit: 0 },
+        { ...body(), query: 'anything' },
+        { ...body(), after: 'abc' },
+        { ...body(), sorts: [{ propertyName: 'email', direction: 'ASCENDING' }] },
+        {
+          ...body(),
+          filterGroups: [{ filters: [{ propertyName: 'email', operator: 'EQ', value: since }] }],
+        },
+        {
+          ...body(),
+          filterGroups: [
+            {
+              filters: [
+                { propertyName: 'lastmodifieddate', operator: 'HAS_PROPERTY', value: since },
+              ],
+            },
+          ],
+        },
+        {
+          ...body(),
+          filterGroups: [
+            {
+              filters: [{ propertyName: 'lastmodifieddate', operator: 'GTE', value: 'yesterday' }],
+            },
+          ],
+        },
+        // companies use hs_lastmodifieddate, not the contact property
+        {
+          ...body('companies'),
+          sorts: [{ propertyName: 'lastmodifieddate', direction: 'ASCENDING' }],
+        },
+      ];
+      for (const [i, b] of bad.entries()) {
+        // Built explicitly: a default parameter would replace an `undefined` body.
+        const req = {
+          method: 'POST' as const,
+          path: `/crm/objects/2026-03/${i === bad.length - 1 ? 'companies' : 'contacts'}/search`,
+          body: b,
+        };
+        expect(() => assertReadOnlyRequest(req), `body #${i}`).toThrow(HubSpotError);
+      }
+    });
+
+    it('search is held to its own limit (3 per second per tenant), other reads are not', async () => {
+      let clock = 0;
+      const sleeps: number[] = [];
+      const searchLimiter = new SlidingWindowRateLimiter(
+        3,
+        1_000,
+        () => clock,
+        (ms) => {
+          sleeps.push(ms);
+          clock += ms;
+          return Promise.resolve();
+        },
+      );
+      const limited = new HubSpotHttpClient(
+        { ...loadHubSpotConfig({}), baseUrl: fake.url, maxRetries: 0 },
+        new SlidingWindowRateLimiter(90),
+        { sleep: () => Promise.resolve(), searchLimiter },
+      );
+      const ok = z.object({ total: z.number() });
+      fake.fail({ match: /search$/, status: 200, body: { total: 0, results: [] }, times: 4 });
+      for (let i = 0; i < 4; i += 1) {
+        await limited.send(search('contacts'), ok, auth);
+      }
+      expect(sleeps).toHaveLength(1);
+      expect(searchLimiter.inWindow('tenant-a')).toBeLessThanOrEqual(3);
+      await limited.send({ method: 'GET', path: CONTACTS }, z.unknown(), auth);
+      expect(sleeps).toHaveLength(1);
+    });
+
+    it('a refused search sends nothing', async () => {
+      const err = await rejection(
+        client.send(
+          { method: 'POST', path: '/crm/objects/2026-03/contacts/search', body: { inputs: [] } },
+          z.unknown(),
+          auth,
+        ),
+      );
+      expect(err.kind).toBe('read_only_violation');
+      expect(fake.requests).toHaveLength(0);
     });
   });
 

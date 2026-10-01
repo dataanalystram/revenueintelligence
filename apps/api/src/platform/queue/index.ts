@@ -1,0 +1,18 @@
+export {
+  BACKOFF_BASE_MS,
+  BACKOFF_CAP_MS,
+  DEFAULT_ATTEMPTS,
+  PermanentJobError,
+  QUEUE_STOPPED_MESSAGE,
+  QueueModule,
+  QueueService,
+  RedisPolicyError,
+  redisEvictionPolicy,
+  retryDelayMs,
+  type AddJobOptions,
+  type Processor,
+  type ProcessorOptions,
+  type QueueCounts,
+  type QueueJob,
+  type RetryAfterHint,
+} from './queue.service';

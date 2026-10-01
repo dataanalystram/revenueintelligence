@@ -8,7 +8,8 @@ listed below. Nothing is scaffolded ahead of its milestone.
 | `domain`        | Canonical Lead / Contact / Company / Signal models (no vendor types)                           | M1        |
 | `tenancy`       | ✅ Tenant registry, TenantContext, TenantDatabase (RLS), per-tenant config and credential refs | M2        |
 | `hubspot`       | ✅ Read-only connector and discovery (M3); OAuth, abstraction (M4); webhooks (M5)              | M3–M5     |
-| `sync`          | Queueing, idempotency, retries, orchestration                                                  | M6        |
+| `crm`           | ✅ Vendor-neutral CRM ports (reader, receipt source, receipts listener)                        | M4–M6     |
+| `context`       | ✅ Event processing (BullMQ), canonical account/person context, references, provenance         | M6        |
 | `sugar`         | Sugar CRM connector interface + mock + real implementation                                     | M7, M17   |
 | `crossref`      | External-ID cross-reference (HubSpot ⇄ Sugar ⇄ Gainsight)                                      | M8        |
 | `mapping`       | Configurable field-mapping engine                                                              | M9        |

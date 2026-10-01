@@ -3,8 +3,10 @@
  * (key = tenant). Keeps each tenant under HubSpot's burst limit and stops one
  * tenant's traffic from delaying another's.
  *
- * In-process only: with several worker replicas each gets its own budget. A
- * shared Redis-backed limiter arrives with the queueing work in Milestone 6.
+ * In-process only: with several worker replicas each gets its own budget.
+ * M6 runs one worker process per environment with bounded job concurrency; a
+ * shared (Redis-backed) limiter is needed before scaling workers out
+ * (technical-debt item 7).
  */
 export class SlidingWindowRateLimiter {
   private readonly history = new Map<string, number[]>();

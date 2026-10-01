@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { ExternalSystem } from './external-ref';
+import type { ExternalRef, ExternalSystem } from './external-ref';
 import type {
   ExternalAssociation,
   ExternalAssociationType,
@@ -45,6 +45,28 @@ export interface CrmListOptions {
   readonly fields?: readonly string[];
 }
 
+/** Options for reading records changed since a source-time watermark. */
+export interface CrmChangedSinceOptions {
+  /** Inclusive lower bound, in the CRM's own modification time. */
+  readonly since: Date;
+  /** Opaque cursor from a previous page of the same query. */
+  readonly after?: string;
+  readonly limit?: number;
+}
+
+/** A page of changed records, oldest modification first. */
+export interface CrmChangedPage<T> extends Page<T> {
+  readonly total: number;
+  /**
+   * The CRM cannot page this query further (e.g. a result window limit):
+   * continue with a new query whose `since` is the last record's timestamp.
+   */
+  readonly windowExhausted: boolean;
+}
+
+/** Kinds that support change listing (reconciliation). */
+export type CrmChangeKind = Extract<CrmObjectKind, 'person' | 'company'>;
+
 /** A per-record failure the CRM reported inside an otherwise successful read. */
 export interface CrmReadFailure {
   readonly category: string | undefined;
@@ -67,6 +89,8 @@ export interface CrmAssociationReadResult {
  */
 export interface CrmReader {
   readonly system: ExternalSystem;
+  /** The external reference for a record id of this kind (pure; no request). */
+  refFor(kind: CrmObjectKind, id: string): ExternalRef;
   getAccount(): Promise<CrmAccount>;
   listRecords<K extends CrmObjectKind>(
     kind: K,
@@ -85,4 +109,9 @@ export interface CrmReader {
     ids: readonly string[],
     to: CrmObjectKind,
   ): Promise<CrmAssociationReadResult>;
+  /** Records modified at or after `options.since`, oldest first (read-only). */
+  listChangedSince<K extends CrmChangeKind>(
+    kind: K,
+    options: CrmChangedSinceOptions,
+  ): Promise<CrmChangedPage<CrmSnapshotFor[K]>>;
 }

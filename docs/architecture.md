@@ -51,23 +51,25 @@ separate functions or services. See [ADR 0002](adr/0002-api-and-worker-process-r
 
 ```
 src/
-  platform/     config · secrets · logging · database · redis · health · telemetry · http
-  modules/      domain · tenancy · hubspot · sugar · gainsight · identity · signals ·
-                qualification · policy · orchestration · sync · crossref · mapping · audit
+  platform/     config · secrets · logging · database · redis · queue · metrics · health · telemetry · http
+  modules/      domain · tenancy · crm (ports) · hubspot · context · identity ·
+                (later: sugar · gainsight · signals · qualification · policy · audit)
 ```
 
-| Module                          | Role                                                                                                                                                             |
-| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `domain`                        | Canonical entities: Person, Company, LeadCandidate, Lead, MarketingSignal, ProductSignal, AccountSignal, QualificationDecision, HumanOverride, SalesOutcome (M1) |
-| `hubspot`, `sugar`, `gainsight` | Connectors: the only code that knows vendor payloads                                                                                                             |
-| `identity`                      | Resolve the same person/company across systems                                                                                                                   |
-| `signals`                       | Aggregate signals into LeadCandidates; duplicate/requalification checks                                                                                          |
-| `qualification`                 | `QualificationProvider` implementations and mode selection                                                                                                       |
-| `policy`                        | SLA, routing and sequence eligibility from the effective decision                                                                                                |
-| `orchestration`                 | Drives a Lead's journey across modules                                                                                                                           |
-| `sync` / `crossref` / `mapping` | Queues, idempotency, external-ID links, tenant field mappings                                                                                                    |
-| `audit`                         | Append-only history of decisions, overrides and outbound writes                                                                                                  |
-| `tenancy`                       | Tenants, per-tenant configuration and credentials                                                                                                                |
+| Module                          | Role                                                                                                                                                                                                                                                                     |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `domain`                        | Canonical entities: Person, Company, LeadCandidate, Lead, MarketingSignal, ProductSignal, AccountSignal, QualificationDecision, HumanOverride, SalesOutcome (M1)                                                                                                         |
+| `hubspot`, `sugar`, `gainsight` | Connectors: the only code that knows vendor payloads                                                                                                                                                                                                                     |
+| `identity`                      | Resolve the same person/company across systems                                                                                                                                                                                                                           |
+| `signals`                       | Aggregate signals into LeadCandidates; duplicate/requalification checks                                                                                                                                                                                                  |
+| `qualification`                 | `QualificationProvider` implementations and mode selection                                                                                                                                                                                                               |
+| `policy`                        | SLA, routing and sequence eligibility from the effective decision                                                                                                                                                                                                        |
+| `orchestration`                 | Drives a Lead's journey across modules                                                                                                                                                                                                                                   |
+| `sync` / `crossref` / `mapping` | Queues, idempotency, external-ID links, tenant field mappings                                                                                                                                                                                                            |
+| `audit`                         | Append-only history of decisions, overrides and outbound writes                                                                                                                                                                                                          |
+| `tenancy`                       | Tenants, per-tenant configuration and credentials                                                                                                                                                                                                                        |
+| `crm`                           | Vendor-neutral ports: `CrmConnector`/`CrmReader`, `CrmReceiptSource`, `ReceiptsStoredListener` (M4–M6)                                                                                                                                                                   |
+| `context`                       | M6: event processing on BullMQ; the single canonical writer for accounts and people; external references; provenance; backfill and reconciliation ([ADR 0013](adr/0013-event-processing-on-bullmq.md), [ADR 0014](adr/0014-canonical-identity-references-provenance.md)) |
 
 Rules, enforced in CI by dependency-cruiser (`apps/api/.dependency-cruiser.cjs`):
 
@@ -90,6 +92,22 @@ business logic ──> SugarConnector (interface, canonical types)
 
 All external payloads are validated with Zod at the connector edge before they
 are translated into canonical types.
+
+### Context processing (M6)
+
+```
+HubSpot webhook ──▶ API: verify, route, durable receipt ──▶ BullMQ (identifiers only)
+initial backfill  ─┐                                          │
+reconciliation    ─┼──▶ worker: read back (read-only) ──▶ SourceObservation
+receipt job       ─┘                                          │
+                         ContextIngestionService.ingest (the only canonical writer)
+                         ──▶ companies / persons / external refs / relationships / provenance
+```
+
+PostgreSQL is the source of truth (receipts, checkpoints, dead letters);
+Redis only coordinates jobs. `CONTEXT_PROCESSING_ENABLED=false` returns to M5
+behaviour (receipts stored, nothing processed). Platform UUIDs are canonical;
+external ids are references; no cross-system matching rules exist yet.
 
 ## 4. Cross-cutting guarantees (built up over M5–M9)
 
@@ -172,3 +190,9 @@ source signal → HubSpot Lead → enrichment → qualification (+ overrides)
   personal data (CRM payloads contain names and emails).
 - `/health/live` (process up) and `/health/ready` (PostgreSQL and Redis
   reachable; 503 otherwise) for orchestrators.
+- M6: OpenTelemetry metrics (exported with `OTEL_ENABLED`) for receipts
+  received/queued/outcome, jobs started/succeeded/retried/failed, dead letters,
+  replays, processing latency, backfill and reconciliation records, HubSpot
+  calls and 429s. Labels are short codes only (validated); correlation ids
+  link receipts, jobs, logs, provenance and dead letters. `context:report`
+  shows queue depth, receipts by status, checkpoints and dead letters.

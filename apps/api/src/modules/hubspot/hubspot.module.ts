@@ -1,11 +1,13 @@
 import { Logger, Module } from '@nestjs/common';
-import { CRM_CONNECTOR } from '../crm';
+import { MetricsService } from '../../platform/metrics';
+import { CRM_CONNECTOR, CRM_RECEIPT_SOURCE } from '../crm';
 import { TenancyModule } from '../tenancy';
 import { HubSpotOAuthController } from './api/hubspot-oauth.controller';
 import { HubSpotWebhookController } from './api/hubspot-webhook.controller';
 import { HubSpotConnector } from './application/hubspot-connector.service';
 import { HubSpotDiscoveryService } from './application/hubspot-discovery.service';
 import { HubSpotOAuthService } from './application/hubspot-oauth.service';
+import { HubSpotReceiptSource } from './application/hubspot-receipt-source';
 import { HubSpotWebhookService } from './application/hubspot-webhook.service';
 import { HUBSPOT_CONFIG, loadHubSpotConfig, type HubSpotConfig } from './hubspot.config';
 import { HubSpotHttpClient } from './infrastructure/http-client';
@@ -20,11 +22,23 @@ import { WebhookReceiptRepository } from './infrastructure/webhook-receipt.repos
     { provide: HUBSPOT_CONFIG, useFactory: () => loadHubSpotConfig() },
     {
       provide: HubSpotHttpClient,
-      inject: [HUBSPOT_CONFIG],
-      useFactory: (config: HubSpotConfig) => {
+      inject: [HUBSPOT_CONFIG, MetricsService],
+      useFactory: (config: HubSpotConfig, metrics: MetricsService) => {
         const logger = new Logger('HubSpotHttpClient');
         return new HubSpotHttpClient(config, new SlidingWindowRateLimiter(config.requestsPer10s), {
           logger: { warn: (message, context) => logger.warn({ ...context, msg: message }) },
+          // Calls and 429s per attempt (M6 observability); labels are codes only.
+          onAttempt: (outcome) => {
+            const result =
+              typeof outcome === 'number'
+                ? outcome === 429
+                  ? '429'
+                  : `${Math.floor(outcome / 100)}xx`
+                : outcome;
+            metrics.increment('lip_source_requests', { system: 'hubspot', result });
+            if (outcome === 429)
+              metrics.increment('lip_source_rate_limited', { system: 'hubspot' });
+          },
         });
       },
     },
@@ -39,8 +53,11 @@ import { WebhookReceiptRepository } from './infrastructure/webhook-receipt.repos
     HubSpotDiscoveryService,
     WebhookReceiptRepository,
     HubSpotWebhookService,
+    HubSpotReceiptSource,
+    { provide: CRM_RECEIPT_SOURCE, useExisting: HubSpotReceiptSource },
   ],
   exports: [
+    CRM_RECEIPT_SOURCE,
     HubSpotConnector,
     CRM_CONNECTOR,
     HubSpotOAuthService,

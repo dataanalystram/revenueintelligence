@@ -32,6 +32,15 @@ export const HsObjectPageSchema = z.object({
   paging: HsPagingSchema,
 });
 
+/** CRM search response (ADR 0015); `paging.next.after` is a numeric offset. */
+export const HsSearchPageSchema = z.object({
+  total: z.number().int().nonnegative(),
+  results: z.array(HsObjectSchema),
+  paging: z
+    .object({ next: z.object({ after: z.string().regex(/^[0-9]{1,10}$/) }).optional() })
+    .optional(),
+});
+
 export const HsPropertyDefinitionSchema = z.object({
   name: z.string().min(1),
   label: z.string(),

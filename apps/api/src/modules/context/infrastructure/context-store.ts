@@ -1,0 +1,559 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { Injectable } from '@nestjs/common';
+import type {
+  ContextKind,
+  ExternalRef,
+  ExternalRefState,
+  RecordState,
+  SourceCompanyLink,
+} from '../../domain';
+import { tenantClient, type TenantTransaction } from '../../tenancy';
+
+/**
+ * Persistence for canonical context (M6, ADR 0014). Only
+ * `ContextIngestionService` may use it (dependency rule
+ * `context-store-only-from-ingestion`): it is the single canonical writer.
+ * Every method takes an open tenant transaction (forced RLS).
+ */
+
+export interface RefRow {
+  readonly canonicalId: string;
+  readonly system: string;
+  readonly objectType: string;
+  readonly externalId: string;
+  readonly state: ExternalRefState;
+  readonly mergedIntoExternalId: string | undefined;
+  readonly sourceUpdatedAt: Date | undefined;
+  readonly sourceCreatedAt: Date | undefined;
+  readonly fieldHash: string | undefined;
+  readonly deletedAt: Date | undefined;
+  readonly lastSeenAt: Date;
+  readonly firstSeenAt: Date;
+}
+
+export interface RefWrite {
+  readonly state: ExternalRefState;
+  readonly mergedIntoExternalId?: string | null;
+  readonly sourceCreatedAt?: Date | null;
+  readonly sourceUpdatedAt?: Date | null;
+  readonly deletedAt?: Date | null;
+  readonly fieldHash?: string | null;
+  readonly lastSeenAt?: Date;
+  readonly lastChangeId?: string | null;
+}
+
+export interface CompanyValues {
+  readonly name: string | null;
+  readonly domains: readonly string[];
+}
+
+export interface PersonValues {
+  readonly primaryEmail: string | null;
+  readonly firstName: string | null;
+  readonly lastName: string | null;
+  readonly jobTitle: string | null;
+  readonly companyId: string | null;
+}
+
+export interface CanonicalRow<V> {
+  readonly id: string;
+  readonly values: V;
+  readonly recordState: RecordState;
+  readonly mergedIntoId: string | undefined;
+}
+
+export interface ChangeWrite {
+  readonly entityKind: ContextKind;
+  readonly entityId: string;
+  readonly changeType:
+    'created' | 'updated' | 'state_changed' | 'merged' | 'ref_added' | 'relationship_changed';
+  readonly changedFields: readonly string[];
+  readonly source: ExternalRef;
+  readonly cause: string;
+  readonly receiptDeliveryKey?: string;
+  readonly checkpointId?: string;
+  readonly sourceUpdatedAt?: Date;
+  readonly adapter: string;
+  readonly adapterVersion: string;
+  readonly correlationId: string;
+}
+
+const refKey = (r: { system: string; objectType: string; id: string }) =>
+  `${r.system}:${r.objectType}:${r.id}`;
+
+function toRef(
+  kind: ContextKind,
+  r: {
+    companyId?: string;
+    personId?: string;
+    system: string;
+    objectType: string;
+    externalId: string;
+    state: string;
+    mergedIntoExternalId: string | null;
+    sourceUpdatedAt: Date | null;
+    sourceCreatedAt: Date | null;
+    fieldHash: string | null;
+    deletedAt: Date | null;
+    lastSeenAt: Date;
+    firstSeenAt: Date;
+  },
+): RefRow {
+  return {
+    canonicalId: (kind === 'company' ? r.companyId : r.personId)!,
+    system: r.system,
+    objectType: r.objectType,
+    externalId: r.externalId,
+    state: r.state as ExternalRefState,
+    mergedIntoExternalId: r.mergedIntoExternalId ?? undefined,
+    sourceUpdatedAt: r.sourceUpdatedAt ?? undefined,
+    sourceCreatedAt: r.sourceCreatedAt ?? undefined,
+    fieldHash: r.fieldHash ?? undefined,
+    deletedAt: r.deletedAt ?? undefined,
+    lastSeenAt: r.lastSeenAt,
+    firstSeenAt: r.firstSeenAt,
+  };
+}
+
+@Injectable()
+export class ContextStore {
+  /**
+   * Serialises all writers of one source record for the rest of the
+   * transaction (also before the reference exists, so two concurrent creates
+   * of a new record cannot both insert).
+   */
+  async lockRef(tx: TenantTransaction, kind: ContextKind, ref: ExternalRef): Promise<void> {
+    const key = createHash('sha256')
+      .update(`${tx.tenantId}|${kind}|${refKey(ref)}`)
+      .digest()
+      .readBigInt64BE(0);
+    await tenantClient(tx).$executeRaw`SELECT pg_advisory_xact_lock(${key}::bigint)`;
+  }
+
+  /**
+   * Serialises a check across records for the rest of the transaction (e.g.
+   * the shared-email check). Always taken after the record lock, so lock
+   * order is fixed and cannot deadlock.
+   */
+  async lockKey(tx: TenantTransaction, scope: string, value: string): Promise<void> {
+    const key = createHash('sha256')
+      .update(`${tx.tenantId}|${scope}|${value}`)
+      .digest()
+      .readBigInt64BE(0);
+    await tenantClient(tx).$executeRaw`SELECT pg_advisory_xact_lock(${key}::bigint)`;
+  }
+
+  async findRef(
+    tx: TenantTransaction,
+    kind: ContextKind,
+    ref: ExternalRef,
+  ): Promise<RefRow | undefined> {
+    const db = tenantClient(tx);
+    const where = {
+      tenantId: tx.tenantId,
+      system: ref.system,
+      objectType: ref.objectType,
+      externalId: ref.id,
+    };
+    const row =
+      kind === 'company'
+        ? await db.companyExternalRef.findFirst({ where })
+        : await db.personExternalRef.findFirst({ where });
+    return row ? toRef(kind, row) : undefined;
+  }
+
+  async refsOf(tx: TenantTransaction, kind: ContextKind, canonicalId: string): Promise<RefRow[]> {
+    const db = tenantClient(tx);
+    const rows =
+      kind === 'company'
+        ? await db.companyExternalRef.findMany({
+            where: { tenantId: tx.tenantId, companyId: canonicalId },
+          })
+        : await db.personExternalRef.findMany({
+            where: { tenantId: tx.tenantId, personId: canonicalId },
+          });
+    return rows.map((r) => toRef(kind, r));
+  }
+
+  async insertRef(
+    tx: TenantTransaction,
+    kind: ContextKind,
+    ref: ExternalRef,
+    canonicalId: string,
+    values: RefWrite & { readonly firstSeenAt: Date; readonly lastSeenAt: Date },
+  ): Promise<void> {
+    const db = tenantClient(tx);
+    const data = {
+      tenantId: tx.tenantId,
+      system: ref.system,
+      objectType: ref.objectType,
+      externalId: ref.id,
+      state: values.state,
+      mergedIntoExternalId: values.mergedIntoExternalId ?? null,
+      firstSeenAt: values.firstSeenAt,
+      lastSeenAt: values.lastSeenAt,
+      sourceCreatedAt: values.sourceCreatedAt ?? null,
+      sourceUpdatedAt: values.sourceUpdatedAt ?? null,
+      deletedAt: values.deletedAt ?? null,
+      fieldHash: values.fieldHash ?? null,
+      lastChangeId: values.lastChangeId ?? null,
+    };
+    if (kind === 'company') {
+      await db.companyExternalRef.create({ data: { ...data, companyId: canonicalId } });
+    } else {
+      await db.personExternalRef.create({ data: { ...data, personId: canonicalId } });
+    }
+  }
+
+  async updateRef(
+    tx: TenantTransaction,
+    kind: ContextKind,
+    ref: ExternalRef,
+    values: Partial<RefWrite> & { readonly canonicalId?: string },
+  ): Promise<void> {
+    const db = tenantClient(tx);
+    const where = {
+      tenantId: tx.tenantId,
+      system: ref.system,
+      objectType: ref.objectType,
+      externalId: ref.id,
+    };
+    const { canonicalId, ...rest } = values;
+    const data = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined));
+    if (kind === 'company') {
+      await db.companyExternalRef.updateMany({
+        where,
+        data: { ...data, ...(canonicalId ? { companyId: canonicalId } : {}) },
+      });
+    } else {
+      await db.personExternalRef.updateMany({
+        where,
+        data: { ...data, ...(canonicalId ? { personId: canonicalId } : {}) },
+      });
+    }
+  }
+
+  async getCompany(tx: TenantTransaction, id: string): Promise<CanonicalRow<CompanyValues>> {
+    const c = await tenantClient(tx).company.findFirstOrThrow({
+      where: { tenantId: tx.tenantId, id },
+    });
+    return {
+      id: c.id,
+      values: { name: c.name, domains: c.domains },
+      recordState: c.recordState as RecordState,
+      mergedIntoId: c.mergedIntoId ?? undefined,
+    };
+  }
+
+  async getPerson(tx: TenantTransaction, id: string): Promise<CanonicalRow<PersonValues>> {
+    const p = await tenantClient(tx).person.findFirstOrThrow({
+      where: { tenantId: tx.tenantId, id },
+    });
+    return {
+      id: p.id,
+      values: {
+        primaryEmail: p.primaryEmail,
+        firstName: p.firstName,
+        lastName: p.lastName,
+        jobTitle: p.jobTitle,
+        companyId: p.companyId,
+      },
+      recordState: p.recordState as RecordState,
+      mergedIntoId: p.mergedIntoId ?? undefined,
+    };
+  }
+
+  async createCompany(tx: TenantTransaction, values: CompanyValues, now: Date): Promise<string> {
+    const id = randomUUID();
+    await tenantClient(tx).company.create({
+      data: {
+        id,
+        tenantId: tx.tenantId,
+        name: values.name,
+        domains: [...values.domains],
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+    return id;
+  }
+
+  async createPerson(tx: TenantTransaction, values: PersonValues, now: Date): Promise<string> {
+    const id = randomUUID();
+    await tenantClient(tx).person.create({
+      data: { id, tenantId: tx.tenantId, ...values, createdAt: now, updatedAt: now },
+    });
+    return id;
+  }
+
+  async updateCompany(
+    tx: TenantTransaction,
+    id: string,
+    values: Partial<CompanyValues> & {
+      readonly recordState?: RecordState;
+      readonly mergedIntoId?: string | null;
+    },
+    now: Date,
+  ): Promise<void> {
+    const { domains, ...rest } = values;
+    await tenantClient(tx).company.updateMany({
+      where: { tenantId: tx.tenantId, id },
+      data: { ...rest, ...(domains ? { domains: [...domains] } : {}), updatedAt: now },
+    });
+  }
+
+  async updatePerson(
+    tx: TenantTransaction,
+    id: string,
+    values: Partial<PersonValues> & {
+      readonly recordState?: RecordState;
+      readonly mergedIntoId?: string | null;
+    },
+    now: Date,
+  ): Promise<void> {
+    await tenantClient(tx).person.updateMany({
+      where: { tenantId: tx.tenantId, id },
+      data: { ...values, updatedAt: now },
+    });
+  }
+
+  /** Follows merge lineage to the surviving canonical record. */
+  async resolveCanonical(tx: TenantTransaction, kind: ContextKind, id: string): Promise<string> {
+    let current = id;
+    for (let hops = 0; hops < 20; hops += 1) {
+      const row =
+        kind === 'company' ? await this.getCompany(tx, current) : await this.getPerson(tx, current);
+      if (row.recordState !== 'merged' || !row.mergedIntoId) return current;
+      current = row.mergedIntoId;
+    }
+    throw new Error('merge lineage too deep');
+  }
+
+  async activeRefCount(tx: TenantTransaction, kind: ContextKind, id: string): Promise<number> {
+    const db = tenantClient(tx);
+    return kind === 'company'
+      ? db.companyExternalRef.count({
+          where: { tenantId: tx.tenantId, companyId: id, state: 'active' },
+        })
+      : db.personExternalRef.count({
+          where: { tenantId: tx.tenantId, personId: id, state: 'active' },
+        });
+  }
+
+  /** The canonical company of a source company reference, following merges. */
+  async companyIdForRef(tx: TenantTransaction, ref: ExternalRef): Promise<string | undefined> {
+    const r = await this.findRef(tx, 'company', ref);
+    return r ? this.resolveCanonical(tx, 'company', r.canonicalId) : undefined;
+  }
+
+  /** Replaces a person's source company links; returns whether anything changed. */
+  async replacePersonLinks(
+    tx: TenantTransaction,
+    person: ExternalRef,
+    links: readonly SourceCompanyLink[],
+    observedAt: Date,
+  ): Promise<boolean> {
+    const db = tenantClient(tx);
+    const base = {
+      tenantId: tx.tenantId,
+      system: person.system,
+      fromObjectType: person.objectType,
+      fromExternalId: person.id,
+    };
+    const existing = await db.tenantSourceRelationship.findMany({ where: base });
+    const key = (to: string, toType: string, typeId: number) => `${toType}:${to}:${typeId}`;
+    const wanted = new Map(
+      links.map((l) => [key(l.company.id, l.company.objectType, l.typeId), l] as const),
+    );
+    let changed = false;
+    for (const row of existing) {
+      const k = key(row.toExternalId, row.toObjectType, row.associationTypeId);
+      if (!wanted.has(k) && row.state !== 'removed') {
+        await db.tenantSourceRelationship.updateMany({
+          where: {
+            ...base,
+            toObjectType: row.toObjectType,
+            toExternalId: row.toExternalId,
+            associationTypeId: row.associationTypeId,
+          },
+          data: { state: 'removed', lastSeenAt: observedAt, sourceObservedAt: observedAt },
+        });
+        changed = true;
+      }
+    }
+    for (const [k, l] of wanted) {
+      const row = existing.find(
+        (e) => key(e.toExternalId, e.toObjectType, e.associationTypeId) === k,
+      );
+      if (!row) {
+        await db.tenantSourceRelationship.create({
+          data: {
+            ...base,
+            toObjectType: l.company.objectType,
+            toExternalId: l.company.id,
+            associationTypeId: l.typeId,
+            category: l.category,
+            isPrimary: l.primary,
+            state: 'active',
+            sourceObservedAt: observedAt,
+            lastSeenAt: observedAt,
+          },
+        });
+        changed = true;
+      } else {
+        const differs = row.state !== 'active' || row.isPrimary !== l.primary;
+        await db.tenantSourceRelationship.updateMany({
+          where: {
+            ...base,
+            toObjectType: row.toObjectType,
+            toExternalId: row.toExternalId,
+            associationTypeId: row.associationTypeId,
+          },
+          data: {
+            state: 'active',
+            isPrimary: l.primary,
+            category: l.category,
+            lastSeenAt: observedAt,
+            ...(differs ? { sourceObservedAt: observedAt } : {}),
+          },
+        });
+        changed ||= differs;
+      }
+    }
+    return changed;
+  }
+
+  /**
+   * People whose active primary source link points at this company reference
+   * but whose canonical company differs (e.g. the company arrived after the
+   * person). Returns their ids so the caller can link and record provenance.
+   */
+  async peopleAwaitingCompany(
+    tx: TenantTransaction,
+    company: ExternalRef,
+    companyId: string,
+  ): Promise<string[]> {
+    const rows = await tenantClient(tx).$queryRaw<{ id: string }[]>`
+      SELECT DISTINCT p.id::text AS id
+        FROM tenant_source_relationships r
+        JOIN person_external_refs pr
+          ON pr.tenant_id = r.tenant_id AND pr.system = r.system
+         AND pr.object_type = r.from_object_type AND pr.external_id = r.from_external_id
+        JOIN persons p ON p.tenant_id = pr.tenant_id AND p.id = pr.person_id
+       WHERE r.tenant_id = ${tx.tenantId}::uuid
+         AND r.system = ${company.system}
+         AND r.to_object_type = ${company.objectType}
+         AND r.to_external_id = ${company.id}
+         AND r.state = 'active' AND r.is_primary
+         AND pr.state = 'active' AND p.record_state <> 'merged'
+         AND p.company_id IS DISTINCT FROM ${companyId}::uuid`;
+    return rows.map((r) => r.id);
+  }
+
+  async personIdsWithEmail(
+    tx: TenantTransaction,
+    email: string,
+    excludeId: string,
+  ): Promise<string[]> {
+    const rows = await tenantClient(tx).person.findMany({
+      where: {
+        tenantId: tx.tenantId,
+        primaryEmail: email,
+        id: { not: excludeId },
+        recordState: { not: 'merged' },
+      },
+      select: { id: true },
+      orderBy: { id: 'asc' },
+    });
+    return rows.map((r) => r.id);
+  }
+
+  /** Records an identity question once per conflict (idempotent); never resolves it. */
+  async recordConflict(
+    tx: TenantTransaction,
+    conflict: {
+      readonly kind: 'shared_email' | 'merge_across_systems' | 'ambiguous_primary_company';
+      readonly entityKind: ContextKind;
+      readonly identity: string;
+      readonly canonicalIds: readonly string[];
+      readonly externalRefs: readonly ExternalRef[];
+    },
+  ): Promise<void> {
+    const conflictKey = createHash('sha256')
+      .update(`${conflict.kind}|${conflict.identity}`)
+      .digest('hex');
+    const canonicalIds = [...new Set(conflict.canonicalIds)].sort();
+    const externalRefs = [...new Set(conflict.externalRefs.map(refKey))].sort();
+    await tenantClient(tx).tenantIdentityConflict.upsert({
+      where: { tenantId_conflictKey: { tenantId: tx.tenantId, conflictKey } },
+      create: {
+        tenantId: tx.tenantId,
+        id: randomUUID(),
+        kind: conflict.kind,
+        entityKind: conflict.entityKind,
+        conflictKey,
+        canonicalIds,
+        externalRefs,
+      },
+      update: { canonicalIds, externalRefs, updatedAt: new Date() },
+    });
+  }
+
+  /** Moves every reference of `fromId` to `toId` (merge forward). */
+  async repointRefs(
+    tx: TenantTransaction,
+    kind: ContextKind,
+    fromId: string,
+    toId: string,
+  ): Promise<void> {
+    const db = tenantClient(tx);
+    if (kind === 'company') {
+      await db.companyExternalRef.updateMany({
+        where: { tenantId: tx.tenantId, companyId: fromId },
+        data: { companyId: toId },
+      });
+      await db.person.updateMany({
+        where: { tenantId: tx.tenantId, companyId: fromId },
+        data: { companyId: toId },
+      });
+      await db.company.updateMany({
+        where: { tenantId: tx.tenantId, mergedIntoId: fromId },
+        data: { mergedIntoId: toId },
+      });
+    } else {
+      await db.personExternalRef.updateMany({
+        where: { tenantId: tx.tenantId, personId: fromId },
+        data: { personId: toId },
+      });
+      await db.person.updateMany({
+        where: { tenantId: tx.tenantId, mergedIntoId: fromId },
+        data: { mergedIntoId: toId },
+      });
+    }
+  }
+
+  async insertChange(tx: TenantTransaction, change: ChangeWrite): Promise<string> {
+    const id = randomUUID();
+    await tenantClient(tx).tenantContextChange.create({
+      data: {
+        tenantId: tx.tenantId,
+        id,
+        entityKind: change.entityKind,
+        entityId: change.entityId,
+        changeType: change.changeType,
+        changedFields: [...change.changedFields],
+        sourceSystem: change.source.system,
+        sourceObjectType: change.source.objectType,
+        sourceRecordId: change.source.id,
+        cause: change.cause,
+        receiptDeliveryKey: change.receiptDeliveryKey ?? null,
+        checkpointId: change.checkpointId ?? null,
+        sourceUpdatedAt: change.sourceUpdatedAt ?? null,
+        adapter: change.adapter,
+        adapterVersion: change.adapterVersion,
+        correlationId: change.correlationId,
+      },
+    });
+    return id;
+  }
+}

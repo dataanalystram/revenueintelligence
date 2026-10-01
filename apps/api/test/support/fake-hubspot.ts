@@ -61,6 +61,8 @@ export interface FakeFault {
   stallBodyMs?: number;
   /** How many matching requests to fail (default 1). */
   times?: number;
+  /** Further condition on the request (e.g. only a later page). */
+  when?: (entry: FakeRequestLog) => boolean;
 }
 
 export interface FakeRequestLog {
@@ -96,6 +98,11 @@ export interface FakeHubSpotOptions {
   onRequest?: (entry: FakeRequestLog) => void;
   records?: Partial<Record<'contacts' | 'companies' | 'leads', FakeRecord[]>>;
   associations?: FakeAssociation[];
+  /**
+   * Standalone (runtime verification) only: test-control endpoints under
+   * `/__fake/` (upsert/remove records, inject faults). Never real HubSpot API.
+   */
+  admin?: boolean;
 }
 
 export const ALL_READ_SCOPES = [
@@ -106,6 +113,24 @@ export const ALL_READ_SCOPES = [
   'crm.schemas.companies.read',
   'crm.schemas.leads.read',
 ];
+
+/**
+ * Like HubSpot: without a `properties` parameter, record reads return only
+ * these defaults (observed live in M6: `jobtitle` is not one of them); with
+ * it, the requested properties. Both always carry the timestamps and the id.
+ */
+const DEFAULT_PROPERTIES: Partial<Record<string, readonly string[]>> = {
+  contacts: ['firstname', 'lastname', 'email'],
+  companies: ['name', 'domain'],
+};
+const ALWAYS_RETURNED = ['createdate', 'lastmodifieddate', 'hs_lastmodifieddate', 'hs_object_id'];
+
+function requestedProperties(url: URL): string[] {
+  return url.searchParams
+    .getAll('properties')
+    .flatMap((v) => v.split(','))
+    .filter(Boolean);
+}
 
 const OBJECT_SCOPE: Record<string, string> = {
   contacts: 'crm.objects.contacts.read',
@@ -159,6 +184,8 @@ export class FakeHubSpot {
   private readonly refreshTokens = new Map<string, number>();
   /** OAuth calls received, by grant type. */
   readonly oauthCalls = { authorizationCode: 0, refreshToken: 0, revoke: 0 };
+  /** Successful CRM search calls served. */
+  searchCalls = 0;
   private reverseHidden: ((a: FakeAssociation) => boolean) | undefined;
   private server: Server | undefined;
   private readonly options: FakeHubSpotOptions;
@@ -263,7 +290,9 @@ export class FakeHubSpot {
     this.requests.push(entry);
     this.options.onRequest?.(entry);
 
-    const fault = this.faults.find((f) => f.match.test(`${method} ${url.pathname}`));
+    const fault = this.faults.find(
+      (f) => f.match.test(`${method} ${url.pathname}`) && (!f.when || f.when(entry)),
+    );
     if (fault) {
       fault.times = (fault.times ?? 1) - 1;
       if (fault.times <= 0) this.faults.splice(this.faults.indexOf(fault), 1);
@@ -286,6 +315,8 @@ export class FakeHubSpot {
     }
 
     if (/^\/oauth\//.test(url.pathname)) return this.oauthRoute(method, url, raw, res);
+    if (this.options.admin && url.pathname.startsWith('/__fake/'))
+      return this.adminRoute(method, url, body, res);
 
     const token = /^Bearer (.+)$/.exec(req.headers.authorization ?? '')?.[1];
     const account = token ? this.options.accounts[token] : undefined;
@@ -331,9 +362,13 @@ export class FakeHubSpot {
     let m = /^\/crm\/objects\/[\w-]+\/(\w+)$/.exec(p);
     if (method === 'GET' && m) return this.listObjects(m[1]!, url, account, res);
     m = /^\/crm\/objects\/[\w-]+\/(\w+)\/(\w+)$/.exec(p);
-    if (method === 'GET' && m) return this.getObject(m[1]!, m[2]!, account, res);
+    if (method === 'GET' && m) return this.getObject(m[1]!, m[2]!, url, account, res);
     m = /^\/crm\/properties\/[\w-]+\/(\w+)$/.exec(p);
     if (method === 'GET' && m) return this.listProperties(m[1]!, account, res);
+    // CRM search: only the version verified at Gate 1 (ADR 0015) is served, so a
+    // 2026-09 search path (unverified) fails tests.
+    m = /^\/crm\/objects\/2026-03\/(contacts|companies)\/search$/.exec(p);
+    if (method === 'POST' && m) return this.search(m[1]!, body, account, res);
     m = /^\/crm\/associations\/[\w-]+\/(\w+)\/(\w+)\/labels$/.exec(p);
     if (method === 'GET' && m) return this.labels(m[1]!, m[2]!, account, res);
     m = /^\/crm\/associations\/[\w-]+\/(\w+)\/(\w+)\/batch\/read$/.exec(p);
@@ -506,12 +541,133 @@ export class FakeHubSpot {
         ? Buffer.from(String(start + limit)).toString('base64url')
         : undefined;
     this.send(res, 200, {
-      results: slice.map((r) => this.object(r)),
+      results: slice.map((r) => this.object(r, type, requestedProperties(url))),
       ...(next ? { paging: { next: { after: next, link: `?after=${next}` } } } : {}),
     });
   }
 
-  private getObject(type: string, id: string, account: FakeAccount, res: ServerResponse): void {
+  /**
+   * `POST /crm/objects/2026-03/{type}/search` with one GTE/LTE filter on the
+   * modification property, ascending sort and an offset cursor, as HubSpot
+   * documents it (10,000-result window; offsets beyond it are a 400).
+   */
+  private search(type: string, body: unknown, account: FakeAccount, res: ServerResponse): void {
+    if (this.denied(type, OBJECT_SCOPE[type], account, res)) return;
+    const b = body as {
+      filterGroups?: { filters?: { propertyName: string; operator: string; value: string }[] }[];
+      sorts?: { propertyName: string; direction: string }[];
+      limit?: number;
+      after?: string;
+      properties?: string[];
+    };
+    const modified = type === 'contacts' ? 'lastmodifieddate' : 'hs_lastmodifieddate';
+    const filters = b?.filterGroups?.[0]?.filters ?? [];
+    const limit = Math.min(Number(b?.limit ?? 10), 200);
+    const offset = b?.after === undefined ? 0 : Number(b.after);
+    if (
+      filters.some((f) => f.propertyName !== modified) ||
+      (b?.sorts ?? []).some((x) => x.propertyName !== modified) ||
+      !Number.isInteger(offset) ||
+      offset + limit > 10_000
+    ) {
+      return this.send(res, 400, {
+        status: 'error',
+        message: 'Invalid search request',
+        category: 'VALIDATION_ERROR',
+      });
+    }
+    this.searchCalls += 1;
+    const time = (r: FakeRecord): number => Date.parse(r.updatedAt ?? '2026-09-02T09:00:00.000Z');
+    const matches = (this.options.records?.[type as 'contacts'] ?? [])
+      .filter((r) =>
+        filters.every((f) =>
+          f.operator === 'GTE'
+            ? time(r) >= Number(f.value)
+            : f.operator === 'LTE'
+              ? time(r) <= Number(f.value)
+              : time(r) === Number(f.value),
+        ),
+      )
+      .sort((x, y) => time(x) - time(y) || Number(x.id) - Number(y.id));
+    const slice = matches.slice(offset, offset + limit);
+    const next = offset + limit < matches.length ? String(offset + limit) : undefined;
+    this.send(res, 200, {
+      total: matches.length,
+      results: slice.map((r) => this.object(r, type, b?.properties ?? [])),
+      ...(next ? { paging: { next: { after: next } } } : {}),
+    });
+  }
+
+  /** Runtime-verification control: `POST /__fake/records/{type}`, `/__fake/remove/{type}/{id}`, `/__fake/fault`. */
+  private adminRoute(method: string, url: URL, body: unknown, res: ServerResponse): void {
+    let m = /^\/__fake\/records\/(contacts|companies|leads)$/.exec(url.pathname);
+    if (method === 'POST' && m) {
+      this.upsertRecord(m[1] as 'contacts', body as FakeRecord);
+      return this.send(res, 200, { ok: true });
+    }
+    m = /^\/__fake\/remove\/(contacts|companies|leads)\/(\w+)$/.exec(url.pathname);
+    if (method === 'POST' && m) {
+      this.removeRecord(m[1] as 'contacts', m[2]!);
+      return this.send(res, 200, { ok: true });
+    }
+    if (method === 'POST' && url.pathname === '/__fake/fault') {
+      const f = body as {
+        match: string;
+        status: number;
+        times?: number;
+        delayMs?: number;
+        body?: unknown;
+      };
+      this.fail({
+        match: new RegExp(f.match),
+        status: f.status,
+        times: f.times ?? 1,
+        delayMs: f.delayMs,
+        ...(f.body === undefined ? {} : { body: f.body }),
+      });
+      return this.send(res, 200, { ok: true });
+    }
+    return this.send(res, 404, { status: 'error', message: 'unknown fake control route' });
+  }
+
+  /** Test helper: creates or replaces a record (e.g. a change made in HubSpot). */
+  upsertRecord(type: 'contacts' | 'companies' | 'leads', record: FakeRecord): void {
+    const records = (this.options.records ??= {});
+    const list = (records[type] ??= []);
+    const i = list.findIndex((r) => r.id === record.id);
+    if (i >= 0) list[i] = record;
+    else list.push(record);
+  }
+
+  /** Test helper: the record disappears (deleted or merged away in HubSpot). */
+  removeRecord(type: 'contacts' | 'companies' | 'leads', id: string): void {
+    const list = this.options.records?.[type] ?? [];
+    const i = list.findIndex((r) => r.id === id);
+    if (i >= 0) list.splice(i, 1);
+  }
+
+  /** Test helper: replaces every association between two object types. */
+  setAssociations(fromType: string, toType: string, links: FakeAssociation[]): void {
+    const all = (this.options.associations ??= []);
+    for (let i = all.length - 1; i >= 0; i -= 1) {
+      const a = all[i]!;
+      if (
+        (a.fromType === fromType && a.toType === toType) ||
+        (a.fromType === toType && a.toType === fromType)
+      ) {
+        all.splice(i, 1);
+      }
+    }
+    all.push(...links);
+  }
+
+  private getObject(
+    type: string,
+    id: string,
+    url: URL,
+    account: FakeAccount,
+    res: ServerResponse,
+  ): void {
     if (this.denied(type, OBJECT_SCOPE[type], account, res)) return;
     const record = (this.options.records?.[type as 'contacts'] ?? []).find((r) => r.id === id);
     if (!record) {
@@ -521,13 +677,18 @@ export class FakeHubSpot {
         category: 'OBJECT_NOT_FOUND',
       });
     }
-    this.send(res, 200, this.object(record));
+    this.send(res, 200, this.object(record, type, requestedProperties(url)));
   }
 
-  private object(r: FakeRecord): unknown {
+  private object(r: FakeRecord, type: string, requested: readonly string[]): unknown {
+    const defaults = DEFAULT_PROPERTIES[type];
+    const visible =
+      defaults && new Set([...(requested.length ? requested : defaults), ...ALWAYS_RETURNED]);
     return {
       id: r.id,
-      properties: r.properties,
+      properties: visible
+        ? Object.fromEntries(Object.entries(r.properties).filter(([k]) => visible.has(k)))
+        : r.properties,
       createdAt: r.createdAt ?? '2026-09-01T09:00:00.000Z',
       updatedAt: r.updatedAt ?? '2026-09-02T09:00:00.000Z',
       archived: false,
@@ -778,6 +939,7 @@ if (process.argv[1]?.endsWith('fake-hubspot.ts')) {
       },
     },
     ...sampleData(),
+    admin: true,
     ...(args.includes('--oauth-client-id')
       ? {
           oauth: {

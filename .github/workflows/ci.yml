@@ -57,6 +57,16 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm verify:runtime
+      # The log artifact below is not always reachable; print the essentials
+      # (runtime checks assert that these logs hold no values or secrets).
+      - name: Show runtime warnings, errors and log tails
+        if: failure()
+        run: |
+          for f in /tmp/lip-verify.*/*.log; do
+            echo "== $f"
+            grep -E '"level":(40|50|60)' "$f" | tail -n 20 || true
+            tail -n 5 "$f" | grep -vE '"level":(40|50|60)' || true
+          done
       # verify-runtime.sh keeps its logs in /tmp/lip-verify.* when a check fails.
       - if: failure()
         uses: actions/upload-artifact@v4
@@ -73,8 +83,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
+      # No pnpm cache: this job installs nothing on the host (the images do),
+      # so a cache miss would leave no store to save and fail the post step.
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
-          cache: pnpm
       - run: pnpm verify:docker

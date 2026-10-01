@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { webhookEvent } from '../../../../test/support/hubspot-webhooks';
 import { WEBHOOK_MAX_EVENTS, parseWebhookBatch } from './webhook-events';
@@ -98,6 +99,102 @@ describe('HubSpot webhook payload (ADR 0011)', () => {
       propertyName: undefined,
       changeSource: undefined,
       objectTypeId: undefined,
+    });
+  });
+
+  describe('M6 lifecycle identifiers (ADR 0015)', () => {
+    it('keeps merge identifiers, still no values', () => {
+      const event = webhookEvent({
+        subscriptionType: 'object.merge',
+        objectTypeId: '0-1',
+        objectId: undefined,
+        primaryObjectId: 101,
+        mergedObjectIds: [102, '103'],
+        newObjectId: 104,
+        numberOfPropertiesMoved: 7,
+        propertyValue: 'secret-value-marker',
+      });
+      const parsed = parseWebhookBatch(body([event]));
+      expect(parsed.ok).toBe(true);
+      if (!parsed.ok) return;
+      expect(parsed.events[0]!.merge).toEqual({
+        primaryObjectId: '101',
+        newObjectId: '104',
+        mergedObjectIds: ['102', '103'],
+      });
+      expect(JSON.stringify(parsed.events)).not.toContain('secret-value-marker');
+      expect(JSON.stringify(parsed.events)).not.toContain('numberOfPropertiesMoved');
+    });
+
+    it('keeps association identifiers', () => {
+      const event = webhookEvent({
+        subscriptionType: 'object.associationChange',
+        objectId: undefined,
+        fromObjectId: 101,
+        fromObjectTypeId: '0-1',
+        toObjectId: 201,
+        toObjectTypeId: '0-2',
+        associationTypeId: 1,
+        associationCategory: 'HUBSPOT_DEFINED',
+        associationRemoved: false,
+        isPrimaryAssociation: true,
+      });
+      const parsed = parseWebhookBatch(body([event]));
+      expect(parsed.ok && parsed.events[0]!.association).toEqual({
+        fromObjectId: '101',
+        fromObjectTypeId: '0-1',
+        toObjectId: '201',
+        toObjectTypeId: '0-2',
+        associationTypeId: 1,
+        associationCategory: 'HUBSPOT_DEFINED',
+        associationRemoved: false,
+        isPrimaryAssociation: true,
+      });
+    });
+
+    it('delivery keys of M5-style events are unchanged (stored receipts stay de-duplicated)', () => {
+      const event = webhookEvent({
+        subscriptionType: 'object.propertyChange',
+        propertyName: 'email',
+      });
+      const parsed = parseWebhookBatch(body([event]));
+      if (!parsed.ok) throw new Error('parse failed');
+      const e = event as {
+        portalId: number;
+        appId: number;
+        subscriptionId: number;
+        eventId: number;
+        objectTypeId: string;
+        objectId: number;
+        occurredAt: number;
+      };
+      const m5Identity = [
+        String(e.portalId),
+        String(e.appId),
+        String(e.subscriptionId),
+        String(e.eventId),
+        'object.propertyChange',
+        e.objectTypeId,
+        String(e.objectId),
+        'email',
+        e.occurredAt,
+      ];
+      expect(parsed.events[0]!.deliveryKey).toBe(
+        createHash('sha256').update(JSON.stringify(m5Identity)).digest('hex'),
+      );
+    });
+
+    it('two association events differing only by removal have different keys', () => {
+      const base = {
+        subscriptionType: 'object.associationChange',
+        objectId: undefined,
+        fromObjectId: 101,
+        toObjectId: 201,
+      };
+      const a = parseWebhookBatch(body([webhookEvent({ ...base, associationRemoved: false })]));
+      const b = parseWebhookBatch(body([webhookEvent({ ...base, associationRemoved: true })]));
+      if (!a.ok || !b.ok) throw new Error('parse failed');
+      expect(a.events[0]!.deliveryKey).not.toBe(b.events[0]!.deliveryKey);
     });
   });
 });

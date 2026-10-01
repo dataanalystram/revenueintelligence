@@ -23,8 +23,10 @@ services:
 
   redis:
     image: redis:7-alpine
-    # AOF persistence so queued jobs survive a restart (matters from Milestone 6).
-    command: ['redis-server', '--appendonly', 'yes']
+    # AOF persistence so queued jobs survive a restart, and no eviction: BullMQ
+    # must never lose a job under memory pressure (M6, ADR 0013; the worker
+    # refuses to start otherwise).
+    command: ['redis-server', '--appendonly', 'yes', '--maxmemory-policy', 'noeviction']
     ports: ['${LIP_REDIS_PORT:-6379}:6379']
     volumes: [redisdata:/data]
     healthcheck:

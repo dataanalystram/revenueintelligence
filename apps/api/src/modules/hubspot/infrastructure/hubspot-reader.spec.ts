@@ -50,6 +50,87 @@ describe('HubSpotReader (translation into vendor-neutral read models)', () => {
     });
   });
 
+  describe('searchModifiedSince (Gate 1 path, ADR 0015)', () => {
+    const at = (iso: string) => ({ updatedAt: iso });
+    beforeEach(() => {
+      fake.upsertRecord('companies', {
+        id: '201',
+        properties: { name: 'A' },
+        ...at('2026-09-03T00:00:00.000Z'),
+      });
+      fake.upsertRecord('companies', {
+        id: '202',
+        properties: { name: 'B' },
+        ...at('2026-09-05T00:00:00.000Z'),
+      });
+      fake.upsertRecord('companies', {
+        id: '203',
+        properties: { name: 'C' },
+        ...at('2026-09-04T00:00:00.000Z'),
+      });
+    });
+
+    it('sends the exact verified path and body, oldest first, with snapshots', async () => {
+      const page = await reader.searchModifiedSince('companies', {
+        since: new Date('2026-09-04T00:00:00.000Z'),
+        limit: 1,
+      });
+      expect(page.items.map((r) => r.ref.id)).toEqual(['203']);
+      expect(page.total).toBe(2);
+      expect(page.nextCursor).toBe('1');
+      expect(page.windowExhausted).toBe(false);
+      const req = fake.requests.at(-1)!;
+      expect(`${req.method} ${req.path}`).toBe('POST /crm/objects/2026-03/companies/search');
+      expect(req.body).toEqual({
+        filterGroups: [
+          {
+            filters: [
+              {
+                propertyName: 'hs_lastmodifieddate',
+                operator: 'GTE',
+                value: String(Date.parse('2026-09-04T00:00:00.000Z')),
+              },
+            ],
+          },
+        ],
+        sorts: [{ propertyName: 'hs_lastmodifieddate', direction: 'ASCENDING' }],
+        properties: ['name', 'domain', 'createdate', 'hs_lastmodifieddate'],
+        limit: 1,
+      });
+      const next = await reader.searchModifiedSince('companies', {
+        since: new Date('2026-09-04T00:00:00.000Z'),
+        limit: 1,
+        after: page.nextCursor,
+      });
+      expect(next.items.map((r) => r.ref.id)).toEqual(['202']);
+      expect(next.nextCursor).toBeUndefined();
+    });
+
+    it('contacts use lastmodifieddate', async () => {
+      await reader.searchModifiedSince('contacts', { since: new Date(0) });
+      const body = fake.requests.at(-1)!.body as { sorts: { propertyName: string }[] };
+      expect(body.sorts[0]!.propertyName).toBe('lastmodifieddate');
+    });
+
+    it('stops at the 10,000-result window instead of paging past it', async () => {
+      fake.fail({
+        match: /search$/,
+        status: 200,
+        body: { total: 20_000, results: [], paging: { next: { after: '9950' } } },
+      });
+      const page = await reader.searchModifiedSince('companies', {
+        since: new Date(0),
+        limit: 100,
+        after: '9850',
+      });
+      expect(page.windowExhausted).toBe(true);
+      expect(page.nextCursor).toBeUndefined();
+      await expect(
+        reader.searchModifiedSince('companies', { since: new Date(0), after: '10000' }),
+      ).rejects.toThrow(RangeError);
+    });
+  });
+
   it('refuses a malformed account-info version before any request', async () => {
     await expect(reader.getAccount('2026-09/../../account-info/v3')).rejects.toThrow(RangeError);
     expect(fake.requests).toHaveLength(0);
@@ -101,7 +182,11 @@ describe('HubSpotReader (translation into vendor-neutral read models)', () => {
   });
 
   it('maps contacts to person snapshots (normalised email, raw attributes kept)', async () => {
-    const page = await reader.listRecords('contacts', { limit: 100 });
+    // A custom property is returned only when requested (as by HubSpot).
+    const page = await reader.listRecords('contacts', {
+      limit: 100,
+      properties: ['fake_custom_field'],
+    });
     expect(page.items).toHaveLength(5);
     expect(page.nextCursor).toBeUndefined();
     const first = page.items[0]!;
@@ -167,15 +252,28 @@ describe('HubSpotReader (translation into vendor-neutral read models)', () => {
     });
   });
 
-  it('passes requested properties and validates page size', async () => {
+  it('passes requested properties (with the canonical ones) and validates page size', async () => {
     await reader.listRecords('contacts', { limit: 5, properties: ['email', 'fake_custom_field'] });
     expect(fake.requests[0]!.query).toMatchObject({
       limit: '5',
-      properties: 'email,fake_custom_field',
+      properties: 'email,firstname,lastname,jobtitle,fake_custom_field',
       archived: 'false',
     });
     await expect(reader.listRecords('contacts', { limit: 101 })).rejects.toThrow(RangeError);
     await expect(reader.listRecords('contacts', { limit: 0 })).rejects.toThrow(RangeError);
+  });
+
+  it('always requests the canonical properties: HubSpot omits non-default ones (jobtitle) otherwise', async () => {
+    await reader.listRecords('contacts');
+    await reader.getRecord('contacts', '101');
+    await reader.getRecord('companies', '202');
+    await reader.listRecords('leads');
+    expect(fake.requests.map((r) => r.query.properties)).toEqual([
+      'email,firstname,lastname,jobtitle',
+      'email,firstname,lastname,jobtitle',
+      'name,domain',
+      undefined,
+    ]);
   });
 
   it('getRecord: found, and 404 → undefined', async () => {
@@ -204,8 +302,8 @@ describe('HubSpotReader (translation into vendor-neutral read models)', () => {
 
   it('maps association labels to vendor-neutral categories', async () => {
     await expect(reader.listAssociationTypes('leads', 'companies')).resolves.toEqual([
-      { category: 'standard', typeId: 580, label: 'Primary' },
-      { category: 'standard', typeId: 610, label: null },
+      { category: 'standard', typeId: 580, label: 'Primary', primary: true },
+      { category: 'standard', typeId: 610, label: null, primary: false },
     ]);
   });
 
@@ -391,6 +489,7 @@ describe('association categories (technical debt #8)', () => {
         category: 'standard',
         typeId: 1,
         label: 'Primary',
+        primary: true,
       },
     );
     expect(toAssociationType({ category: 'USER_DEFINED', typeId: 9, label: null }).category).toBe(
@@ -402,6 +501,9 @@ describe('association categories (technical debt #8)', () => {
     expect(toAssociationType({ category: 'SOME_FUTURE_CATEGORY', typeId: 9 }).category).toBe(
       'other',
     );
+    // Primary only for HubSpot-defined primary types, never for a lookalike custom type.
+    expect(toAssociationType({ category: 'HUBSPOT_DEFINED', typeId: 279 }).primary).toBe(false);
+    expect(toAssociationType({ category: 'USER_DEFINED', typeId: 1 }).primary).toBe(false);
     // Inherited object keys are not categories.
     expect(toAssociationType({ category: 'toString', typeId: 9 }).category).toBe('other');
     expect(HsAssociationTypeSchema.safeParse({ category: 'NEW_KIND', typeId: 3 }).success).toBe(

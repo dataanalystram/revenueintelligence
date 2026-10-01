@@ -85,6 +85,22 @@ if (missing.length > 0) {
       }
     });
 
+    it('Gate 1 (ADR 0015): the verified 2026-03 search answers for contacts and companies', async () => {
+      for (const kind of ['person', 'company'] as const) {
+        const page = await crm.listChangedSince(kind, {
+          since: new Date('2020-01-01T00:00:00Z'),
+          limit: 5,
+        });
+        expect(page.items.length, kind).toBeGreaterThan(0);
+        expect(page.total, kind).toBeGreaterThanOrEqual(page.items.length);
+        expect(page.windowExhausted, kind).toBe(false);
+        const times = page.items.map((r) => r.updatedAt!.getTime());
+        expect(times, `${kind}: oldest modification first`).toEqual(
+          [...times].sort((a, b) => a - b),
+        );
+      }
+    });
+
     it('another tenant without its own credential cannot use this one', async () => {
       const other = await provisionTenant(h, 'hsliveb');
       await h.config.configureIntegration(other, 'hubspot', {

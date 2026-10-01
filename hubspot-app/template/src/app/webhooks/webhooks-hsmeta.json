@@ -8,7 +8,11 @@
     },
     "subscriptions": {
       "crmObjects": [
-        { "subscriptionType": "object.creation", "objectType": "contact", "active": true },
+        {
+          "subscriptionType": "object.creation",
+          "objectType": "contact",
+          "active": true
+        },
         {
           "subscriptionType": "object.propertyChange",
           "objectType": "contact",
@@ -27,7 +31,31 @@
           "propertyName": "hs_lead_status",
           "active": true
         },
-        { "subscriptionType": "object.creation", "objectType": "company", "active": true },
+        {
+          "subscriptionType": "object.deletion",
+          "objectType": "contact",
+          "active": true
+        },
+        {
+          "subscriptionType": "object.restore",
+          "objectType": "contact",
+          "active": true
+        },
+        {
+          "subscriptionType": "object.merge",
+          "objectType": "contact",
+          "active": true
+        },
+        {
+          "subscriptionType": "object.associationChange",
+          "objectType": "contact",
+          "active": true
+        },
+        {
+          "subscriptionType": "object.creation",
+          "objectType": "company",
+          "active": true
+        },
         {
           "subscriptionType": "object.propertyChange",
           "objectType": "company",
@@ -46,7 +74,31 @@
           "propertyName": "lifecyclestage",
           "active": true
         },
-        { "subscriptionType": "object.creation", "objectType": "lead", "active": true },
+        {
+          "subscriptionType": "object.deletion",
+          "objectType": "company",
+          "active": true
+        },
+        {
+          "subscriptionType": "object.restore",
+          "objectType": "company",
+          "active": true
+        },
+        {
+          "subscriptionType": "object.merge",
+          "objectType": "company",
+          "active": true
+        },
+        {
+          "subscriptionType": "object.associationChange",
+          "objectType": "company",
+          "active": true
+        },
+        {
+          "subscriptionType": "object.creation",
+          "objectType": "lead",
+          "active": true
+        },
         {
           "subscriptionType": "object.propertyChange",
           "objectType": "lead",

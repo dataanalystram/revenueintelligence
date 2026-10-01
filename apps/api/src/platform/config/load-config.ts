@@ -39,6 +39,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     redisUrl: e.REDIS_URL,
     secretsProvider: e.SECRETS_PROVIDER,
     healthCheckTimeoutMs: e.HEALTH_CHECK_TIMEOUT_MS,
+    queue: Object.freeze({
+      prefix: e.QUEUE_PREFIX,
+      shutdownTimeoutMs: e.WORKER_SHUTDOWN_TIMEOUT_MS,
+    }),
+    context: Object.freeze({
+      processingEnabled: e.CONTEXT_PROCESSING_ENABLED,
+      sweepIntervalMs: e.CONTEXT_SWEEP_INTERVAL_MS,
+      sweepStaleMs: e.CONTEXT_SWEEP_STALE_MS,
+      sweepMaxAgeMs: e.CONTEXT_SWEEP_MAX_AGE_MS,
+      reconcileIntervalMs: e.CONTEXT_RECONCILE_INTERVAL_MS,
+      reconcileLookbackMs: e.CONTEXT_RECONCILE_LOOKBACK_MS,
+    }),
     telemetry: Object.freeze({
       otelEnabled: e.OTEL_ENABLED,
       serviceName: e.OTEL_SERVICE_NAME,

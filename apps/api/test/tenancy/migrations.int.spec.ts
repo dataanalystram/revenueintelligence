@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { StartedPostgreSqlContainer } from '@testcontainers/postgresql';
@@ -24,6 +24,60 @@ async function createDatabase(
   await withAdmin(container.getConnectionUri(), (db) => db.query(`CREATE DATABASE ${name}`));
   return databaseUrl(container, name);
 }
+
+/** A Prisma config whose migrations folder holds only the migrations shipped up to M5. */
+function m5MigrationsConfig(dir: string): string {
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(resolve(dir, 'migrations'), { recursive: true });
+  for (const name of readdirSync(resolve('prisma/migrations'))) {
+    if (name < '20261005' || name === 'migration_lock.toml') {
+      cpSync(resolve('prisma/migrations', name), resolve(dir, 'migrations', name), {
+        recursive: true,
+      });
+    }
+  }
+  const config = resolve(dir, 'prisma.config.ts');
+  writeFileSync(
+    config,
+    `import { defineConfig } from 'prisma/config';
+export default defineConfig({
+  schema: ${JSON.stringify(resolve('prisma/schema.prisma'))},
+  migrations: { path: ${JSON.stringify(resolve(dir, 'migrations'))} },
+  datasource: { url: process.env.DATABASE_URL! },
+});\n`,
+  );
+  return config;
+}
+
+/** Everything a migration can change, as sorted text (for exact schema comparison). */
+async function schemaSnapshot(url: string): Promise<Record<string, string[]>> {
+  const queries: Record<string, string> = {
+    columns: `SELECT table_name || '.' || column_name || ' ' || data_type || ' ' || is_nullable || ' ' || coalesce(column_default, '-') AS v
+              FROM information_schema.columns WHERE table_schema = 'public' AND table_name <> '_prisma_migrations'`,
+    constraints: `SELECT conrelid::regclass::text || ' ' || conname || ' ' || pg_get_constraintdef(oid) AS v
+                  FROM pg_constraint WHERE connamespace = 'public'::regnamespace AND conrelid <> 0`,
+    indexes: `SELECT indexdef AS v FROM pg_indexes WHERE schemaname = 'public' AND tablename <> '_prisma_migrations'`,
+    policies: `SELECT tablename || ' ' || policyname || ' ' || coalesce(qual, '') || ' ' || coalesce(with_check, '') AS v
+               FROM pg_policies WHERE schemaname = 'public'`,
+    rls: `SELECT relname || ' ' || relrowsecurity || ' ' || relforcerowsecurity AS v
+          FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind = 'r'`,
+    triggers: `SELECT tgrelid::regclass::text || ' ' || tgname AS v FROM pg_trigger WHERE NOT tgisinternal`,
+    grants: `SELECT grantee || ' ' || table_name || ' ' || privilege_type AS v
+             FROM information_schema.role_table_grants WHERE table_schema = 'public' AND grantee LIKE 'lip_%'`,
+  };
+  return withAdmin(url, async (db) => {
+    const out: Record<string, string[]> = {};
+    for (const [key, sql] of Object.entries(queries)) {
+      out[key] = (await db.query<{ v: string }>(sql)).rows.map((r) => r.v).sort();
+    }
+    return out;
+  });
+}
+
+const ROLLBACK = {
+  processing: resolve('prisma/rollback/20261005130000_m6_event_processing_state.down.sql'),
+  identity: resolve('prisma/rollback/20261005120000_m6_canonical_identity_provenance.down.sql'),
+};
 
 describe('database migrations and schema guard', () => {
   let pg: StartedPostgreSqlContainer;
@@ -52,6 +106,8 @@ describe('database migrations and schema guard', () => {
         '20260926120000_tenancy_and_identity',
         '20260927120000_oauth_tokens_and_states',
         '20260928120000_webhook_receipts_and_routing',
+        '20261005120000_m6_canonical_identity_provenance',
+        '20261005130000_m6_event_processing_state',
       ]);
       expect(rows.every((r) => r.finished_at !== null)).toBe(true);
     });
@@ -289,6 +345,133 @@ describe('database migrations and schema guard', () => {
           public: false,
         },
       ]);
+    });
+  });
+
+  describe('upgrading from the Milestone 5 state (M6 migrations on existing data)', () => {
+    it('keeps receipts, people, companies and references; old receipts become pending pre_m6', async () => {
+      const url = await createDatabase(pg, 'm5_db');
+      const dir = resolve('test/.tmp/m5-state');
+      try {
+        await migrate(url, ['--config', m5MigrationsConfig(dir)]);
+        const tenant = '11111111-1111-4111-8111-111111111111';
+        const company = '22222222-2222-4222-8222-222222222222';
+        const person = '33333333-3333-4333-8333-333333333333';
+        await withAdmin(url, async (db) => {
+          await db.query(
+            `INSERT INTO tenants (id, slug, name, updated_at) VALUES ($1, 'mfive', 'M5', now())`,
+            [tenant],
+          );
+          await db.query(
+            `INSERT INTO companies (id, tenant_id, name, created_at, updated_at) VALUES ($1, $2, 'School', now(), now())`,
+            [company, tenant],
+          );
+          await db.query(
+            `INSERT INTO company_external_refs (tenant_id, system, object_type, external_id, company_id, created_at)
+             VALUES ($1, 'hubspot', 'companies', '201', $2, '2026-09-30T10:00:00Z')`,
+            [tenant, company],
+          );
+          await db.query(
+            `INSERT INTO persons (id, tenant_id, primary_email, company_id, created_at, updated_at)
+             VALUES ($1, $2, 'a@school.example', $3, now(), now())`,
+            [person, tenant, company],
+          );
+          await db.query(
+            `INSERT INTO tenant_webhook_receipts (tenant_id, system, delivery_key, event_id, subscription_id, account_id, app_id,
+               subscription_type, object_type_id, object_id, occurred_at, first_attempt_number, last_attempt_number)
+             VALUES ($1, 'hubspot', $2, '1', '2', '149338734', '3', 'object.creation', '0-1', '101', now(), 0, 0)`,
+            [tenant, 'a'.repeat(64)],
+          );
+        });
+
+        const output = await migrate(url);
+        expect(output).toMatch(/20261005120000_m6_canonical_identity_provenance/);
+        expect(output).toMatch(/20261005130000_m6_event_processing_state/);
+
+        await withAdmin(url, async (db) => {
+          const receipts = await db.query(
+            'SELECT processing_status, processing_reason, processing_attempts FROM tenant_webhook_receipts',
+          );
+          expect(receipts.rows).toEqual([
+            { processing_status: 'pending', processing_reason: 'pre_m6', processing_attempts: 0 },
+          ]);
+          const refs = await db.query(
+            'SELECT state, first_seen_at, last_seen_at IS NOT NULL AS seen FROM company_external_refs',
+          );
+          expect(refs.rows).toEqual([
+            { state: 'active', first_seen_at: new Date('2026-09-30T10:00:00Z'), seen: true },
+          ]);
+          const people = await db.query('SELECT primary_email, record_state FROM persons');
+          expect(people.rows).toEqual([
+            { primary_email: 'a@school.example', record_state: 'active' },
+          ]);
+          // Now allowed: no name, no email, and the same email twice (email is not identity).
+          await db.query(
+            `INSERT INTO companies (id, tenant_id, created_at, updated_at) VALUES (gen_random_uuid(), $1, now(), now())`,
+            [tenant],
+          );
+          await db.query(
+            `INSERT INTO persons (id, tenant_id, primary_email, created_at, updated_at)
+             VALUES (gen_random_uuid(), $1, NULL, now(), now()), (gen_random_uuid(), $1, 'a@school.example', now(), now())`,
+            [tenant],
+          );
+          // Still refused: blank names, placeholder-free CHECKs, unknown states.
+          await expect(
+            db.query(
+              `INSERT INTO companies (id, tenant_id, name, created_at, updated_at) VALUES (gen_random_uuid(), $1, '  ', now(), now())`,
+              [tenant],
+            ),
+          ).rejects.toThrow(/companies_name_not_blank/);
+          await expect(
+            db.query(`UPDATE persons SET record_state = 'merged' WHERE id = $1`, [person]),
+          ).rejects.toThrow(/persons_merged_consistent/);
+        });
+        await expect(migrate(url)).resolves.toMatch(/No pending migrations/);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+    it('the M6 down-scripts restore exactly the M5 schema, refuse data M5 cannot hold, and M6 re-applies', async () => {
+      const m5Url = await createDatabase(pg, 'm5_reference_db');
+      const url = await createDatabase(pg, 'm6_down_db');
+      const dir = resolve('test/.tmp/m5-reference');
+      try {
+        await migrate(m5Url, ['--config', m5MigrationsConfig(dir)]);
+        await migrate(url);
+        const m6 = await schemaSnapshot(url);
+        const tenant = '44444444-4444-4444-8444-444444444444';
+        await withAdmin(url, async (db) => {
+          await db.query(
+            `INSERT INTO tenants (id, slug, name, updated_at) VALUES ($1, 'mdown', 'Down', now())`,
+            [tenant],
+          );
+          await db.query(
+            `INSERT INTO companies (id, tenant_id, created_at, updated_at) VALUES (gen_random_uuid(), $1, now(), now())`,
+            [tenant],
+          );
+          await db.query(readFileSync(ROLLBACK.processing, 'utf8'));
+          // A company without a name cannot exist in M5: refused, nothing changed.
+          await expect(db.query(readFileSync(ROLLBACK.identity, 'utf8'))).rejects.toThrow(
+            /cannot be rolled back/,
+          );
+          await db.query('ROLLBACK');
+          const still = await db.query(
+            `SELECT count(*)::int AS n FROM information_schema.tables WHERE table_name = 'tenant_context_changes'`,
+          );
+          expect(still.rows).toEqual([{ n: 1 }]);
+          await db.query('DELETE FROM companies WHERE tenant_id = $1', [tenant]);
+          await db.query(readFileSync(ROLLBACK.identity, 'utf8'));
+        });
+
+        expect(await schemaSnapshot(url)).toEqual(await schemaSnapshot(m5Url));
+
+        const output = await migrate(url);
+        expect(output).toMatch(/20261005120000_m6_canonical_identity_provenance/);
+        expect(output).toMatch(/20261005130000_m6_event_processing_state/);
+        expect(await schemaSnapshot(url)).toEqual(m6);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     });
   });
 

@@ -3,6 +3,7 @@ import { config, telemetry } from './instrument-worker';
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { Logger } from 'nestjs-pino';
+import { QueueService } from './platform/queue';
 import { WorkerModule } from './worker.module';
 
 async function main(): Promise<void> {
@@ -11,9 +12,32 @@ async function main(): Promise<void> {
   });
   const logger = app.get(Logger);
   app.useLogger(logger);
-  app.enableShutdownHooks();
   process.once('beforeExit', () => void telemetry.shutdown());
-  logger.log('Worker started; no queue processors are registered yet (Milestone 6).');
+  // Graceful shutdown (ADR 0013): stop taking jobs and let active ones finish
+  // while the database is still connected, then close the application.
+  let closing = false;
+  const shutdown = (signal: NodeJS.Signals): void => {
+    if (closing) return;
+    closing = true;
+    void (async () => {
+      try {
+        await app.get(QueueService).stopProcessing();
+        await app.close();
+      } catch (err) {
+        // Never die silently on an unhandled rejection: say what failed.
+        logger.error({ err, signal }, 'Worker shutdown failed');
+        process.exit(1);
+      }
+      process.kill(process.pid, signal);
+    })();
+  };
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+  process.once('SIGINT', () => shutdown('SIGINT'));
+  await app.init();
+  logger.log(
+    { processors: app.get(QueueService).processorCount },
+    'Worker started (context processing on BullMQ)',
+  );
 }
 
 main().catch((err: unknown) => {

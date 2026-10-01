@@ -94,7 +94,7 @@ describe('tenant data isolation (real PostgreSQL, app role, RLS)', () => {
         h.persons.save(tx, person(b.tenantId, idB, { primaryEmail: email, externalRefs: [ref] })),
       );
 
-      await expect(inA((tx) => h.persons.findByEmail(tx, email))).resolves.toBeUndefined();
+      await expect(inA((tx) => h.persons.listByEmail(tx, email))).resolves.toEqual([]);
       await expect(inA((tx) => h.persons.findByExternalRef(tx, ref))).resolves.toBeUndefined();
       await expect(inB((tx) => h.persons.findByExternalRef(tx, ref))).resolves.toMatchObject({
         id: idB,
@@ -227,17 +227,20 @@ describe('tenant data isolation (real PostgreSQL, app role, RLS)', () => {
       ).rejects.toBeInstanceOf(UniqueConstraintError);
     });
 
-    it('email uniqueness is per tenant', async () => {
+    it('email is not identity (ADR 0014): two people may share one; lookups stay in the tenant', async () => {
       const email = `head-${randomUUID().slice(0, 8)}@abc.example`;
-      await inA((tx) =>
-        h.persons.save(tx, person(a.tenantId, newPersonId(), { primaryEmail: email })),
-      );
+      const first = newPersonId();
+      const second = newPersonId();
+      await inA((tx) => h.persons.save(tx, person(a.tenantId, first, { primaryEmail: email })));
+      await inA((tx) => h.persons.save(tx, person(a.tenantId, second, { primaryEmail: email })));
       await inB((tx) =>
         h.persons.save(tx, person(b.tenantId, newPersonId(), { primaryEmail: email })),
       );
-      await expect(
-        inA((tx) => h.persons.save(tx, person(a.tenantId, newPersonId(), { primaryEmail: email }))),
-      ).rejects.toBeInstanceOf(UniqueConstraintError);
+      const inTenantA = await inA((tx) =>
+        h.persons.listByEmail(tx, EmailAddressSchema.parse(email)),
+      );
+      expect(inTenantA.map((p) => p.id).sort()).toEqual([first, second].sort());
+      expect(inTenantA.every((p) => p.tenantId === a.tenantId)).toBe(true);
     });
 
     it('product keys and mapping keys are unique per tenant only', async () => {

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ExternalRefListSchema } from './external-ref';
+import { ExternalRefListSchema, RecordStateSchema } from './external-ref';
 import { ProductOwnershipSchema, type ProductKey } from './product';
 import { CompanyIdSchema, TenantIdSchema } from './shared/ids';
 import { InstantSchema } from './shared/time';
@@ -18,11 +18,15 @@ export const CompanySchema = z
   .object({
     id: CompanyIdSchema,
     tenantId: TenantIdSchema,
-    name: z.string().trim().min(1).max(500),
+    /** Optional (ADR 0014): source records may have no usable name; never a placeholder. */
+    name: z.string().trim().min(1).max(500).optional(),
     domains: z.array(DomainNameSchema).readonly().default([]),
     customerStatus: CustomerStatusSchema.default('unknown'),
     products: z.array(ProductOwnershipSchema).readonly().default([]),
     externalRefs: ExternalRefListSchema.default([]),
+    recordState: RecordStateSchema.default('active'),
+    /** The record this one was merged into (only when recordState is `merged`). */
+    mergedIntoId: CompanyIdSchema.optional(),
     createdAt: InstantSchema,
     updatedAt: InstantSchema,
   })
@@ -33,6 +37,14 @@ export const CompanySchema = z
   .refine((c) => new Set(c.products.map((p) => p.productKey)).size === c.products.length, {
     message: 'a product may appear only once',
     path: ['products'],
+  })
+  .refine((c) => (c.recordState === 'merged') === (c.mergedIntoId !== undefined), {
+    message: 'mergedIntoId is required exactly when the record is merged',
+    path: ['mergedIntoId'],
+  })
+  .refine((c) => c.mergedIntoId !== c.id, {
+    message: 'a record cannot be merged into itself',
+    path: ['mergedIntoId'],
   })
   .refine((c) => c.createdAt <= c.updatedAt, {
     message: 'updatedAt must not be before createdAt',

@@ -48,6 +48,34 @@ export const envSchema = z
     OTEL_SERVICE_NAME: z.string().min(1).default('lead-intelligence-platform'),
     OTEL_EXPORTER_OTLP_ENDPOINT: z.url().optional(),
 
+    /**
+     * M6 runtime switch (ADR 0013). false: webhook receipts are stored exactly
+     * as in M5, nothing is enqueued and the worker registers no processors.
+     */
+    CONTEXT_PROCESSING_ENABLED: booleanFromEnv.default(true),
+    /** BullMQ key prefix, so environments can share a Redis safely. */
+    QUEUE_PREFIX: z
+      .string()
+      .regex(/^[a-z0-9-]{1,32}$/)
+      .default('lip'),
+    /** Longest the worker waits for active jobs on shutdown. */
+    WORKER_SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(25_000),
+    /** How often each tenant's pending receipts are swept back into the queue. */
+    CONTEXT_SWEEP_INTERVAL_MS: z.coerce.number().int().min(5_000).max(3_600_000).default(300_000),
+    /** A receipt still pending after this long is re-enqueued by the sweep. */
+    CONTEXT_SWEEP_STALE_MS: z.coerce.number().int().min(1_000).max(3_600_000).default(120_000),
+    /** The sweep ignores receipts older than this (historical ones need the explicit command). */
+    CONTEXT_SWEEP_MAX_AGE_MS: z.coerce
+      .number()
+      .int()
+      .min(60_000)
+      .max(30 * 24 * 3_600_000)
+      .default(24 * 3_600_000),
+    /** How often a reconciliation run starts per tenant (0 = never automatically). */
+    CONTEXT_RECONCILE_INTERVAL_MS: z.coerce.number().int().min(0).max(86_400_000).default(900_000),
+    /** Overlap before the watermark, for search-index lag (ADR 0015). */
+    CONTEXT_RECONCILE_LOOKBACK_MS: z.coerce.number().int().min(0).max(86_400_000).default(600_000),
+
     SENTRY_DSN: z.url().optional(),
     SENTRY_ENVIRONMENT: z.string().min(1).optional(),
   })
@@ -85,6 +113,15 @@ export interface AppConfig {
   readonly redisUrl: string;
   readonly secretsProvider: Env['SECRETS_PROVIDER'];
   readonly healthCheckTimeoutMs: number;
+  readonly queue: { readonly prefix: string; readonly shutdownTimeoutMs: number };
+  readonly context: {
+    readonly processingEnabled: boolean;
+    readonly sweepIntervalMs: number;
+    readonly sweepStaleMs: number;
+    readonly sweepMaxAgeMs: number;
+    readonly reconcileIntervalMs: number;
+    readonly reconcileLookbackMs: number;
+  };
   readonly telemetry: {
     readonly otelEnabled: boolean;
     readonly serviceName: string;

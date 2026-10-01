@@ -123,6 +123,7 @@ wait_ready && pass "API ready at $API_URL" || { fail "API did not become ready";
 sleep 1
 check "worker process running" kill -0 "$WORKER_PID"
 check "worker logged start-up" grep -q 'Worker started' "$WORK/worker.log"
+check "worker registered the context processors (M6)" grep -q 'Context processors registered' "$WORK/worker.log"
 
 log "5. HTTP behaviour"
 json_field() { node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const v=$1;process.stdout.write(String(v(JSON.parse(d))))})"; }
