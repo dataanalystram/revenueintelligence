@@ -143,14 +143,21 @@ export class ContextIngestionService {
       case 'not_found':
       case 'stale':
         return stored ? { ...none, entityId: stored.canonicalId } : none;
-      case 'unchanged':
+      case 'unchanged': {
         await this.store.updateRef(tx, obs.kind, obs.ref, {
           lastSeenAt: maxDate(
             stored!.lastSeenAt,
             obs.presence === 'present' ? obs.observedAt : undefined,
           ),
         });
+        // A person committed concurrently may still wait for this company
+        // (its follow-up read finds the company unchanged): link it now.
+        if (obs.kind === 'company' && obs.presence === 'present') {
+          const id = await this.store.resolveCanonical(tx, 'company', stored!.canonicalId);
+          await this.afterWrite(tx, obs, id, meta);
+        }
         return { ...none, entityId: stored!.canonicalId };
+      }
       case 'delete':
         return this.tombstone(tx, obs, stored!, meta);
       case 'create':

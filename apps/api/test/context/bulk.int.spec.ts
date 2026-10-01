@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { SourceObservation } from '../../src/modules/domain';
 import type { TenantContext } from '../../src/modules/tenancy';
 import { startContextHarness, APP_ID, type ContextHarness } from '../support/context';
@@ -207,6 +207,22 @@ describe('context bulk sync: backfill, reconciliation, historical receipts', () 
   });
 
   describe('reconciliation (verified search path 2026-03, watermark in source time)', () => {
+    // A completed backfill starts its own reconciliation in the background:
+    // wait for it, so each test starts (not joins) a run.
+    beforeEach(async () => {
+      await c.until(
+        async () =>
+          (
+            await c.sql(
+              "SELECT 1 FROM tenant_sync_checkpoints WHERE tenant_id = $1 AND status = 'running'",
+              [t.tenantId],
+            )
+          ).length === 0,
+        30_000,
+        'no active sync run',
+      );
+    });
+
     it('pages through changes since the watermark and advances it to the newest source time', async () => {
       for (let i = 0; i < 5; i += 1) {
         c.fake.upsertRecord('companies', {

@@ -121,6 +121,13 @@ sleep 1
 out="$(run_once cli --network host -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" "$TAG-runtime" \
   node dist/cli/provision-tenant.js --slug dockerco --name "Docker Co" --template juniper 2>&1 || true)"
 grep -q '"slug": "dockerco"' <<<"$out" && pass "provisioning CLI works inside the image (template shipped)" || fail "provisioning CLI in image"
+# M6: the worker consumes the context queues (Redis noeviction verified at start-up).
+docker logs "$PROJECT-worker" 2>&1 | grep -q 'Context processors registered' \
+  && pass "worker container registered the context processors (M6)" || fail "worker container context processors"
+out="$(run_once ctxcli --network host -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" "$TAG-runtime" \
+  node dist/cli/context.js report --tenant dockerco 2>&1 || true)"
+grep -q '"processingEnabled": true' <<<"$out" && grep -q '"lip-receipts"' <<<"$out" \
+  && pass "context CLI works inside the image (report)" || fail "context CLI in image"
 
 echo "== Cleanup self-test"
 # The leftover detector must see every kind of resource this run creates, or
