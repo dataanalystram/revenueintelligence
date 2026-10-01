@@ -79,24 +79,44 @@ describe('HubSpot app project definition (hubspot-app/, ADR 0011)', () => {
     expect(JSON.stringify(app.config.permittedUrls)).not.toContain('{{');
   });
 
-  it('subscribes only to creation and property changes of contacts, companies and leads, on confirmed properties', () => {
+  /** M6 lifecycle events (ADR 0015): read-only, no new scope, contacts and companies only. */
+  const LIFECYCLE = [
+    'object.deletion',
+    'object.restore',
+    'object.merge',
+    'object.associationChange',
+  ];
+
+  it('subscribes to creation and property changes (confirmed properties) and the M6 lifecycle events only', () => {
     expect(Object.keys(webhooks.config.subscriptions)).toEqual(['crmObjects']);
     const subs = webhooks.config.subscriptions.crmObjects;
     expect(subs.length).toBeGreaterThan(0);
     for (const s of subs) {
-      expect(['object.creation', 'object.propertyChange']).toContain(s.subscriptionType);
+      expect(['object.creation', 'object.propertyChange', ...LIFECYCLE]).toContain(
+        s.subscriptionType,
+      );
       expect(Object.keys(CONFIRMED_PROPERTIES)).toContain(s.objectType);
       if (s.subscriptionType === 'object.propertyChange') {
         expect(CONFIRMED_PROPERTIES[s.objectType]).toContain(s.propertyName);
       } else {
         expect(s.propertyName).toBeUndefined();
       }
+      // Lifecycle events for contacts and companies only (leads stay out of M6).
+      if (LIFECYCLE.includes(s.subscriptionType))
+        expect(['contact', 'company']).toContain(s.objectType);
     }
     for (const type of ['contact', 'company', 'lead']) {
       expect(
         subs.some((s) => s.objectType === type && s.subscriptionType === 'object.creation'),
       ).toBe(true);
     }
+    for (const type of ['contact', 'company']) {
+      for (const event of LIFECYCLE) {
+        expect(subs.some((s) => s.objectType === type && s.subscriptionType === event)).toBe(true);
+      }
+    }
+    // No privacy-deletion subscription in M6 (technical-debt item 15).
+    expect(JSON.stringify(webhooks)).not.toMatch(/privacyDeletion|hubEvents/);
   });
 
   const RENDER = resolve(APP_DIR, 'render.mjs');

@@ -61,6 +61,8 @@ export interface FakeFault {
   stallBodyMs?: number;
   /** How many matching requests to fail (default 1). */
   times?: number;
+  /** Further condition on the request (e.g. only a later page). */
+  when?: (entry: FakeRequestLog) => boolean;
 }
 
 export interface FakeRequestLog {
@@ -265,7 +267,9 @@ export class FakeHubSpot {
     this.requests.push(entry);
     this.options.onRequest?.(entry);
 
-    const fault = this.faults.find((f) => f.match.test(`${method} ${url.pathname}`));
+    const fault = this.faults.find(
+      (f) => f.match.test(`${method} ${url.pathname}`) && (!f.when || f.when(entry)),
+    );
     if (fault) {
       fault.times = (fault.times ?? 1) - 1;
       if (fault.times <= 0) this.faults.splice(this.faults.indexOf(fault), 1);

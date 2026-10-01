@@ -96,6 +96,10 @@ export function classifyFailure(err: unknown): FailureInfo {
       ...(d.status === undefined ? {} : { httpStatus: d.status }),
     };
   }
+  // Integrity or data errors (CHECK violation, invalid value): retrying cannot help.
+  if (err instanceof Error && /Code: `(23514|23502|2201B|22P02|22001|22007)`/.test(err.message)) {
+    return { permanent: true, code: 'database_constraint' };
+  }
   if (
     err instanceof LockTimeoutError ||
     err instanceof ConcurrencyConflictError ||

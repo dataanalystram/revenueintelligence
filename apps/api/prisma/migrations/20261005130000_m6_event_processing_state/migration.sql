@@ -122,7 +122,7 @@ ALTER TABLE "tenant_sync_checkpoints"
   ADD CONSTRAINT "tenant_sync_checkpoints_mode_valid" CHECK ("mode" IN ('backfill', 'reconcile')),
   ADD CONSTRAINT "tenant_sync_checkpoints_status_valid" CHECK ("status" IN ('running', 'completed', 'failed', 'cancelled')),
   ADD CONSTRAINT "tenant_sync_checkpoints_active_consistent" CHECK (("status" = 'running') = ("active_key" IS NOT NULL)),
-  ADD CONSTRAINT "tenant_sync_checkpoints_cursor_format" CHECK ("cursor" IS NULL OR "cursor" ~ '^[A-Za-z0-9_=%.+/-]{1,512}$'),
+  ADD CONSTRAINT "tenant_sync_checkpoints_cursor_format" CHECK ("cursor" IS NULL OR ("cursor" ~ '^[A-Za-z0-9_=%.+/-]+$' AND length("cursor") <= 512)),
   ADD CONSTRAINT "tenant_sync_checkpoints_counts_valid" CHECK ("page_no" >= 0 AND "records_seen" >= 0 AND "records_changed" >= 0 AND "records_skipped" >= 0 AND "records_failed" >= 0 AND ("max_records" IS NULL OR "max_records" > 0) AND "page_size" BETWEEN 1 AND 200),
   ADD CONSTRAINT "tenant_sync_checkpoints_error_code_format" CHECK ("last_error_code" IS NULL OR "last_error_code" ~ '^[a-z0-9_]{1,64}$');
 

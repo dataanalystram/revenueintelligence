@@ -1,4 +1,5 @@
 import { Logger, Module } from '@nestjs/common';
+import { MetricsService } from '../../platform/metrics';
 import { CRM_CONNECTOR, CRM_RECEIPT_SOURCE } from '../crm';
 import { TenancyModule } from '../tenancy';
 import { HubSpotOAuthController } from './api/hubspot-oauth.controller';
@@ -21,11 +22,23 @@ import { WebhookReceiptRepository } from './infrastructure/webhook-receipt.repos
     { provide: HUBSPOT_CONFIG, useFactory: () => loadHubSpotConfig() },
     {
       provide: HubSpotHttpClient,
-      inject: [HUBSPOT_CONFIG],
-      useFactory: (config: HubSpotConfig) => {
+      inject: [HUBSPOT_CONFIG, MetricsService],
+      useFactory: (config: HubSpotConfig, metrics: MetricsService) => {
         const logger = new Logger('HubSpotHttpClient');
         return new HubSpotHttpClient(config, new SlidingWindowRateLimiter(config.requestsPer10s), {
           logger: { warn: (message, context) => logger.warn({ ...context, msg: message }) },
+          // Calls and 429s per attempt (M6 observability); labels are codes only.
+          onAttempt: (outcome) => {
+            const result =
+              typeof outcome === 'number'
+                ? outcome === 429
+                  ? '429'
+                  : `${Math.floor(outcome / 100)}xx`
+                : outcome;
+            metrics.increment('lip_source_requests', { system: 'hubspot', result });
+            if (outcome === 429)
+              metrics.increment('lip_source_rate_limited', { system: 'hubspot' });
+          },
         });
       },
     },

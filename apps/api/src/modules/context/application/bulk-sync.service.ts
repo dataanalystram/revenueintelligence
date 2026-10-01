@@ -99,7 +99,7 @@ export class BulkSyncService {
   async startReconcile(
     ctx: TenantContext,
     kind: ContextKind,
-    options: { since?: Date; correlationId: string },
+    options: { since?: Date; pageSize?: number; correlationId: string },
   ): Promise<StartedRun> {
     const reader = await this.readers.forTenant(ctx);
     const lookback = this.config.context.reconcileLookbackMs;
@@ -114,7 +114,7 @@ export class BulkSyncService {
         kind,
         mode: 'reconcile',
         correlationId: options.correlationId,
-        pageSize: 100,
+        pageSize: options.pageSize ?? 100,
         windowSince,
         // Carries the baseline forward even if this run finds nothing.
         highWatermark: baseline,

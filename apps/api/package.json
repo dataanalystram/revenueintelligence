@@ -24,6 +24,14 @@
     "hubspot:install-url": "node dist/cli/hubspot-install-url.js",
     "hubspot:webhook-report": "node dist/cli/hubspot-webhook-report.js",
     "hubspot:oauth-refresh-evidence": "node dist/cli/hubspot-oauth-refresh-evidence.js",
+    "context:report": "node dist/cli/context.js report",
+    "context:receipts": "node dist/cli/context.js receipts",
+    "context:backfill": "node dist/cli/context.js backfill",
+    "context:reconcile": "node dist/cli/context.js reconcile",
+    "context:replay": "node dist/cli/context.js replay",
+    "context:dead-letters": "node dist/cli/context.js dead-letters",
+    "context:show": "node dist/cli/context.js show",
+    "context:state-hash": "node dist/cli/context.js state-hash",
     "test:live": "vitest run --config vitest.live.config.mts"
   },
   "dependencies": {

@@ -161,6 +161,8 @@ export interface HubSpotHttpClientDeps {
   readonly random?: () => number;
   readonly now?: () => number;
   readonly logger?: HubSpotTransportLogger;
+  /** Called once per attempt with the HTTP status (or the transport failure): metrics (M6). */
+  readonly onAttempt?: (outcome: number | 'network' | 'timeout') => void;
 }
 
 const STATUS_KIND: Readonly<Record<number, HubSpotErrorKind>> = {
@@ -182,6 +184,7 @@ export class HubSpotHttpClient {
   private readonly random: () => number;
   private readonly now: () => number;
   private readonly logger: HubSpotTransportLogger | undefined;
+  private readonly onAttempt: ((outcome: number | 'network' | 'timeout') => void) | undefined;
 
   constructor(
     private readonly config: HubSpotConfig,
@@ -193,6 +196,7 @@ export class HubSpotHttpClient {
     this.random = deps.random ?? Math.random;
     this.now = deps.now ?? Date.now;
     this.logger = deps.logger;
+    this.onAttempt = deps.onAttempt;
   }
 
   async send<T>(req: HubSpotRequest, schema: z.ZodType<T>, auth: HubSpotAuth): Promise<T> {
@@ -254,6 +258,7 @@ export class HubSpotHttpClient {
     } catch (err) {
       const timedOut =
         err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
+      this.onAttempt?.(timedOut ? 'timeout' : 'network');
       throw new HubSpotError(
         timedOut ? 'timeout' : 'network',
         timedOut
@@ -263,6 +268,7 @@ export class HubSpotHttpClient {
       );
     }
 
+    this.onAttempt?.(response.status);
     const text = await this.readBody(response, req.path);
     if (!response.ok) throw this.classify(response, text, req.path);
 
