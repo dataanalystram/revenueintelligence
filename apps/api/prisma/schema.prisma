@@ -46,6 +46,11 @@ model Tenant {
   policies            TenantPolicy[]
   companies           Company[]
   persons             Person[]
+  contextChanges      TenantContextChange[]
+  sourceRelationships TenantSourceRelationship[]
+  identityConflicts   TenantIdentityConflict[]
+  deadLetters         TenantDeadLetter[]
+  syncCheckpoints     TenantSyncCheckpoint[]
 
   @@unique([id, slug])
   @@map("tenants")
@@ -170,10 +175,35 @@ model TenantWebhookReceipt {
   receivedAt         DateTime @default(now()) @map("received_at") @db.Timestamptz(3)
   lastReceivedAt     DateTime @default(now()) @map("last_received_at") @db.Timestamptz(3)
 
+  // Merge events (identifiers only)
+  primaryObjectId      String?  @map("primary_object_id")
+  newObjectId          String?  @map("new_object_id")
+  mergedObjectIds      String[] @default([]) @map("merged_object_ids")
+  // Association-change events (identifiers only)
+  fromObjectId         String?  @map("from_object_id")
+  fromObjectTypeId     String?  @map("from_object_type_id")
+  toObjectId           String?  @map("to_object_id")
+  toObjectTypeId       String?  @map("to_object_type_id")
+  associationTypeId    Int?     @map("association_type_id")
+  associationCategory  String?  @map("association_category")
+  associationRemoved   Boolean? @map("association_removed")
+  isPrimaryAssociation Boolean? @map("is_primary_association")
+
+  /// M6 processing state (ADR 0013): pending | processing | retrying | processed |
+  /// ineligible | deferred | irrelevant | source_not_found | dead_lettered
+  processingStatus   String    @default("pending") @map("processing_status")
+  /// Reason code for a terminal or deferred status (never free text)
+  processingReason   String?   @map("processing_reason")
+  processingAttempts Int       @default(0) @map("processing_attempts")
+  processedAt        DateTime? @map("processed_at") @db.Timestamptz(3)
+  /// End-to-end trace id, set at intake
+  correlationId      String?   @map("correlation_id") @db.Uuid
+
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
 
   @@id([tenantId, system, deliveryKey])
   @@index([tenantId, receivedAt])
+  @@index([tenantId, processingStatus, receivedAt])
   @@map("tenant_webhook_receipts")
 }
 
@@ -275,13 +305,19 @@ model TenantPolicy {
 model Company {
   id             String   @id @db.Uuid
   tenantId       String   @map("tenant_id") @db.Uuid
-  name           String
+  /// Nullable (ADR 0014): a source record may have no usable name; never a placeholder
+  name           String?
   domains        String[] @default([])
   customerStatus String   @default("unknown") @map("customer_status")
+  /// active | inactive (no active source reference) | merged (see merged_into_id)
+  recordState    String   @default("active") @map("record_state")
+  mergedIntoId   String?  @map("merged_into_id") @db.Uuid
   createdAt      DateTime @map("created_at") @db.Timestamptz(3)
   updatedAt      DateTime @map("updated_at") @db.Timestamptz(3)
 
   tenant       Tenant               @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  mergedInto   Company?             @relation("CompanyMergedInto", fields: [tenantId, mergedIntoId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  mergedFrom   Company[]            @relation("CompanyMergedInto")
   products     CompanyProduct[]
   externalRefs CompanyExternalRef[]
   persons      Person[]
@@ -308,12 +344,22 @@ model CompanyProduct {
 }
 
 model CompanyExternalRef {
-  tenantId   String   @map("tenant_id") @db.Uuid
-  system     String
-  objectType String   @map("object_type")
-  externalId String   @map("external_id")
-  companyId  String   @map("company_id") @db.Uuid
-  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  tenantId             String    @map("tenant_id") @db.Uuid
+  system               String
+  objectType           String    @map("object_type")
+  externalId           String    @map("external_id")
+  companyId            String    @map("company_id") @db.Uuid
+  /// active | deleted | merged (ADR 0014)
+  state                String    @default("active")
+  mergedIntoExternalId String?   @map("merged_into_external_id")
+  firstSeenAt          DateTime  @default(now()) @map("first_seen_at") @db.Timestamptz(3)
+  lastSeenAt           DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(3)
+  sourceCreatedAt      DateTime? @map("source_created_at") @db.Timestamptz(3)
+  sourceUpdatedAt      DateTime? @map("source_updated_at") @db.Timestamptz(3)
+  deletedAt            DateTime? @map("deleted_at") @db.Timestamptz(3)
+  /// SHA-256 of the last applied mapped fields (idempotency; no values)
+  fieldHash            String?   @map("field_hash")
+  lastChangeId         String?   @map("last_change_id") @db.Uuid
 
   company Company @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Cascade, onUpdate: Restrict)
 
@@ -325,37 +371,208 @@ model CompanyExternalRef {
 model Person {
   id               String   @id @db.Uuid
   tenantId         String   @map("tenant_id") @db.Uuid
-  primaryEmail     String   @map("primary_email")
+  /// Nullable and not unique (ADR 0014): email is not identity
+  primaryEmail     String?  @map("primary_email")
   additionalEmails String[] @default([]) @map("additional_emails")
   firstName        String?  @map("first_name")
   lastName         String?  @map("last_name")
   jobTitle         String?  @map("job_title")
   companyId        String?  @map("company_id") @db.Uuid
   roles            String[] @default([])
+  /// active | inactive | merged (ADR 0014)
+  recordState      String   @default("active") @map("record_state")
+  mergedIntoId     String?  @map("merged_into_id") @db.Uuid
   createdAt        DateTime @map("created_at") @db.Timestamptz(3)
   updatedAt        DateTime @map("updated_at") @db.Timestamptz(3)
 
   tenant       Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   company      Company?            @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  mergedInto   Person?             @relation("PersonMergedInto", fields: [tenantId, mergedIntoId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  mergedFrom   Person[]            @relation("PersonMergedInto")
   externalRefs PersonExternalRef[]
 
   @@unique([tenantId, id])
-  @@unique([tenantId, primaryEmail])
+  @@index([tenantId, primaryEmail])
   @@index([tenantId, companyId])
   @@map("persons")
 }
 
 model PersonExternalRef {
-  tenantId   String   @map("tenant_id") @db.Uuid
-  system     String
-  objectType String   @map("object_type")
-  externalId String   @map("external_id")
-  personId   String   @map("person_id") @db.Uuid
-  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  tenantId             String    @map("tenant_id") @db.Uuid
+  system               String
+  objectType           String    @map("object_type")
+  externalId           String    @map("external_id")
+  personId             String    @map("person_id") @db.Uuid
+  state                String    @default("active")
+  mergedIntoExternalId String?   @map("merged_into_external_id")
+  firstSeenAt          DateTime  @default(now()) @map("first_seen_at") @db.Timestamptz(3)
+  lastSeenAt           DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(3)
+  sourceCreatedAt      DateTime? @map("source_created_at") @db.Timestamptz(3)
+  sourceUpdatedAt      DateTime? @map("source_updated_at") @db.Timestamptz(3)
+  deletedAt            DateTime? @map("deleted_at") @db.Timestamptz(3)
+  fieldHash            String?   @map("field_hash")
+  lastChangeId         String?   @map("last_change_id") @db.Uuid
 
   person Person @relation(fields: [tenantId, personId], references: [tenantId, id], onDelete: Cascade, onUpdate: Restrict)
 
   @@id([tenantId, system, objectType, externalId])
   @@index([tenantId, personId])
   @@map("person_external_refs")
+}
+
+// ---------------------------------------------------------------------------
+// Canonical context processing (Milestone 6, ADR 0013 / 0014)
+// ---------------------------------------------------------------------------
+
+/// Provenance: one append-only row per real canonical change. Field NAMES only;
+/// values live in the canonical record.
+model TenantContextChange {
+  tenantId           String    @map("tenant_id") @db.Uuid
+  id                 String    @db.Uuid
+  /// company | person
+  entityKind         String    @map("entity_kind")
+  entityId           String    @map("entity_id") @db.Uuid
+  /// created | updated | state_changed | merged | ref_added | relationship_changed
+  changeType         String    @map("change_type")
+  changedFields      String[]  @default([]) @map("changed_fields")
+  sourceSystem       String    @map("source_system")
+  sourceObjectType   String    @map("source_object_type")
+  sourceRecordId     String    @map("source_record_id")
+  /// webhook | backfill | reconciliation | replay | resync
+  cause              String
+  receiptDeliveryKey String?   @map("receipt_delivery_key")
+  checkpointId       String?   @map("checkpoint_id") @db.Uuid
+  sourceUpdatedAt    DateTime? @map("source_updated_at") @db.Timestamptz(3)
+  ingestedAt         DateTime  @default(now()) @map("ingested_at") @db.Timestamptz(3)
+  adapter            String
+  adapterVersion     String    @map("adapter_version")
+  correlationId      String    @map("correlation_id") @db.Uuid
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, id])
+  @@index([tenantId, entityKind, entityId, ingestedAt])
+  @@index([tenantId, ingestedAt])
+  @@map("tenant_context_changes")
+}
+
+/// Source relationships (e.g. HubSpot contact↔company associations) as context only.
+model TenantSourceRelationship {
+  tenantId          String    @map("tenant_id") @db.Uuid
+  system            String
+  fromObjectType    String    @map("from_object_type")
+  fromExternalId    String    @map("from_external_id")
+  toObjectType      String    @map("to_object_type")
+  toExternalId      String    @map("to_external_id")
+  associationTypeId Int       @map("association_type_id")
+  category          String
+  isPrimary         Boolean   @default(false) @map("is_primary")
+  /// active | removed
+  state             String    @default("active")
+  sourceObservedAt  DateTime? @map("source_observed_at") @db.Timestamptz(3)
+  lastSeenAt        DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, system, fromObjectType, fromExternalId, toObjectType, toExternalId, associationTypeId])
+  @@index([tenantId, system, toObjectType, toExternalId])
+  @@map("tenant_source_relationships")
+}
+
+/// Identity questions recorded for later review; never resolved automatically in M6.
+model TenantIdentityConflict {
+  tenantId     String    @map("tenant_id") @db.Uuid
+  id           String    @db.Uuid
+  /// shared_email | merge_across_systems | ambiguous_primary_company
+  kind         String
+  /// company | person
+  entityKind   String    @map("entity_kind")
+  /// SHA-256 of the conflict's identity (kind + sorted refs/ids): one row per conflict
+  conflictKey  String    @map("conflict_key")
+  canonicalIds String[]  @default([]) @map("canonical_ids")
+  /// system:objectType:externalId keys (identifiers only)
+  externalRefs String[]  @default([]) @map("external_refs")
+  /// open | resolved
+  state        String    @default("open")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+  resolvedAt   DateTime? @map("resolved_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, id])
+  @@unique([tenantId, conflictKey])
+  @@map("tenant_identity_conflicts")
+}
+
+/// Jobs that will not be retried (ADR 0013). Identifiers and codes only.
+model TenantDeadLetter {
+  tenantId           String    @map("tenant_id") @db.Uuid
+  id                 String    @db.Uuid
+  queue              String
+  jobName            String    @map("job_name")
+  jobId              String    @map("job_id")
+  subjectSystem      String?   @map("subject_system")
+  subjectKind        String?   @map("subject_kind")
+  subjectExternalId  String?   @map("subject_external_id")
+  receiptDeliveryKey String?   @map("receipt_delivery_key")
+  checkpointId       String?   @map("checkpoint_id") @db.Uuid
+  correlationId      String    @map("correlation_id") @db.Uuid
+  errorCode          String    @map("error_code")
+  httpStatus         Int?      @map("http_status")
+  attempts           Int
+  firstFailedAt      DateTime  @default(now()) @map("first_failed_at") @db.Timestamptz(3)
+  lastFailedAt       DateTime  @default(now()) @map("last_failed_at") @db.Timestamptz(3)
+  /// open | replayed | discarded
+  state              String    @default("open")
+  resolvedAt         DateTime? @map("resolved_at") @db.Timestamptz(3)
+  /// operator reason code (replay | discarded_<code>)
+  resolution         String?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, id])
+  @@unique([tenantId, jobId])
+  @@index([tenantId, state, lastFailedAt])
+  @@map("tenant_dead_letters")
+}
+
+/// Progress of a backfill or reconciliation run; the cursor lives here, not in Redis.
+model TenantSyncCheckpoint {
+  tenantId       String    @map("tenant_id") @db.Uuid
+  id             String    @db.Uuid
+  system         String
+  /// company | person
+  kind           String
+  /// backfill | reconcile
+  mode           String
+  /// running | completed | failed | cancelled
+  status         String    @default("running")
+  /// system:kind:mode while running, NULL afterwards: one active run per kind and mode
+  activeKey      String?   @map("active_key")
+  /// Opaque source paging cursor for the next page
+  cursor         String?
+  /// Reconcile: inclusive lower bound of the current search window (source time)
+  windowSince    DateTime? @map("window_since") @db.Timestamptz(3)
+  /// Highest source modification time fully processed
+  highWatermark  DateTime? @map("high_watermark") @db.Timestamptz(3)
+  pageNo         Int       @default(0) @map("page_no")
+  recordsSeen    Int       @default(0) @map("records_seen")
+  recordsChanged Int       @default(0) @map("records_changed")
+  recordsSkipped Int       @default(0) @map("records_skipped")
+  recordsFailed  Int       @default(0) @map("records_failed")
+  maxRecords     Int?      @map("max_records")
+  pageSize       Int       @default(100) @map("page_size")
+  correlationId  String    @map("correlation_id") @db.Uuid
+  startedAt      DateTime  @default(now()) @map("started_at") @db.Timestamptz(3)
+  updatedAt      DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+  completedAt    DateTime? @map("completed_at") @db.Timestamptz(3)
+  lastErrorCode  String?   @map("last_error_code")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, id])
+  @@unique([tenantId, activeKey])
+  @@index([tenantId, system, kind, mode, status, completedAt])
+  @@map("tenant_sync_checkpoints")
 }

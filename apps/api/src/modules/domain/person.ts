@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { EmailAddressSchema } from './email';
-import { ExternalRefListSchema } from './external-ref';
+import { ExternalRefListSchema, RecordStateSchema } from './external-ref';
 import { CompanyIdSchema, PersonIdSchema, TenantIdSchema } from './shared/ids';
 import { InstantSchema } from './shared/time';
 
@@ -23,7 +23,8 @@ export const PersonSchema = z
   .object({
     id: PersonIdSchema,
     tenantId: TenantIdSchema,
-    primaryEmail: EmailAddressSchema,
+    /** Optional and not identity (ADR 0014); normalised when present. */
+    primaryEmail: EmailAddressSchema.optional(),
     additionalEmails: z.array(EmailAddressSchema).readonly().default([]),
     firstName: z.string().trim().min(1).max(200).optional(),
     lastName: z.string().trim().min(1).max(200).optional(),
@@ -31,16 +32,27 @@ export const PersonSchema = z
     companyId: CompanyIdSchema.optional(),
     roles: z.array(PersonRoleSchema).readonly().default([]),
     externalRefs: ExternalRefListSchema.default([]),
+    recordState: RecordStateSchema.default('active'),
+    /** The record this one was merged into (only when recordState is `merged`). */
+    mergedIntoId: PersonIdSchema.optional(),
     createdAt: InstantSchema,
     updatedAt: InstantSchema,
   })
-  .refine((p) => !p.additionalEmails.includes(p.primaryEmail), {
+  .refine((p) => p.primaryEmail === undefined || !p.additionalEmails.includes(p.primaryEmail), {
     message: 'primary email must not be repeated in additionalEmails',
     path: ['additionalEmails'],
   })
   .refine((p) => new Set(p.roles).size === p.roles.length, {
     message: 'duplicate role',
     path: ['roles'],
+  })
+  .refine((p) => (p.recordState === 'merged') === (p.mergedIntoId !== undefined), {
+    message: 'mergedIntoId is required exactly when the record is merged',
+    path: ['mergedIntoId'],
+  })
+  .refine((p) => p.mergedIntoId !== p.id, {
+    message: 'a record cannot be merged into itself',
+    path: ['mergedIntoId'],
   })
   .refine((p) => p.createdAt <= p.updatedAt, {
     message: 'updatedAt must not be before createdAt',
@@ -52,14 +64,17 @@ export type Person = z.infer<typeof PersonSchema>;
 export type PersonInput = z.input<typeof PersonSchema>;
 
 export function personEmails(person: Person): readonly string[] {
-  return [person.primaryEmail, ...person.additionalEmails];
+  return person.primaryEmail === undefined
+    ? person.additionalEmails
+    : [person.primaryEmail, ...person.additionalEmails];
 }
 
 export function hasRole(person: Person, role: PersonRole): boolean {
   return person.roles.includes(role);
 }
 
-export function personDisplayName(person: Person): string {
+/** Name, else email; undefined when the source gave neither (display is a UI decision). */
+export function personDisplayName(person: Person): string | undefined {
   const name = [person.firstName, person.lastName].filter(Boolean).join(' ');
   return name || person.primaryEmail;
 }

@@ -19,6 +19,22 @@ export const ExternalRefSchema = z
 
 export type ExternalRef = z.infer<typeof ExternalRefSchema>;
 
+/**
+ * Lifecycle of a reference in its source system (ADR 0014): `deleted` keeps
+ * the link (history) after the source record is deleted; `merged` points to
+ * the surviving source record.
+ */
+export const ExternalRefStateSchema = z.enum(['active', 'deleted', 'merged']);
+export type ExternalRefState = z.infer<typeof ExternalRefStateSchema>;
+
+/**
+ * State of a canonical record (ADR 0014): `inactive` when every source
+ * reference is deleted; `merged` when merged forward into another record.
+ * Canonical records are never hard-deleted by ingestion.
+ */
+export const RecordStateSchema = z.enum(['active', 'inactive', 'merged']);
+export type RecordState = z.infer<typeof RecordStateSchema>;
+
 /** A stable string key for an external reference: `system:objectType:id`. */
 export function externalRefKey(ref: ExternalRef): string {
   return `${ref.system}:${ref.objectType}:${ref.id}`;

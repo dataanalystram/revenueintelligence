@@ -14,9 +14,11 @@ const include = { externalRefs: true, products: true } as const;
 interface CompanyRow {
   id: string;
   tenantId: string;
-  name: string;
+  name: string | null;
   domains: string[];
   customerStatus: string;
+  recordState: string;
+  mergedIntoId: string | null;
   createdAt: Date;
   updatedAt: Date;
   externalRefs: { system: string; objectType: string; externalId: string }[];
@@ -27,9 +29,11 @@ function toCompany(row: CompanyRow): Company {
   return CompanySchema.parse({
     id: row.id,
     tenantId: row.tenantId,
-    name: row.name,
+    name: row.name ?? undefined,
     domains: row.domains,
     customerStatus: row.customerStatus,
+    recordState: row.recordState,
+    mergedIntoId: row.mergedIntoId ?? undefined,
     products: [...row.products]
       .sort((a, b) => a.productKey.localeCompare(b.productKey))
       .map((p) => ({
@@ -76,9 +80,11 @@ export class PrismaCompanyRepository implements CompanyRepository {
     if (company.tenantId !== tx.tenantId) throw new TenantMismatchError('company');
     const db = tenantClient(tx);
     const data = {
-      name: company.name,
+      name: company.name ?? null,
       domains: [...company.domains],
       customerStatus: company.customerStatus,
+      recordState: company.recordState,
+      mergedIntoId: company.mergedIntoId ?? null,
       createdAt: company.createdAt,
       updatedAt: company.updatedAt,
     };
@@ -92,8 +98,18 @@ export class PrismaCompanyRepository implements CompanyRepository {
           where: { tenantId_id: { tenantId: tx.tenantId, id: company.id } },
           data,
         });
+        // References keep their source state (ADR 0014): remove only those no
+        // longer listed; listed ones are inserted below if missing.
         await db.companyExternalRef.deleteMany({
-          where: { tenantId: tx.tenantId, companyId: company.id },
+          where: {
+            tenantId: tx.tenantId,
+            companyId: company.id,
+            NOT: company.externalRefs.map((r) => ({
+              system: r.system,
+              objectType: r.objectType,
+              externalId: r.id,
+            })),
+          },
         });
         await db.companyProduct.deleteMany({
           where: { tenantId: tx.tenantId, companyId: company.id },
@@ -102,14 +118,23 @@ export class PrismaCompanyRepository implements CompanyRepository {
         await db.company.create({ data: { id: company.id, tenantId: tx.tenantId, ...data } });
       }
       if (company.externalRefs.length > 0) {
+        // Insert only references this record does not hold yet: a reference owned
+        // by another record still fails (one external id → one record).
+        const held = await db.companyExternalRef.findMany({
+          where: { tenantId: tx.tenantId, companyId: company.id },
+          select: { system: true, objectType: true, externalId: true },
+        });
+        const heldKeys = new Set(held.map((r) => `${r.system}:${r.objectType}:${r.externalId}`));
         await db.companyExternalRef.createMany({
-          data: company.externalRefs.map((r) => ({
-            tenantId: tx.tenantId,
-            companyId: company.id,
-            system: r.system,
-            objectType: r.objectType,
-            externalId: r.id,
-          })),
+          data: company.externalRefs
+            .filter((r) => !heldKeys.has(`${r.system}:${r.objectType}:${r.id}`))
+            .map((r) => ({
+              tenantId: tx.tenantId,
+              companyId: company.id,
+              system: r.system,
+              objectType: r.objectType,
+              externalId: r.id,
+            })),
         });
       }
       if (company.products.length > 0) {

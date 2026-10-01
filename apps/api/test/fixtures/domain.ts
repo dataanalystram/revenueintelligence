@@ -24,6 +24,7 @@ export const ids = {
   person: PersonIdSchema.parse(uuid(10)),
   otherPerson: PersonIdSchema.parse(uuid(11)),
   company: CompanyIdSchema.parse(uuid(20)),
+  otherCompany: CompanyIdSchema.parse(uuid(21)),
   signal: SignalIdSchema.parse(uuid(30)),
   signal2: SignalIdSchema.parse(uuid(31)),
   candidate: LeadCandidateIdSchema.parse(uuid(40)),

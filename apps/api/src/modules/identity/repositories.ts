@@ -7,7 +7,8 @@ import type { TenantTransaction } from '../tenancy';
  */
 export interface PersonRepository {
   findById(tx: TenantTransaction, id: PersonId): Promise<Person | undefined>;
-  findByEmail(tx: TenantTransaction, email: EmailAddress): Promise<Person | undefined>;
+  /** Email is not identity (ADR 0014): several people may share one address. */
+  listByEmail(tx: TenantTransaction, email: EmailAddress): Promise<Person[]>;
   findByExternalRef(tx: TenantTransaction, ref: ExternalRef): Promise<Person | undefined>;
   /** Inserts or replaces the person (including external refs). */
   save(tx: TenantTransaction, person: Person): Promise<Person>;
