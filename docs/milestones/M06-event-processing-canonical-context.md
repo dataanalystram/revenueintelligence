@@ -6,6 +6,9 @@
   [charter](../product/revenue-opportunity-intelligence.md),
   [roadmap](../product/roadmap.md),
   [ADR 0012](../adr/0012-revenue-opportunity-intelligence-direction.md)).
+- Independent plan review (2026-10-01): **PASS WITH CHANGES**. Two gates
+  added: the search endpoint/version hard precondition (Gate 1, section 21)
+  and the removal of privacy deletion from M6 (Gate 2, sections 23 and 30).
 - Owner decisions already taken for this plan (2026-10-01):
   1. canonical companies may have no name;
   2. canonical people may have no email; email is not identity;
@@ -448,11 +451,23 @@ grants):
 Purpose: catch changes whose webhooks were lost, delayed past retries, or
 missed while the app was not subscribed, using a source-time watermark.
 
-- **Endpoint** (DOCUMENTED pattern `POST /crm/objects/{version}/{object}/search`;
-  `2026-03` documented; `2026-09` INFERRED — confirmed before
-  implementation, otherwise the documented `2026-03` path is used):
-  `POST /crm/objects/2026-09/contacts/search` and
-  `POST /crm/objects/2026-09/companies/search`.
+> **Hard precondition — search endpoint/version gate (Gate 1).** No
+> reconciliation or search code, allow-list entry, request builder or test
+> fixture naming a search path is written until the exact HubSpot CRM search
+> endpoint and version are verified, either from current official HubSpot
+> documentation or from a safe live read-only check against developer test
+> account 149338734. The evidence (source, date, exact path, method, scope,
+> observed response) is recorded in ADR 0015 before the code. If the version
+> is still unclear after that check, the documented `2026-03` endpoint is
+> used; `2026-09` is never assumed. The allow-list contains only the exact
+> verified read-only search path(s) for contacts and companies and nothing
+> broader. `<V>` below stands for the verified version.
+
+- **Endpoint**: `POST /crm/objects/<V>/contacts/search` and
+  `POST /crm/objects/<V>/companies/search`. Current evidence: the pattern
+  `POST /crm/objects/{version}/{object}/search` and the `2026-03` version are
+  DOCUMENTED; a `2026-09` search path is not confirmed. Default if Gate 1
+  cannot confirm another version: `2026-03`.
 - **Scopes**: `crm.objects.contacts.read` / `crm.objects.companies.read`
   (DOCUMENTED), already granted. No new scope.
 - **Limits** (DOCUMENTED): 10 000 results per query (paging beyond → 400);
@@ -474,19 +489,21 @@ missed while the app was not subscribed, using a source-time watermark.
 - **Schedule**: every 15 min per tenant (configurable), after backfill, and
   on demand (`context:reconcile`).
 - **Guarding** (owner requirement):
-  - exact allow-list `^/crm/objects/2026-09/(contacts|companies)/search$`
-    (no generic POST exception, no other objects);
+  - exact allow-list `^/crm/objects/<V>/(contacts|companies)/search$`,
+    with `<V>` the single version verified at Gate 1 (no generic POST
+    exception, no other objects, no other versions);
   - request body validated against a strict schema: only `filterGroups`,
     `sorts`, `properties`, `limit`, `after`; filter operators limited to
     `GTE` / `LTE` / `EQ` on allowed properties; unknown keys refused;
-  - negative tests: create (`POST /crm/objects/2026-09/contacts`), batch
+  - negative tests: create (`POST /crm/objects/<V>/contacts`), batch
     create/update/upsert/archive, merge, GDPR delete, deals/tickets search,
     trailing-slash, case and traversal variants, bodies with `inputs` or
     `properties` objects — all refused;
   - breadth test: the allow-list is compared with an exact expected list,
     and a corpus of HubSpot write paths is asserted refused;
   - mutation proof: widening the pattern (e.g. `/search$` suffix only, or
-    `[\w-]+` object) makes the breadth and negative tests fail.
+    `[\w-]+` object, or any version) makes the breadth and negative tests
+    fail.
 
 ## 22. Existing M5 receipt processing
 
@@ -537,7 +554,16 @@ app definition changes.
 | Restore            | `object.restore`                          | contact, company                                                              | `objectId`, `objectTypeId`                                                                                                                                   | read-back (record returns)                                  | same read scopes                                                    | DOCUMENTED (type exists); scopes INFERRED                                                      | **yes** (deletion is otherwise irreversible; restore window 90 days) |
 | Merge              | `object.merge`                            | contact (DOCUMENTED); company (generic `object.merge`, INFERRED for projects) | `primaryObjectId`, `mergedObjectIds[]`, `newObjectId` (when a new record results), `numberOfPropertiesMoved`, `objectTypeId`                                 | read-back of the surviving record                           | `crm.objects.contacts.read` (DOCUMENTED); companies read (INFERRED) | DOCUMENTED for contacts                                                                        | **yes** for contacts; companies if the CLI accepts the subscription  |
 | Association change | `object.associationChange`                | contact, company (with contact, company, deal, ticket, line item, product)    | `fromObjectId`, `fromObjectTypeId`, `toObjectId`, `toObjectTypeId`, `associationTypeId`, `associationCategory`, `associationRemoved`, `isPrimaryAssociation` | read-back of the contact's company associations             | object read scopes (DOCUMENTED); association reads already allowed  | DOCUMENTED; user-defined labels not supported by generic subscriptions; fires for both objects | **yes**, contact↔company only; other pairs → `irrelevant`            |
-| Privacy deletion   | `contact.privacyDeletion` (`hubEvents`)   | contact                                                                       | `objectId`                                                                                                                                                   | none (data must be erased)                                  | UNCONFIRMED                                                         | DOCUMENTED (subscription exists)                                                               | **approval needed** (see 30)                                         |
+
+**Privacy deletion is out of scope for M6 (Gate 2).** HubSpot's
+`contact.privacyDeletion` subscription is not added, handled or
+approval-gated in M6. Ordinary `object.deletion` and `object.restore` remain
+in M6 where verified. Privacy/GDPR erasure will be handled through a
+separate future privacy and data-retention ADR, tracked as technical-debt
+item 15. That design must decide what personal data is erased, what
+identifiers and provenance may legally remain, and how erasure is proven
+across source data, canonical records, logs, provenance, signals,
+opportunities and downstream systems.
 
 Canonical semantics:
 
@@ -742,17 +768,18 @@ no-values test output; the HubSpot research record with sources.
 
 Open questions / approval points:
 
-1. **Privacy deletion** (`contact.privacyDeletion`): GDPR erasure is a
-   legal concern. Proposal: subscribe and erase the person's personal
-   fields (email, names, title) while keeping the platform id, refs and
-   provenance ids — only if its scope is read-only (UNCONFIRMED). Needs
-   owner approval either way.
+1. **Gate 1 (hard precondition)**: the search endpoint/version must be
+   verified and recorded in ADR 0015 before any reconciliation/search code
+   (section 21); otherwise the documented `2026-03` endpoint is used.
 2. Company `object.merge` in projects apps: INFERRED; included only if the
    CLI accepts it.
-3. `2026-09` search path: INFERRED; else the documented `2026-03` path.
-4. Modified-date property names for search: INFERRED; confirmed via
+3. Modified-date property names for search: INFERRED; confirmed via
    discovery.
-5. Re-uploading the app to the test account (manual step, as in M5).
+4. Re-uploading the app to the test account (manual step, as in M5).
+
+Future work (not M6): privacy/GDPR erasure, including HubSpot
+`contact.privacyDeletion`, through a separate privacy and data-retention
+ADR (section 23; technical-debt item 15).
 
 Risks:
 
@@ -774,7 +801,9 @@ Explicitly out of scope: product catalogue; subscriptions/entitlements;
 eligibility; whitespace; candidate opportunities; qualification; Jev;
 prioritisation; routing; Sugar; Gainsight; CRM writes; operator UI; AI/LLM
 soft-signal analysis; sales action creation; cross-system matching rules;
-automatic canonical merges across systems; Lead object processing (receipts
+automatic canonical merges across systems; privacy/GDPR erasure and
+`contact.privacyDeletion` (future privacy and data-retention ADR); Lead
+object processing (receipts
 `deferred`); custom-field and lifecycle mapping (`tbc`).
 
 ---
@@ -807,13 +836,14 @@ automatic canonical merges across systems; Lead object processing (receipts
   platform ids, nullable name/email, removal of email uniqueness, ref
   state, delete/restore/merge semantics, single canonical writer.
 - **ADR 0015** — HubSpot lifecycle subscriptions and reconciliation search:
-  research record, subscription additions, exact search allow-list and body
-  validation, watermark rules.
+  research record, subscription additions, the **Gate 1 evidence** for the
+  exact search endpoint and version (written before any search code), exact
+  search allow-list and body validation, watermark rules.
 
 ## Implementation sequence
 
-1. ADRs 0013–0015 drafts and the HubSpot research re-check (search version,
-   property names, merge for companies, privacy deletion scope).
+1. ADRs 0013–0015 drafts and the HubSpot research re-check (property
+   names, merge for companies, deletion/restore/association scopes).
    **Approval point** if anything differs from section 23.
 2. `platform/queue`: install BullMQ, connections, producer/registry,
    `noeviction` check, shutdown, metrics; tests and mutation proofs.
@@ -825,7 +855,11 @@ automatic canonical merges across systems; Lead object processing (receipts
    sweep; tests 1–3, 5–7, 12–14, 21.
 6. Retry classification, dead letters, replay, poison handling; tests 9–11.
 7. Backfill; tests 17–18.
-8. Search allow-list, body validator, reconciliation; tests 19–20.
+8. **Gate 1 first**: verify the search endpoint/version (official docs or a
+   safe live read-only check on test account 149338734) and record the
+   evidence in ADR 0015; use `2026-03` if unclear. Only then: search
+   allow-list (exact verified path), body validator, reconciliation; tests
+   19–20.
 9. Deletion/restore/merge/association handling against the fake; test 16.
    **Approval point**: app subscription change and re-upload to the test
    account.
@@ -856,7 +890,8 @@ automatic canonical merges across systems; Lead object processing (receipts
 1. This plan (before any code, dependency or schema change).
 2. Research re-check results if any differ from section 23, and any scope
    that is not read-only (work stops).
-3. Privacy-deletion handling (section 30, item 1).
+3. Gate 1 evidence for the search endpoint/version, if the live check is
+   used or the result differs from the documented `2026-03` path.
 4. The app subscription change and its manual re-upload to test account 149338734.
 5. Live test actions on the test account (delete/restore/merge of test
    records only).
