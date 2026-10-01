@@ -369,7 +369,19 @@ person in the HubSpot UI; they are not platform writes. Safe metadata only.
 
 ## Final gates
 
-Filled in on the final commit (see the PR).
+Run on code commit `9a056c0609447f6b920ad6df17a66a47ad51064a`. The commit
+recording this section changes documentation only.
+
+| Gate                  | Result                                                                                                     |
+| --------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `pnpm verify`         | pass: format, lint, typecheck, boundaries (191 modules); unit 34 files / 401 tests; integration 12 / 174   |
+| `pnpm verify:runtime` | pass: 88 passed, 0 failed                                                                                  |
+| `pnpm test:live`      | pass: 2 files / 10 tests (read-only, test account; Service Key absent from all logs)                       |
+| Fresh clone           | pass: clone HEAD = `9a056c0`; install, verify (401/174), runtime (88/0), live (10/10), Docker              |
+| `pnpm verify:docker`  | pass: 12 passed, 0 failed (first attempt); cleanup verified                                                |
+| Resources             | before and after: 0 app processes, 0 containers, 0 volumes, 0 compose networks, 0 images, 0 testcontainers |
+| CI                    | on the final commit: see the PR                                                                            |
+| Independent review    | pending                                                                                                    |
 
 ## What is documented, live-proven or still unconfirmed
 
