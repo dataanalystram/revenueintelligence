@@ -20,8 +20,14 @@ async function main(): Promise<void> {
     if (closing) return;
     closing = true;
     void (async () => {
-      await app.get(QueueService).stopProcessing();
-      await app.close();
+      try {
+        await app.get(QueueService).stopProcessing();
+        await app.close();
+      } catch (err) {
+        // Never die silently on an unhandled rejection: say what failed.
+        logger.error({ err, signal }, 'Worker shutdown failed');
+        process.exit(1);
+      }
       process.kill(process.pid, signal);
     })();
   };
