@@ -57,7 +57,14 @@ function details(err: unknown): { status?: number; retryAfterMs?: number } {
 
 /** Pure: retryable (transient) versus permanent, with a code for dead letters and metrics. */
 export function classifyFailure(err: unknown): FailureInfo {
-  if (err instanceof PermanentJobError) return { permanent: true, code: err.code };
+  if (err instanceof PermanentJobError) {
+    const status = (err as { httpStatus?: unknown }).httpStatus;
+    return {
+      permanent: true,
+      code: err.code,
+      ...(typeof status === 'number' ? { httpStatus: status } : {}),
+    };
+  }
   if (err instanceof TransientJobError) {
     return {
       permanent: false,
@@ -104,6 +111,6 @@ export function toJobError(err: unknown): Error {
   const info = classifyFailure(err);
   const message = err instanceof Error ? err.message : String(err);
   return info.permanent
-    ? new PermanentJobError(info.code, message)
+    ? Object.assign(new PermanentJobError(info.code, message), { httpStatus: info.httpStatus })
     : new TransientJobError(info.code, message, info.retryAfterMs, info.httpStatus);
 }
