@@ -9,6 +9,7 @@ import type {
   CrmReader,
   CrmSnapshotFor,
   ExternalAssociationType,
+  ExternalRef,
   ExternalFieldDefinition,
   Page,
 } from '../../domain';
@@ -30,6 +31,10 @@ export class HubSpotCrmReader implements CrmReader {
   readonly system = 'hubspot' as const;
 
   constructor(private readonly reader: HubSpotReader) {}
+
+  refFor(kind: CrmObjectKind, id: string): ExternalRef {
+    return { system: 'hubspot', objectType: HUBSPOT_OBJECT_FOR_KIND[kind], id };
+  }
 
   /** Requests made so far (`METHOD /path/{id}` → count), for discovery reports. */
   endpointsUsed(): Readonly<Record<string, number>> {

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { ExternalSystem } from './external-ref';
+import type { ExternalRef, ExternalSystem } from './external-ref';
 import type {
   ExternalAssociation,
   ExternalAssociationType,
@@ -89,6 +89,8 @@ export interface CrmAssociationReadResult {
  */
 export interface CrmReader {
   readonly system: ExternalSystem;
+  /** The external reference for a record id of this kind (pure; no request). */
+  refFor(kind: CrmObjectKind, id: string): ExternalRef;
   getAccount(): Promise<CrmAccount>;
   listRecords<K extends CrmObjectKind>(
     kind: K,

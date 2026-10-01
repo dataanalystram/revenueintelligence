@@ -23,3 +23,4 @@ export * from './shared/errors';
 export * from './shared/ids';
 export * from './shared/time';
 export * from './signals';
+export * from './source-observation';

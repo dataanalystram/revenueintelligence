@@ -97,6 +97,13 @@ export function toFieldDefinition(
   });
 }
 
+/**
+ * HubSpot-defined association types that mean "primary": contact→company 1
+ * (reverse 2) and the Lead primary contact/company types 578/580 (reverse
+ * 579/581), as seen live on the test account (M3) and listed by HubSpot.
+ */
+const PRIMARY_ASSOCIATION_TYPE_IDS: ReadonlySet<number> = new Set([1, 2, 578, 579, 580, 581]);
+
 const CATEGORY: Readonly<Record<string, z.infer<typeof AssociationCategorySchema>>> = {
   HUBSPOT_DEFINED: 'standard',
   USER_DEFINED: 'user_defined',
@@ -107,5 +114,10 @@ export function toAssociationType(
   t: z.infer<typeof HsAssociationTypeSchema>,
 ): ExternalAssociationType {
   const category = Object.hasOwn(CATEGORY, t.category) ? CATEGORY[t.category]! : 'other';
-  return { category, typeId: t.typeId, label: t.label ?? null };
+  return {
+    category,
+    typeId: t.typeId,
+    label: t.label ?? null,
+    primary: t.category === 'HUBSPOT_DEFINED' && PRIMARY_ASSOCIATION_TYPE_IDS.has(t.typeId),
+  };
 }

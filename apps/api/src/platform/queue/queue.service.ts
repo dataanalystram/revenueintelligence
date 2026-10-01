@@ -175,6 +175,25 @@ export class QueueService implements OnModuleDestroy {
     };
   }
 
+  /** A repeating job (BullMQ job scheduler); idempotent per scheduler id. */
+  async upsertScheduler(
+    queue: string,
+    schedulerId: string,
+    everyMs: number,
+    name: string,
+    data: object,
+  ): Promise<void> {
+    await this.queue(queue).upsertJobScheduler(
+      schedulerId,
+      { every: everyMs },
+      {
+        name,
+        data,
+        opts: { attempts: 1, removeOnComplete: true, removeOnFail: { age: 24 * 3600, count: 100 } },
+      },
+    );
+  }
+
   /** Stored payload of a job (tests and diagnostics: proves what Redis holds). */
   async jobData(queue: string, jobId: string): Promise<unknown> {
     return (await this.queue(queue).getJob(jobId))?.data;

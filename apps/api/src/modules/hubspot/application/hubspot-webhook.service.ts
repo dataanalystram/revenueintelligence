@@ -1,4 +1,6 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { RECEIPTS_STORED_LISTENER, type ReceiptsStoredListener } from '../../crm';
 import { SECRET_PROVIDER, type SecretProvider } from '../../../platform/secrets';
 import {
   OAuthAccountRouter,
@@ -43,8 +45,9 @@ export type WebhookOutcome =
     };
 
 /**
- * HubSpot webhook intake (ADR 0011). Verifies, routes and records; nothing
- * else: no CRM reads, no processing, no downstream jobs (Milestone 6).
+ * HubSpot webhook intake (ADR 0011). Verifies, routes and records. No CRM
+ * reads and no processing here: newly stored receipts are only handed to the
+ * M6 listener, which queues them (processing happens in the worker).
  *
  * 1. Signature v3 only, over the raw body and the configured public URL,
  *    with timestamp freshness; v1/v2 are refused.
@@ -65,6 +68,10 @@ export class HubSpotWebhookService {
     private readonly router: OAuthAccountRouter,
     private readonly tenantConfig: TenantConfigService,
     private readonly receipts: WebhookReceiptRepository,
+    /** M6: queues new receipts for processing; absent in contexts that only record. */
+    @Optional()
+    @Inject(RECEIPTS_STORED_LISTENER)
+    private readonly listener?: ReceiptsStoredListener,
   ) {}
 
   async receive(req: WebhookRequest, now: number = Date.now()): Promise<WebhookOutcome> {
@@ -115,6 +122,9 @@ export class HubSpotWebhookService {
     let stored = 0;
     let duplicates = 0;
     let unroutable = 0;
+    // One id per delivery request, carried on every receipt, job, log line and
+    // provenance row it leads to (M6).
+    const correlationId = randomUUID();
     for (const [accountId, events] of groupByAccount(batch.events)) {
       const target = await this.target(accountId);
       if (!target.ok) {
@@ -127,12 +137,21 @@ export class HubSpotWebhookService {
         });
         continue;
       }
-      const recorded = await this.receipts.record(target.ctx, events, new Date(now));
+      const recorded = await this.receipts.record(target.ctx, events, new Date(now), correlationId);
+      if (recorded.storedKeys.length > 0 && this.listener) {
+        // Best effort after commit: a failure leaves the receipts pending for the sweep.
+        await this.listener
+          .receiptsStored(target.ctx, 'hubspot', recorded.storedKeys, correlationId)
+          .catch((err: unknown) =>
+            this.logger.warn({ err, correlationId }, 'Receipts stored but not queued'),
+          );
+      }
       stored += recorded.stored;
       duplicates += recorded.duplicates;
       this.logger.log({
         msg: 'HubSpot webhook events recorded',
         tenantId: target.ctx.tenantId,
+        correlationId,
         accountId,
         events: events.length,
         stored: recorded.stored,

@@ -1,11 +1,12 @@
 import { Logger, Module } from '@nestjs/common';
-import { CRM_CONNECTOR } from '../crm';
+import { CRM_CONNECTOR, CRM_RECEIPT_SOURCE } from '../crm';
 import { TenancyModule } from '../tenancy';
 import { HubSpotOAuthController } from './api/hubspot-oauth.controller';
 import { HubSpotWebhookController } from './api/hubspot-webhook.controller';
 import { HubSpotConnector } from './application/hubspot-connector.service';
 import { HubSpotDiscoveryService } from './application/hubspot-discovery.service';
 import { HubSpotOAuthService } from './application/hubspot-oauth.service';
+import { HubSpotReceiptSource } from './application/hubspot-receipt-source';
 import { HubSpotWebhookService } from './application/hubspot-webhook.service';
 import { HUBSPOT_CONFIG, loadHubSpotConfig, type HubSpotConfig } from './hubspot.config';
 import { HubSpotHttpClient } from './infrastructure/http-client';
@@ -39,8 +40,11 @@ import { WebhookReceiptRepository } from './infrastructure/webhook-receipt.repos
     HubSpotDiscoveryService,
     WebhookReceiptRepository,
     HubSpotWebhookService,
+    HubSpotReceiptSource,
+    { provide: CRM_RECEIPT_SOURCE, useExisting: HubSpotReceiptSource },
   ],
   exports: [
+    CRM_RECEIPT_SOURCE,
     HubSpotConnector,
     CRM_CONNECTOR,
     HubSpotOAuthService,

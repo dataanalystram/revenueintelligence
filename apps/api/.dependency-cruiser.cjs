@@ -112,6 +112,21 @@ module.exports = {
       to: { path: 'node_modules/bullmq/' },
     },
     {
+      name: 'context-store-only-from-ingestion',
+      severity: 'error',
+      comment:
+        'ContextIngestionService is the single canonical writer (ADR 0014): webhooks, backfill and ' +
+        'reconciliation reach canonical tables only through it.',
+      from: {
+        pathNot: [
+          '^src/modules/context/application/context-ingestion\\.service\\.ts$',
+          '^src/modules/context/context\\.module\\.ts$',
+          '\\.spec\\.ts$',
+        ],
+      },
+      to: { path: '^src/modules/context/infrastructure/context-store\\.ts$' },
+    },
+    {
       name: 'no-test-code-in-production',
       severity: 'error',
       from: { pathNot: '\\.spec\\.ts$' },

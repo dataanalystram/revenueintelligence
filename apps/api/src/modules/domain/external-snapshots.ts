@@ -99,6 +99,8 @@ export const ExternalAssociationTypeSchema = z
     typeId: z.number().int(),
     /** e.g. "Primary"; null for the unlabelled default association. */
     label: z.string().nullable(),
+    /** The source marks this as the primary association (e.g. a contact's primary company). */
+    primary: z.boolean().default(false),
   })
   .readonly();
 export type ExternalAssociationType = z.infer<typeof ExternalAssociationTypeSchema>;

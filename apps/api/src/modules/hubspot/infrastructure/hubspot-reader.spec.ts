@@ -285,8 +285,8 @@ describe('HubSpotReader (translation into vendor-neutral read models)', () => {
 
   it('maps association labels to vendor-neutral categories', async () => {
     await expect(reader.listAssociationTypes('leads', 'companies')).resolves.toEqual([
-      { category: 'standard', typeId: 580, label: 'Primary' },
-      { category: 'standard', typeId: 610, label: null },
+      { category: 'standard', typeId: 580, label: 'Primary', primary: true },
+      { category: 'standard', typeId: 610, label: null, primary: false },
     ]);
   });
 
@@ -472,6 +472,7 @@ describe('association categories (technical debt #8)', () => {
         category: 'standard',
         typeId: 1,
         label: 'Primary',
+        primary: true,
       },
     );
     expect(toAssociationType({ category: 'USER_DEFINED', typeId: 9, label: null }).category).toBe(
@@ -483,6 +484,9 @@ describe('association categories (technical debt #8)', () => {
     expect(toAssociationType({ category: 'SOME_FUTURE_CATEGORY', typeId: 9 }).category).toBe(
       'other',
     );
+    // Primary only for HubSpot-defined primary types, never for a lookalike custom type.
+    expect(toAssociationType({ category: 'HUBSPOT_DEFINED', typeId: 279 }).primary).toBe(false);
+    expect(toAssociationType({ category: 'USER_DEFINED', typeId: 1 }).primary).toBe(false);
     // Inherited object keys are not categories.
     expect(toAssociationType({ category: 'toString', typeId: 9 }).category).toBe('other');
     expect(HsAssociationTypeSchema.safeParse({ category: 'NEW_KIND', typeId: 3 }).success).toBe(
