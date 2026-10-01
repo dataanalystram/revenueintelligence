@@ -1,5 +1,11 @@
 # Delivery plan
 
+> **M0–M5 are complete.** The rows from M6 onward below are the original plan
+> and are **under revision**: see the proposed roadmap in
+> [docs/product/roadmap-proposal-m6.md](../product/roadmap-proposal-m6.md),
+> which follows the [product charter](../product/revenue-opportunity-intelligence.md).
+> Nothing from M6 onward starts until the revised roadmap is approved.
+
 We build and test one milestone at a time. We don't start the next milestone
 until the current one's tests and Definition of Done pass. Each milestone is
 committed separately with its own record in this folder.
@@ -29,6 +35,6 @@ committed separately with its own record in this folder.
 | 20  | Pilot / end-to-end QA                                                      | All                                               |
 | 21  | Production-quality frontend / dashboard                                    | No                                                |
 
-Records: [M0](M00-foundation.md) · [M1](M01-canonical-domain-model.md) · [M2](M02-tenancy-data-isolation.md) · [M3](M03-hubspot-test-environment.md) · [M4](M04-hubspot-connector-abstraction.md) · [M5](M05-hubspot-webhooks.md) (in progress)
+Records: [M0](M00-foundation.md) · [M1](M01-canonical-domain-model.md) · [M2](M02-tenancy-data-isolation.md) · [M3](M03-hubspot-test-environment.md) · [M4](M04-hubspot-connector-abstraction.md) · [M5](M05-hubspot-webhooks.md)
 
 Known non-blocking items: [technical-debt register](../tech-debt.md).

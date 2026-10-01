@@ -1,10 +1,31 @@
 # Milestone 5: HubSpot webhook receiver and first real app install
 
-- Status: **live evidence complete; awaiting the final gates and the
-  independent review.** Not complete until the review passes and the owner
-  approves the merge.
+- Status: **complete**. Merged in PR #6 (merge commit `aca9c407f16691c60d7e73b4358e164b8d454395`,
+  reviewed head `2d68304e6a3bf2d70480e9d00bd672872b6ec236`). The independent review passed
+  ("PASS WITH NON-BLOCKING NOTES"; the documentation correction it asked for was confirmed);
+  CI was green on the reviewed head.
 - Decisions: [ADR 0011](../adr/0011-hubspot-webhooks-and-routing.md)
 - Setup: [integrations/hubspot/setup.md §7](../integrations/hubspot/setup.md#7-milestone-5-the-projects-based-app)
+
+## Outcome
+
+Live, on HubSpot developer test account 149338734 (details in
+[live findings](#live-findings) and [final gates](#final-gates)):
+
+- **App and install**: the real HubSpot projects app is deployed, and a real
+  OAuth install succeeded.
+- **Tokens**: encrypted token storage is proven. A real OAuth refresh worked,
+  and the cross-process refresh lock let exactly one process refresh.
+- **Reads**: Contacts, Companies and Leads were read through the CRM port.
+- **Webhooks**:
+  - Contact, Company and Lead webhooks (creation and property change) were
+    received and verified;
+  - duplicate handling (replay) and HubSpot retry handling were observed.
+- **Coexistence and safety**: a static-token tenant and an OAuth tenant
+  coexist on the same account without leaking receipts. Zero platform CRM
+  writes.
+- **Gates**: `pnpm verify`, runtime, live, Docker, fresh clone, CI and the
+  independent review passed.
 
 ## Scope
 
@@ -38,7 +59,7 @@ Jev/AI, SLA, frontend. No Juniper credentials.
 | 10  | Live Contact, Company and Lead webhooks (Journal probe if Leads do not deliver); real v3 signature       | done (live finding 4); Journal not needed                                                              |
 | 11  | Live URI reconstruction, payload shape (safe metadata), batching/retry, duplicate recorded once, routing | done (live finding 4); batch sizes not separately recorded                                             |
 | 12  | `hstest` unchanged and coexisting; zero CRM writes                                                       | done (live finding 4)                                                                                  |
-| 13  | `pnpm verify`, runtime, Docker, fresh clone, CI on the final commit, independent review                  | gates: see [Final gates](#final-gates); review pending                                                 |
+| 13  | `pnpm verify`, runtime, Docker, fresh clone, CI on the final commit, independent review                  | done ([Final gates](#final-gates))                                                                     |
 
 ## What was built
 
@@ -380,8 +401,8 @@ recording this section changes documentation only.
 | Fresh clone           | pass: clone HEAD = `9a056c0`; install, verify (401/174), runtime (88/0), live (10/10), Docker              |
 | `pnpm verify:docker`  | pass: 12 passed, 0 failed (first attempt); cleanup verified                                                |
 | Resources             | before and after: 0 app processes, 0 containers, 0 volumes, 0 compose networks, 0 images, 0 testcontainers |
-| CI                    | on the final commit: see the PR                                                                            |
-| Independent review    | pending                                                                                                    |
+| CI                    | green on the reviewed head `2d68304` (all four jobs)                                                       |
+| Independent review    | passed (PASS WITH NON-BLOCKING NOTES; documentation correction confirmed)                                  |
 
 ## What is documented, live-proven or still unconfirmed
 
