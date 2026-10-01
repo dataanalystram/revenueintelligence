@@ -1,6 +1,9 @@
 import type {
   CrmAccount,
   CrmAssociationReadResult,
+  CrmChangeKind,
+  CrmChangedPage,
+  CrmChangedSinceOptions,
   CrmListOptions,
   CrmObjectKind,
   CrmReader,
@@ -95,5 +98,16 @@ export class HubSpotCrmReader implements CrmReader {
       ids,
       HUBSPOT_OBJECT_FOR_KIND[to],
     );
+  }
+
+  listChangedSince<K extends CrmChangeKind>(
+    kind: K,
+    options: CrmChangedSinceOptions,
+  ): Promise<CrmChangedPage<CrmSnapshotFor[K]>> {
+    const objectType = HUBSPOT_OBJECT_FOR_KIND[kind] as (typeof HUBSPOT_OBJECT_FOR_KIND)[K] &
+      ('contacts' | 'companies');
+    return this.reader.searchModifiedSince(objectType, options) as Promise<
+      CrmChangedPage<CrmSnapshotFor[K]>
+    >;
   }
 }

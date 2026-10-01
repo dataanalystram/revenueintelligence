@@ -50,6 +50,87 @@ describe('HubSpotReader (translation into vendor-neutral read models)', () => {
     });
   });
 
+  describe('searchModifiedSince (Gate 1 path, ADR 0015)', () => {
+    const at = (iso: string) => ({ updatedAt: iso });
+    beforeEach(() => {
+      fake.upsertRecord('companies', {
+        id: '201',
+        properties: { name: 'A' },
+        ...at('2026-09-03T00:00:00.000Z'),
+      });
+      fake.upsertRecord('companies', {
+        id: '202',
+        properties: { name: 'B' },
+        ...at('2026-09-05T00:00:00.000Z'),
+      });
+      fake.upsertRecord('companies', {
+        id: '203',
+        properties: { name: 'C' },
+        ...at('2026-09-04T00:00:00.000Z'),
+      });
+    });
+
+    it('sends the exact verified path and body, oldest first, with snapshots', async () => {
+      const page = await reader.searchModifiedSince('companies', {
+        since: new Date('2026-09-04T00:00:00.000Z'),
+        limit: 1,
+      });
+      expect(page.items.map((r) => r.ref.id)).toEqual(['203']);
+      expect(page.total).toBe(2);
+      expect(page.nextCursor).toBe('1');
+      expect(page.windowExhausted).toBe(false);
+      const req = fake.requests.at(-1)!;
+      expect(`${req.method} ${req.path}`).toBe('POST /crm/objects/2026-03/companies/search');
+      expect(req.body).toEqual({
+        filterGroups: [
+          {
+            filters: [
+              {
+                propertyName: 'hs_lastmodifieddate',
+                operator: 'GTE',
+                value: String(Date.parse('2026-09-04T00:00:00.000Z')),
+              },
+            ],
+          },
+        ],
+        sorts: [{ propertyName: 'hs_lastmodifieddate', direction: 'ASCENDING' }],
+        properties: ['name', 'domain', 'createdate', 'hs_lastmodifieddate'],
+        limit: 1,
+      });
+      const next = await reader.searchModifiedSince('companies', {
+        since: new Date('2026-09-04T00:00:00.000Z'),
+        limit: 1,
+        after: page.nextCursor,
+      });
+      expect(next.items.map((r) => r.ref.id)).toEqual(['202']);
+      expect(next.nextCursor).toBeUndefined();
+    });
+
+    it('contacts use lastmodifieddate', async () => {
+      await reader.searchModifiedSince('contacts', { since: new Date(0) });
+      const body = fake.requests.at(-1)!.body as { sorts: { propertyName: string }[] };
+      expect(body.sorts[0]!.propertyName).toBe('lastmodifieddate');
+    });
+
+    it('stops at the 10,000-result window instead of paging past it', async () => {
+      fake.fail({
+        match: /search$/,
+        status: 200,
+        body: { total: 20_000, results: [], paging: { next: { after: '9950' } } },
+      });
+      const page = await reader.searchModifiedSince('companies', {
+        since: new Date(0),
+        limit: 100,
+        after: '9850',
+      });
+      expect(page.windowExhausted).toBe(true);
+      expect(page.nextCursor).toBeUndefined();
+      await expect(
+        reader.searchModifiedSince('companies', { since: new Date(0), after: '10000' }),
+      ).rejects.toThrow(RangeError);
+    });
+  });
+
   it('refuses a malformed account-info version before any request', async () => {
     await expect(reader.getAccount('2026-09/../../account-info/v3')).rejects.toThrow(RangeError);
     expect(fake.requests).toHaveLength(0);

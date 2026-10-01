@@ -7,7 +7,14 @@ import type {
 import { HubSpotError } from '../errors';
 import type { HubSpotConfig } from '../hubspot.config';
 import type { z } from 'zod';
-import type { HubSpotAuth, HubSpotHttpClient, HubSpotRequest } from './http-client';
+import {
+  HUBSPOT_SEARCH_API_VERSION,
+  HUBSPOT_SEARCH_PROPERTIES,
+  type HubSpotAuth,
+  type HubSpotHttpClient,
+  type HubSpotRequest,
+  type HubSpotSearchObject,
+} from './http-client';
 import {
   toAssociationType,
   toFieldDefinition,
@@ -22,6 +29,7 @@ import {
   HsObjectPageSchema,
   HsObjectSchema,
   HsPropertyListSchema,
+  HsSearchPageSchema,
 } from './schemas';
 
 /** The HubSpot account (portal) a token belongs to. */
@@ -58,6 +66,19 @@ export interface AssociationReadResult {
   /** Any other per-record error HubSpot reported. */
   readonly failures: AssociationReadFailure[];
 }
+
+export interface ModifiedSincePage<T> extends Page<T> {
+  /** HubSpot's total match count for the query. */
+  readonly total: number;
+  /**
+   * True when the next page would pass HubSpot's 10,000-result search window:
+   * the caller must start a new query from the last record's timestamp.
+   */
+  readonly windowExhausted: boolean;
+}
+
+/** HubSpot search returns at most 10,000 results per query (ADR 0015). */
+export const SEARCH_WINDOW = 10_000;
 
 /** HubSpot's per-record "no associations" result inside a 207 (seen live). */
 const NO_ASSOCIATIONS_FOUND = 'crm.associations.NO_ASSOCIATIONS_FOUND';
@@ -186,6 +207,60 @@ export class HubSpotReader {
       if (err instanceof HubSpotError && err.kind === 'not_found') return undefined;
       throw err;
     }
+  }
+
+  /**
+   * Records modified at or after `since`, oldest first, through the CRM search
+   * endpoint verified at Gate 1 (ADR 0015: `POST /crm/objects/2026-03/{object}/search`).
+   * The request body is the only shape the transport guard accepts.
+   */
+  async searchModifiedSince<K extends HubSpotSearchObject>(
+    objectType: K,
+    options: { readonly since: Date; readonly after?: string; readonly limit?: number },
+  ): Promise<ModifiedSincePage<SnapshotFor[K]>> {
+    const limit = options.limit ?? 100;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+      throw new RangeError('limit must be an integer from 1 to 200');
+    }
+    const offset = options.after === undefined ? 0 : Number(options.after);
+    if (!Number.isInteger(offset) || offset < 0 || offset >= SEARCH_WINDOW) {
+      throw new RangeError('search cursor must be an offset below 10,000');
+    }
+    const { modified, readable } = HUBSPOT_SEARCH_PROPERTIES[objectType];
+    const path = `/crm/objects/${HUBSPOT_SEARCH_API_VERSION}/${objectType}/search`;
+    const page = await this.send(
+      {
+        method: 'POST',
+        path,
+        body: {
+          filterGroups: [
+            {
+              filters: [
+                { propertyName: modified, operator: 'GTE', value: String(options.since.getTime()) },
+              ],
+            },
+          ],
+          sorts: [{ propertyName: modified, direction: 'ASCENDING' }],
+          properties: [...readable],
+          limit,
+          ...(options.after === undefined ? {} : { after: options.after }),
+        },
+      },
+      HsSearchPageSchema,
+    );
+    const next = page.paging?.next?.after;
+    if (next !== undefined && next === options.after) {
+      throw new HubSpotError('invalid_payload', 'HubSpot returned the same paging cursor twice', {
+        path,
+      });
+    }
+    const windowExhausted = next !== undefined && Number(next) + limit > SEARCH_WINDOW;
+    return {
+      items: page.results.map((o) => toRecordSnapshot(objectType, o)),
+      nextCursor: windowExhausted ? undefined : next,
+      total: page.total,
+      windowExhausted,
+    };
   }
 
   async listProperties(objectType: HubSpotObjectType): Promise<ExternalFieldDefinition[]> {

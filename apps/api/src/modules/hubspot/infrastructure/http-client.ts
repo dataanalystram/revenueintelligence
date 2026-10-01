@@ -1,4 +1,4 @@
-import type { z } from 'zod';
+import { z } from 'zod';
 import type { Secret } from '../../../platform/secrets';
 import { HubSpotError, type HubSpotErrorKind } from '../errors';
 import type { HubSpotConfig } from '../hubspot.config';
@@ -34,20 +34,92 @@ export interface HubSpotAuth {
 /**
  * The connector is read-only (Milestone 3; no production writes without
  * explicit approval). GET is always a read. POST is allowed only for HubSpot's
- * batch *read* endpoints, which use POST to carry a list of ids.
+ * batch *read* endpoints, which use POST to carry a list of ids, and for the
+ * exact CRM search paths below, whose body is validated as a pure read.
  */
 const READ_ONLY_POST_PATHS: readonly RegExp[] = [
   /^\/crm\/associations\/[\w-]+\/[\w-]+\/[\w-]+\/batch\/read$/,
 ];
 
-export function assertReadOnlyRequest(req: Pick<HubSpotRequest, 'method' | 'path'>): void {
-  if (req.method === 'GET') return;
-  if (req.method === 'POST' && READ_ONLY_POST_PATHS.some((re) => re.test(req.path))) return;
+/**
+ * CRM search (M6 reconciliation). Gate 1 (ADR 0015) verified the documented
+ * endpoint `POST /crm/objects/2026-03/{object}/search`; no other version is
+ * assumed. Exactly two object types, nothing broader.
+ */
+export const HUBSPOT_SEARCH_API_VERSION = '2026-03';
+export const HUBSPOT_SEARCH_PATH = /^\/crm\/objects\/2026-03\/(contacts|companies)\/search$/;
+
+/** Per searchable object: the modification-time property and the readable properties. */
+export const HUBSPOT_SEARCH_PROPERTIES = {
+  contacts: {
+    modified: 'lastmodifieddate',
+    readable: ['email', 'firstname', 'lastname', 'jobtitle', 'createdate', 'lastmodifieddate'],
+  },
+  companies: {
+    modified: 'hs_lastmodifieddate',
+    readable: ['name', 'domain', 'createdate', 'hs_lastmodifieddate'],
+  },
+} as const;
+export type HubSpotSearchObject = keyof typeof HUBSPOT_SEARCH_PROPERTIES;
+
+const MillisString = z.string().regex(/^[0-9]{1,15}$/);
+
+/** The only search body shape the connector may send: a modified-since read. */
+function searchBodySchema(object: HubSpotSearchObject) {
+  const { modified, readable } = HUBSPOT_SEARCH_PROPERTIES[object];
+  return z.strictObject({
+    filterGroups: z
+      .array(
+        z.strictObject({
+          filters: z
+            .array(
+              z.strictObject({
+                propertyName: z.literal(modified),
+                operator: z.enum(['GTE', 'LTE', 'EQ']),
+                value: MillisString,
+              }),
+            )
+            .min(1)
+            .max(2),
+        }),
+      )
+      .length(1),
+    sorts: z
+      .array(
+        z.strictObject({
+          propertyName: z.literal(modified),
+          direction: z.enum(['ASCENDING', 'DESCENDING']),
+        }),
+      )
+      .length(1),
+    properties: z.array(z.enum(readable)).min(1).max(readable.length),
+    limit: z.number().int().min(1).max(200),
+    after: z
+      .string()
+      .regex(/^[0-9]{1,10}$/)
+      .optional(),
+  });
+}
+
+function refuse(req: Pick<HubSpotRequest, 'method' | 'path'>, why = ''): never {
   throw new HubSpotError(
     'read_only_violation',
-    `Refusing ${String(req.method)} ${req.path}: the HubSpot connector is read-only`,
+    `Refusing ${String(req.method)} ${req.path}: the HubSpot connector is read-only${why}`,
     { path: req.path },
   );
+}
+
+export function assertReadOnlyRequest(req: Pick<HubSpotRequest, 'method' | 'path' | 'body'>): void {
+  if (req.method === 'GET') return;
+  if (req.method !== 'POST') refuse(req);
+  if (READ_ONLY_POST_PATHS.some((re) => re.test(req.path))) return;
+  const search = HUBSPOT_SEARCH_PATH.exec(req.path);
+  if (search) {
+    const object = search[1] as HubSpotSearchObject;
+    if (searchBodySchema(object).safeParse(req.body).success) return;
+    refuse(req, ' (search body is not a permitted read)');
+  }
+  refuse(req);
 }
 
 /**

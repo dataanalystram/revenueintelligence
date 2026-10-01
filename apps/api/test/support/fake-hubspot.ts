@@ -159,6 +159,8 @@ export class FakeHubSpot {
   private readonly refreshTokens = new Map<string, number>();
   /** OAuth calls received, by grant type. */
   readonly oauthCalls = { authorizationCode: 0, refreshToken: 0, revoke: 0 };
+  /** Successful CRM search calls served. */
+  searchCalls = 0;
   private reverseHidden: ((a: FakeAssociation) => boolean) | undefined;
   private server: Server | undefined;
   private readonly options: FakeHubSpotOptions;
@@ -334,6 +336,10 @@ export class FakeHubSpot {
     if (method === 'GET' && m) return this.getObject(m[1]!, m[2]!, account, res);
     m = /^\/crm\/properties\/[\w-]+\/(\w+)$/.exec(p);
     if (method === 'GET' && m) return this.listProperties(m[1]!, account, res);
+    // CRM search: only the version verified at Gate 1 (ADR 0015) is served, so a
+    // 2026-09 search path (unverified) fails tests.
+    m = /^\/crm\/objects\/2026-03\/(contacts|companies)\/search$/.exec(p);
+    if (method === 'POST' && m) return this.search(m[1]!, body, account, res);
     m = /^\/crm\/associations\/[\w-]+\/(\w+)\/(\w+)\/labels$/.exec(p);
     if (method === 'GET' && m) return this.labels(m[1]!, m[2]!, account, res);
     m = /^\/crm\/associations\/[\w-]+\/(\w+)\/(\w+)\/batch\/read$/.exec(p);
@@ -509,6 +515,89 @@ export class FakeHubSpot {
       results: slice.map((r) => this.object(r)),
       ...(next ? { paging: { next: { after: next, link: `?after=${next}` } } } : {}),
     });
+  }
+
+  /**
+   * `POST /crm/objects/2026-03/{type}/search` with one GTE/LTE filter on the
+   * modification property, ascending sort and an offset cursor, as HubSpot
+   * documents it (10,000-result window; offsets beyond it are a 400).
+   */
+  private search(type: string, body: unknown, account: FakeAccount, res: ServerResponse): void {
+    if (this.denied(type, OBJECT_SCOPE[type], account, res)) return;
+    const b = body as {
+      filterGroups?: { filters?: { propertyName: string; operator: string; value: string }[] }[];
+      sorts?: { propertyName: string; direction: string }[];
+      limit?: number;
+      after?: string;
+      properties?: string[];
+    };
+    const modified = type === 'contacts' ? 'lastmodifieddate' : 'hs_lastmodifieddate';
+    const filters = b?.filterGroups?.[0]?.filters ?? [];
+    const limit = Math.min(Number(b?.limit ?? 10), 200);
+    const offset = b?.after === undefined ? 0 : Number(b.after);
+    if (
+      filters.some((f) => f.propertyName !== modified) ||
+      (b?.sorts ?? []).some((x) => x.propertyName !== modified) ||
+      !Number.isInteger(offset) ||
+      offset + limit > 10_000
+    ) {
+      return this.send(res, 400, {
+        status: 'error',
+        message: 'Invalid search request',
+        category: 'VALIDATION_ERROR',
+      });
+    }
+    this.searchCalls += 1;
+    const time = (r: FakeRecord): number => Date.parse(r.updatedAt ?? '2026-09-02T09:00:00.000Z');
+    const matches = (this.options.records?.[type as 'contacts'] ?? [])
+      .filter((r) =>
+        filters.every((f) =>
+          f.operator === 'GTE'
+            ? time(r) >= Number(f.value)
+            : f.operator === 'LTE'
+              ? time(r) <= Number(f.value)
+              : time(r) === Number(f.value),
+        ),
+      )
+      .sort((x, y) => time(x) - time(y) || Number(x.id) - Number(y.id));
+    const slice = matches.slice(offset, offset + limit);
+    const next = offset + limit < matches.length ? String(offset + limit) : undefined;
+    this.send(res, 200, {
+      total: matches.length,
+      results: slice.map((r) => this.object(r)),
+      ...(next ? { paging: { next: { after: next } } } : {}),
+    });
+  }
+
+  /** Test helper: creates or replaces a record (e.g. a change made in HubSpot). */
+  upsertRecord(type: 'contacts' | 'companies' | 'leads', record: FakeRecord): void {
+    const records = (this.options.records ??= {});
+    const list = (records[type] ??= []);
+    const i = list.findIndex((r) => r.id === record.id);
+    if (i >= 0) list[i] = record;
+    else list.push(record);
+  }
+
+  /** Test helper: the record disappears (deleted or merged away in HubSpot). */
+  removeRecord(type: 'contacts' | 'companies' | 'leads', id: string): void {
+    const list = this.options.records?.[type] ?? [];
+    const i = list.findIndex((r) => r.id === id);
+    if (i >= 0) list.splice(i, 1);
+  }
+
+  /** Test helper: replaces every association between two object types. */
+  setAssociations(fromType: string, toType: string, links: FakeAssociation[]): void {
+    const all = (this.options.associations ??= []);
+    for (let i = all.length - 1; i >= 0; i -= 1) {
+      const a = all[i]!;
+      if (
+        (a.fromType === fromType && a.toType === toType) ||
+        (a.fromType === toType && a.toType === fromType)
+      ) {
+        all.splice(i, 1);
+      }
+    }
+    all.push(...links);
   }
 
   private getObject(type: string, id: string, account: FakeAccount, res: ServerResponse): void {
