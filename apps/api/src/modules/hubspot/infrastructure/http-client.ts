@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { Secret } from '../../../platform/secrets';
 import { HubSpotError, type HubSpotErrorKind } from '../errors';
 import type { HubSpotConfig } from '../hubspot.config';
-import type { SlidingWindowRateLimiter } from './rate-limiter';
+import { SlidingWindowRateLimiter } from './rate-limiter';
 import { backoffDelayMs, parseRetryAfterMs } from './retry';
 import { HsErrorBodySchema } from './schemas';
 
@@ -161,6 +161,12 @@ export interface HubSpotHttpClientDeps {
   readonly random?: () => number;
   readonly now?: () => number;
   readonly logger?: HubSpotTransportLogger;
+  /**
+   * Extra limiter for CRM search (ADR 0015: HubSpot's search burst limit is
+   * 5/s per account and search responses carry no rate-limit headers).
+   * Default: 3 searches per second per tenant.
+   */
+  readonly searchLimiter?: SlidingWindowRateLimiter;
   /** Called once per attempt with the HTTP status (or the transport failure): metrics (M6). */
   readonly onAttempt?: (outcome: number | 'network' | 'timeout') => void;
 }
@@ -185,6 +191,7 @@ export class HubSpotHttpClient {
   private readonly now: () => number;
   private readonly logger: HubSpotTransportLogger | undefined;
   private readonly onAttempt: ((outcome: number | 'network' | 'timeout') => void) | undefined;
+  private readonly searchLimiter: SlidingWindowRateLimiter;
 
   constructor(
     private readonly config: HubSpotConfig,
@@ -197,6 +204,7 @@ export class HubSpotHttpClient {
     this.now = deps.now ?? Date.now;
     this.logger = deps.logger;
     this.onAttempt = deps.onAttempt;
+    this.searchLimiter = deps.searchLimiter ?? new SlidingWindowRateLimiter(3, 1_000);
   }
 
   async send<T>(req: HubSpotRequest, schema: z.ZodType<T>, auth: HubSpotAuth): Promise<T> {
@@ -242,6 +250,7 @@ export class HubSpotHttpClient {
     token: Secret,
   ): Promise<T> {
     await this.limiter.acquire(tenantKey);
+    if (HUBSPOT_SEARCH_PATH.test(req.path)) await this.searchLimiter.acquire(tenantKey);
     let response: Response;
     try {
       response = await this.fetchFn(this.url(req), {

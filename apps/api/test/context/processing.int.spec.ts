@@ -593,6 +593,29 @@ describe('context processing: webhook receipts → canonical context', () => {
       ).toEqual([]);
     });
 
+    it('concurrent ingestion of one new source record creates exactly one canonical record', async () => {
+      const obs = {
+        kind: 'company' as const,
+        presence: 'present' as const,
+        ref: { system: 'hubspot' as const, objectType: 'companies', id: '292' },
+        observedAt: new Date(),
+        sourceUpdatedAt: new Date('2026-09-10T00:00:00Z'),
+        fields: { name: 'Concurrent School' },
+      };
+      const results = await Promise.all(
+        Array.from({ length: 6 }, () =>
+          c.ingestion.ingest(a, obs, { cause: 'resync', correlationId: randomUUID() }),
+        ),
+      );
+      expect(results.filter((r) => r.decision === 'create')).toHaveLength(1);
+      expect(results.filter((r) => r.decision === 'unchanged')).toHaveLength(5);
+      expect(
+        await c.sql("SELECT 1 FROM companies WHERE tenant_id = $1 AND name = 'Concurrent School'", [
+          a.tenantId,
+        ]),
+      ).toHaveLength(1);
+    });
+
     it('stale (older) observations never overwrite newer state', async () => {
       const ref = { system: 'hubspot' as const, objectType: 'companies', id: '291' };
       const base = { kind: 'company' as const, presence: 'present' as const, ref };

@@ -272,6 +272,35 @@ describe('HubSpotHttpClient', () => {
       }
     });
 
+    it('search is held to its own limit (3 per second per tenant), other reads are not', async () => {
+      let clock = 0;
+      const sleeps: number[] = [];
+      const searchLimiter = new SlidingWindowRateLimiter(
+        3,
+        1_000,
+        () => clock,
+        (ms) => {
+          sleeps.push(ms);
+          clock += ms;
+          return Promise.resolve();
+        },
+      );
+      const limited = new HubSpotHttpClient(
+        { ...loadHubSpotConfig({}), baseUrl: fake.url, maxRetries: 0 },
+        new SlidingWindowRateLimiter(90),
+        { sleep: () => Promise.resolve(), searchLimiter },
+      );
+      const ok = z.object({ total: z.number() });
+      fake.fail({ match: /search$/, status: 200, body: { total: 0, results: [] }, times: 4 });
+      for (let i = 0; i < 4; i += 1) {
+        await limited.send(search('contacts'), ok, auth);
+      }
+      expect(sleeps).toHaveLength(1);
+      expect(searchLimiter.inWindow('tenant-a')).toBeLessThanOrEqual(3);
+      await limited.send({ method: 'GET', path: CONTACTS }, z.unknown(), auth);
+      expect(sleeps).toHaveLength(1);
+    });
+
     it('a refused search sends nothing', async () => {
       const err = await rejection(
         client.send(

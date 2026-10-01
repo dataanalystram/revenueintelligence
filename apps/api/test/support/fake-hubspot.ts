@@ -98,6 +98,11 @@ export interface FakeHubSpotOptions {
   onRequest?: (entry: FakeRequestLog) => void;
   records?: Partial<Record<'contacts' | 'companies' | 'leads', FakeRecord[]>>;
   associations?: FakeAssociation[];
+  /**
+   * Standalone (runtime verification) only: test-control endpoints under
+   * `/__fake/` (upsert/remove records, inject faults). Never real HubSpot API.
+   */
+  admin?: boolean;
 }
 
 export const ALL_READ_SCOPES = [
@@ -292,6 +297,8 @@ export class FakeHubSpot {
     }
 
     if (/^\/oauth\//.test(url.pathname)) return this.oauthRoute(method, url, raw, res);
+    if (this.options.admin && url.pathname.startsWith('/__fake/'))
+      return this.adminRoute(method, url, body, res);
 
     const token = /^Bearer (.+)$/.exec(req.headers.authorization ?? '')?.[1];
     const account = token ? this.options.accounts[token] : undefined;
@@ -571,6 +578,38 @@ export class FakeHubSpot {
       results: slice.map((r) => this.object(r)),
       ...(next ? { paging: { next: { after: next } } } : {}),
     });
+  }
+
+  /** Runtime-verification control: `POST /__fake/records/{type}`, `/__fake/remove/{type}/{id}`, `/__fake/fault`. */
+  private adminRoute(method: string, url: URL, body: unknown, res: ServerResponse): void {
+    let m = /^\/__fake\/records\/(contacts|companies|leads)$/.exec(url.pathname);
+    if (method === 'POST' && m) {
+      this.upsertRecord(m[1] as 'contacts', body as FakeRecord);
+      return this.send(res, 200, { ok: true });
+    }
+    m = /^\/__fake\/remove\/(contacts|companies|leads)\/(\w+)$/.exec(url.pathname);
+    if (method === 'POST' && m) {
+      this.removeRecord(m[1] as 'contacts', m[2]!);
+      return this.send(res, 200, { ok: true });
+    }
+    if (method === 'POST' && url.pathname === '/__fake/fault') {
+      const f = body as {
+        match: string;
+        status: number;
+        times?: number;
+        delayMs?: number;
+        body?: unknown;
+      };
+      this.fail({
+        match: new RegExp(f.match),
+        status: f.status,
+        times: f.times ?? 1,
+        delayMs: f.delayMs,
+        ...(f.body === undefined ? {} : { body: f.body }),
+      });
+      return this.send(res, 200, { ok: true });
+    }
+    return this.send(res, 404, { status: 'error', message: 'unknown fake control route' });
   }
 
   /** Test helper: creates or replaces a record (e.g. a change made in HubSpot). */
@@ -871,6 +910,7 @@ if (process.argv[1]?.endsWith('fake-hubspot.ts')) {
       },
     },
     ...sampleData(),
+    admin: true,
     ...(args.includes('--oauth-client-id')
       ? {
           oauth: {

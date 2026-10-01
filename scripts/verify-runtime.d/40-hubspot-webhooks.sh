@@ -8,6 +8,12 @@
 # static-token tenant on the same account, never guessed for unknown
 # accounts); identifiers only in the database; nothing sensitive in any log;
 # no HubSpot call caused by a webhook; the report CLI.
+#
+# Since M6 the API hands new receipts to the context queue. This file keeps
+# checking M5 intake on its own, so its API process runs with the M6 runtime
+# switch off (CONTEXT_PROCESSING_ENABLED=false): receipts must stay pending
+# and nothing is queued (the operational rollback, ADR 0013). M6 processing is
+# checked in 50-context-processing.sh.
 
 WH_FAKE_PORT="$(free_port)"
 WH_API_PORT="$(free_port "$WH_FAKE_PORT")"
@@ -46,6 +52,7 @@ WH_ENV=(
   HUBSPOT_APP_ID="$WH_APP_ID"
   HUBSPOT_WEBHOOK_TARGET_URL="$WH_TARGET"
   PLATFORM_TOKEN_ENCRYPTION_KEY="$WH_KEY"
+  CONTEXT_PROCESSING_ENABLED=false
 )
 wh_cli() { (cd "$API_DIR" && env "${WH_ENV[@]}" node "dist/cli/hubspot-$1.js" "${@:2}"); }
 wh_owner_sql() { compose exec -T -e PGPASSWORD=lip postgres psql -h 127.0.0.1 -U lip -d lip -v ON_ERROR_STOP=1 -Atc "$1"; }
@@ -169,6 +176,16 @@ wh_route_fn() {
   [ "$routed" = 1 ] && [ "$grants" = 0 ]
 }
 check "routing function answers for the app role; grants stay invisible to it" wh_route_fn
+
+wh_switch_off() {
+  local statuses queued
+  statuses="$(wh_owner_sql "SELECT processing_status, count(*) FROM tenant_webhook_receipts GROUP BY 1")" || return 1
+  # Receipt jobs only (the main worker's queue bookkeeping keys are expected).
+  queued="$(compose exec -T redis redis-cli --scan --pattern 'lip:lip-receipts:rcpt-*' | wc -l)"
+  echo "statuses=$statuses queued_keys=$queued"
+  [[ "$statuses" == "pending|4" ]] && [ "$queued" -eq 0 ]
+}
+check "runtime switch off: receipts stay pending, nothing queued (M5 behaviour)" wh_switch_off
 
 wh_report() {
   local out
