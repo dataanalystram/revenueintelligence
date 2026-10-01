@@ -35,6 +35,7 @@ export {
   OAUTH_GRANT_SAVE_MARGIN_MS,
 } from './infrastructure/encrypted-oauth-grant.store';
 export * from './oauth/oauth-grants';
+export { OAuthAccountRouter, type AccountRoute } from './infrastructure/oauth-account-router';
 export {
   OAUTH_STATE_TTL_MS,
   OAuthStateError,

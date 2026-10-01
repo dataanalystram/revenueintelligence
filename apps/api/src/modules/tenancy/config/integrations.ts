@@ -34,6 +34,19 @@ export const IntegrationSettingsSchemas = {
      * Service Key. `oauth`: the grant stored when the tenant installed the app.
      */
     auth: z.enum(['static_token', 'oauth']).optional(),
+    /**
+     * HubSpot web host of the tenant's account (its data-hosting region), as
+     * HubSpot's Account Information API reports it (`uiDomain`), e.g.
+     * `app.hubspot.com` or `app-eu1.hubspot.com`. The OAuth consent page is
+     * opened on this host. Only HubSpot's own app hosts are accepted.
+     */
+    uiDomain: z
+      .string()
+      .regex(
+        /^app(-[a-z]{2,4}[0-9]{1,2})?\.hubspot\.com$/,
+        'must be a HubSpot app host, e.g. app-eu1.hubspot.com',
+      )
+      .optional(),
   }),
   sugar: z.strictObject({
     baseUrl: httpsUrl.optional(),

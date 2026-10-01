@@ -335,12 +335,36 @@ describe('HubSpot process configuration', () => {
       requestsPer10s: 90,
       oauth: {
         apiVersion: '2026-09',
-        authorizeBaseUrl: 'https://app.hubspot.com/oauth',
+        authorizeBaseUrl: undefined,
         timeoutMs: 10_000,
         clientId: undefined,
         redirectUri: undefined,
       },
+      webhooks: { appId: undefined, targetUrl: undefined },
     });
+  });
+
+  it('webhook target URL: https (or loopback http), no query, fragment or credentials', () => {
+    expect(
+      loadHubSpotConfig({
+        HUBSPOT_WEBHOOK_TARGET_URL: 'https://example.trycloudflare.com/webhooks/hubspot',
+        HUBSPOT_APP_ID: '123456',
+      }).webhooks,
+    ).toEqual({
+      appId: '123456',
+      targetUrl: 'https://example.trycloudflare.com/webhooks/hubspot',
+    });
+    for (const bad of [
+      'http://example.com/webhooks/hubspot',
+      'https://example.com/webhooks/hubspot?x=1',
+      'https://example.com/webhooks/hubspot#f',
+      'https://user:pw@example.com/webhooks/hubspot',
+    ]) {
+      expect(() => loadHubSpotConfig({ HUBSPOT_WEBHOOK_TARGET_URL: bad }), bad).toThrow(
+        /HUBSPOT_WEBHOOK_TARGET_URL/,
+      );
+    }
+    expect(() => loadHubSpotConfig({ HUBSPOT_APP_ID: 'abc' })).toThrow(/HUBSPOT_APP_ID/);
   });
 
   it('allows plain http only for a loopback test server', () => {

@@ -29,6 +29,6 @@ committed separately with its own record in this folder.
 | 20  | Pilot / end-to-end QA                                                      | All                                               |
 | 21  | Production-quality frontend / dashboard                                    | No                                                |
 
-Records: [M0](M00-foundation.md) · [M1](M01-canonical-domain-model.md) · [M2](M02-tenancy-data-isolation.md) · [M3](M03-hubspot-test-environment.md) · [M4](M04-hubspot-connector-abstraction.md)
+Records: [M0](M00-foundation.md) · [M1](M01-canonical-domain-model.md) · [M2](M02-tenancy-data-isolation.md) · [M3](M03-hubspot-test-environment.md) · [M4](M04-hubspot-connector-abstraction.md) · [M5](M05-hubspot-webhooks.md) (in progress)
 
 Known non-blocking items: [technical-debt register](../tech-debt.md).

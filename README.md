@@ -48,7 +48,7 @@ docs/                     Architecture, ADRs, milestone records, credentials gui
 
 ## Getting started
 
-Prerequisites: Node.js 22.18+ (`.nvmrc`; the HubSpot fake runs as TypeScript directly), pnpm 10 (`corepack enable`), Docker.
+Prerequisites: Node.js **>=22.18.0** (`.nvmrc`, `engines`; the HubSpot fake runs as TypeScript directly), pnpm 10 (`corepack enable`), Docker.
 
 ```bash
 pnpm install

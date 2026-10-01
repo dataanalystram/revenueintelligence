@@ -13,12 +13,39 @@ import {
   type TenantContext,
   type TenantOAuthGrantStore,
 } from '../../tenancy';
-import { HubSpotError } from '../errors';
+import { HubSpotError, isHubSpotError } from '../errors';
 import { HUBSPOT_CONFIG, type HubSpotConfig } from '../hubspot.config';
 import { HUBSPOT_OAUTH_SCOPES, HubSpotOAuthClient } from '../infrastructure/oauth-client';
 
 /** SecretProvider key of the app's client secret (env: HUBSPOT_APP_CLIENT_SECRET). */
 export const HUBSPOT_APP_CLIENT_SECRET = 'hubspot.app.client_secret';
+
+/**
+ * HubSpot's OAuth consent URL for a deployed projects app:
+ * `https://<uiDomain>/oauth/authorize?client_id&redirect_uri&scope&state`,
+ * the form HubSpot generates on the app's page. `uiDomain` is the account's
+ * web host (region); `testAuthorizeBaseUrl` replaces `https://<uiDomain>/oauth`
+ * for a loopback fake only (validated in HubSpotEnvSchema). Scopes are always
+ * exactly HUBSPOT_OAUTH_SCOPES: baseline `oauth` plus CRM read scopes.
+ */
+export function hubspotConsentUrl(input: {
+  uiDomain: string;
+  testAuthorizeBaseUrl: string | undefined;
+  clientId: string;
+  redirectUri: string;
+  state: string;
+}): string {
+  const base = input.testAuthorizeBaseUrl ?? `https://${input.uiDomain}/oauth`;
+  const url = new URL(`${base}/authorize`);
+  url.searchParams.set('client_id', input.clientId);
+  url.searchParams.set('redirect_uri', input.redirectUri);
+  url.searchParams.set('scope', HUBSPOT_OAUTH_SCOPES.join(' '));
+  url.searchParams.set('state', input.state);
+  return url.toString();
+}
+
+/** HubSpot's web host when the tenant's account region is not configured (as HubSpot's CLI). */
+export const DEFAULT_HUBSPOT_UI_DOMAIN = 'app.hubspot.com';
 
 /** An access token is treated as expired this long before HubSpot's expiry. */
 export const ACCESS_TOKEN_SKEW_MS = 60_000;
@@ -27,6 +54,17 @@ interface CachedToken {
   readonly token: Secret;
   readonly expiresAt: Date;
   readonly accountId: string;
+}
+
+/** What HubSpot returned on one refresh: no token, only facts about it. */
+export interface RefreshOutcome {
+  readonly at: Date;
+  /** HubSpot included a refresh_token in the refresh response. */
+  readonly refreshTokenReturned: boolean;
+  /** The returned refresh token differs from the one used (rotation). */
+  readonly refreshTokenRotated: boolean;
+  readonly expiresInSeconds: number;
+  readonly scopes: readonly string[];
 }
 
 export interface CompletedInstall {
@@ -61,6 +99,8 @@ export class HubSpotOAuthService {
    * never held outside a redacting Secret. Memory only.
    */
   private readonly rejected = new Map<string, string>();
+  /** Refreshes this process performed at HubSpot (memory only, no tokens). */
+  private readonly refreshes: RefreshOutcome[] = [];
 
   constructor(
     private readonly tenantConfig: TenantConfigService,
@@ -71,17 +111,26 @@ export class HubSpotOAuthService {
     private readonly client: HubSpotOAuthClient,
   ) {}
 
-  /** The consent URL an admin opens to install the app for this tenant. */
+  /**
+   * The consent URL an admin opens to install the app for this tenant:
+   * `https://<account's HubSpot host>/oauth/authorize`, the form HubSpot itself
+   * generates for a deployed projects app. The host follows the account's
+   * data-hosting region (tenant setting `uiDomain`; default app.hubspot.com).
+   * Which account the admin picks is enforced after the code exchange
+   * (`completeInstall`: hub_id must equal the tenant's portalId).
+   */
   async installUrl(ctx: TenantContext): Promise<{ url: string; expiresAt: Date }> {
-    const portalId = await this.oauthPortalId(ctx);
+    const { uiDomain } = await this.oauthSettings(ctx);
     const app = await this.app();
     const { state, expiresAt } = await this.guarded(() => this.states.issue(ctx, 'hubspot'));
-    const url = new URL(`${this.config.oauth.authorizeBaseUrl}/${portalId}/authorize`);
-    url.searchParams.set('client_id', app.clientId);
-    url.searchParams.set('redirect_uri', app.redirectUri);
-    url.searchParams.set('scope', HUBSPOT_OAUTH_SCOPES.join(' '));
-    url.searchParams.set('state', state);
-    return { url: url.toString(), expiresAt };
+    const url = hubspotConsentUrl({
+      uiDomain,
+      testAuthorizeBaseUrl: this.config.oauth.authorizeBaseUrl,
+      clientId: app.clientId,
+      redirectUri: app.redirectUri,
+      state,
+    });
+    return { url, expiresAt };
   }
 
   /** Handles the OAuth callback. Stores nothing unless every check passes. */
@@ -97,9 +146,11 @@ export class HubSpotOAuthService {
       redirectUri: app.redirectUri,
     });
     if (tokens.accountId !== portalId) {
+      // Refused: nothing is stored, and the grant HubSpot just issued is given back.
+      const revoked = await this.revokeRefusedGrant(tokens.refreshToken, app);
       throw new HubSpotError(
         'account_mismatch',
-        `The app was installed in HubSpot account ${tokens.accountId ?? 'unknown'}, but this tenant is configured for ${portalId}; nothing was stored`,
+        `The app was installed in HubSpot account ${tokens.accountId ?? 'unknown'}, but this tenant is configured for ${portalId}; nothing was stored and the grant was ${revoked ? 'revoked' : 'NOT revoked'}`,
       );
     }
     if (!tokens.refreshToken) {
@@ -119,6 +170,39 @@ export class HubSpotOAuthService {
     this.rejected.delete(ctx.tenantId);
     this.logger.log({ msg: 'HubSpot app installed', tenantId: ctx.tenantId, accountId: portalId });
     return { tenantId: ctx.tenantId, tenantSlug: ctx.tenantSlug, accountId: portalId };
+  }
+
+  /**
+   * The one approved non-read call (ADR 0011): revokes the refresh token of a
+   * grant `completeInstall` has just refused because HubSpot issued it for a
+   * different account. The grant was never stored and is not usable by the
+   * platform; revoking it means it does not stay valid at HubSpot either.
+   * Best effort: a failure is logged (never the token) and reported in the
+   * refusal, and the install is refused either way.
+   */
+  private async revokeRefusedGrant(
+    refreshToken: Secret | undefined,
+    app: { clientId: string; clientSecret: Secret },
+  ): Promise<boolean> {
+    if (!refreshToken) return false;
+    try {
+      await this.client.revokeRefreshToken({
+        refreshToken,
+        clientId: app.clientId,
+        clientSecret: app.clientSecret,
+      });
+      this.logger.warn({ msg: 'Refused HubSpot grant for another account revoked', revoked: true });
+      return true;
+    } catch (err) {
+      if (!isHubSpotError(err)) throw err;
+      this.logger.warn({
+        msg: 'Refused HubSpot grant for another account could NOT be revoked',
+        revoked: false,
+        kind: err.kind,
+        status: err.details.status,
+      });
+      return false;
+    }
   }
 
   /**
@@ -186,6 +270,23 @@ export class HubSpotOAuthService {
             'HubSpot refreshed a token for a different account',
           );
         }
+        const outcome: RefreshOutcome = {
+          at: new Date(),
+          refreshTokenReturned: tokens.refreshToken !== undefined,
+          refreshTokenRotated:
+            tokens.refreshToken !== undefined &&
+            tokens.refreshToken.reveal() !== grant.refreshToken.reveal(),
+          expiresInSeconds: tokens.expiresInSeconds,
+          scopes: tokens.scopes,
+        };
+        this.refreshes.push(outcome);
+        this.logger.log({
+          msg: 'HubSpot access token refreshed',
+          tenantId: ctx.tenantId,
+          refreshTokenReturned: outcome.refreshTokenReturned,
+          refreshTokenRotated: outcome.refreshTokenRotated,
+          expiresInSeconds: outcome.expiresInSeconds,
+        });
         const next: OAuthGrant = {
           accountId: grant.accountId,
           // HubSpot may rotate the refresh token; keep the newest one.
@@ -211,6 +312,37 @@ export class HubSpotOAuthService {
     // the very token that was just rejected.
     if (!this.isRejected(ctx, refreshed.token)) this.rejected.delete(ctx.tenantId);
     return refreshed;
+  }
+
+  /**
+   * Refreshes this process performed at HubSpot, newest last: booleans and
+   * counts only, never a token. Evidence for operators (refresh rotation).
+   */
+  refreshOutcomes(): readonly RefreshOutcome[] {
+    return [...this.refreshes];
+  }
+
+  /**
+   * Operator hook (live refresh evidence): marks the tenant's stored access
+   * token as expired, under the grant lock, so the next `accessToken` performs
+   * a real refresh. The refresh token is not touched; nothing is sent to
+   * HubSpot here. Returns false when the tenant has no grant.
+   */
+  async expireStoredAccessToken(ctx: TenantContext): Promise<boolean> {
+    const expired = await this.guarded(() =>
+      this.grants.withLockedGrant(ctx, 'hubspot', (current) => {
+        if (!current?.accessToken) return Promise.resolve({ result: current !== undefined });
+        return Promise.resolve({
+          save: {
+            ...current,
+            accessToken: { ...current.accessToken, expiresAt: new Date(Date.now() - 60_000) },
+          },
+          result: true,
+        });
+      }),
+    );
+    this.cache.delete(ctx.tenantId);
+    return expired;
   }
 
   /** Test and operator hook: forget this process's cached access tokens. */
@@ -266,6 +398,11 @@ export class HubSpotOAuthService {
 
   /** The tenant's HubSpot account id, requiring an enabled integration in OAuth mode. */
   private async oauthPortalId(ctx: TenantContext): Promise<string> {
+    return (await this.oauthSettings(ctx)).portalId;
+  }
+
+  /** Account id and web host of the tenant's HubSpot account (enabled, OAuth mode). */
+  private async oauthSettings(ctx: TenantContext): Promise<{ portalId: string; uiDomain: string }> {
     let integration;
     try {
       integration = await this.tenantConfig.getIntegration(ctx, 'hubspot');
@@ -290,7 +427,10 @@ export class HubSpotOAuthService {
         'The HubSpot account id (portalId) must be configured first',
       );
     }
-    return integration.settings.portalId;
+    return {
+      portalId: integration.settings.portalId,
+      uiDomain: integration.settings.uiDomain ?? DEFAULT_HUBSPOT_UI_DOMAIN,
+    };
   }
 
   private async app(): Promise<{ clientId: string; clientSecret: Secret; redirectUri: string }> {

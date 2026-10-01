@@ -1,0 +1,28 @@
+{
+  "uid": "lip_lead_intelligence_dev",
+  "type": "app",
+  "config": {
+    "name": "LIP Lead Intelligence (dev)",
+    "description": "Wigmore Lead Intelligence Platform - development and live validation app. Read-only CRM access; receives CRM webhooks.",
+    "distribution": "private",
+    "auth": {
+      "type": "oauth",
+      "redirectUrls": ["{{HUBSPOT_APP_REDIRECT_URI}}"],
+      "requiredScopes": [
+        "oauth",
+        "crm.objects.contacts.read",
+        "crm.objects.companies.read",
+        "crm.objects.leads.read",
+        "crm.schemas.contacts.read",
+        "crm.schemas.companies.read"
+      ],
+      "optionalScopes": [],
+      "conditionallyRequiredScopes": []
+    },
+    "permittedUrls": {
+      "fetch": ["https://api.hubapi.com"],
+      "iframe": [],
+      "img": []
+    }
+  }
+}

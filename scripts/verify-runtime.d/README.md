@@ -3,10 +3,11 @@
 `scripts/verify-runtime.sh` sources every `*.sh` file in this directory, in
 name order, after its core checks and before shutdown.
 
-| File                  | Milestone | Checks                                                                                                                                           |
-| --------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `20-hubspot.sh`       | M3        | HubSpot CLIs against a local fake: read-only setup, discovery, refusals                                                                          |
-| `30-hubspot-oauth.sh` | M4        | OAuth install via a second API process: callback, single-use state, encrypted grant, CrmReader discovery, one refresh across processes, no leaks |
+| File                     | Milestone | Checks                                                                                                                                                                                                                                                  |
+| ------------------------ | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `20-hubspot.sh`          | M3        | HubSpot CLIs against a local fake: read-only setup, discovery, refusals                                                                                                                                                                                 |
+| `30-hubspot-oauth.sh`    | M4        | OAuth install via a second API process: callback, single-use state, encrypted grant, CrmReader discovery, one refresh across processes, no leaks                                                                                                        |
+| `40-hubspot-webhooks.sh` | M5        | Signed webhook deliveries through a real API process: v3 signature, freshness, Host never trusted, v1/v2 refused, body limit, atomic de-duplication, routing (static tenant never, unknown never guessed), identifiers only, no leaks, no HubSpot calls |
 
 Conventions for a check file (e.g. `20-hubspot.sh`):
 

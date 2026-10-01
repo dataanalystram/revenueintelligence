@@ -4,10 +4,16 @@ import { HubSpotError } from '../errors';
 import type { HubSpotConfig } from '../hubspot.config';
 
 /**
- * Read-only CRM scopes requested on install (ADR 0010). No write scope is ever
- * requested; a unit test fails if one is added.
+ * Scopes requested on install (ADR 0010, 0011): HubSpot's baseline `oauth`
+ * scope plus read-only CRM scopes. `oauth` is part of every HubSpot app's
+ * required scopes (HubSpot added it to this app on upload, and every official
+ * 2026.03 app template lists it); the consent URL must request all of the
+ * app's required scopes. No write scope is ever requested; unit tests fail if
+ * one is added or if this list drifts from hubspot-app/.
  */
+export const HUBSPOT_OAUTH_BASELINE_SCOPE = 'oauth';
 export const HUBSPOT_OAUTH_SCOPES = [
+  HUBSPOT_OAUTH_BASELINE_SCOPE,
   'crm.objects.contacts.read',
   'crm.objects.companies.read',
   'crm.objects.leads.read',
@@ -16,17 +22,24 @@ export const HUBSPOT_OAUTH_SCOPES = [
 ] as const;
 
 /**
- * The only OAuth request the platform makes: POST to the date-versioned token
- * endpoint (authorization-code exchange and refresh). Separate from the CRM
- * transport, whose read-only guard is unchanged. Anything else is refused.
+ * The only OAuth requests the platform makes (separate from the CRM transport,
+ * whose read-only guard is unchanged); anything else is refused:
+ *
+ * - POST to the date-versioned token endpoint (authorization-code exchange and
+ *   refresh);
+ * - POST to exactly HubSpot's current refresh-token revoke endpoint, used only
+ *   to give back a grant the platform refused because it was issued for the
+ *   wrong HubSpot account (ADR 0011). `2026-03` is the current documented
+ *   version (verified 2026-09-27; no 2026-09 revoke endpoint is documented).
  */
 const TOKEN_PATH = /^\/oauth\/\d{4}-(0[1-9]|1[0-2])\/token$/;
+export const HUBSPOT_OAUTH_REVOKE_PATH = '/oauth/2026-03/token/revoke';
 
-export function assertOAuthTokenRequest(method: string, path: string): void {
-  if (method === 'POST' && TOKEN_PATH.test(path)) return;
+export function assertOAuthRequest(method: string, path: string): void {
+  if (method === 'POST' && (TOKEN_PATH.test(path) || path === HUBSPOT_OAUTH_REVOKE_PATH)) return;
   throw new HubSpotError(
     'unsupported_endpoint',
-    `Refusing ${method} ${path}: not the OAuth token endpoint`,
+    `Refusing ${method} ${path}: not an allowed OAuth endpoint`,
     {
       path,
     },
@@ -121,15 +134,46 @@ export class HubSpotOAuthClient {
     );
   }
 
-  private async token(
-    form: Record<string, string>,
-    rejectedKind: 'bad_request' | 'reauthorization_required',
-  ): Promise<OAuthTokens> {
-    const path = `/oauth/${this.config.oauth.apiVersion}/token`;
-    assertOAuthTokenRequest('POST', path);
-    let response: Response;
+  /**
+   * Revokes a refresh token HubSpot has just issued. Called from exactly one
+   * place: the install callback, when the grant belongs to a different HubSpot
+   * account than the tenant's, so the refused grant does not stay valid at
+   * HubSpot (ADR 0011). Not a general revocation feature.
+   */
+  async revokeRefreshToken(input: {
+    refreshToken: Secret;
+    clientId: string;
+    clientSecret: Secret;
+  }): Promise<void> {
+    const response = await this.post(HUBSPOT_OAUTH_REVOKE_PATH, {
+      token: input.refreshToken.reveal(),
+      client_id: input.clientId,
+      client_secret: input.clientSecret.reveal(),
+    });
+    const json = await readJson(response); // also releases the connection
+    if (!response.ok) {
+      const { code, correlationId } = errorCode(json);
+      throw new HubSpotError(
+        response.status >= 500
+          ? 'server_error'
+          : response.status === 429
+            ? 'rate_limited'
+            : 'bad_request',
+        `HubSpot OAuth revoke returned ${response.status}${code ? ` (${code})` : ''}`,
+        {
+          status: response.status,
+          path: HUBSPOT_OAUTH_REVOKE_PATH,
+          ...(code ? { category: code } : {}),
+          ...(correlationId ? { correlationId } : {}),
+        },
+      );
+    }
+  }
+
+  private async post(path: string, form: Record<string, string>): Promise<Response> {
+    assertOAuthRequest('POST', path);
     try {
-      response = await this.fetchFn(`${this.config.baseUrl}${path}`, {
+      return await this.fetchFn(`${this.config.baseUrl}${path}`, {
         method: 'POST',
         headers: {
           accept: 'application/json',
@@ -150,17 +194,17 @@ export class HubSpotOAuthClient {
         { path },
       );
     }
-    let json: unknown;
-    try {
-      json = JSON.parse(await response.text());
-    } catch {
-      json = undefined;
-    }
+  }
+
+  private async token(
+    form: Record<string, string>,
+    rejectedKind: 'bad_request' | 'reauthorization_required',
+  ): Promise<OAuthTokens> {
+    const path = `/oauth/${this.config.oauth.apiVersion}/token`;
+    const response = await this.post(path, form);
+    const json = await readJson(response);
     if (!response.ok) {
-      const body = HsOAuthErrorSchema.safeParse(json);
-      const code = body.success
-        ? (body.data.error ?? body.data.subCategory ?? body.data.category)
-        : undefined;
+      const { code, correlationId } = errorCode(json);
       const kind =
         response.status >= 500
           ? 'server_error'
@@ -176,9 +220,7 @@ export class HubSpotOAuthClient {
           status: response.status,
           path,
           ...(code ? { category: code } : {}),
-          ...(body.success && body.data.correlationId
-            ? { correlationId: body.data.correlationId }
-            : {}),
+          ...(correlationId ? { correlationId } : {}),
         },
       );
     }
@@ -203,4 +245,23 @@ export class HubSpotOAuthClient {
       scopes: t.scopes ?? [],
     };
   }
+}
+
+async function readJson(response: Response): Promise<unknown> {
+  try {
+    return JSON.parse(await response.text());
+  } catch {
+    return undefined;
+  }
+}
+
+/** HubSpot's error code and correlation id from an OAuth error body (never the body itself). */
+function errorCode(json: unknown): { code?: string; correlationId?: string } {
+  const body = HsOAuthErrorSchema.safeParse(json);
+  if (!body.success) return {};
+  const code = body.data.error ?? body.data.subCategory ?? body.data.category;
+  return {
+    ...(code ? { code } : {}),
+    ...(body.data.correlationId ? { correlationId: body.data.correlationId } : {}),
+  };
 }

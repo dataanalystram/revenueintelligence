@@ -22,3 +22,4 @@ apps/api/src/generated/
 !.vscode/extensions.json
 *.log
 apps/api/test/.tmp/
+hubspot-app/build/

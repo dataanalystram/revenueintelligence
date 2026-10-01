@@ -53,6 +53,15 @@ oa_configured() {
     ! grep -q 'environmentVariable' <<<"$out"
 }
 check "hubspot:configure --auth oauth: read-only, no token variable to set" oa_configured
+oa_ui_domain() {
+  local out
+  out="$(oa_cli configure --tenant rtoauth --portal-id 888 --auth oauth --ui-domain app-eu1.hubspot.com)" || return 1
+  echo "$out"
+  grep -q '"uiDomain": "app-eu1.hubspot.com"' <<<"$out" || return 1
+  # Any host that is not a HubSpot app host is refused (no phishing consent host).
+  ! oa_cli configure --tenant rtoauth --portal-id 888 --auth oauth --ui-domain evil.example >/dev/null 2>&1
+}
+check "hubspot:configure --ui-domain: the account's HubSpot host accepted, other hosts refused" oa_ui_domain
 
 oa_install_url() {
   local out
@@ -60,16 +69,16 @@ oa_install_url() {
   echo "$out" | sed -E 's/state=[^"&]+/state=<redacted>/'
   # Kept in a variable, never written to disk: the state is single-use but still not for artifacts.
   OA_URL="$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf8")).installUrl)' <<<"$out")"
-  [[ "$OA_URL" == "$OA_FAKE_URL/oauth/888/authorize?"* ]] &&
+  [[ "$OA_URL" == "$OA_FAKE_URL/oauth/authorize?"* ]] &&
     node -e '
       const u = new URL(process.argv[1]);
       const scopes = u.searchParams.get("scope").split(" ");
-      const ok = scopes.length > 0 && scopes.every((s) => s.endsWith(".read")) &&
+      const ok = scopes[0] === "oauth" && scopes.length > 1 && scopes.slice(1).every((s) => /^crm\.(objects|schemas)\.\w+\.read$/.test(s)) &&
         u.searchParams.get("client_id") === process.argv[2] && /\./.test(u.searchParams.get("state"));
       process.exit(ok ? 0 : 1);' "$OA_URL" "$OA_CLIENT_ID" &&
     ! grep -q "$OA_CLIENT_SECRET" <<<"$out"
 }
-check "hubspot:install-url: account-specific consent URL, read-only scopes, no secret" oa_install_url
+check "hubspot:install-url: generic consent URL, oauth + read-only scopes, no secret" oa_install_url
 
 oa_bad_state() {
   local out
@@ -141,6 +150,41 @@ oa_refresh_once() {
 }
 check "3 concurrent processes, expired token → exactly 1 refresh call at HubSpot" oa_refresh_once
 
+oa_refresh_evidence() {
+  local out before after
+  before="$(grep -c 'grant=refresh_token' "$OA_FAKE_LOG" || true)"
+  out="$(oa_cli oauth-refresh-evidence --tenant rtoauth)" || return 1
+  after="$(grep -c 'grant=refresh_token' "$OA_FAKE_LOG" || true)"
+  echo "$out"
+  node -e '
+    const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    const ok = r.refreshesPerformedByThisProcess === 1 && r.accessTokenChanged === true &&
+      r.hubspotReturnedRefreshToken === false && r.hubspotRotatedRefreshToken === false &&
+      r.storedRefreshTokenChanged === false && r.storedAccountId === "888";
+    process.exit(ok ? 0 : 1);' <<<"$out" &&
+    [ $((after - before)) -eq 1 ] &&
+    ! grep -qE 'refresh-[0-9a-f]{32}|access-[0-9a-f]{32}' <<<"$out"
+}
+check "hubspot:oauth-refresh-evidence: one real refresh, rotation facts as booleans, no token printed" oa_refresh_evidence
+
+oa_evidence_concurrent() {
+  local before after i pids=() total=0
+  oa_cli oauth-refresh-evidence --tenant rtoauth --mode expire >/dev/null || return 1
+  before="$(grep -c 'grant=refresh_token' "$OA_FAKE_LOG" || true)"
+  for i in 1 2 3; do
+    oa_cli oauth-refresh-evidence --tenant rtoauth --mode observe >"$WORK/oa-observe-$i.json" 2>&1 &
+    pids+=("$!")
+  done
+  for i in "${pids[@]}"; do wait "$i" || return 1; done
+  after="$(grep -c 'grant=refresh_token' "$OA_FAKE_LOG" || true)"
+  for i in 1 2 3; do
+    total=$((total + $(node -e 'process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).refreshesPerformedByThisProcess))' "$WORK/oa-observe-$i.json")))
+  done
+  echo "refreshes performed by the 3 processes: $total; at HubSpot: $((after - before))"
+  [ "$total" -eq 1 ] && [ $((after - before)) -eq 1 ]
+}
+check "after one expiry, 3 concurrent evidence processes: exactly 1 performs the refresh" oa_evidence_concurrent
+
 oa_no_leaks() {
   # The fake issues recognisable values; none may appear in any log or output.
   ! grep -rEl 'refresh-[0-9a-f]{32}|access-[0-9a-f]{32}|code-[0-9a-f]{24}' "$WORK" --exclude=checks.log &&
@@ -153,7 +197,7 @@ oa_read_only() {
   local requests
   requests="$(grep '^request ' "$OA_FAKE_LOG")" || return 1
   echo "$requests" | sort | uniq -c
-  ! grep -vE '^request (GET /(crm/(objects|properties|associations)|account-info)/[0-9]{4}-[0-9]{2}/.+|POST /crm/associations/[0-9]{4}-[0-9]{2}/[^/]+/[^/]+/batch/read|POST /oauth/2026-09/token grant=(authorization_code|refresh_token)|GET /oauth/888/authorize)$' <<<"$requests"
+  ! grep -vE '^request (GET /(crm/(objects|properties|associations)|account-info)/[0-9]{4}-[0-9]{2}/.+|POST /crm/associations/[0-9]{4}-[0-9]{2}/[^/]+/[^/]+/batch/read|POST /oauth/2026-09/token grant=(authorization_code|refresh_token)|GET /oauth/authorize)$' <<<"$requests"
 }
 check "only CRM reads and the date-versioned OAuth token endpoint were called" oa_read_only
 

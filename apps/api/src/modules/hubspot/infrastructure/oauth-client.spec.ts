@@ -4,7 +4,7 @@ import { Secret } from '../../../platform/secrets';
 import { HubSpotError } from '../errors';
 import { loadHubSpotConfig } from '../hubspot.config';
 import { assertReadOnlyRequest } from './http-client';
-import { HUBSPOT_OAUTH_SCOPES, HubSpotOAuthClient, assertOAuthTokenRequest } from './oauth-client';
+import { HUBSPOT_OAUTH_SCOPES, HubSpotOAuthClient, assertOAuthRequest } from './oauth-client';
 
 const APP = {
   clientId: 'client-id-0001',
@@ -35,26 +35,32 @@ describe('HubSpot OAuth client (ADR 0010)', () => {
     await fake.stop();
   });
 
-  it('requests read-only scopes only', () => {
-    expect(HUBSPOT_OAUTH_SCOPES.length).toBeGreaterThan(0);
-    for (const scope of HUBSPOT_OAUTH_SCOPES)
+  it("requests HubSpot's baseline oauth scope and read-only CRM scopes only", () => {
+    expect(HUBSPOT_OAUTH_SCOPES).toContain('oauth');
+    for (const scope of HUBSPOT_OAUTH_SCOPES.filter((s) => s !== 'oauth'))
       expect(scope).toMatch(/^crm\.(objects|schemas)\.\w+\.read$/);
   });
 
-  it('allows exactly POST to the date-versioned token endpoint', () => {
-    expect(() => assertOAuthTokenRequest('POST', '/oauth/2026-09/token')).not.toThrow();
+  it('allows exactly POST to the date-versioned token endpoint and to the one revoke endpoint', () => {
+    expect(() => assertOAuthRequest('POST', '/oauth/2026-09/token')).not.toThrow();
+    expect(() => assertOAuthRequest('POST', '/oauth/2026-03/token/revoke')).not.toThrow();
     for (const [method, path] of [
       ['POST', '/oauth/v1/token'],
       ['POST', '/oauth/v3/token'],
       ['POST', '/oauth/2026-09/token/revoke'],
+      ['POST', '/oauth/2025-09/token/revoke'],
+      ['GET', '/oauth/2026-03/token/revoke'],
+      ['DELETE', '/oauth/2026-03/token/revoke'],
+      ['POST', '/oauth/2026-03/token/revoke/extra'],
+      ['POST', '/oauth/2026-03/token/revoke?token=x'],
+      ['DELETE', '/oauth/v1/refresh-tokens/abc'],
+      ['POST', '/oauth/v1/refresh-tokens/abc'],
       ['POST', '/oauth/2026-09/token/introspect'],
       ['GET', '/oauth/2026-09/token'],
       ['POST', '/oauth/2026-09/../v1/token'],
       ['POST', '/crm/objects/2026-09/contacts'],
     ] as const) {
-      expect(() => assertOAuthTokenRequest(method, path), `${method} ${path}`).toThrow(
-        HubSpotError,
-      );
+      expect(() => assertOAuthRequest(method, path), `${method} ${path}`).toThrow(HubSpotError);
     }
   });
 
@@ -136,5 +142,45 @@ describe('HubSpot OAuth client (ADR 0010)', () => {
       .catch((e: unknown) => e);
     expect((bad as HubSpotError).kind).toBe('invalid_payload');
     expect(String(bad)).not.toContain('leaky-access-token');
+  });
+
+  it('revokes a refresh token: POST to exactly the revoke endpoint, form body, nothing in the URL', async () => {
+    const tokens = await client.exchangeCode({
+      code: new Secret(fake.issueCode(77, APP.redirectUri)),
+      clientId: APP.clientId,
+      clientSecret: new Secret(APP.clientSecret),
+      redirectUri: APP.redirectUri,
+    });
+    const refreshToken = tokens.refreshToken!;
+    expect(fake.isRefreshTokenActive(refreshToken.reveal())).toBe(true);
+    await client.revokeRefreshToken({
+      refreshToken,
+      clientId: APP.clientId,
+      clientSecret: new Secret(APP.clientSecret),
+    });
+    expect(fake.isRefreshTokenActive(refreshToken.reveal())).toBe(false);
+    const req = fake.requests.at(-1)!;
+    expect(req.method).toBe('POST');
+    expect(req.path).toBe('/oauth/2026-03/token/revoke');
+    expect(req.query).toEqual({});
+    const form = new URLSearchParams(req.body as string);
+    expect([...form.keys()].sort()).toEqual(['client_id', 'client_secret', 'token']);
+    expect(fake.oauthCalls.revoke).toBe(1);
+  });
+
+  it('a failed revoke is classified; the error never contains the token or secret', async () => {
+    const err = await client
+      .revokeRefreshToken({
+        refreshToken: new Secret('refresh-never-issued'),
+        clientId: APP.clientId,
+        clientSecret: new Secret(APP.clientSecret),
+      })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(HubSpotError);
+    expect((err as HubSpotError).kind).toBe('bad_request');
+    expect((err as HubSpotError).details.status).toBe(400);
+    expect(String(err) + JSON.stringify(err)).not.toMatch(
+      /refresh-never-issued|client-secret-value/,
+    );
   });
 });

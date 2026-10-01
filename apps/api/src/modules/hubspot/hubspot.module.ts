@@ -2,15 +2,18 @@ import { Logger, Module } from '@nestjs/common';
 import { CRM_CONNECTOR } from '../crm';
 import { TenancyModule } from '../tenancy';
 import { HubSpotOAuthController } from './api/hubspot-oauth.controller';
+import { HubSpotWebhookController } from './api/hubspot-webhook.controller';
 import { HubSpotConnector } from './application/hubspot-connector.service';
 import { HubSpotDiscoveryService } from './application/hubspot-discovery.service';
 import { HubSpotOAuthService } from './application/hubspot-oauth.service';
+import { HubSpotWebhookService } from './application/hubspot-webhook.service';
 import { HUBSPOT_CONFIG, loadHubSpotConfig, type HubSpotConfig } from './hubspot.config';
 import { HubSpotHttpClient } from './infrastructure/http-client';
 import { HubSpotOAuthClient } from './infrastructure/oauth-client';
 import { SlidingWindowRateLimiter } from './infrastructure/rate-limiter';
+import { WebhookReceiptRepository } from './infrastructure/webhook-receipt.repository';
 
-/** Read-only HubSpot connector (Milestones 3–4): CrmConnector port, OAuth token source. */
+/** Read-only HubSpot connector (Milestones 3–5): CrmConnector port, OAuth token source, webhook intake. */
 @Module({
   imports: [TenancyModule],
   providers: [
@@ -34,11 +37,23 @@ import { SlidingWindowRateLimiter } from './infrastructure/rate-limiter';
     HubSpotConnector,
     { provide: CRM_CONNECTOR, useExisting: HubSpotConnector },
     HubSpotDiscoveryService,
+    WebhookReceiptRepository,
+    HubSpotWebhookService,
   ],
-  exports: [HubSpotConnector, CRM_CONNECTOR, HubSpotOAuthService, HubSpotDiscoveryService],
+  exports: [
+    HubSpotConnector,
+    CRM_CONNECTOR,
+    HubSpotOAuthService,
+    HubSpotDiscoveryService,
+    HubSpotWebhookService,
+    WebhookReceiptRepository,
+  ],
 })
 export class HubSpotModule {}
 
-/** The OAuth callback endpoint; registered in the API process only. */
-@Module({ imports: [HubSpotModule], controllers: [HubSpotOAuthController] })
+/** The OAuth callback and webhook endpoints; registered in the API process only. */
+@Module({
+  imports: [HubSpotModule],
+  controllers: [HubSpotOAuthController, HubSpotWebhookController],
+})
 export class HubSpotOAuthHttpModule {}

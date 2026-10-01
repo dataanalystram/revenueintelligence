@@ -34,6 +34,8 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
   /** A second, independent application instance (own pool, own caches): another process. */
   let h2: TenancyHarness;
   let fake: FakeHubSpot;
+  /** Revokes the wrong-account install tests caused (the only legitimate ones). */
+  let mismatchRevokes = 0;
   const envSet = new Map<string, string | undefined>();
 
   const STATIC_TOKEN = 'service-key-for-static-tenant';
@@ -65,6 +67,9 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
   /** Walks the install exactly as a browser would: install URL → consent redirect → callback. */
   async function install(ctx: TenantContext) {
     const { url } = await oauth().installUrl(ctx);
+    // On HubSpot's generic consent page the admin picks the account: the tenant's own.
+    const integration = await h.config.getIntegration(ctx, 'hubspot');
+    fake.configureOAuth({ consentPortalId: Number(integration.settings.portalId) });
     const consent = await fetch(url, { redirect: 'manual' });
     expect(consent.status).toBe(302);
     const back = new URL(consent.headers.get('location')!);
@@ -171,10 +176,19 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
       await configureOAuth(t, '3003');
       const { url, expiresAt } = await oauth().installUrl(t);
       const u = new URL(url);
-      expect(`${u.origin}${u.pathname}`).toBe(`${fake.url}/oauth/3003/authorize`);
+      // HubSpot's generic consent path (as on the deployed app's page); the account is
+      // enforced after the code exchange, not by the path.
+      expect(`${u.origin}${u.pathname}`).toBe(`${fake.url}/oauth/authorize`);
+      expect([...u.searchParams.keys()].sort()).toEqual([
+        'client_id',
+        'redirect_uri',
+        'scope',
+        'state',
+      ]);
       expect(u.searchParams.get('client_id')).toBe(APP.clientId);
       expect(u.searchParams.get('redirect_uri')).toBe(APP.redirectUri);
       expect(u.searchParams.get('scope')!.split(' ')).toEqual([...HUBSPOT_OAUTH_SCOPES]);
+      expect(u.searchParams.get('scope')!.split(' ')[0]).toBe('oauth');
       expect(u.searchParams.get('scope')).not.toMatch(/write/);
       expect(u.searchParams.get('state')).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/);
       expect(expiresAt.getTime() - Date.now()).toBeGreaterThan(9 * 60_000);
@@ -234,10 +248,31 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
       await configureOAuth(t, '3003');
       const { state } = await states().issue(t, 'hubspot');
       const code = fake.issueCode(4004); // the user installed into another account
+      const revokesBefore = fake.oauthCalls.revoke;
       const err = await hubspotRejection(oauth().completeInstall({ code, state }));
       expect(err.kind).toBe('account_mismatch');
+      expect(err.message).toMatch(/nothing was stored and the grant was revoked/);
       expect(await tokenRow(t)).toBeUndefined();
       await expect(grants().get(t, 'hubspot')).resolves.toBeUndefined();
+      // The refused grant was given back to HubSpot: exactly one revoke, and no
+      // refresh token for the foreign account remains valid.
+      expect(fake.oauthCalls.revoke - revokesBefore).toBe(1);
+      mismatchRevokes += 1;
+      expect(fake.activeRefreshTokens(4004)).toBe(0);
+    });
+
+    it('if HubSpot refuses the revoke, the install is still refused and nothing is stored', async () => {
+      const t = await provisionTenant(h, 'oamisrv');
+      await configureOAuth(t, '3003');
+      const { state } = await states().issue(t, 'hubspot');
+      const code = fake.issueCode(4004);
+      fake.fail({ match: /^POST \/oauth\/2026-03\/token\/revoke$/, status: 503 });
+      const err = await hubspotRejection(oauth().completeInstall({ code, state }));
+      // Attempted once (the injected fault answered it, so the fake's counter is unchanged).
+      expect(fake.requests.filter((r) => r.path === '/oauth/2026-03/token/revoke')).toHaveLength(1);
+      expect(err.kind).toBe('account_mismatch');
+      expect(err.message).toMatch(/nothing was stored and the grant was NOT revoked/);
+      expect(await tokenRow(t)).toBeUndefined();
     });
 
     it('the tenant-bound state installs only into the tenant it was issued for', async () => {
@@ -502,6 +537,60 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
       }
     });
 
+    it('refresh evidence: the expire hook forces exactly one real refresh; outcomes hold facts, never tokens', async () => {
+      const t = await provisionTenant(h, 'oaevidence');
+      await configureOAuth(t, '3003');
+      await install(t);
+      const before = (await grants().get(t, 'hubspot'))!;
+      const refreshesBefore = fake.oauthCalls.refreshToken;
+      const outcomesBefore = oauth().refreshOutcomes().length;
+
+      // Without rotation (the fake then returns no refresh_token on refresh).
+      await expect(oauth().expireStoredAccessToken(t)).resolves.toBe(true);
+      expect(fake.oauthCalls.refreshToken).toBe(refreshesBefore); // expiring calls nobody
+      const token = await oauth().accessToken(t, '3003');
+      expect(fake.oauthCalls.refreshToken).toBe(refreshesBefore + 1);
+      const after = (await grants().get(t, 'hubspot'))!;
+      expect(token.reveal()).not.toBe(before.accessToken!.token.reveal());
+      expect(after.refreshToken.reveal()).toBe(before.refreshToken.reveal());
+      const plain = oauth().refreshOutcomes().slice(outcomesBefore);
+      expect(plain).toHaveLength(1);
+      expect(plain[0]).toMatchObject({ refreshTokenReturned: false, refreshTokenRotated: false });
+
+      // With rotation.
+      fake.configureOAuth({ rotateRefreshTokens: true });
+      try {
+        await oauth().expireStoredAccessToken(t);
+        await oauth().accessToken(t, '3003');
+      } finally {
+        fake.configureOAuth({ rotateRefreshTokens: false });
+      }
+      const rotated = oauth().refreshOutcomes().at(-1)!;
+      expect(rotated).toMatchObject({ refreshTokenReturned: true, refreshTokenRotated: true });
+      const latest = (await grants().get(t, 'hubspot'))!;
+      expect(latest.refreshToken.reveal()).not.toBe(before.refreshToken.reveal());
+
+      // Facts only: no token in the outcomes.
+      const json = JSON.stringify(oauth().refreshOutcomes());
+      for (const secret of [
+        before.refreshToken.reveal(),
+        latest.refreshToken.reveal(),
+        token.reveal(),
+        latest.accessToken!.token.reveal(),
+      ]) {
+        expect(json).not.toContain(secret);
+      }
+    });
+
+    it('the expire hook on a tenant without a grant changes nothing and calls nobody', async () => {
+      const t = await provisionTenant(h, 'oaexpirenone');
+      await configureOAuth(t, '3003');
+      const calls = fake.oauthCalls.refreshToken;
+      await expect(oauth().expireStoredAccessToken(t)).resolves.toBe(false);
+      expect(fake.oauthCalls.refreshToken).toBe(calls);
+      expect(await tokenRow(t)).toBeUndefined();
+    });
+
     it('a revoked grant → reauthorization_required, never a silent failure', async () => {
       const t = await provisionTenant(h, 'oarevoked');
       await configureOAuth(t, '3003');
@@ -638,10 +727,16 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
           (r.method === 'POST' &&
             /^\/crm\/associations\/\d{4}-\d{2}\/\w+\/\w+\/batch\/read$/.test(r.path)) ||
           (r.method === 'POST' && r.path === '/oauth/2026-09/token') ||
-          (r.method === 'GET' && /^\/oauth\/\d+\/authorize$/.test(r.path));
+          // Only ever for a refused wrong-account install (counted by those tests).
+          (r.method === 'POST' && r.path === '/oauth/2026-03/token/revoke') ||
+          (r.method === 'GET' && r.path === '/oauth/authorize');
         expect(ok, `${r.method} ${r.path}`).toBe(true);
       }
       expect(fake.requests.some((r) => r.path === '/oauth/2026-09/token')).toBe(true);
+      // Installs, refreshes, reinstalls and revoked grants never caused a revoke:
+      // only the wrong-account installs did, once each.
+      // (oauthCalls is cumulative over the whole file; the request log is reset per test.)
+      expect(fake.oauthCalls.revoke).toBe(mismatchRevokes);
     });
   });
 });

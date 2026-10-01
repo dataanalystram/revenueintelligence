@@ -38,6 +38,7 @@ model Tenant {
   credentialRefs      TenantCredentialRef[]
   oauthTokens         TenantOAuthToken[]
   oauthStates         TenantOAuthState[]
+  webhookReceipts     TenantWebhookReceipt[]
   qualificationConfig TenantQualificationConfig?
   products            TenantProduct[]
   fieldMappings       TenantFieldMapping[]
@@ -138,6 +139,42 @@ model TenantOAuthState {
 
   @@id([tenantId, nonceHash])
   @@map("tenant_oauth_states")
+}
+
+/// One webhook event received for a tenant (ADR 0011): metadata only. Property
+/// values and request bodies are never stored (CHECK constraints keep every
+/// column to identifiers). Redeliveries of the same event update the counters
+/// of the one row; the key is a SHA-256 of the event's identity.
+model TenantWebhookReceipt {
+  tenantId           String   @map("tenant_id") @db.Uuid
+  system             String
+  deliveryKey        String   @map("delivery_key")
+  eventId            String   @map("event_id")
+  subscriptionId     String   @map("subscription_id")
+  /// The external account the event came from (HubSpot: portal id).
+  accountId          String   @map("account_id")
+  appId              String   @map("app_id")
+  /// e.g. object.creation, object.propertyChange
+  subscriptionType   String   @map("subscription_type")
+  /// HubSpot object type id, e.g. 0-1 (contact), 0-2 (company), 0-136 (lead)
+  objectTypeId       String?  @map("object_type_id")
+  objectId           String?  @map("object_id")
+  /// Name of the changed property (never its value)
+  propertyName       String?  @map("property_name")
+  changeSource       String?  @map("change_source")
+  occurredAt         DateTime @map("occurred_at") @db.Timestamptz(3)
+  firstAttemptNumber Int      @map("first_attempt_number")
+  lastAttemptNumber  Int      @map("last_attempt_number")
+  /// How many times the event was delivered (1 = no redelivery)
+  deliveries         Int      @default(1)
+  receivedAt         DateTime @default(now()) @map("received_at") @db.Timestamptz(3)
+  lastReceivedAt     DateTime @default(now()) @map("last_received_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, system, deliveryKey])
+  @@index([tenantId, receivedAt])
+  @@map("tenant_webhook_receipts")
 }
 
 model TenantQualificationConfig {

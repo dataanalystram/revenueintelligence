@@ -37,6 +37,11 @@ export default tseslint.config(
     },
   },
   {
+    // Plain ESM tooling outside any TypeScript project (hubspot-app/render.mjs).
+    files: ['hubspot-app/**/*.mjs'],
+    ...tseslint.configs.disableTypeChecked,
+  },
+  {
     // Tenant configuration tables are written only through TenantConfigService,
     // which enforces cross-setting invariants under the per-tenant lock
     // (ADR 0008). Other modules must not touch these Prisma delegates directly.

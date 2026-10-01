@@ -51,6 +51,7 @@ describe('database migrations and schema guard', () => {
       expect(rows.map((r) => r.migration_name)).toEqual([
         '20260926120000_tenancy_and_identity',
         '20260927120000_oauth_tokens_and_states',
+        '20260928120000_webhook_receipts_and_routing',
       ]);
       expect(rows.every((r) => r.finished_at !== null)).toBe(true);
     });
@@ -134,9 +135,10 @@ describe('database migrations and schema guard', () => {
           'person_external_refs',
           'tenant_oauth_tokens',
           'tenant_oauth_states',
+          'tenant_webhook_receipts',
         ]),
       );
-      expect(tables.length).toBeGreaterThanOrEqual(16);
+      expect(tables.length).toBeGreaterThanOrEqual(17);
     });
 
     it('every table has row-level security enabled and forced', () => {
@@ -218,6 +220,75 @@ describe('database migrations and schema guard', () => {
         ),
       );
       expect(rows).toEqual([{ rolsuper: false, rolbypassrls: false, rolcanlogin: false }]);
+    });
+  });
+
+  describe('webhook routing role (ADR 0011)', () => {
+    it('is a powerless NOLOGIN role that the app role cannot become', async () => {
+      const { rows } = await withAdmin(cleanUrl, (db) =>
+        db.query<Record<string, boolean>>(`
+          SELECT rolsuper, rolbypassrls, rolcanlogin, rolcreaterole, rolcreatedb,
+                 pg_has_role('lip_app', 'lip_webhook_router', 'MEMBER') AS app_is_member,
+                 pg_has_role('lip_webhook_router', 'lip_app', 'MEMBER') AS router_is_app
+          FROM pg_roles WHERE rolname = 'lip_webhook_router'`),
+      );
+      expect(rows).toEqual([
+        {
+          rolsuper: false,
+          rolbypassrls: false,
+          rolcanlogin: false,
+          rolcreaterole: false,
+          rolcreatedb: false,
+          app_is_member: false,
+          router_is_app: false,
+        },
+      ]);
+    });
+
+    it('can read only non-secret columns: never a token column, never another table', async () => {
+      const { rows } = await withAdmin(cleanUrl, (db) =>
+        db.query<{ table_name: string; column_name: string; privilege_type: string }>(`
+          SELECT table_name, column_name, privilege_type FROM information_schema.column_privileges
+          WHERE grantee = 'lip_webhook_router' ORDER BY table_name, column_name`),
+      );
+      expect(rows.map((r) => `${r.table_name}.${r.column_name}:${r.privilege_type}`)).toEqual([
+        'tenant_oauth_tokens.account_id:SELECT',
+        'tenant_oauth_tokens.system:SELECT',
+        'tenant_oauth_tokens.tenant_id:SELECT',
+        'tenants.id:SELECT',
+        'tenants.status:SELECT',
+      ]);
+      const tables = await withAdmin(cleanUrl, (db) =>
+        db.query<{ n: number }>(
+          "SELECT count(*)::int AS n FROM information_schema.table_privileges WHERE grantee = 'lip_webhook_router'",
+        ),
+      );
+      expect(tables.rows[0]!.n).toBe(0);
+    });
+
+    it('owns exactly one function, SECURITY DEFINER with a fixed search_path, executable by the app role only', async () => {
+      const { rows } = await withAdmin(cleanUrl, (db) =>
+        db.query<{
+          name: string;
+          definer: boolean;
+          config: string[] | null;
+          app: boolean;
+          public: boolean;
+        }>(`
+          SELECT p.proname AS name, p.prosecdef AS definer, p.proconfig AS config,
+                 has_function_privilege('lip_app', p.oid, 'EXECUTE') AS app,
+                 has_function_privilege('public', p.oid, 'EXECUTE') AS public
+          FROM pg_proc p WHERE p.proowner = 'lip_webhook_router'::regrole`),
+      );
+      expect(rows).toEqual([
+        {
+          name: 'app_route_oauth_account',
+          definer: true,
+          config: ['search_path=pg_catalog, pg_temp'],
+          app: true,
+          public: false,
+        },
+      ]);
     });
   });
 

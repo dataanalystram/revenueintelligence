@@ -132,6 +132,20 @@ describe('integration settings', () => {
     });
     expect(() => parseIntegrationSettings('sugar', { baseUrl: 'http://plain.example' })).toThrow();
     expect(() => parseIntegrationSettings('hubspot', { portalId: 'abc' })).toThrow();
+    // HubSpot web host (region) of the account: HubSpot's own app hosts only.
+    for (const uiDomain of ['app.hubspot.com', 'app-eu1.hubspot.com', 'app-na2.hubspot.com']) {
+      expect(parseIntegrationSettings('hubspot', { uiDomain })).toEqual({ uiDomain });
+    }
+    for (const uiDomain of [
+      'evil.example',
+      'app.hubspot.com.evil.example',
+      'https://app-eu1.hubspot.com',
+      'app-eu1.hubspot.com/oauth',
+      'api.hubapi.com',
+      'app-eu1.hubspot.co',
+    ]) {
+      expect(() => parseIntegrationSettings('hubspot', { uiDomain }), uiDomain).toThrow();
+    }
     expect(isEnabled({ access: 'disabled' })).toBe(false);
     expect(isEnabled({ access: 'read_only' })).toBe(true);
   });
