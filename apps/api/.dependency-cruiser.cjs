@@ -104,6 +104,14 @@ module.exports = {
       to: { path: '^src/generated/prisma/' },
     },
     {
+      name: 'bullmq-only-in-platform-queue',
+      severity: 'error',
+      comment:
+        'Job coordination goes through QueueService (ADR 0013); BullMQ types never reach business code.',
+      from: { pathNot: '^src/platform/queue/' },
+      to: { path: 'node_modules/bullmq/' },
+    },
+    {
       name: 'no-test-code-in-production',
       severity: 'error',
       from: { pathNot: '\\.spec\\.ts$' },

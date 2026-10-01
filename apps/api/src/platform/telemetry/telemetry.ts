@@ -1,3 +1,4 @@
+import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { ExpressInstrumentation } from '@opentelemetry/instrumentation-express';
 import { HttpInstrumentation } from '@opentelemetry/instrumentation-http';
@@ -5,6 +6,7 @@ import { IORedisInstrumentation } from '@opentelemetry/instrumentation-ioredis';
 import { NestInstrumentation } from '@opentelemetry/instrumentation-nestjs-core';
 import { PgInstrumentation } from '@opentelemetry/instrumentation-pg';
 import { resourceFromAttributes } from '@opentelemetry/resources';
+import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
 import { NodeSDK } from '@opentelemetry/sdk-node';
 import { ATTR_SERVICE_NAME } from '@opentelemetry/semantic-conventions';
 import * as Sentry from '@sentry/nestjs';
@@ -53,6 +55,12 @@ export function startTelemetry(config: AppConfig, processRole: 'api' | 'worker')
         [ATTR_SERVICE_NAME]: `${telemetry.serviceName}-${processRole}`,
       }),
       traceExporter: new OTLPTraceExporter({ url: `${telemetry.otlpEndpoint}/v1/traces` }),
+      // Queue and context-processing metrics (M6); labels are short codes only.
+      metricReaders: [
+        new PeriodicExportingMetricReader({
+          exporter: new OTLPMetricExporter({ url: `${telemetry.otlpEndpoint}/v1/metrics` }),
+        }),
+      ],
       instrumentations: [
         new HttpInstrumentation(),
         new ExpressInstrumentation(),

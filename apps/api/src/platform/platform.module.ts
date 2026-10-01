@@ -4,6 +4,8 @@ import { CryptoModule } from './crypto';
 import { DatabaseModule } from './database';
 import { LifecycleLogger } from './lifecycle';
 import { LoggingModule } from './logging';
+import { MetricsModule } from './metrics';
+import { QueueModule } from './queue';
 import { RedisModule } from './redis';
 import { SecretsModule } from './secrets';
 
@@ -24,6 +26,8 @@ export class PlatformModule {
         CryptoModule,
         DatabaseModule,
         RedisModule,
+        MetricsModule,
+        QueueModule,
       ],
       providers: [LifecycleLogger],
       exports: [
@@ -33,6 +37,8 @@ export class PlatformModule {
         CryptoModule,
         DatabaseModule,
         RedisModule,
+        MetricsModule,
+        QueueModule,
       ],
     };
   }
