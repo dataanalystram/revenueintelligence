@@ -106,8 +106,6 @@ export class HubSpotCrmReader implements CrmReader {
   ): Promise<CrmChangedPage<CrmSnapshotFor[K]>> {
     const objectType = HUBSPOT_OBJECT_FOR_KIND[kind] as (typeof HUBSPOT_OBJECT_FOR_KIND)[K] &
       ('contacts' | 'companies');
-    return this.reader.searchModifiedSince(objectType, options) as Promise<
-      CrmChangedPage<CrmSnapshotFor[K]>
-    >;
+    return this.reader.searchModifiedSince(objectType, options);
   }
 }
