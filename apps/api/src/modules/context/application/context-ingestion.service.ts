@@ -363,6 +363,8 @@ export class ContextIngestionService {
         }
       }
       if (obs.fields.email) {
+        // Concurrent ingestion of two people with one email must still see each other.
+        await this.store.lockKey(tx, 'email', obs.fields.email);
         const others = await this.store.personIdsWithEmail(tx, obs.fields.email, id);
         if (others.length > 0) {
           // Email is not identity: record the question, never merge (ADR 0014).

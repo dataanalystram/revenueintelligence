@@ -142,12 +142,17 @@ describe('HubSpot webhook intake (API process)', () => {
     setEnv('HUBSPOT_WEBHOOK_TARGET_URL', TARGET);
     setEnv('PLATFORM_TOKEN_ENCRYPTION_KEY', randomBytes(32).toString('base64'));
     infra = await startInfrastructure();
-    app = await createApiApp(infra.config);
+    // M5 intake contract: stored receipts stay pending (M6 processing is covered in test/context).
+    const config = {
+      ...infra.config,
+      context: { ...infra.config.context, processingEnabled: false },
+    };
+    app = await createApiApp(config);
     await app.init();
     // Listening once: supertest otherwise starts a listener per request (20 concurrent ones below).
     await app.listen(0, '127.0.0.1');
     http = app.getHttpServer() as App;
-    h = await startTenancy(infra.config);
+    h = await startTenancy(config);
 
     ok = await installed('whok', 5005);
     staticTenant = await provisionTenant(h, 'whstatic');

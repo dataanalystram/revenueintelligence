@@ -130,6 +130,19 @@ export class ContextStore {
     await tenantClient(tx).$executeRaw`SELECT pg_advisory_xact_lock(${key}::bigint)`;
   }
 
+  /**
+   * Serialises a check across records for the rest of the transaction (e.g.
+   * the shared-email check). Always taken after the record lock, so lock
+   * order is fixed and cannot deadlock.
+   */
+  async lockKey(tx: TenantTransaction, scope: string, value: string): Promise<void> {
+    const key = createHash('sha256')
+      .update(`${tx.tenantId}|${scope}|${value}`)
+      .digest()
+      .readBigInt64BE(0);
+    await tenantClient(tx).$executeRaw`SELECT pg_advisory_xact_lock(${key}::bigint)`;
+  }
+
   async findRef(
     tx: TenantTransaction,
     kind: ContextKind,

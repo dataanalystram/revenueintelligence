@@ -84,6 +84,7 @@ export function retryDelayMs(
 /** Redis must not evict keys under memory pressure, or BullMQ loses jobs. */
 export async function redisEvictionPolicy(redisUrl: string): Promise<string | undefined> {
   const client = createRedisClient(redisUrl);
+  client.on('error', () => undefined); // reported by the caller through the rejected promise
   try {
     await client.connect();
     const info = await client.info('memory');
@@ -201,9 +202,16 @@ export class QueueService implements OnModuleDestroy {
 
   /** Verifies the Redis eviction policy once (workers only). */
   assertRedisPolicy(): Promise<void> {
-    this.policyChecked ??= redisEvictionPolicy(this.config.redisUrl).then((policy) => {
-      if (policy !== 'noeviction') throw new RedisPolicyError(policy);
-    });
+    this.policyChecked ??= redisEvictionPolicy(this.config.redisUrl).then(
+      (policy) => {
+        if (policy !== 'noeviction') throw new RedisPolicyError(policy);
+      },
+      (err: unknown) => {
+        // Unreachable is not a verdict: allow the check to run again later.
+        this.policyChecked = undefined;
+        throw err;
+      },
+    );
     return this.policyChecked;
   }
 

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { Client } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { QUEUES, JOBS } from '../../src/modules/context';
 import type { TenantContext } from '../../src/modules/tenancy';
@@ -273,6 +274,61 @@ describe('context processing: webhook receipts → canonical context', () => {
         people.map((p) => p.id).sort(),
       );
       expect(JSON.stringify(conflicts)).not.toContain('shared@school.example');
+    });
+  });
+
+  describe('concurrency of identity checks', () => {
+    it('people sharing an email ingested at the same time still raise one conflict per email', async () => {
+      // Force the race: an admin session holds the provenance table, so every
+      // ingestion stops after inserting its (uncommitted) person and before
+      // its email check. Released together, each must still see the other.
+      const admin = new Client({ connectionString: c.infra.adminUrl });
+      await admin.connect();
+      const pairs = [1, 2, 3, 4, 5];
+      let ingestions: Promise<unknown>[] = [];
+      try {
+        await admin.query('BEGIN');
+        await admin.query('LOCK TABLE tenant_context_changes IN SHARE MODE');
+        ingestions = pairs.flatMap((n) =>
+          ['a', 'b'].map((side) =>
+            c.ingestion.ingest(
+              a,
+              {
+                kind: 'person',
+                presence: 'present',
+                ref: {
+                  system: 'hubspot',
+                  objectType: 'contacts',
+                  id: `77${n}${side === 'a' ? 0 : 1}`,
+                },
+                observedAt: new Date(),
+                sourceUpdatedAt: new Date('2026-09-10T00:00:00Z'),
+                fields: { email: `pair${n}@race.example` as never },
+              },
+              { cause: 'resync', correlationId: randomUUID() },
+            ),
+          ),
+        );
+        await c.until(
+          async () => {
+            const [row] = await c.sql<{ n: number }>(
+              "SELECT count(*)::int AS n FROM pg_locks WHERE relation = 'tenant_context_changes'::regclass AND NOT granted",
+            );
+            return row!.n >= ingestions.length;
+          },
+          20_000,
+          'all ingestions waiting on the provenance table',
+        );
+      } finally {
+        await admin.query('COMMIT').catch(() => undefined);
+        await admin.end();
+      }
+      await Promise.all(ingestions);
+      const raceConflicts = await c.sql(
+        "SELECT c.id FROM tenant_identity_conflicts c WHERE c.tenant_id = $1 AND c.kind = 'shared_email' AND cardinality(c.canonical_ids) = 2 AND EXISTS (SELECT 1 FROM persons p WHERE p.id::text = ANY (c.canonical_ids) AND p.primary_email LIKE '%@race.example')",
+        [a.tenantId],
+      );
+      expect(raceConflicts).toHaveLength(pairs.length);
     });
   });
 
