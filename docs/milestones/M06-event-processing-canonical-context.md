@@ -1,7 +1,10 @@
 # Milestone 6 — Event processing and canonical account context
 
-- Status: **implementation plan, awaiting approval**. No M6 code, dependency,
-  schema or HubSpot app change exists.
+- Status: **implemented, awaiting independent review** (plan approved
+  2026-10-01: "PASS — M6 PLAN APPROVED FOR IMPLEMENTATION"). The
+  [implementation record](#implementation-record) at the end lists what was
+  built, deviations from this plan, evidence and open items. Live evidence on
+  the test account is owner-run and still outstanding.
 - Base: `main` at `51c62c9` (PR #7 merged: approved
   [charter](../product/revenue-opportunity-intelligence.md),
   [roadmap](../product/roadmap.md),
@@ -878,8 +881,11 @@ object processing (receipts
 - **Database**: migrations are additive except the two relaxations
   (nullable name/email, dropped email uniqueness). Production policy is
   forward-fix; a tested down-script is provided for development and
-  staging. Pre-M6 code cannot read rows with null name/email, so once such
-  rows exist the rollback path is the runtime switch, not a code downgrade.
+  staging (`apps/api/prisma/rollback/`, tested in
+  `test/tenancy/migrations.int.spec.ts`). Pre-M6 code cannot read rows with
+  null name/email, so once such rows exist the rollback path is the runtime
+  switch, not a code downgrade; the identity down-script refuses to run on
+  such data.
 - **HubSpot app**: re-upload the previous template to remove the new
   subscriptions; no scope changes are involved.
 - **Canonical data**: every change has provenance; records created by M6 can
@@ -896,3 +902,115 @@ object processing (receipts
 5. Live test actions on the test account (delete/restore/merge of test
    records only).
 6. The PR and independent review before merge.
+
+---
+
+## Implementation record
+
+Branch `claude/blissful-mendel-urbh4r`, from the approved plan (`869ddae`).
+The exact head SHA, CI result and fresh-clone output are in the M6 pull
+request description, since they are bound to the final commit.
+
+### What was built
+
+| Area                    | Implementation                                                                                                                                                                                                                                                                                                                                        |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ADRs                    | [0013](../adr/0013-event-processing-on-bullmq.md) BullMQ processing, [0014](../adr/0014-canonical-identity-references-provenance.md) identity/references/provenance, [0015](../adr/0015-hubspot-lifecycle-subscriptions-and-reconciliation-search.md) lifecycle subscriptions and Gate 1 search evidence                                              |
+| Gate 1 (search)         | Official docs (2026-09 "latest" page titled `POST /crm/objects/2026-03/{objectType}/search`) → **2026-03**. Exact allow-list `^/crm/objects/2026-03/(contacts\|companies)/search$`, strict body schema per object, 3 req/s per tenant. Written before any search code (commit order: ADR 0015 → `5d4bf55`)                                            |
+| Gate 2 (privacy)        | `contact.privacyDeletion` not subscribed, parsed or handled; a test refuses it in the app template; tech-debt item 15                                                                                                                                                                                                                                 |
+| Queue platform          | `platform/queue` (only module importing BullMQ, dependency rule): queues `lip-receipts`, `lip-sync`, `lip-bulk`; deterministic job ids; strict identifier-only payloads; 8 attempts, 5 s × 2ⁿ (≤ 10 min, ±20 %, ≥ Retry-After); `noeviction` check; graceful shutdown; stalled-job recovery; tick scheduler                                           |
+| Migrations              | `20261005120000_m6_canonical_identity_provenance`, `20261005130000_m6_event_processing_state` (RLS, tenant keys, CHECKs, immutability triggers on all five new tables); development/staging down-scripts in `apps/api/prisma/rollback/`                                                                                                               |
+| Identity                | Platform UUIDs canonical; refs carry `state` (`active`/`deleted`/`merged`), `merged_into_external_id`, source times, field hash; nullable company name and person email (no placeholders); email not unique, never used to merge; `shared_email`, `merge_across_systems`, `ambiguous_primary_company` conflicts                                       |
+| Single writer           | `ContextIngestionService.ingest` / `ingestMerge` (dependency rule `context-store-only-from-ingestion`); pure `decideApply` (create/apply/restore/delete/unchanged/stale/not_found); per-record and per-email advisory locks; one tenant transaction per record including provenance and receipt/checkpoint state                                      |
+| Provenance              | `tenant_context_changes`: change type, changed **field names**, cause, receipt/checkpoint, correlation id, adapter version. No values (CHECK constraints)                                                                                                                                                                                             |
+| Receipts                | Eligibility (app, portal, object type), leads `deferred:lead_out_of_scope`, read-back before any canonical write (`source_not_found` otherwise), sweep for recent receipts, `pre_m6` receipts only via the bounded command                                                                                                                            |
+| Backfill/reconciliation | Paginated, checkpointed, resumable, rate-limited, same writer. Reconciliation on the Gate-1 path only: watermark, lookback, 10 000-result window splitting, `needs_backfill` without a baseline                                                                                                                                                       |
+| Lifecycle               | `object.deletion`, `object.restore`, `object.merge`, `object.associationChange` for contacts and companies (template only; scopes unchanged). Merge forward within one system; contact↔company associations only                                                                                                                                      |
+| Operations              | CLI `context:report/receipts/backfill/reconcile/replay/dead-letters/show/state-hash` (dry run unless `--execute`); [operations guide](../operations/context-processing.md); [live-evidence runbook](../integrations/hubspot/m6-live-evidence-runbook.md); runtime switch `CONTEXT_PROCESSING_ENABLED`                                                 |
+| Metrics                 | `lip_receipts_received/outcome/swept/enqueue_failed/skipped_finished`, `lip_receipt_latency_ms`, `lip_jobs_queued/started/succeeded/failed_final`, `lip_job_duration_ms`, `lip_dead_letters`, `lip_replayed`, `lip_context_ingest/merge`, `lip_backfill_records`, `lip_reconcile_records`, `lip_source_requests/rate_limited` (labels are codes only) |
+
+### Deviations from the plan
+
+| Plan                                        | Implemented                                                                                   | Why                                                                                                       |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| BullMQ 5.x                                  | BullMQ 6.3.11                                                                                 | Current major at implementation time; API used is the same (ADR 0013)                                     |
+| Separate sweep and reconciliation schedules | One `context.tick` job scheduler (sweep + due reconciliations)                                | One scheduler, one interval to operate                                                                    |
+| Shared HubSpot limiter                      | Per-process limiter; one worker process per environment                                       | Tech-debt item 7 (corrected); revisit before horizontal scaling                                           |
+| Live evidence before the PR                 | Owner-run after the PR opens ([runbook](../integrations/hubspot/m6-live-evidence-runbook.md)) | This environment has no HubSpot credentials and its egress policy blocks HubSpot; never requested in chat |
+
+### Definition of Done (section 29)
+
+| #   | Criterion                                              | Status                                                                                     |
+| --- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| 1   | One canonical write path                               | Met: dependency rule + mutation proof                                                      |
+| 2   | Platform ids canonical; nullable name/email            | Met: migrations, domain, upgrade test                                                      |
+| 3   | Every eligible receipt terminal with a reason          | Met against the fake (integration + runtime script 50); live pending                       |
+| 4   | Duplicates/concurrency/replay/stale converge           | Met: concurrency, out-of-order, tombstone and shared-email race tests + mutation proofs    |
+| 5   | Retry, dead letter, poison, replay                     | Met: integration tests + mutation proofs                                                   |
+| 6   | Redis/worker/PostgreSQL interruptions lose nothing     | Met: sweep test, runtime script (Redis/worker restarts), stalled-job recovery              |
+| 7   | Backfill resumable/idempotent; reconciliation window   | Met against the fake                                                                       |
+| 8   | Historical M5 receipts; second replay equal hash       | Met against the fake; live pending                                                         |
+| 9   | Delete/restore/merge/association semantics             | Met against the fake; live pending (company `object.merge` upload unconfirmed, item 18)    |
+| 10  | Isolation; zero writes; no new scopes; no values       | Met: RLS tests, read-only guard, zero-write counters in runtime scripts, value-free checks |
+| 11  | Metrics and `context:report`                           | Met                                                                                        |
+| 12  | Mutation proofs; verify/runtime/Docker/fresh clone; CI | Mutation proofs, verify, runtime, Docker: met (below). Fresh clone and CI: PR description  |
+| 13  | ADRs, record, runbooks                                 | Met                                                                                        |
+
+### Mutation proofs (final code)
+
+Each mechanism was broken, its guarding test run (must fail for the stated
+reason), then restored and re-run (must pass). Script output, verbatim
+summaries:
+
+| Mechanism broken                                                | Result with the mutation                                                                                                                                                                                                                                                                                                                                                        | After restore                                                                     |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Search allow-list breadth                                       | fails: “refuses POST to write-like association and batch paths”; “allows exactly the verified 2026-03 contacts and companies search with a read body”; “the allow-list is exactly the expected set (breadth check)”                                                                                                                                                             | 53 passed (53) (exit 0)                                                           |
+| Search body validator                                           | fails: “refuses search bodies that are not a modified-since read”; “a refused search sends nothing”                                                                                                                                                                                                                                                                             | 53 passed (53) (exit 0)                                                           |
+| Redis noeviction check                                          | fails: “refuses to process when Redis may evict keys (maxmemory-policy)”                                                                                                                                                                                                                                                                                                        | 1 passed, 5 skipped (6) (exit 0)                                                  |
+| Graceful shutdown (waits for active jobs)                       | fails: “graceful shutdown waits for the active job to finish”                                                                                                                                                                                                                                                                                                                   | 1 passed, 5 skipped (6) (exit 0)                                                  |
+| Single canonical writer (dependency rule)                       | fails: 1 dependency violations (1 errors, 0 warnings); error context-store-only-from-ingestion                                                                                                                                                                                                                                                                                  | ✔ no dependency violations found (219 modules, 858 dependencies cruised) (exit 0) |
+| Out-of-order guard (source time)                                | fails: “stale (older) observations never overwrite newer state”; “a newer webhook read-back wins over an older backfill snapshot processed later”                                                                                                                                                                                                                               | 2 passed, 33 skipped (35) (exit 0)                                                |
+| Tombstone guard (read time vs deletion)                         | fails: “an old snapshot cannot resurrect a record whose deletion was recorded after it was read”                                                                                                                                                                                                                                                                                | 2 passed, 7 skipped (9) (exit 0)                                                  |
+| Per-record advisory lock                                        | fails: “concurrent ingestion of one new source record creates exactly one canonical record”                                                                                                                                                                                                                                                                                     | 1 passed, 25 skipped (26) (exit 0)                                                |
+| Single transaction (afterApply inside the canonical write)      | fails: “a failure after the canonical write rolls back the record, reference and provenance”                                                                                                                                                                                                                                                                                    | 1 passed, 25 skipped (26) (exit 0)                                                |
+| Eligibility: account check                                      | fails: “account mismatch”                                                                                                                                                                                                                                                                                                                                                       | 1 passed, 25 skipped (26) (exit 0)                                                |
+| Read-back gate (never create from a receipt alone)              | fails: “a synthetic id HubSpot does not have”                                                                                                                                                                                                                                                                                                                                   | 1 passed, 25 skipped (26) (exit 0)                                                |
+| Read-back gate, historical receipts                             | ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯; × are processed explicitly through the same path; a second replay changes nothing (equal state hash) 445ms; FAIL test/context/bulk.int.spec.ts > context bulk sync: backfill, reconciliation, historical receipts > historical M5 receipts > are processed explicitly through the same path; a second replay changes nothing (equal state hash) | 1 passed, 8 skipped (9) (exit 0)                                                  |
+| Retry classification (permanent errors)                         | ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯; × a permanent source error dead-letters the receipt (code only); replay processes it 5147ms; FAIL test/context/processing.int.spec.ts > context processing: webhook receipts → canonical context > failures: retries, dead letters, replay, poison jobs > a permanent source error dead-letters the receipt (code only); replay processes it    | 1 passed, 25 skipped (26) (exit 0)                                                |
+| Dead-letter write                                               | fails: “a poison job (invalid payload) fails without retries and is dead-lettered with invalid_payload”; “a job for tenant A naming tenant B's receipt finds nothing (RLS) and changes nothing in B”                                                                                                                                                                            | 4 passed, 22 skipped (26) (exit 0)                                                |
+| Sweep (durability after Redis loss)                             | fails: “a receipt stored while the queue was unreachable stays pending and the sweep processes it”                                                                                                                                                                                                                                                                              | 1 passed, 25 skipped (26) (exit 0)                                                |
+| Runtime switch (CONTEXT_PROCESSING_ENABLED=false)               | fails: “job payloads in Redis hold identifiers only: no credentials, tokens or record values”                                                                                                                                                                                                                                                                                   | 1 passed, 25 skipped (26) (exit 0)                                                |
+| Merge lineage (cross-system guard)                              | fails: “never merges canonical records across systems automatically: a conflict is recorded”                                                                                                                                                                                                                                                                                    | 1 passed, 9 skipped (10) (exit 0)                                                 |
+| Email is not identity (no merge on shared email)                | ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯; × two contacts with the same email stay two people; a shared_email conflict is recorded 20212ms; FAIL test/context/processing.int.spec.ts > context processing: webhook receipts → canonical context > missing values and email is not identity > two contacts with the same email stay two people; a shared_email conflict is recorded         | 1 passed, 25 skipped (26) (exit 0)                                                |
+| RLS on a new M6 table                                           | fails: “every table has row-level security enabled and forced”; “every tenant-owned table has NOT NULL tenant_id and a policy on app_current_tenant()”                                                                                                                                                                                                                          | 17 passed (17) (exit 0)                                                           |
+| Email lock (shared-email conflict under concurrency)            | fails: “people sharing an email ingested at the same time still raise one conflict per email”                                                                                                                                                                                                                                                                                   | 1 passed, 25 skipped (26) (exit 0)                                                |
+| Worker starts while Redis is unreachable (registration retried) | fails: “allows a superuser only with the explicit development override”; “starts with the application role”                                                                                                                                                                                                                                                                     | 2 passed, 5 skipped (7) (exit 0)                                                  |
+| Down-script restores the M5 schema (unique email index)         | fails: “the M6 down-scripts restore exactly the M5 schema, refuse data M5 cannot hold, and M6 re-applies”                                                                                                                                                                                                                                                                       | 1 passed, 16 skipped (17) (exit 0)                                                |
+| Down-script refuses data M5 cannot hold                         | fails: “the M6 down-scripts restore exactly the M5 schema, refuse data M5 cannot hold, and M6 re-applies”                                                                                                                                                                                                                                                                       | 1 passed, 16 skipped (17) (exit 0)                                                |
+
+The shared-email race test was first written as a plain concurrent run and
+**did not fail** without the email lock (the race window was never hit). It
+was rewritten to force the race (an admin session holds the provenance
+table, so every ingestion stops between inserting its person and the email
+check) and then failed without the lock (`expected [ …(2) ] to have a length
+of 5 but got 2`) and passed with it.
+
+### Verification (local, before the PR)
+
+| Gate                  | Result                                                                                                                                         |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm verify`         | pass: lint, format, typecheck, dependency rules; unit 36 files / 434 tests; integration 16 files / 226 tests (before the down-script test, +1) |
+| `pnpm verify:runtime` | pass: 105 passed, 0 failed (includes script 40 with processing disabled and script 50 context processing)                                      |
+| `pnpm verify:docker`  | pass: 14 passed, 0 failed; cleanup verified (sandbox CA added through `LIP_DOCKERFILE`, not committed)                                         |
+| Fresh clone, CI       | In the PR description (bound to the final SHA)                                                                                                 |
+| Live (test account)   | **Outstanding**: owner-run per the [runbook](../integrations/hubspot/m6-live-evidence-runbook.md)                                              |
+
+### Open items
+
+- Live evidence on test account 149338734 (runbook steps 1–7), including the
+  app re-upload with the lifecycle subscriptions and confirmation that
+  scopes stay read-only.
+- Technical debt added or updated: items 7, 15–19 in the
+  [register](../tech-debt.md).
+- Explicitly not in M6: privacy deletion/erasure, leads processing, signals,
+  scoring, routing, CRM writes, UI, per-tenant fairness, retention policy.

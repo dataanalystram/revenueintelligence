@@ -71,6 +71,14 @@ never names or emails. Work is processed by the worker.
 - **Redis flushed/lost:** recent receipts return through the sweep; for older
   ones run `context:receipts --since <time> --execute`; restart failed runs
   with `--resume`.
+- **Schema rollback (development/staging only; production is forward-fix):**
+  stop API and worker, then run with the owner credentials, in this order,
+  `prisma/rollback/20261005130000_m6_event_processing_state.down.sql` and
+  `prisma/rollback/20261005120000_m6_canonical_identity_provenance.down.sql`
+  (`psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -f …`). The second
+  refuses while any company has no name, any person no email, two people
+  share an email or a record is merged; it never invents values. Deploy the
+  M5 code afterwards; `prisma migrate deploy` re-applies M6 later.
 - **Shutdown:** SIGTERM stops taking jobs and waits up to
   `WORKER_SHUTDOWN_TIMEOUT_MS` for active ones; a killed worker's job is
   re-delivered by BullMQ (stalled-job recovery) and processed idempotently.
