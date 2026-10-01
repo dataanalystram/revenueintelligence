@@ -172,12 +172,14 @@ check "routing function answers for the app role; grants stay invisible to it" w
 
 wh_report() {
   local out
-  out="$(wh_cli webhook-report --tenant rtwebhook)" || return 1
+  out="$(wh_cli webhook-report --tenant rtwebhook --recent 10)" || return 1
   echo "$out"
   node -e '
     const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
     const ok = r.receipts === 4 && r.redelivered === 4 && r.maxAttemptNumber === 1 &&
-      r.byType.some((t) => t.subscriptionType === "object.creation" && t.objectTypeId === "0-136");
+      r.byType.some((t) => t.subscriptionType === "object.creation" && t.objectTypeId === "0-136") &&
+      r.byType.some((t) => t.subscriptionType === "object.propertyChange" && t.propertyName === "email") &&
+      r.recent.length === 4 && r.recent.some((x) => x.eventId === "9100003" && x.lastAttemptNumber === 1);
     process.exit(ok ? 0 : 1);' <<<"$out" && ! grep -q "$WH_MARKER" <<<"$out"
 }
 check "hubspot:webhook-report: counts, types, attempts; no values" wh_report

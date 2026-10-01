@@ -23,6 +23,7 @@ export {
   HUBSPOT_APP_CLIENT_SECRET,
   HubSpotOAuthService,
   type CompletedInstall,
+  type RefreshOutcome,
 } from './application/hubspot-oauth.service';
 export { HUBSPOT_OBJECT_FOR_KIND, HubSpotCrmReader } from './application/hubspot-crm-reader';
 export { HubSpotModule, HubSpotOAuthHttpModule } from './hubspot.module';
@@ -40,6 +41,7 @@ export {
 export {
   WebhookReceiptRepository,
   type RecordedDeliveries,
+  type WebhookReceiptRow,
   type WebhookReceiptSummary,
 } from './infrastructure/webhook-receipt.repository';
 export {

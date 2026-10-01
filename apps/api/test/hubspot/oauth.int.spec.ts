@@ -537,6 +537,60 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
       }
     });
 
+    it('refresh evidence: the expire hook forces exactly one real refresh; outcomes hold facts, never tokens', async () => {
+      const t = await provisionTenant(h, 'oaevidence');
+      await configureOAuth(t, '3003');
+      await install(t);
+      const before = (await grants().get(t, 'hubspot'))!;
+      const refreshesBefore = fake.oauthCalls.refreshToken;
+      const outcomesBefore = oauth().refreshOutcomes().length;
+
+      // Without rotation (the fake then returns no refresh_token on refresh).
+      await expect(oauth().expireStoredAccessToken(t)).resolves.toBe(true);
+      expect(fake.oauthCalls.refreshToken).toBe(refreshesBefore); // expiring calls nobody
+      const token = await oauth().accessToken(t, '3003');
+      expect(fake.oauthCalls.refreshToken).toBe(refreshesBefore + 1);
+      const after = (await grants().get(t, 'hubspot'))!;
+      expect(token.reveal()).not.toBe(before.accessToken!.token.reveal());
+      expect(after.refreshToken.reveal()).toBe(before.refreshToken.reveal());
+      const plain = oauth().refreshOutcomes().slice(outcomesBefore);
+      expect(plain).toHaveLength(1);
+      expect(plain[0]).toMatchObject({ refreshTokenReturned: false, refreshTokenRotated: false });
+
+      // With rotation.
+      fake.configureOAuth({ rotateRefreshTokens: true });
+      try {
+        await oauth().expireStoredAccessToken(t);
+        await oauth().accessToken(t, '3003');
+      } finally {
+        fake.configureOAuth({ rotateRefreshTokens: false });
+      }
+      const rotated = oauth().refreshOutcomes().at(-1)!;
+      expect(rotated).toMatchObject({ refreshTokenReturned: true, refreshTokenRotated: true });
+      const latest = (await grants().get(t, 'hubspot'))!;
+      expect(latest.refreshToken.reveal()).not.toBe(before.refreshToken.reveal());
+
+      // Facts only: no token in the outcomes.
+      const json = JSON.stringify(oauth().refreshOutcomes());
+      for (const secret of [
+        before.refreshToken.reveal(),
+        latest.refreshToken.reveal(),
+        token.reveal(),
+        latest.accessToken!.token.reveal(),
+      ]) {
+        expect(json).not.toContain(secret);
+      }
+    });
+
+    it('the expire hook on a tenant without a grant changes nothing and calls nobody', async () => {
+      const t = await provisionTenant(h, 'oaexpirenone');
+      await configureOAuth(t, '3003');
+      const calls = fake.oauthCalls.refreshToken;
+      await expect(oauth().expireStoredAccessToken(t)).resolves.toBe(false);
+      expect(fake.oauthCalls.refreshToken).toBe(calls);
+      expect(await tokenRow(t)).toBeUndefined();
+    });
+
     it('a revoked grant → reauthorization_required, never a silent failure', async () => {
       const t = await provisionTenant(h, 'oarevoked');
       await configureOAuth(t, '3003');

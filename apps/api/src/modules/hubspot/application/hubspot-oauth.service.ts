@@ -56,6 +56,17 @@ interface CachedToken {
   readonly accountId: string;
 }
 
+/** What HubSpot returned on one refresh: no token, only facts about it. */
+export interface RefreshOutcome {
+  readonly at: Date;
+  /** HubSpot included a refresh_token in the refresh response. */
+  readonly refreshTokenReturned: boolean;
+  /** The returned refresh token differs from the one used (rotation). */
+  readonly refreshTokenRotated: boolean;
+  readonly expiresInSeconds: number;
+  readonly scopes: readonly string[];
+}
+
 export interface CompletedInstall {
   readonly tenantId: string;
   readonly tenantSlug: string;
@@ -88,6 +99,8 @@ export class HubSpotOAuthService {
    * never held outside a redacting Secret. Memory only.
    */
   private readonly rejected = new Map<string, string>();
+  /** Refreshes this process performed at HubSpot (memory only, no tokens). */
+  private readonly refreshes: RefreshOutcome[] = [];
 
   constructor(
     private readonly tenantConfig: TenantConfigService,
@@ -257,6 +270,23 @@ export class HubSpotOAuthService {
             'HubSpot refreshed a token for a different account',
           );
         }
+        const outcome: RefreshOutcome = {
+          at: new Date(),
+          refreshTokenReturned: tokens.refreshToken !== undefined,
+          refreshTokenRotated:
+            tokens.refreshToken !== undefined &&
+            tokens.refreshToken.reveal() !== grant.refreshToken.reveal(),
+          expiresInSeconds: tokens.expiresInSeconds,
+          scopes: tokens.scopes,
+        };
+        this.refreshes.push(outcome);
+        this.logger.log({
+          msg: 'HubSpot access token refreshed',
+          tenantId: ctx.tenantId,
+          refreshTokenReturned: outcome.refreshTokenReturned,
+          refreshTokenRotated: outcome.refreshTokenRotated,
+          expiresInSeconds: outcome.expiresInSeconds,
+        });
         const next: OAuthGrant = {
           accountId: grant.accountId,
           // HubSpot may rotate the refresh token; keep the newest one.
@@ -282,6 +312,37 @@ export class HubSpotOAuthService {
     // the very token that was just rejected.
     if (!this.isRejected(ctx, refreshed.token)) this.rejected.delete(ctx.tenantId);
     return refreshed;
+  }
+
+  /**
+   * Refreshes this process performed at HubSpot, newest last: booleans and
+   * counts only, never a token. Evidence for operators (refresh rotation).
+   */
+  refreshOutcomes(): readonly RefreshOutcome[] {
+    return [...this.refreshes];
+  }
+
+  /**
+   * Operator hook (live refresh evidence): marks the tenant's stored access
+   * token as expired, under the grant lock, so the next `accessToken` performs
+   * a real refresh. The refresh token is not touched; nothing is sent to
+   * HubSpot here. Returns false when the tenant has no grant.
+   */
+  async expireStoredAccessToken(ctx: TenantContext): Promise<boolean> {
+    const expired = await this.guarded(() =>
+      this.grants.withLockedGrant(ctx, 'hubspot', (current) => {
+        if (!current?.accessToken) return Promise.resolve({ result: current !== undefined });
+        return Promise.resolve({
+          save: {
+            ...current,
+            accessToken: { ...current.accessToken, expiresAt: new Date(Date.now() - 60_000) },
+          },
+          result: true,
+        });
+      }),
+    );
+    this.cache.delete(ctx.tenantId);
+    return expired;
   }
 
   /** Test and operator hook: forget this process's cached access tokens. */

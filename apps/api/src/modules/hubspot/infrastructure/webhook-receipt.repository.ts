@@ -19,8 +19,26 @@ export interface WebhookReceiptSummary {
   readonly byType: readonly {
     readonly subscriptionType: string;
     readonly objectTypeId: string | null;
+    readonly propertyName: string | null;
     readonly receipts: number;
   }[];
+}
+
+/** One receipt as metadata (identifiers, types, attempts, times): the report's `recent` list. */
+export interface WebhookReceiptRow {
+  readonly eventId: string;
+  readonly subscriptionId: string;
+  readonly subscriptionType: string;
+  readonly objectTypeId: string | null;
+  readonly objectId: string | null;
+  readonly propertyName: string | null;
+  readonly changeSource: string | null;
+  readonly occurredAt: Date;
+  readonly firstAttemptNumber: number;
+  readonly lastAttemptNumber: number;
+  readonly deliveries: number;
+  readonly receivedAt: Date;
+  readonly lastReceivedAt: Date;
 }
 
 /**
@@ -66,6 +84,37 @@ export class WebhookReceiptRepository {
     });
   }
 
+  /** The newest receipts of a tenant, as metadata only (no values exist to return). */
+  async recent(ctx: TenantContext, limit: number, since?: Date): Promise<WebhookReceiptRow[]> {
+    return await this.db.transaction(ctx, async (tx) => {
+      const rows = await tenantClient(tx).tenantWebhookReceipt.findMany({
+        where: {
+          tenantId: tx.tenantId,
+          system: 'hubspot',
+          ...(since ? { receivedAt: { gte: since } } : {}),
+        },
+        orderBy: [{ receivedAt: 'desc' }, { eventId: 'desc' }],
+        take: Math.max(1, Math.min(limit, 200)),
+        select: {
+          eventId: true,
+          subscriptionId: true,
+          subscriptionType: true,
+          objectTypeId: true,
+          objectId: true,
+          propertyName: true,
+          changeSource: true,
+          occurredAt: true,
+          firstAttemptNumber: true,
+          lastAttemptNumber: true,
+          deliveries: true,
+          receivedAt: true,
+          lastReceivedAt: true,
+        },
+      });
+      return rows;
+    });
+  }
+
   /** Safe metadata about a tenant's receipts (counts, types, times): the webhook report. */
   async summary(ctx: TenantContext, since?: Date): Promise<WebhookReceiptSummary> {
     return await this.db.transaction(ctx, async (tx) => {
@@ -87,10 +136,10 @@ export class WebhookReceiptRepository {
         where: { ...where, deliveries: { gt: 1 } },
       });
       const groups = await client.tenantWebhookReceipt.groupBy({
-        by: ['subscriptionType', 'objectTypeId'],
+        by: ['subscriptionType', 'objectTypeId', 'propertyName'],
         where,
         _count: { _all: true },
-        orderBy: [{ subscriptionType: 'asc' }, { objectTypeId: 'asc' }],
+        orderBy: [{ subscriptionType: 'asc' }, { objectTypeId: 'asc' }, { propertyName: 'asc' }],
       });
       return {
         receipts: agg._count._all,
@@ -102,6 +151,7 @@ export class WebhookReceiptRepository {
         byType: groups.map((g) => ({
           subscriptionType: g.subscriptionType,
           objectTypeId: g.objectTypeId,
+          propertyName: g.propertyName,
           receipts: g._count._all,
         })),
       };

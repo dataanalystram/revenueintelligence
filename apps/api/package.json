@@ -23,6 +23,7 @@
     "hubspot:discover": "node dist/cli/hubspot-discovery.js",
     "hubspot:install-url": "node dist/cli/hubspot-install-url.js",
     "hubspot:webhook-report": "node dist/cli/hubspot-webhook-report.js",
+    "hubspot:oauth-refresh-evidence": "node dist/cli/hubspot-oauth-refresh-evidence.js",
     "test:live": "vitest run --config vitest.live.config.mts"
   },
   "dependencies": {

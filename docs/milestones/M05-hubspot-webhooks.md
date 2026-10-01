@@ -295,6 +295,27 @@ Retry: re-upload the app (its file now lists `oauth`, which matches what
 HubSpot deployed), then reconfigure `hsoauth` with
 `--ui-domain app-eu1.hubspot.com` and issue a new install URL.
 
+### 3. Real OAuth install succeeded (local Mac/ngrok, reported 2026-10-01)
+
+- `{"status":"installed","tenant":"hsoauth","accountId":"149338734"}`; the
+  encrypted grant is stored.
+- Granted scopes: `oauth`, `crm.objects.contacts.read`,
+  `crm.objects.companies.read`, `crm.objects.leads.read`,
+  `crm.schemas.contacts.read`, `crm.schemas.companies.read`. No write scope.
+- OAuth discovery through CrmReader: contacts 6 records / 402 properties,
+  companies 6 / 247, leads 3 / 132; no missing scopes.
+- Public `/health/live` returns 200 through ngrok.
+- A signed probe for an unknown account returned 200 `unroutable: 1`; a stale
+  probe returned 401.
+- One earlier callback failed because a hand-copied state lost a character
+  (refused as `invalid_state`, as designed). It is not a defect.
+
+Next: [M5 live-evidence runbook](../integrations/hubspot/m5-live-evidence-runbook.md)
+(contact/company/lead webhooks, replay and retry, real refresh and rotation,
+`hstest` coexistence). It added two evidence tools:
+`hubspot:oauth-refresh-evidence` (booleans/timestamps/counts only, never a
+token) and `hubspot:webhook-report --recent N`.
+
 ## Open questions
 
 1. **Tunnel**: allow `api.trycloudflare.com` in the environment's network

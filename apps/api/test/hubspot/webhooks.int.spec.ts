@@ -479,8 +479,49 @@ describe('HubSpot webhook intake (API process)', () => {
       expect(summary.maxAttemptNumber).toBe(2);
       expect(summary.byType).toEqual(
         expect.arrayContaining([
-          { subscriptionType: 'object.creation', objectTypeId: '0-136', receipts: 1 },
+          {
+            subscriptionType: 'object.creation',
+            objectTypeId: '0-136',
+            propertyName: null,
+            receipts: 1,
+          },
+          {
+            subscriptionType: 'object.propertyChange',
+            objectTypeId: '0-2',
+            propertyName: 'name',
+            receipts: 1,
+          },
         ]),
+      );
+    });
+
+    it('lists recent receipts as metadata only (ids, types, attempts, times)', async () => {
+      const rows = await h.app.get(WebhookReceiptRepository).recent(ok, 5);
+      expect(rows).toHaveLength(5);
+      for (const row of rows) {
+        expect(Object.keys(row).sort()).toEqual([
+          'changeSource',
+          'deliveries',
+          'eventId',
+          'firstAttemptNumber',
+          'lastAttemptNumber',
+          'lastReceivedAt',
+          'objectId',
+          'objectTypeId',
+          'occurredAt',
+          'propertyName',
+          'receivedAt',
+          'subscriptionId',
+          'subscriptionType',
+        ]);
+      }
+      // Newest first.
+      const times = rows.map((r) => r.receivedAt.getTime());
+      expect([...times].sort((a, b) => b - a)).toEqual(times);
+      expect(JSON.stringify(rows)).not.toContain(VALUE_MARKER);
+      // Tenant-scoped: the static tenant has none.
+      await expect(h.app.get(WebhookReceiptRepository).recent(staticTenant, 5)).resolves.toEqual(
+        [],
       );
     });
   });

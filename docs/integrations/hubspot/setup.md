@@ -261,6 +261,9 @@ hosts (`app[-<region>].hubspot.com`) are accepted. On the consent page, pick
 the tenant's account. Picking another account is refused after the code
 exchange, and the grant is revoked.
 
+After the install, collect the live evidence with the
+[M5 live-evidence runbook](m5-live-evidence-runbook.md).
+
 ### 7.6 Fallback: tunnel and API on a local machine
 
 Use this if the cloud environment cannot run a tunnel (M5 spike: its egress
