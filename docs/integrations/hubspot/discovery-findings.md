@@ -180,6 +180,13 @@ How this is enforced, not just intended:
   - or HubSpot workflow webhooks configured in Juniper's account
 - A read-only discovery cannot answer this: creating a subscription and a
   test Lead are writes to the test account, which belong to M5.
+- **M5 update (live, 2026-10-01):** on test account 149338734, with the
+  projects app at platform version 2026.03, a generic `object.creation`
+  subscription for leads **did deliver**. So did an
+  `object.propertyChange` on `hs_pipeline_stage`
+  ([M5 record](../../milestones/M05-hubspot-webhooks.md#4-live-webhooks-delivery-refresh-and-coexistence-reported-2026-10-01)).
+  This is proven for this account and point in time only. Confirm again on
+  Juniper's account (M16) before depending on it.
 
 ## Scopes Juniper will eventually need
 

@@ -1,7 +1,8 @@
 # Milestone 5: HubSpot webhook receiver and first real app install
 
-- Status: **in progress**: local build and proofs done; blocked on a public
-  HTTPS tunnel (see [Tunnel spike](#tunnel-spike)) before the real install
+- Status: **live evidence complete; awaiting the final gates and the
+  independent review.** Not complete until the review passes and the owner
+  approves the merge.
 - Decisions: [ADR 0011](../adr/0011-hubspot-webhooks-and-routing.md)
 - Setup: [integrations/hubspot/setup.md §7](../integrations/hubspot/setup.md#7-milestone-5-the-projects-based-app)
 
@@ -23,21 +24,21 @@ Jev/AI, SLA, frontend. No Juniper credentials.
 
 ## Definition of Done
 
-| #   | Item                                                                                                     | State                                                 |
-| --- | -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| 1   | HubSpot documentation verified; docs, community reports and live behaviour recorded separately           | done (ADR 0011); live column pending                  |
-| 2   | Webhook intake with every security requirement, unit + integration + runtime tested                      | done                                                  |
-| 3   | Routing only to active tenants with a grant; unknown/ambiguous never guessed; static tenant coexists     | done (local)                                          |
-| 4   | Receipts: forced RLS, identifiers only, atomic de-duplication                                            | done (local)                                          |
-| 5   | Wrong-account revoke: only in the mismatch branch, exact endpoint, grant never stored                    | done (local; live revoke optional, needs 2nd account) |
-| 6   | Every required mutation makes a check fail for the right reason                                          | done (22 mutations below)                             |
-| 7   | Public HTTPS tunnel: bounded spike with preservation proof                                               | **blocked** (network policy)                          |
-| 8   | App uploaded, real OAuth install, encrypted grant, OAuth CrmReader reads                                 | pending (manual steps, setup §7)                      |
-| 9   | Real refresh and rotation, old refresh token behaviour, granted scopes, `oauth` scope needed or not      | pending                                               |
-| 10  | Live Contact, Company and Lead webhooks (Journal probe if Leads do not deliver); real v3 signature       | pending                                               |
-| 11  | Live URI reconstruction, payload shape (safe metadata), batching/retry, duplicate recorded once, routing | pending                                               |
-| 12  | `hstest` unchanged and coexisting; zero CRM writes                                                       | pending (live)                                        |
-| 13  | `pnpm verify`, runtime, Docker, fresh clone, CI on the final commit, independent review                  | pending (final gate)                                  |
+| #   | Item                                                                                                     | State                                                                                                  |
+| --- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| 1   | HubSpot documentation verified; docs, community reports and live behaviour recorded separately           | done ([classification](#what-is-documented-live-proven-or-still-unconfirmed))                          |
+| 2   | Webhook intake with every security requirement, unit + integration + runtime tested                      | done                                                                                                   |
+| 3   | Routing only to active tenants with a grant; unknown/ambiguous never guessed; static tenant coexists     | done (local + live)                                                                                    |
+| 4   | Receipts: forced RLS, identifiers only, atomic de-duplication                                            | done (local + live replay)                                                                             |
+| 5   | Wrong-account revoke: only in the mismatch branch, exact endpoint, grant never stored                    | done (local; not exercised live: optional, needs a 2nd account)                                        |
+| 6   | Every required mutation makes a check fail for the right reason                                          | done (22 mutations below)                                                                              |
+| 7   | Public HTTPS tunnel: bounded spike with preservation proof                                               | done: cloud blocked by policy; local ngrok used (signed probe and real deliveries verified through it) |
+| 8   | App uploaded, real OAuth install, encrypted grant, OAuth CrmReader reads                                 | done (live findings 1–3)                                                                               |
+| 9   | Real refresh and rotation, old refresh token behaviour, granted scopes, `oauth` scope needed or not      | done (live finding 4); old-token test moot (no rotation)                                               |
+| 10  | Live Contact, Company and Lead webhooks (Journal probe if Leads do not deliver); real v3 signature       | done (live finding 4); Journal not needed                                                              |
+| 11  | Live URI reconstruction, payload shape (safe metadata), batching/retry, duplicate recorded once, routing | done (live finding 4); batch sizes not separately recorded                                             |
+| 12  | `hstest` unchanged and coexisting; zero CRM writes                                                       | done (live finding 4)                                                                                  |
+| 13  | `pnpm verify`, runtime, Docker, fresh clone, CI on the final commit, independent review                  | gates: see [Final gates](#final-gates); review pending                                                 |
 
 ## What was built
 
@@ -291,6 +292,9 @@ Gates after the fix: `pnpm verify` passes (unit 34 files / 401 tests,
 integration 12 files / 171 tests). `pnpm verify:runtime` passes (86 passed,
 0 failed; includes the new `--ui-domain` check).
 
+**Outcome (live, finding 3)**: with the corrected URL the consent page
+appeared and the install completed. The loop did not recur.
+
 Retry: re-upload the app (its file now lists `oauth`, which matches what
 HubSpot deployed), then reconfigure `hsoauth` with
 `--ui-domain app-eu1.hubspot.com` and issue a new install URL.
@@ -316,21 +320,78 @@ Next: [M5 live-evidence runbook](../integrations/hubspot/m5-live-evidence-runboo
 `hubspot:oauth-refresh-evidence` (booleans/timestamps/counts only, never a
 token) and `hubspot:webhook-report --recent N`.
 
+### 4. Live webhooks, delivery, refresh and coexistence (reported 2026-10-01)
+
+Run with the [live-evidence runbook](../integrations/hubspot/m5-live-evidence-runbook.md)
+on commit `c43d69a`, test account 149338734, local Mac with ngrok. The test
+records (`M5 Webhook Test Contact/Company/Lead`) were created and edited by a
+person in the HubSpot UI; they are not platform writes. Safe metadata only.
+
+| Check                        | Result | Evidence (metadata)                                                                                                                                   |
+| ---------------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Contact creation             | PASS   | `object.creation`, objectTypeId `0-1`                                                                                                                 |
+| Contact property change      | PASS   | `object.propertyChange`, `lifecyclestage`, `0-1`                                                                                                      |
+| Company creation             | PASS   | `object.creation`, `0-2`                                                                                                                              |
+| Company property change      | PASS   | `object.propertyChange`, `domain`, `0-2`                                                                                                              |
+| Lead creation                | PASS   | `object.creation`, `0-136`                                                                                                                            |
+| Lead stage change            | PASS   | `object.propertyChange`, `hs_pipeline_stage`, `0-136`                                                                                                 |
+| Real signature v3            | PASS   | every receipt is stored only after v3 verification against the configured public URL, through ngrok                                                   |
+| Duplicate (replay in window) | PASS   | ngrok replay → HTTP 200, same receipt row, `deliveries` incremented, no new row                                                                       |
+| Replay after the window      | PASS   | HTTP 401, stale timestamp refused                                                                                                                     |
+| HubSpot retry                | PASS   | API stopped during a contact change; HubSpot redelivered later; attempt evidence on the receipt                                                       |
+| Real OAuth refresh           | PASS   | `hubspotReturnedRefreshToken = true`, `hubspotRotatedRefreshToken = false`, `storedRefreshTokenChanged = false`; the refreshed token worked for reads |
+| Cross-process refresh        | PASS   | after one expiry, 3 concurrent processes: exactly 1 performed the refresh                                                                             |
+| Coexistence                  | PASS   | `hsoauth` receives the receipts; `hstest` 0 receipts; `hstest` Service Key discovery still succeeds                                                   |
+| Zero platform CRM writes     | PASS   | see below                                                                                                                                             |
+
+- **Lead webhooks**: HubSpot documents Leads as supported by generic object
+  subscriptions. A community report (January 2026) said real Lead creation
+  did not deliver. On test account 149338734, at platform version 2026.03,
+  both Lead creation and Lead stage change delivered. This is one account and
+  one point in time, not a general guarantee.
+- **Old refresh token**: HubSpot returned a refresh token but did not rotate
+  it, so no superseded token exists to test. None was manufactured. Later
+  refreshes keep using the same stored refresh token.
+- **Zero platform CRM writes**:
+  - the CRM transport rejects every method except GET and the allow-listed
+    association batch-read POST (unit- and mutation-tested);
+  - the OAuth transport allows only the token endpoint and the one revoke
+    endpoint;
+  - webhook intake makes no outbound HubSpot call;
+  - no CRM write scope was requested or granted;
+  - the connector has no create, update or delete endpoint.
+- **Webhooks Journal**: not implemented and not added to the app (no
+  `developer.webhooks_journal.read`), because Lead push works. It stays a
+  possible future resilience/diagnostic option ([tech debt](../tech-debt.md) #14).
+- **Operational lesson** (not a product defect): an OAuth state copied by
+  hand from the terminal lost a character and was refused (`invalid_state`).
+  Copying the install URL straight to the clipboard avoided it.
+
+## Final gates
+
+Filled in on the final commit (see the PR).
+
+## What is documented, live-proven or still unconfirmed
+
+| Topic                         | DOCUMENTED                                                  | LIVE-PROVEN IN OUR TEST ACCOUNT (149338734)                                              | STILL GENERALLY UNCONFIRMED                                                  |
+| ----------------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `config.permittedUrls`        | in every official template                                  | required by upload validation (2026.03)                                                  | whether an empty `fetch` list is accepted                                    |
+| Baseline `oauth` scope        | in every official template's required scopes                | added by HubSpot on upload; requested and granted                                        | —                                                                            |
+| Consent host / path           | HubSpot's CLI builds `app.hubspot.com/oauth/{id}/authorize` | HubSpot's link for this EU account used the EU host and `/oauth/authorize`, and it works | the exact rule HubSpot applies for every region                              |
+| Lead push webhooks            | supported via generic subscriptions                         | creation and stage change delivered                                                      | other accounts/tiers/versions (a community report said otherwise)            |
+| Signature v3, 5-minute window | yes                                                         | verified on real deliveries; stale replay refused                                        | —                                                                            |
+| Retries                       | up to 10 over 24 h, randomised                              | a redelivery after a failure was observed                                                | the exact schedule                                                           |
+| Duplicates                    | `eventId` not guaranteed unique; at-least-once              | replayed delivery recorded once (counter)                                                | how often HubSpot itself duplicates                                          |
+| Refresh-token rotation        | a response "may" include a new refresh token                | returned, not rotated                                                                    | whether HubSpot ever rotates; whether a superseded token is revoked on reuse |
+| Revoke endpoint               | `POST /oauth/2026-03/token/revoke`                          | not exercised live (needs a second account)                                              | whether a 2026-09 revoke path exists                                         |
+| Static + OAuth coexistence    | (platform design)                                           | same portal, Service Key tenant + OAuth tenant; no receipt leak                          | —                                                                            |
+
 ## Open questions
 
-1. **Tunnel**: allow `api.trycloudflare.com` in the environment's network
-   access (and confirm outbound port 7844 to `*.v2.argotunnel.com` is
-   permitted), or allow ngrok's hosts and set `NGROK_AUTHTOKEN`, or run the
-   tunnel and API on a local machine (setup §7).
-2. **Revoke version**: `POST /oauth/2026-03/token/revoke` is the path HubSpot's
-   changelog and blog quote. A "2026-09" OAuth token page exists but could not
-   be read here, and no source quotes `2026-09/token/revoke`. Kept at
-   `2026-03` (GA, documented); switch if the 2026-09 page documents it.
-3. **`oauth` scope**: resolved. HubSpot added it on upload, and it is now
-   requested (live finding 2). Whether the consent succeeds is confirmed on
-   the next install attempt.
-4. **Leads object type in webhook subscriptions**: `lead` is used; the upload
-   validates it.
-5. **Webhooks Journal**: probed only if Lead webhooks do not deliver. It needs
-   the extra scope `developer.webhooks_journal.read` (app re-upload) and uses
-   non-date-versioned `v4` paths (the documented exception).
+1. **Revoke version**: `POST /oauth/2026-03/token/revoke` is the documented
+   path. Switch it only if HubSpot documents a 2026-09 revoke. The live
+   wrong-account revoke needs a second test account (optional).
+2. **Webhooks Journal**: future resilience/diagnostic option only (tech debt #14).
+3. **Tunnel for cloud sessions**: the cloud environment's egress policy
+   refuses Cloudflare Quick Tunnel and ngrok hosts. Live tests run from a local
+   machine (setup §7.6).
