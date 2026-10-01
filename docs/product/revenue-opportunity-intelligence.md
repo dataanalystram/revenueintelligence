@@ -1,10 +1,23 @@
-# Revenue Opportunity Intelligence: product charter (proposal)
+# Revenue Opportunity Intelligence: product charter
 
-- Status: **proposal, awaiting approval**. A product-level source of truth,
-  used alongside the ADRs (`docs/adr/`) and milestone records
-  (`docs/milestones/`). Where this charter and an ADR disagree, the ADR
-  governs until it is superseded by a new ADR.
+- Status: **approved, current architecture** (2026-10-01). Approved after
+  the independent product architecture review of planning SHA `c98a300`;
+  the product decisions are recorded in
+  [ADR 0012](../adr/0012-revenue-opportunity-intelligence-direction.md).
 - Date: 2026-10-01
+
+How this charter relates to other documents:
+
+- It is the **product-level source of truth**: what the platform is, the
+  concepts it uses and the rules it follows.
+- **Milestone records** (`docs/milestones/`) and the
+  [roadmap](roadmap.md) must align with it. A milestone that needs to depart
+  from it changes the charter first, with approval.
+- **ADRs** (`docs/adr/`) own detailed technical decisions. Where an ADR is
+  more specific than the charter, the ADR governs that detail.
+- **Juniper is the first implementation, not the definition of the
+  platform.** Juniper's systems, products and vocabulary are tenant
+  configuration (§19).
 
 This document describes **what** we are building and **why**. It is not an
 implementation specification. Technical decisions are made per milestone and
@@ -64,14 +77,14 @@ The platform must coexist with it first and may later take over parts of it
 
 ## 4. Systems and sources
 
-| Role                        | Juniper today                     | Platform view                                                     |
-| --------------------------- | --------------------------------- | ----------------------------------------------------------------- |
-| Marketing / lead generation | HubSpot                           | a source of people, accounts, engagement and Leads; a destination |
-| Sales / commercial workflow | SugarCRM                          | a source of accounts, opportunities and outcomes; a destination   |
-| Customer success            | Gainsight CS                      | a source of account health, renewals, CS observations             |
-| Product usage               | Gainsight PX                      | a source of usage and adoption signals                            |
-| Products and subscriptions  | to be confirmed (open question)   | the source of the catalogue and of what each account owns         |
-| Future                      | support, communication, warehouse | further sources, added as connectors                              |
+| Role                        | Juniper today                      | Platform view                                                     |
+| --------------------------- | ---------------------------------- | ----------------------------------------------------------------- |
+| Marketing / lead generation | HubSpot                            | a source of people, accounts, engagement and Leads; a destination |
+| Sales / commercial workflow | SugarCRM                           | a source of accounts, opportunities and outcomes; a destination   |
+| Customer success            | Gainsight CS                       | a source of account health, renewals, CS observations             |
+| Product usage               | Gainsight PX                       | a source of usage and adoption signals                            |
+| Products and subscriptions  | to be confirmed (pre-M8 discovery) | the source of the catalogue and of what each account owns         |
+| Future                      | support, communication, warehouse  | further sources, added as connectors                              |
 
 The roles are configuration, not code. Another customer may use Salesforce
 for sales, or have no customer-success platform at all.
@@ -81,25 +94,25 @@ for sales, or have no customer-success platform at all.
 Vendor-neutral concepts at the core. Every connector maps into and out of
 these concepts:
 
-| Concept                    | Meaning                                                                                   |
-| -------------------------- | ----------------------------------------------------------------------------------------- |
-| Account (Company)          | an organisation we sell to or serve                                                       |
-| Person (Contact)           | someone at an account                                                                     |
-| Product                    | something the tenant sells, from the tenant's catalogue                                   |
-| Subscription / entitlement | an account's relationship with a product: owned, trial, expired, churned, with dates      |
-| Signal                     | an observed fact or derived indication about an account, person or product                |
-| Opportunity candidate      | a possible revenue opportunity: account × product (± person), with its triggering signals |
-| Eligibility                | whether an account may buy a product at all                                               |
-| Dependency / exclusion     | product relationships: requires, includes, replaces, mutually exclusive                   |
-| Whitespace                 | products an account is eligible for, does not own and is not already pursuing             |
-| Qualification              | how strong a candidate is (HOT / WARM / COLD / NEEDS_REVIEW)                              |
-| Priority                   | the order in which qualified opportunities should be worked                               |
-| Recommendation             | the proposed next commercial action for an opportunity                                    |
-| Route / destination        | which team, owner and system should receive it                                            |
-| Commercial outcome         | what happened: accepted, worked, converted, won, lost, ignored, disqualified              |
-| Evidence / reason          | the signals, rules, versions and data behind every decision                               |
-| Human override             | a person's decision that replaces an automated one                                        |
-| Feedback                   | outcomes linked back to the decisions that produced them                                  |
+| Concept                    | Meaning                                                                                                    |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Account (Company)          | an organisation we sell to or serve                                                                        |
+| Person (Contact)           | someone at an account                                                                                      |
+| Product                    | something the tenant sells, from the tenant's catalogue                                                    |
+| Subscription / entitlement | an account's relationship with a product: owned, trial, expired, churned, with dates                       |
+| Signal                     | an observed fact or derived indication about an account, person or product                                 |
+| Opportunity candidate      | a possible revenue opportunity: account × product (± person), with its triggering signals                  |
+| Eligibility                | whether an account may buy a product at all                                                                |
+| Dependency / exclusion     | product relationships: requires, includes, replaces, mutually exclusive                                    |
+| Whitespace                 | products an account is eligible for, does not own and is not already pursuing                              |
+| Qualification              | how strong a candidate is (HOT / WARM / COLD / NEEDS_REVIEW)                                               |
+| Priority                   | the order in which qualified opportunities should be worked                                                |
+| Recommendation             | the proposed next commercial action for an opportunity                                                     |
+| Route / destination        | which team, owner and system should receive it                                                             |
+| Commercial outcome         | what happened: accepted, worked, ignored, rejected/disqualified, converted, won, lost, expired, superseded |
+| Evidence / reason          | the signals, rules, versions and data behind every decision                                                |
+| Human override             | a person's decision that replaces an automated one                                                         |
+| Feedback                   | outcomes linked back to the decisions that produced them                                                   |
 
 The tenant's lifecycle vocabulary (prospect, MQL, SQL, CSQL, expansion
 candidate, lead, opportunity, won, lost, disqualified) is mapped onto these
@@ -155,6 +168,18 @@ Structured facts are the reliable source of truth. Soft signals carry their
 derivation (rule or model, version, confidence) and are never presented as
 facts.
 
+Each stage of the chain is its own record, linked to the one before it, and
+never collapsed into one generic signal record:
+
+```
+FACT → DERIVED SIGNAL → OPPORTUNITY → DECISION → ACTION → OUTCOME
+```
+
+Where applicable, facts and signals record: tenant, source system, source
+record id, source timestamp, ingestion timestamp, signal/fact type,
+derivation status, derivation method/provider, derivation version and an
+evidence reference. The exact schema is designed at the start of M10.
+
 ## 9. Opportunity intelligence
 
 For every opportunity the platform should be able to answer:
@@ -196,6 +221,10 @@ equivalents are suppressed (ADR 0006).
 Qualification says how strong an opportunity is. Priority says what to work
 first. Priority combines qualification, potential value, timing (renewals,
 SLA) and capacity. It is deterministic, per-tenant policy, and explainable.
+
+Qualification, priority and routing are separate concepts with separate
+decision records (Qualification Decision, Priority Decision, Routing
+Decision), each with its own policy version, reasons and override.
 
 ## 12. Routing and commercial action
 
@@ -308,32 +337,31 @@ The core never assumes:
 
 The fit assessment is in [m0-m5-architecture-fit.md](m0-m5-architecture-fit.md).
 
-## 21. Open architectural questions
+## 21. Architectural decisions and open questions
 
-1. **Source of truth for products and subscriptions** at Juniper: Sugar,
-   Gainsight CS, a billing system, or a combination? This decides the order
-   of the Sugar and Gainsight milestones.
-2. **Opportunity-centric domain**: the current domain centres on
-   `LeadCandidate` (person required) and `Lead`. Account × product
-   opportunities need a person-optional candidate. When and how to evolve it
-   (proposal: an ADR in the candidate milestone)?
-3. **Vendor names in canonical enums** (`ExternalSystem`, `LeadOrigin`,
-   `ChangeSource`, `Flow`, the Gainsight-only `ProductSignal`): fine for
-   Juniper, limiting for reuse. Generalise before the second customer or the
-   first new connector?
-4. **Identity resolution**: matching rules across systems (email, domain,
-   cross-references) and who resolves conflicts.
-5. **Eligibility rules representation**: declarative tenant data with a small
-   evaluator (proposed), not an external rules engine.
-6. **Event processing infrastructure**: a Redis-backed queue (Redis and a
-   worker process already run; no queue library is installed yet) versus a
-   PostgreSQL job table, for the first processing milestone.
-7. **Jev availability and contract**: qualification starts rules-only until
-   Jev's interface and access are confirmed.
-8. **Operator interface timing**: explainability and overrides need a
-   surface during the pilot, earlier than the original M21.
-9. **Product naming in the repository**: when to rename "Lead Intelligence
-   Platform" references.
+The questions raised with the proposal were decided on 2026-10-01
+([ADR 0012](../adr/0012-revenue-opportunity-intelligence-direction.md)):
+
+| Question                          | Decision                                                                                       |
+| --------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Source of truth for subscriptions | not assumed; decided by the pre-M8 Subscription Source Discovery gate                          |
+| Opportunity-centric domain        | Account × Product, Person optional; schema evolution in M11 with its own ADR                   |
+| Vendor names in canonical enums   | generalise only when a real new system or tenant requires it                                   |
+| Eligibility rules representation  | declarative, versioned per-tenant rules; pure deterministic evaluator; no generic rules engine |
+| Event processing infrastructure   | BullMQ on Redis; no PostgreSQL job system without a concrete need                              |
+| Jev                               | rules-first; Jev/hybrid later behind the existing provider interface                           |
+| Operator interface timing         | minimal workspace in M14, before any write in M15                                              |
+| Repository naming                 | deferred                                                                                       |
+
+Still open (each answered in the milestone that needs it):
+
+1. **Identity resolution across systems**: matching rules for Sugar,
+   Gainsight and other sources (and who resolves conflicts) are defined only
+   once their schemas are known. M6 uses canonical platform ids with external
+   cross-references.
+2. **Jev availability and contract**: needed before the Jev/hybrid work.
+3. **Juniper's product rules** (dependencies, exclusions, eligibility):
+   supplied by Juniper; `tbc` until then.
 
 ## 22. Future capability map
 
@@ -355,5 +383,5 @@ REVENUE OUTCOME         outcomes from sales and CS systems, attribution
 LEARN / IMPROVE         measured conversion by signal/product/rule/route; later, models
 ```
 
-These layers describe capabilities, not milestones. The proposed milestone
-order is in [roadmap-proposal-m6.md](roadmap-proposal-m6.md).
+These layers describe capabilities, not milestones. The approved milestone
+order is in [roadmap.md](roadmap.md).

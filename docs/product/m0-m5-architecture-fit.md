@@ -1,6 +1,9 @@
 # M0–M5 against the Revenue Opportunity Intelligence vision
 
-- Status: assessment, 2026-10-01 (after the M5 merge, `aca9c40`)
+- Status: assessment, 2026-10-01 (after the M5 merge, `aca9c40`). Confirmed
+  by the independent product architecture review of planning SHA `c98a300`:
+  M0–M5 are compatible with the vision and no preparatory refactor is needed
+  before M6 ([ADR 0012](../adr/0012-revenue-opportunity-intelligence-direction.md)).
 - Scope: does the completed foundation fit the
   [product charter](revenue-opportunity-intelligence.md)? What needs to
   change, and when?
@@ -52,15 +55,15 @@ little. **No preparatory refactor is needed before M6.**
 These are acceptable for Juniper, and they are documented. They should be
 generalised **when** the milestone that needs them arrives:
 
-| Assumption                                                                      | Where                                                 | When to address                                                               |
-| ------------------------------------------------------------------------------- | ----------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `LeadCandidate.personId` is required; candidates are person-centric             | `domain/lead-candidate.ts`                            | the opportunity-candidate milestone (proposed ADR)                            |
-| `LeadStage` = HubSpot's default Lead pipeline (`new` … `disqualified`)          | `domain/lead.ts`                                      | when lifecycle mapping is built (tenant stage mapping)                        |
-| Vendor names in canonical enums: `ExternalSystem`, `LeadOrigin`, `ChangeSource` | `domain/external-ref.ts`, `attribution.ts`, `lead.ts` | before the first connector outside these four systems, or the second customer |
-| `ProductSignal` must come from Gainsight                                        | `domain/signals.ts`                                   | the signal milestone (source becomes data, not a rule)                        |
-| Flow names are vendor pairs (`hubspot_to_sugar_handover`, …)                    | `tenancy/config/flows.ts`                             | the commercial-action milestone (flows as route + destination)                |
-| `SalesOutcomeType` has no `ignored` / `accepted`                                | `domain/sales-outcome.ts`                             | the outcomes milestone                                                        |
-| Product ownership has no dependency, exclusion or eligibility concepts          | `domain/product.ts`, `tenant_products`                | the product-intelligence milestone                                            |
+| Assumption                                                                      | Where                                                 | When to address                                                                |
+| ------------------------------------------------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `LeadCandidate.personId` is required; candidates are person-centric             | `domain/lead-candidate.ts`                            | M11, with its own ADR (direction approved: Account × Product, Person optional) |
+| `LeadStage` = HubSpot's default Lead pipeline (`new` … `disqualified`)          | `domain/lead.ts`                                      | when lifecycle mapping is built (tenant stage mapping)                         |
+| Vendor names in canonical enums: `ExternalSystem`, `LeadOrigin`, `ChangeSource` | `domain/external-ref.ts`, `attribution.ts`, `lead.ts` | before the first connector outside these four systems, or the second customer  |
+| `ProductSignal` must come from Gainsight                                        | `domain/signals.ts`                                   | the signal milestone (source becomes data, not a rule)                         |
+| Flow names are vendor pairs (`hubspot_to_sugar_handover`, …)                    | `tenancy/config/flows.ts`                             | the commercial-action milestone (flows as route + destination)                 |
+| `SalesOutcomeType` has no `ignored` / `accepted`                                | `domain/sales-outcome.ts`                             | the outcomes milestone                                                         |
+| Product ownership has no dependency, exclusion or eligibility concepts          | `domain/product.ts`, `tenant_products`                | the product-intelligence milestone                                             |
 
 ## 4. Material conflicts
 

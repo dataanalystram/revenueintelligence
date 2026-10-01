@@ -69,7 +69,7 @@ the live checks keep using the test account's Service Key.
 
 M5 installs the projects-based app for real in the developer test account and
 receives its webhooks ([ADR 0011](adr/0011-hubspot-webhooks-and-routing.md)).
-Exact steps: [integrations/hubspot/setup.md](integrations/hubspot/setup.md#milestone-5-the-projects-based-app).
+Exact steps: [integrations/hubspot/setup.md](integrations/hubspot/setup.md#7-milestone-5-the-projects-based-app).
 
 | Variable                        | Where it comes from                                                                       | Secret? |
 | ------------------------------- | ----------------------------------------------------------------------------------------- | ------- |
