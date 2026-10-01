@@ -1,10 +1,14 @@
 # Milestone 6 — Event processing and canonical account context
 
-- Status: **implemented, awaiting independent review** (plan approved
-  2026-10-01: "PASS — M6 PLAN APPROVED FOR IMPLEMENTATION"). The
-  [implementation record](#implementation-record) at the end lists what was
-  built, deviations from this plan, evidence and open items. Live evidence on
-  the test account is owner-run and still outstanding.
+- Status: **complete, with documented non-blocking technical debt** (not
+  debt-free; see [closure](#closure)). Merged in PR #8 (merge commit
+  `0f106afdb75e1507981fe2353907ff78edb8aba4`, reviewed head
+  `68c06c3a44500f3485cce04c54ab87d99ffa1200`). Independent implementation
+  review: **PASS WITH NON-BLOCKING FINDINGS — M6 READY TO MERGE**, no
+  blockers. CI was green on the reviewed head. Plan approved 2026-10-01 ("PASS
+  — M6 PLAN APPROVED FOR IMPLEMENTATION"); the
+  [implementation record](#implementation-record) lists what was built and
+  the deviations from this plan.
 - Base: `main` at `51c62c9` (PR #7 merged: approved
   [charter](../product/revenue-opportunity-intelligence.md),
   [roadmap](../product/roadmap.md),
@@ -1051,3 +1055,72 @@ errors and log tails on failure. Technical-debt item 20.
   [register](../tech-debt.md).
 - Explicitly not in M6: privacy deletion/erasure, leads processing, signals,
   scoring, routing, CRM writes, UI, per-tenant fairness, retention policy.
+
+---
+
+## Closure
+
+M6 is **complete** (2026-10-01). It is not perfect or debt-free: the
+non-blocking findings and debt below are carried forward. This section
+supersedes the "pending", "outstanding" and "owner-run" live items in the
+implementation record above.
+
+### Final gates
+
+| Gate                 | Result                                                                                                                                |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Final implementation | `68c06c3a44500f3485cce04c54ab87d99ffa1200` (reviewed head of PR #8)                                                                   |
+| Merge                | PR #8, merge commit `0f106afdb75e1507981fe2353907ff78edb8aba4` (parents `51c62c9` and `68c06c3`; tree identical to the reviewed head) |
+| Unit tests           | 435 passed                                                                                                                            |
+| Integration tests    | 228 passed                                                                                                                            |
+| Runtime verification | 105/105                                                                                                                               |
+| Live suite           | 14/14 (read-only, test account 149338734; three consecutive runs)                                                                     |
+| Mutation proofs      | 25/25 fail for the right reason and pass after restore (table above)                                                                  |
+| Docker               | 14/14                                                                                                                                 |
+| Fresh clone          | pass on `68c06c3` (install, verify, runtime, live, Docker; no resources left)                                                         |
+| CI                   | all four jobs green on `68c06c3` (run 36909989944)                                                                                    |
+| Independent review   | PASS WITH NON-BLOCKING FINDINGS — M6 READY TO MERGE; no blockers                                                                      |
+| CRM writes           | zero (read-only guard; every live request a GET or allow-listed read POST)                                                            |
+| OAuth scopes         | unchanged                                                                                                                             |
+| Secrets/PII in logs  | none (runtime and live checks)                                                                                                        |
+
+### Live webhook evidence (owner-run, test account 149338734)
+
+Run by the owner per the
+[live-evidence runbook](../integrations/hubspot/m6-live-evidence-runbook.md)
+and confirmed by the independent reviewer. Recorded here as reported; the raw
+outputs are not stored in this repository.
+
+| Item                                           | Result                                   |
+| ---------------------------------------------- | ---------------------------------------- |
+| App upload with the M6 lifecycle subscriptions | succeeded; scopes unchanged              |
+| Lifecycle subscriptions accepted               | 18/18 (including company `object.merge`) |
+| Create, update, delete, restore                | processed as specified                   |
+| Contact merge                                  | processed as specified (merge forward)   |
+| `associationChange`                            | processed as specified (ADR 0014)        |
+| Historical M5 receipt replay                   | second replay: equal state hash          |
+| Dead letters                                   | zero                                     |
+| CRM writes                                     | zero                                     |
+
+### Non-blocking findings and debt carried forward
+
+From the independent review and this milestone (register:
+[tech-debt.md](../tech-debt.md)):
+
+- **Rate limiter is per process (item 7):** an operational constraint, not a
+  footnote. Run exactly **one worker process per environment** until a shared
+  limiter exists; this must be resolved before any horizontal scaling.
+- **No per-tenant fairness in open-source BullMQ (item 16).**
+- **Retention policy undefined (item 17).**
+- **Company merge (item 18):** the subscription is now accepted live; only
+  the company-merge action itself has not been exercised (opportunistic
+  follow-up).
+- **Search pinned to `2026-03` (item 19)** until new documentation evidence
+  exists.
+- **Shutdown CI episode (item 20):** mitigated; root cause unconfirmed.
+- **`associationChange` net-zero round trip (item 21):** add an explicit test
+  (remove then re-add an association leaves the person's state, link and
+  hash as before).
+- Privacy deletion stays out of scope (item 15).
+
+M7 has not been started.
