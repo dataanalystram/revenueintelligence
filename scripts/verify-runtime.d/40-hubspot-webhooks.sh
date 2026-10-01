@@ -199,7 +199,7 @@ wh_no_hubspot_calls() {
   requests="$(grep '^request ' "$WH_FAKE_LOG")" || return 1
   echo "$requests" | sort | uniq -c
   # Only the install: consent page and one code exchange. Webhooks caused no call at all.
-  ! grep -vE "^request (GET /oauth/$WH_PORTAL/authorize|POST /oauth/2026-09/token grant=authorization_code)$" <<<"$requests"
+  ! grep -vE "^request (GET /oauth/authorize|POST /oauth/2026-09/token grant=authorization_code)$" <<<"$requests"
 }
 check "webhooks caused no HubSpot call (no CRM reads, no writes)" wh_no_hubspot_calls
 

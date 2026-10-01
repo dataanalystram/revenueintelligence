@@ -6,7 +6,7 @@
  * API behaves: that comes from the live discovery run against a test account.
  *
  * It also fakes HubSpot's OAuth app flow (M4): the consent page
- * (`GET /oauth/{portalId}/authorize`, answered with the redirect HubSpot sends
+ * (`GET /oauth/authorize`, the generic consent page; answered with the redirect HubSpot sends
  * after the user consents) and the date-versioned token endpoint
  * (`POST /oauth/{YYYY-MM}/token`: authorization-code exchange and refresh).
  * Codes are single-use; refresh calls are counted, and can be delayed, so
@@ -81,7 +81,11 @@ export interface FakeOAuthApp {
   refreshDelayMs?: number;
   /** Issue a new refresh token on every refresh (HubSpot may or may not; both are handled). */
   rotateRefreshTokens?: boolean;
-  /** Simulate the user installing into a different account than the link targets. */
+  /**
+   * The account the user picks on the consent page (required when the fake
+   * has accounts on more than one portal; a different one than the tenant's
+   * simulates installing into the wrong account).
+   */
   consentPortalId?: number;
 }
 
@@ -180,6 +184,12 @@ export class FakeHubSpot {
   configureOAuth(patch: Partial<FakeOAuthApp>): void {
     if (!this.options.oauth) throw new Error('OAuth not enabled on this fake');
     Object.assign(this.options.oauth, patch);
+  }
+
+  /** The account portal id when every configured account is the same portal. */
+  private onlyPortalId(): number | undefined {
+    const ids = new Set(Object.values(this.options.accounts).map((a) => a.portalId));
+    return ids.size === 1 ? [...ids][0] : undefined;
   }
 
   /** OAuth: this access token stops working (401), e.g. revoked by the user. */
@@ -342,20 +352,25 @@ export class FakeHubSpot {
   private oauthRoute(method: string, url: URL, raw: string, res: ServerResponse): void {
     const app = this.options.oauth;
     if (!app) return this.send(res, 404, { status: 'error', message: 'OAuth not enabled' });
-    const authorize = /^\/oauth\/(\d+)\/authorize$/.exec(url.pathname);
-    if (method === 'GET' && authorize) {
+    if (method === 'GET' && url.pathname === '/oauth/authorize') {
+      // HubSpot's generic consent page (the form HubSpot generates for a
+      // deployed projects app). The user picks the account on this page.
       const q = url.searchParams;
       const scopes = (q.get('scope') ?? '').split(' ').filter(Boolean);
       if (
         q.get('client_id') !== app.clientId ||
         q.get('redirect_uri') !== app.redirectUri ||
         !q.get('state') ||
-        scopes.length === 0 ||
-        scopes.some((scope) => !scope.endsWith('.read'))
+        !scopes.includes('oauth') ||
+        scopes.some((scope) => scope !== 'oauth' && !scope.endsWith('.read'))
       ) {
         return this.send(res, 400, { status: 'error', message: 'Invalid authorize request' });
       }
-      const code = this.issueCode(app.consentPortalId ?? Number(authorize[1]), app.redirectUri);
+      const chosen = app.consentPortalId ?? this.onlyPortalId();
+      if (chosen === undefined) {
+        return this.send(res, 400, { status: 'error', message: 'No account selected' });
+      }
+      const code = this.issueCode(chosen, app.redirectUri);
       const location = new URL(app.redirectUri);
       location.searchParams.set('code', code);
       location.searchParams.set('state', q.get('state')!);

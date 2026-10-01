@@ -67,6 +67,9 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
   /** Walks the install exactly as a browser would: install URL → consent redirect → callback. */
   async function install(ctx: TenantContext) {
     const { url } = await oauth().installUrl(ctx);
+    // On HubSpot's generic consent page the admin picks the account: the tenant's own.
+    const integration = await h.config.getIntegration(ctx, 'hubspot');
+    fake.configureOAuth({ consentPortalId: Number(integration.settings.portalId) });
     const consent = await fetch(url, { redirect: 'manual' });
     expect(consent.status).toBe(302);
     const back = new URL(consent.headers.get('location')!);
@@ -173,10 +176,19 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
       await configureOAuth(t, '3003');
       const { url, expiresAt } = await oauth().installUrl(t);
       const u = new URL(url);
-      expect(`${u.origin}${u.pathname}`).toBe(`${fake.url}/oauth/3003/authorize`);
+      // HubSpot's generic consent path (as on the deployed app's page); the account is
+      // enforced after the code exchange, not by the path.
+      expect(`${u.origin}${u.pathname}`).toBe(`${fake.url}/oauth/authorize`);
+      expect([...u.searchParams.keys()].sort()).toEqual([
+        'client_id',
+        'redirect_uri',
+        'scope',
+        'state',
+      ]);
       expect(u.searchParams.get('client_id')).toBe(APP.clientId);
       expect(u.searchParams.get('redirect_uri')).toBe(APP.redirectUri);
       expect(u.searchParams.get('scope')!.split(' ')).toEqual([...HUBSPOT_OAUTH_SCOPES]);
+      expect(u.searchParams.get('scope')!.split(' ')[0]).toBe('oauth');
       expect(u.searchParams.get('scope')).not.toMatch(/write/);
       expect(u.searchParams.get('state')).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/);
       expect(expiresAt.getTime() - Date.now()).toBeGreaterThan(9 * 60_000);
@@ -663,7 +675,7 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
           (r.method === 'POST' && r.path === '/oauth/2026-09/token') ||
           // Only ever for a refused wrong-account install (counted by those tests).
           (r.method === 'POST' && r.path === '/oauth/2026-03/token/revoke') ||
-          (r.method === 'GET' && /^\/oauth\/\d+\/authorize$/.test(r.path));
+          (r.method === 'GET' && r.path === '/oauth/authorize');
         expect(ok, `${r.method} ${r.path}`).toBe(true);
       }
       expect(fake.requests.some((r) => r.path === '/oauth/2026-09/token')).toBe(true);

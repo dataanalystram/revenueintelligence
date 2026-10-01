@@ -222,6 +222,79 @@ Not a tunnel issue: a template/schema gap.
 - **Also observed**: HubSpot did not report the missing `oauth` scope or the
   optional `support` block (both present in the official template) as errors.
 
+### 2. OAuth consent: login loop before the consent page (2026-09-28)
+
+After a successful upload, the URL from `hubspot:install-url` opened HubSpot
+but looped on sign-in, so the callback was never reached. Comparing it with
+the install link HubSpot generated for the deployed app:
+
+| Item   | Ours (before)                        | HubSpot's link                       |
+| ------ | ------------------------------------ | ------------------------------------ |
+| Host   | `app.hubspot.com`                    | the EU host of this account          |
+| Path   | `/oauth/{portalId}/authorize`        | `/oauth/authorize`                   |
+| Scopes | 5 CRM read scopes                    | `oauth` + the same 5 CRM read scopes |
+| Other  | `client_id`, `redirect_uri`, `state` | `client_id`, `redirect_uri`          |
+
+Evidence (web search unavailable; the docs site is blocked from the cloud
+session):
+
+- **Account region, live**: HubSpot's Account Information API, read with the
+  Service Key, reports account 149338734 as `dataHostingLocation: "eu1"`
+  (committed `docs/integrations/hubspot/discovery-report.json`).
+- **`oauth` scope, live and official**: the upload output stated that HubSpot
+  added `oauth` to the app's required scopes. Every official 2026.03 app
+  template (hubspot-project-components `233e986`) lists `"oauth"` first in
+  `requiredScopes`.
+- **How HubSpot builds the URL**: `@hubspot/cli` 8.15.0 (`lib/app/urls.js`
+  `getOauthAppInstallUrl`) puts the app's `requiredScopes` into `scope`, so
+  the consent URL must request all of the app's required scopes. The CLI
+  builds `https://app.hubspot.com/oauth/{accountId}/authorize`: its origin
+  helper (`@hubspot/local-dev-lib` 5.11.0 `getHubSpotWebsiteOrigin`) only
+  distinguishes HubSpot's QA environment, not data-hosting regions. The
+  deployed app's own link, by contrast, is region-specific with the generic
+  path.
+
+Root cause (best supported, not proven by an isolated live A/B test):
+
+- Our URL did not request the app's full required scope set (`oauth`
+  missing).
+- It sent an EU-hosted account to the global host, with an account-specific
+  path that differs from HubSpot's own link for this app.
+
+Fix (all three aligned with HubSpot's own link):
+
+- `oauth` added to `HUBSPOT_OAUTH_SCOPES` and to the app template, so the
+  file matches the deployed app instead of relying on HubSpot's silent
+  addition. No other scope.
+- The consent host is per tenant: a new integration setting `uiDomain`, set
+  with `hubspot:configure --ui-domain`, accepting only
+  `app[-<region>].hubspot.com`. It defaults to `app.hubspot.com`.
+- The path is `/oauth/authorize`.
+- The process-level `HUBSPOT_OAUTH_AUTHORIZE_BASE_URL` is now a loopback-only
+  test override.
+- Unchanged: the signed, single-use, tenant-bound state with a 10-minute
+  expiry; the exact `redirect_uri`; the hub_id check after the exchange (with
+  revoke on mismatch); read-only access.
+
+Mutation proofs (each failed, each restored byte-identical):
+
+| #   | Mutation                                  | Failed test(s)                                                                                                                |
+| --- | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Q1  | baseline `oauth` dropped                  | consent-url, oauth-client and app-definition scope tests; callback install tests (the fake refuses a consent without `oauth`) |
+| Q2  | region ignored (always `app.hubspot.com`) | "opens on the account's regional HubSpot host…"                                                                               |
+| Q3  | old portal-specific path                  | consent-url host/path tests; callback install tests (the fake serves only `/oauth/authorize`)                                 |
+| Q4  | any `uiDomain` accepted                   | tenancy settings "validate formats"                                                                                           |
+| Q5  | authorize override not loopback-only      | "the fake override is honoured only for a loopback test server"                                                               |
+| Q6  | write scope added to the consent URL      | "carries exactly client_id, the exact redirect_uri, the scopes and the state"; callback spec (fake refuses non-read scopes)   |
+
+Gates after the fix: `pnpm verify` passes (unit 34 files / 401 tests,
+integration 12 files / 171 tests). `pnpm verify:runtime` passes (86 passed,
+0 failed; includes the new `--ui-domain` check).
+
+Retry: re-upload the app (its file now lists `oauth`, which matches what
+HubSpot deployed), then reconfigure `hsoauth` with
+`--ui-domain app-eu1.hubspot.com` and issue a new install URL.
+
 ## Open questions
 
 1. **Tunnel**: allow `api.trycloudflare.com` in the environment's network
@@ -232,8 +305,9 @@ Not a tunnel issue: a template/schema gap.
    changelog and blog quote. A "2026-09" OAuth token page exists but could not
    be read here, and no source quotes `2026-09/token/revoke`. Kept at
    `2026-03` (GA, documented); switch if the 2026-09 page documents it.
-3. **`oauth` scope**: not requested. The first upload's validation did not
-   ask for it; the install will show whether HubSpot requires it.
+3. **`oauth` scope**: resolved. HubSpot added it on upload, and it is now
+   requested (live finding 2). Whether the consent succeeds is confirmed on
+   the next install attempt.
 4. **Leads object type in webhook subscriptions**: `lead` is used; the upload
    validates it.
 5. **Webhooks Journal**: probed only if Lead webhooks do not deliver. It needs

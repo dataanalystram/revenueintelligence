@@ -335,7 +335,7 @@ describe('HubSpot process configuration', () => {
       requestsPer10s: 90,
       oauth: {
         apiVersion: '2026-09',
-        authorizeBaseUrl: 'https://app.hubspot.com/oauth',
+        authorizeBaseUrl: undefined,
         timeoutMs: 10_000,
         clientId: undefined,
         redirectUri: undefined,

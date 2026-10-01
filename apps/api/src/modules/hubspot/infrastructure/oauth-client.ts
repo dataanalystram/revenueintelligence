@@ -4,10 +4,16 @@ import { HubSpotError } from '../errors';
 import type { HubSpotConfig } from '../hubspot.config';
 
 /**
- * Read-only CRM scopes requested on install (ADR 0010). No write scope is ever
- * requested; a unit test fails if one is added.
+ * Scopes requested on install (ADR 0010, 0011): HubSpot's baseline `oauth`
+ * scope plus read-only CRM scopes. `oauth` is part of every HubSpot app's
+ * required scopes (HubSpot added it to this app on upload, and every official
+ * 2026.03 app template lists it); the consent URL must request all of the
+ * app's required scopes. No write scope is ever requested; unit tests fail if
+ * one is added or if this list drifts from hubspot-app/.
  */
+export const HUBSPOT_OAUTH_BASELINE_SCOPE = 'oauth';
 export const HUBSPOT_OAUTH_SCOPES = [
+  HUBSPOT_OAUTH_BASELINE_SCOPE,
   'crm.objects.contacts.read',
   'crm.objects.companies.read',
   'crm.objects.leads.read',

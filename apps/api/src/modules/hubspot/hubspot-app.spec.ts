@@ -41,13 +41,16 @@ describe('HubSpot app project definition (hubspot-app/, ADR 0011)', () => {
   const app = read('src/app/app-hsmeta.json') as AppMeta;
   const webhooks = read('src/app/webhooks/webhooks-hsmeta.json') as WebhooksMeta;
 
-  it('is a private OAuth app requesting exactly the read scopes the install URL asks for', () => {
+  it('is a private OAuth app requesting exactly the scopes the install URL asks for', () => {
     expect(app.config.distribution).toBe('private');
     expect(app.config.auth.type).toBe('oauth');
     expect(app.config.auth.requiredScopes).toEqual([...HUBSPOT_OAUTH_SCOPES]);
     expect(app.config.auth.optionalScopes).toEqual([]);
     expect(app.config.auth.conditionallyRequiredScopes).toEqual([]);
-    for (const scope of app.config.auth.requiredScopes) expect(scope).toMatch(/\.read$/);
+    // HubSpot's baseline `oauth` (HubSpot adds it on upload anyway) plus CRM reads only.
+    expect(app.config.auth.requiredScopes[0]).toBe('oauth');
+    for (const scope of app.config.auth.requiredScopes.filter((s) => s !== 'oauth'))
+      expect(scope).toMatch(/^crm\.(objects|schemas)\.\w+\.read$/);
   });
 
   it('never commits a public host: URLs are placeholders filled in by render.mjs', () => {
@@ -196,6 +199,10 @@ describe('HubSpot app project definition (hubspot-app/, ADR 0011)', () => {
     refused(`app.config.auth.redirectUrls.push('https://evil.example/cb');`);
     refused(`app.config.auth.requiredScopes.push('crm.objects.contacts.write');`);
     refused(`app.config.auth.optionalScopes.push('oauth');`);
+    refused(
+      `app.config.auth.requiredScopes = app.config.auth.requiredScopes.filter((s) => s !== 'oauth');`,
+    );
+    refused(`app.config.auth.requiredScopes.push('oauth');`);
     refused(`app.config.distribution = 'marketplace';`);
     refused(
       `rendered[r.WEBHOOKS_META].config.settings.targetUrl = 'https://evil.example/webhooks/hubspot';`,

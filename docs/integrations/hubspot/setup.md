@@ -187,16 +187,16 @@ scope, or names the Leads object type differently in webhook subscriptions.
 
 What the app contains (`hubspot-app/template/`):
 
-| Setting             | Value                                                                                                                                                                                  |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Distribution / auth | `private` / `oauth`                                                                                                                                                                    |
-| Required scopes     | `crm.objects.contacts.read`, `crm.objects.companies.read`, `crm.objects.leads.read`, `crm.schemas.contacts.read`, `crm.schemas.companies.read` (no write scope; `oauth` not requested) |
-| Permitted URLs      | `permittedUrls`: `fetch: ["https://api.hubapi.com"]`, `iframe: []`, `img: []` (static; required by the 2026.03 schema, see below)                                                      |
-| Redirect URL        | `https://<host>/oauth/hubspot/callback`                                                                                                                                                |
-| Webhook target URL  | `https://<host>/webhooks/hubspot`, max 10 concurrent requests                                                                                                                          |
-| Contact webhooks    | creation; property change of `email`, `lifecyclestage`, `hs_lead_status`                                                                                                               |
-| Company webhooks    | creation; property change of `name`, `domain`, `lifecyclestage`                                                                                                                        |
-| Lead webhooks       | creation; property change of `hs_pipeline_stage`                                                                                                                                       |
+| Setting             | Value                                                                                                                                                                                                                                  |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Distribution / auth | `private` / `oauth`                                                                                                                                                                                                                    |
+| Required scopes     | `oauth` (HubSpot's baseline scope, added by HubSpot on upload anyway), `crm.objects.contacts.read`, `crm.objects.companies.read`, `crm.objects.leads.read`, `crm.schemas.contacts.read`, `crm.schemas.companies.read` (no write scope) |
+| Permitted URLs      | `permittedUrls`: `fetch: ["https://api.hubapi.com"]`, `iframe: []`, `img: []` (static; required by the 2026.03 schema, see below)                                                                                                      |
+| Redirect URL        | `https://<host>/oauth/hubspot/callback`                                                                                                                                                                                                |
+| Webhook target URL  | `https://<host>/webhooks/hubspot`, max 10 concurrent requests                                                                                                                                                                          |
+| Contact webhooks    | creation; property change of `email`, `lifecyclestage`, `hs_lead_status`                                                                                                                                                               |
+| Company webhooks    | creation; property change of `name`, `domain`, `lifecyclestage`                                                                                                                                                                        |
+| Lead webhooks       | creation; property change of `hs_pipeline_stage`                                                                                                                                                                                       |
 
 `config.permittedUrls` is **required** by HubSpot's 2026.03 project
 validation (the first real upload failed with `Missing required field:
@@ -242,7 +242,8 @@ its static token, and the two coexist.
 
 ```bash
 pnpm --filter @lip/api tenant:provision --slug hsoauth --name "HubSpot test account (OAuth)"
-pnpm --filter @lip/api hubspot:configure --tenant hsoauth --portal-id "$HUBSPOT_TEST_PORTAL_ID" --auth oauth
+pnpm --filter @lip/api hubspot:configure --tenant hsoauth --portal-id "$HUBSPOT_TEST_PORTAL_ID" --auth oauth \
+  --ui-domain app-eu1.hubspot.com   # the test account is EU-hosted (dataHostingLocation eu1)
 pnpm --filter @lip/api hubspot:install-url --tenant hsoauth   # open the URL, choose the test account, consent
 pnpm --filter @lip/api hubspot:discover --tenant hsoauth --out /tmp/oauth-discovery.json
 pnpm --filter @lip/api hubspot:webhook-report --tenant hsoauth
@@ -250,6 +251,15 @@ pnpm --filter @lip/api hubspot:webhook-report --tenant hsoauth
 
 Webhooks go only to `hsoauth` (the tenant holding the grant), never to
 `hstest`.
+
+The consent page opens on the account's own HubSpot web host
+(`--ui-domain`, its data-hosting region; default `app.hubspot.com`), at
+HubSpot's generic path `/oauth/authorize`, exactly as on the deployed app's
+own install link. HubSpot's Account Information API reports the host as
+`uiDomain` (the test account: `dataHostingLocation: eu1`). Only HubSpot app
+hosts (`app[-<region>].hubspot.com`) are accepted. On the consent page, pick
+the tenant's account. Picking another account is refused after the code
+exchange, and the grant is revoked.
 
 ### 7.6 Fallback: tunnel and API on a local machine
 

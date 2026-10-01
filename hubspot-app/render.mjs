@@ -112,9 +112,14 @@ export function validateRendered(rendered, values) {
     ...(cfg.auth?.optionalScopes ?? []),
     ...(cfg.auth?.conditionallyRequiredScopes ?? []),
   ];
-  if (scopes.length === 0 || scopes.some((s) => !/^crm\.(objects|schemas)\.\w+\.read$/.test(s))) {
-    fail('only crm.*.read scopes are allowed');
+  // HubSpot's baseline `oauth` scope (required for every app; added by HubSpot
+  // on upload) plus read-only CRM scopes, nothing else.
+  if (!cfg.auth?.requiredScopes?.includes('oauth')) fail("the baseline 'oauth' scope is required");
+  if (scopes.some((s) => s !== 'oauth' && !/^crm\.(objects|schemas)\.\w+\.read$/.test(s))) {
+    fail("only 'oauth' and crm.*.read scopes are allowed");
   }
+  if (scopes.filter((s) => s === 'oauth').length !== 1)
+    fail("'oauth' must be requested exactly once");
   if (!isDeepStrictEqual(cfg.permittedUrls, { ...APPROVED_PERMITTED_URLS })) {
     fail('config.permittedUrls must be exactly the approved static value');
   }

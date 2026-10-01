@@ -35,9 +35,9 @@ describe('HubSpot OAuth client (ADR 0010)', () => {
     await fake.stop();
   });
 
-  it('requests read-only scopes only', () => {
-    expect(HUBSPOT_OAUTH_SCOPES.length).toBeGreaterThan(0);
-    for (const scope of HUBSPOT_OAUTH_SCOPES)
+  it("requests HubSpot's baseline oauth scope and read-only CRM scopes only", () => {
+    expect(HUBSPOT_OAUTH_SCOPES).toContain('oauth');
+    for (const scope of HUBSPOT_OAUTH_SCOPES.filter((s) => s !== 'oauth'))
       expect(scope).toMatch(/^crm\.(objects|schemas)\.\w+\.read$/);
   });
 

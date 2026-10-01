@@ -9,6 +9,7 @@
       "type": "oauth",
       "redirectUrls": ["{{HUBSPOT_APP_REDIRECT_URI}}"],
       "requiredScopes": [
+        "oauth",
         "crm.objects.contacts.read",
         "crm.objects.companies.read",
         "crm.objects.leads.read",
