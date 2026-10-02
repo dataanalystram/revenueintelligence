@@ -33,6 +33,6 @@ committed separately with its own record in this folder.
 | 16  | Outcomes / attribution / measurement                                       | As connected                                      |
 | 17  | Juniper pilot: shadow → coexist → active                                   | Juniper accounts + approvals                      |
 
-Records: [M0](M00-foundation.md) · [M1](M01-canonical-domain-model.md) · [M2](M02-tenancy-data-isolation.md) · [M3](M03-hubspot-test-environment.md) · [M4](M04-hubspot-connector-abstraction.md) · [M5](M05-hubspot-webhooks.md) · [M6](M06-event-processing-canonical-context.md) · [M7 (plan, awaiting approval)](M07-product-catalogue-subscriptions-eligibility.md)
+Records: [M0](M00-foundation.md) · [M1](M01-canonical-domain-model.md) · [M2](M02-tenancy-data-isolation.md) · [M3](M03-hubspot-test-environment.md) · [M4](M04-hubspot-connector-abstraction.md) · [M5](M05-hubspot-webhooks.md) · [M6](M06-event-processing-canonical-context.md) · [M7 (implemented, in review)](M07-product-catalogue-subscriptions-eligibility.md)
 
 Known non-blocking items: [technical-debt register](../tech-debt.md).

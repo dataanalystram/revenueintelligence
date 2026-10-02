@@ -1,15 +1,11 @@
 # Milestone 7 — Product catalogue, subscriptions and eligibility
 
-- Status: **implementation plan; architecture approved, corrections applied**.
-  Independent planning review of `0d60808`: PASS WITH CHANGES REQUIRED.
-  - Correction 1 (account merge and subscriptions) is resolved in
-    [account merge](#account-merge-and-subscriptions) and ADR 0017.
-  - Correction 2 (product-key reuse across versions) is resolved in §2, §6, §8
-    and ADR 0016.
-  - No M7 code, dependency, schema, migration or connector change exists.
-- Approved decisions (review of 2026-10-02): see
-  [approved decisions](#approved-decisions).
-- ADRs (proposed):
+- Status: **implemented; awaiting independent review** (PR from
+  `claude/blissful-mendel-urbh4r`). The plan below was approved
+  (review of `ec3f3f3`: PASS — M7 PLAN APPROVED FOR IMPLEMENTATION); what was
+  built, deviations and evidence are in the
+  [implementation record](#implementation-record).
+- ADRs (accepted, with "as built" notes):
   - [0016 product model](../adr/0016-product-model-versioning.md);
   - [0017 subscriptions and ownership](../adr/0017-subscriptions-and-ownership.md);
   - [0018 eligibility and whitespace](../adr/0018-eligibility-and-whitespace.md).
@@ -21,9 +17,9 @@
   engine); [ADR 0008](../adr/0008-tenant-isolation.md);
   [ADR 0014](../adr/0014-canonical-identity-references-provenance.md).
 - Juniper's real products, relationships, eligibility rules and subscription
-  source are **unknown (`tbc`)**. Every example in this plan is generic
-  (`core`, `analytics`, `analytics-plus`, `reporting`, `suite`) and none of it
-  is shipped as Juniper configuration.
+  source are **unknown (`tbc`)**. Every example is generic (`core`,
+  `analytics`, `reporting`, `suite`, and the fictional
+  `config/examples/*`) and none of it is shipped as Juniper configuration.
 
 **Purpose.** M7 builds the canonical, vendor-neutral core that answers, per
 account and point in time:
@@ -1220,3 +1216,114 @@ From the planning review of 2026-10-02:
 | Removing `Company.products` breaks a hidden consumer             | Only the company repository and tests use it (checked); the upgrade migration test covers the data |
 | Model documents get large                                        | Size limits in validation; models are cached per immutable version                                 |
 | Historic `asOf` with current facts is mistaken for a true replay | Documented: true replay is from snapshots; `asOf` only selects the model version and date windows  |
+
+---
+
+## Implementation record
+
+Commits on `claude/blissful-mendel-urbh4r` after the approved plan
+(`ec3f3f3`): `5ab4b3d` pure core · `eaf9d99` migrations · `ce42978`
+services, merge participant, CLI · `63efdb6` runtime/Docker checks, docs ·
+`9e968e3` strengthened tests · and this record. The final head SHA, CI and
+fresh-clone output are in the M7 pull request description, since they are
+bound to the final commit.
+
+### What was built
+
+| Area                             | Implementation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Pure core (`src/modules/domain`) | `product-model.ts`: schema, `validateProductModel` (all §6 codes, K1–K4, iterative DFS cycle detection with witness, limits 2,000 products / 10,000 rules / 50 `anyOf` / 20 refs), `indexProductModel` (re-validates and checks the hash; `CorruptProductModelError`). `subscription.ts`: canonical states, sources, facts, the observation contract. `eligibility.ts`: `deriveOwnership` (start inclusive, end exclusive, `includes` closure bounded by 2P+2), `evaluateEligibility` (all checks, precedence fail > unknown > eligible), `classifyWhitespace`, `factsHash`, `EVALUATOR_VERSION = 1`. `shared/canonical-json.ts` |
+| Legacy removal                   | `Company.products`, `ProductOwnership`, `OwnershipStatus` (legacy), `ownsProduct()` removed; company repository no longer touches products; `TenantConfigService.saveProduct/deleteProduct` and the template `products` key removed                                                                                                                                                                                                                                                                                                                                                                                              |
+| Migrations                       | `20261010120000_m7_product_model_and_subscriptions` (immutable `tenant_product_models`, never-delete projection, `tenant_subscriptions`, widened provenance/checkpoint CHECKs, lossless `company_products` migration with a count check, then drop; RLS forced) · `20261010130000_m7_eligibility_snapshots` (append-only, ≤ 64 KiB, RLS forced). Dev/staging down-scripts that refuse unsafe data                                                                                                                                                                                                                                |
+| Catalogue                        | `ProductCatalogueService`: validate, atomic publish (advisory lock → validate against latest or pre-M7 rows → insert version → upsert projection), `basedOnVersion` conflict, `modelAt`/`modelVersionTx` with a per-(tenant, version, hash) cache, `show`, `diff`, `listProducts`, `getProduct`                                                                                                                                                                                                                                                                                                                                  |
+| Subscriptions                    | Single writer `SubscriptionIngestionService` (line lock → canonical-company locks → re-resolve, `decideApplyWithHash` reused from M6, provenance with field names only); `SubscriptionStore` (writes) / `SubscriptionQueries` (reads); strict CSV import (`subscription-csv.ts`) with dry run, full/incremental, source-scoped tombstone pass, failed full runs, cancel; `SubscriptionReadModel` (lines, coverage, runs, invariants)                                                                                                                                                                                             |
+| Account merge                    | `CompanyMergeParticipant` port in context; the M6 merge locks loser/survivor and calls participants in its transaction; `SubscriptionMergeParticipant` repoints the same rows with one provenance row each; `ContextModule.register` refuses an empty participant list; worker and context CLI register it                                                                                                                                                                                                                                                                                                                       |
+| Eligibility                      | `EligibilityService`: one `REPEATABLE READ` load per request (model, account, coverage, facts), evaluate / whitespace (no N+1), merge lineage (`requestedCompanyId`/`evaluatedCompanyId`), frozen snapshots, replay                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Boundaries                       | `subscription-store-only-from-writer`, `context-never-depends-on-products`, `eligibility-is-not-qualification`, `qualification-never-reevaluates-eligibility`; ESLint: only products persistence may use the `tenantProduct` delegate                                                                                                                                                                                                                                                                                                                                                                                            |
+| Operations                       | CLI `product:model validate/publish/show/diff`, `subscriptions:import/show/coverage`, `eligibility:evaluate/whitespace/replay`, `products:report`; [operations guide](../operations/product-eligibility.md); fictional examples in `apps/api/config/examples`; runtime script 60; Docker checks                                                                                                                                                                                                                                                                                                                                  |
+| Dependencies                     | `fast-check` 4.10.2 (devDependency, resolved 4.10.2)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+
+### Deviations from the plan
+
+| Plan                                        | Implemented                                                                                     | Why                                                                                                                                     |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Pure code under `products/`                 | Pure code in `src/modules/domain/`                                                              | The existing `domain-is-pure` rule protects it with no new rule                                                                         |
+| Template gains optional `productModel`      | Template `products` key removed, no `productModel`                                              | Juniper's products are `tbc`; a template field would make tenancy depend on products. Models are published with `product:model publish` |
+| Reason `subscription_dates_unknown`         | `subscription_state_conflict`                                                                   | The only date-related undecidable case is a cancelled/expired line whose term is still running; named for what it is (ADR 0018 updated) |
+| "Concurrent publish: loser gets a conflict" | Plain concurrent publishes serialise into consecutive versions; `--based-on` gives the conflict | Both are safe; the optimistic check is opt-in for publishers working from a known version (ADR 0016 updated)                            |
+| Legacy period check `<`                     | `<=` (zero-length term kept, never owned)                                                       | Lossless migration of existing rows                                                                                                     |
+| Single subscription store                   | Store (writes) + queries (reads)                                                                | Lets the single-writer rule name exactly the two writers                                                                                |
+
+### Definition of Done (§29)
+
+| #   | Criterion                                                                                | Status                                                                                                                                     |
+| --- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | Validate/publish/inspect; invalid models refused; versions immutable                     | Met: unit (45 model tests), catalogue integration, triggers + mutation proofs                                                              |
+| 2   | One writer, source refs, tombstones, provenance; `company_products` migrated and removed | Met: dependency rule + mutation, upgrade migration test, import tests                                                                      |
+| 3   | Pure deterministic evaluate/whitespace with full explanation                             | Met: unit + property tests                                                                                                                 |
+| 4   | `unknown` with reason; never whitespace from missing data                                | Met: coverage gating (unit, property, integration, runtime) + mutation proofs                                                              |
+| 5   | Each check behaves and has a mutation proof                                              | Met: owned, bundles, supersession, exclusion, requirements, availability (retired, window), attribute, term dates                          |
+| 6   | Snapshots append-only and reproducible                                                   | Met: trigger + replay after fact and model changes; mutation proofs                                                                        |
+| 7   | Tenant isolation on every new table and on evaluation                                    | Met: RLS mutation tests (models, subscriptions, runs, snapshots), schema guard, runtime RLS check                                          |
+| 8   | Merge moves subscriptions correctly                                                      | Met: same rows, provenance, replay, chains, cross-system refusal, forced-interleaving race, storm test, composition guard; mutation proofs |
+| 9   | No key reuse (K1–K4)                                                                     | Met: unit scenarios, integration (incl. pre-M7 rows), mutation proofs per rule                                                             |
+| 10  | No Juniper configuration; examples fictional                                             | Met                                                                                                                                        |
+| 11  | No connector, signal, candidate, lead, qualification, routing, CRM write, UI or AI       | Met (scope check)                                                                                                                          |
+| 12  | verify, runtime (script 60), Docker, fresh clone, CI, migrations                         | See evidence below and the PR description                                                                                                  |
+| 13  | ADRs, record, operations guide, tech debt                                                | Met; independent review pending                                                                                                            |
+
+### Property tests (fast-check, seed `20261002`, 300 runs each)
+
+Termination on valid generated models; determinism; a failing (or unknown)
+check never yields eligible; incomplete coverage never yields eligible
+whitespace or ownership; owned never eligible and one category per product;
+adding a requirement never increases eligibility; injected requires/bundle
+cycles always rejected; the account identifier does not change semantics (the
+tenant is not an evaluator input, so this is the partition-independence
+property); serialise-and-replay of frozen inputs reproduces the result.
+Reproduce with `FC_SEED=<seed> FC_RUNS=<n> pnpm test:unit`.
+
+### Mutation proofs (34)
+
+Each mechanism was broken, its guarding test run (must fail for the stated
+reason), then restored and re-run (must pass). All 34 failed as required and
+passed after restore.
+
+| Mechanism broken                                                                                   | Failing test(s)                                                                                                                                               |
+| -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Coverage gating (unit)                                                                             | "is unknown with ownership_not_loaded when coverage is not complete"                                                                                          |
+| Coverage gating (integration)                                                                      | "is unknown before ownership coverage, then decides from the facts"                                                                                           |
+| Precedence (fail never eligible)                                                                   | 9 unit tests, e.g. "already owned → ineligible"                                                                                                               |
+| K1 (validator / publish)                                                                           | "rejects omitting a historical key"; "a failed publish writes nothing; K1–K3 …"                                                                               |
+| K2 / K3                                                                                            | "rejects renaming a retired product"; "rejects a rename without declaration"                                                                                  |
+| K4 never-delete trigger                                                                            | "stored versions are immutable and catalogue rows are never deleted"                                                                                          |
+| K1 against pre-M7 rows                                                                             | "the first model must keep catalogue rows created before M7"                                                                                                  |
+| Version immutability trigger                                                                       | "stored versions are immutable …"                                                                                                                             |
+| Publication lock                                                                                   | "concurrent publishes serialise …"                                                                                                                            |
+| Snapshot append-only trigger                                                                       | "records frozen snapshots that replay exactly …"                                                                                                              |
+| Snapshot frozen input                                                                              | "records frozen snapshots that replay exactly …"                                                                                                              |
+| Forced RLS on subscriptions                                                                        | schema guard + "tenants cannot read or write each other's …"                                                                                                  |
+| Merge participant call                                                                             | "moves the same rows …"; "concurrent imports and merges …"                                                                                                    |
+| Merge canonical locks                                                                              | "a write racing a merge waits for it … (forced interleaving)"                                                                                                 |
+| Writer canonical locks                                                                             | same race test                                                                                                                                                |
+| Per-line lock                                                                                      | "concurrent copies of one line naming different accounts …" (added after the first proof did not fail: the company lock alone serialised same-account copies) |
+| Source-only field hash                                                                             | "moves the same rows …" stored-hash assertion (added after the first proof did not fail: the changed-fields comparison hid the rewritten hash)                |
+| Failed full import (rejections)                                                                    | "unknown accounts and products are rejected; a full load with rejections fails …"                                                                             |
+| Tombstone scope                                                                                    | "a full load scoped to one source never tombstones another source"                                                                                            |
+| Only full loads give coverage                                                                      | same rejection test (incremental never establishes coverage)                                                                                                  |
+| Whole-file CSV validation                                                                          | "a malformed file, wrong encoding or oversize file …"                                                                                                         |
+| Startup without participants                                                                       | "every merge-capable composition registers the participant …"                                                                                                 |
+| Single subscription writer                                                                         | dependency rule `subscription-store-only-from-writer` (1 violation)                                                                                           |
+| Checks: owned, bundles, superseded, excluded, requirements, retired, window, attribute, term dates | 1–5 unit tests each (e.g. "closes over includes, including nested bundles", "availability window: inclusive from, exclusive until")                           |
+
+The three other new boundary rules were also broken by hand and each
+reported its violation (`context-never-depends-on-products`,
+`eligibility-is-not-qualification`,
+`qualification-never-reevaluates-eligibility`).
+
+### Open questions (unchanged, §30)
+
+Subscription source(s) and authority, coverage granularity, account and
+product identity mapping, state vocabulary, quantity/term relevance, account
+attributes, and Juniper's actual catalogue: all decided at the Subscription
+Source Discovery gate before M8.
