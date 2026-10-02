@@ -78,6 +78,15 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
       'SELECT id::text, company_id::text, product_key, record_state, source_record_id FROM tenant_subscriptions WHERE tenant_id = $1 ORDER BY source_record_id',
       [t.tenantId],
     );
+  const hashes = async (t: TenantContext) =>
+    Object.fromEntries(
+      (
+        await c.sql<{ source_record_id: string; field_hash: string }>(
+          'SELECT source_record_id, field_hash FROM tenant_subscriptions WHERE tenant_id = $1',
+          [t.tenantId],
+        )
+      ).map((r) => [r.source_record_id, r.field_hash]),
+    );
   const provenance = (t: TenantContext, entityId?: string) =>
     c.sql<{
       entity_id: string;
@@ -473,11 +482,7 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
       const done = runs.filter((r) => r.status === 'fulfilled');
       const refused = runs.filter((r) => r.status === 'rejected');
       expect(done.length).toBeGreaterThanOrEqual(1);
-      expect(
-        refused.every(
-          (r) => (r as PromiseRejectedResult).reason instanceof ImportAlreadyRunningError,
-        ),
-      ).toBe(true);
+      expect(refused.every((r) => r.reason instanceof ImportAlreadyRunningError)).toBe(true);
       expect(await lines(t)).toHaveLength(2);
       await expect(c.h.subscriptionReads.coverage(t)).resolves.toMatchObject({ coverage: 'known' });
     });
@@ -552,6 +557,26 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
     });
   });
 
+  describe('per-line lock', () => {
+    it('concurrent copies of one line naming different accounts converge on one row without errors', async () => {
+      const t = await tenantWithCompanies('lock', ['671', '672']);
+      const a = await companyId(t, '671');
+      const b = await companyId(t, '672');
+      // Different accounts take different company locks: only the line lock serialises them.
+      const results = await Promise.allSettled(
+        Array.from({ length: 8 }, (_, i) =>
+          c.h.subscriptions.ingest(t, present('LK1', i % 2 ? a : b, 'core'), meta()),
+        ),
+      );
+      expect(results.filter((r) => r.status === 'rejected')).toEqual([]);
+      const outcomes = results.map(
+        (r) => (r as PromiseFulfilledResult<{ outcome: string }>).value.outcome,
+      );
+      expect(outcomes.filter((o) => o === 'created')).toHaveLength(1);
+      expect(await lines(t)).toHaveLength(1);
+    });
+  });
+
   describe('account merge participation (ADR 0017 §8)', () => {
     const merge = (t: TenantContext, survivor: string, merged: string[]) =>
       c.ingestion.ingestMerge(
@@ -579,6 +604,7 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
         correlationId: randomUUID(),
       });
       const before = await lines(t);
+      const hashesBefore = await hashes(t);
       const c701 = await companyId(t, '701');
       const c702 = await companyId(t, '702');
 
@@ -625,6 +651,7 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
         { source: 'billing', mode: 'incremental', execute: true, correlationId: randomUUID() },
       );
       expect(redelivered.outcomes).toEqual({ unchanged: 2 });
+      expect(await hashes(t)).toMatchObject(hashesBefore); // stored hashes never depend on the canonical company
 
       // Chained merge: 701 into 703 carries every line, including those from 702.
       await merge(t, '703', ['701']);
