@@ -1,10 +1,9 @@
 # Milestone 7 — Product catalogue, subscriptions and eligibility
 
-- Status: **implemented; awaiting independent review** (PR from
-  `claude/blissful-mendel-urbh4r`). The plan below was approved
-  (review of `ec3f3f3`: PASS — M7 PLAN APPROVED FOR IMPLEMENTATION); what was
-  built, deviations and evidence are in the
-  [implementation record](#implementation-record).
+- Status: **COMPLETE** (2026-10-02). Independent implementation review of
+  `cc65a58`: PASS WITH NON-BLOCKING FINDINGS — M7 READY TO MERGE; merged in
+  PR #10 (merge commit `8a4e162`). See [closure](#closure); the plan and the
+  [implementation record](#implementation-record) follow.
 - ADRs (accepted, with "as built" notes):
   - [0016 product model](../adr/0016-product-model-versioning.md);
   - [0017 subscriptions and ownership](../adr/0017-subscriptions-and-ownership.md);
@@ -1327,3 +1326,44 @@ Subscription source(s) and authority, coverage granularity, account and
 product identity mapping, state vocabulary, quantity/term relevance, account
 attributes, and Juniper's actual catalogue: all decided at the Subscription
 Source Discovery gate before M8.
+
+## Closure
+
+M7 is **complete** (2026-10-02). The non-blocking findings below are carried
+forward; nothing in the implementation changed after the reviewed SHA.
+
+### Final gates
+
+| Gate                 | Result                                                                                                                        |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Final implementation | `cc65a587056c4d3ff1fbb973b273b5396aa29cc4` (reviewed head of PR #10)                                                          |
+| Merge                | PR #10, merge commit `8a4e162edd0a5ab7eb8aba3cfb7eaab3453fc74a` (parents `fb4c6eb` and `cc65a58`)                             |
+| Unit tests           | 538 passed                                                                                                                    |
+| Integration tests    | 258 passed                                                                                                                    |
+| Runtime verification | 118/118 (incl. 13 M7 checks in script 60); independently reproduced by the reviewer                                           |
+| Docker               | 16/16 (incl. 2 M7 checks)                                                                                                     |
+| Mutation proofs      | 34/34 fail for the right reason and pass after restore                                                                        |
+| Property tests       | 9, `fast-check` 4.10.2, seed `20261002`, 300 runs per property                                                                |
+| Fresh clone          | pass on `cc65a58` (install, verify, runtime, Docker; no resources left)                                                       |
+| CI                   | all four jobs green on `cc65a58` (run 36994932296)                                                                            |
+| Tenant isolation     | pass (forced RLS on every new table, RLS mutation tests, schema guard, runtime check)                                         |
+| Independent review   | PASS WITH NON-BLOCKING FINDINGS — M7 READY TO MERGE; no blockers                                                              |
+| Scope                | no connector, frontend, opportunity/candidate, qualification or AI code; no Juniper products or rules (`tbc`); M8 not started |
+
+### Carried-forward findings
+
+| Finding                                                         | Where recorded                                                                                                                |
+| --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Human-facing publishing (M14 UI/API) must send the base version | Technical debt #26: always optimistic concurrency, never the optional operator `--based-on`                                   |
+| Batched whitespace across many accounts                         | Technical debt #25, now a **required M11 design input**                                                                       |
+| Killed import needs `--cancel`                                  | Technical debt #24 (automatic stale-run recovery belongs with connector/backfill automation)                                  |
+| Snapshot and provenance retention                               | Technical debt #23 (privacy/data-retention work, items 15 and 17)                                                             |
+| Pure products logic lives in `src/modules/domain`               | Technical debt #27 (note only; no refactor)                                                                                   |
+| ADR 0018 terminology                                            | Already aligned: ADR 0018 §3 lists `subscription_state_conflict`                                                              |
+| Snapshot recorded before a merge stays unchanged after it       | Technical debt #28: add a direct regression test (covered today only indirectly: append-only trigger and frozen-input replay) |
+
+### Next activity
+
+**Subscription Source Discovery**, the approved gate before M8. M8 is not
+started; no source (Sugar, Gainsight, billing, warehouse or other) is chosen
+by assumption.
