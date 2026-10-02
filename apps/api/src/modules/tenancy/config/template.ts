@@ -3,7 +3,6 @@ import { FieldMappingSchema } from './field-mappings';
 import { IntegrationSettingsSchemas } from './integrations';
 import { LeadSourceMappingSchema } from './lead-source-mappings';
 import { PolicySchemas } from './policies';
-import { ProductSchema } from './products';
 import { QualificationConfigInputSchema } from './qualification';
 
 /**
@@ -12,7 +11,8 @@ import { QualificationConfigInputSchema } from './qualification';
  * these data files, never in code.
  *
  * Deliberately excluded: integration access levels, flow modes and
- * credentials. A new tenant always starts with every integration disabled and
+ * credentials. Products are not template data: the catalogue is a published,
+ * versioned product model (ADR 0016), loaded with `product:model publish`. A new tenant always starts with every integration disabled and
  * every flow off; enabling writes is an explicit, separate step.
  */
 export const TenantTemplateSchema = z.strictObject({
@@ -27,7 +27,6 @@ export const TenantTemplateSchema = z.strictObject({
     })
     .default({}),
   qualification: QualificationConfigInputSchema.optional(),
-  products: z.array(ProductSchema).default([]),
   fieldMappings: z.array(FieldMappingSchema).default([]),
   leadSourceMappings: z.array(LeadSourceMappingSchema).default([]),
   policies: z

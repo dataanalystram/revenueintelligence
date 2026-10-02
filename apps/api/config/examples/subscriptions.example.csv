@@ -1,0 +1,4 @@
+record_id,account,product,state,starts_at,ends_at,quantity,source_updated_at
+EX-1,hubspot:companies:ex-1001,core,active,2026-01-01T00:00:00Z,2036-01-01T00:00:00Z,25,2026-01-01T00:00:00Z
+EX-2,hubspot:companies:ex-1001,reports,trial,2026-06-01T00:00:00Z,2035-12-01T00:00:00Z,,2026-06-01T00:00:00Z
+EX-3,hubspot:companies:ex-1002,core-plus,cancelled,2025-01-01T00:00:00Z,2026-01-01T00:00:00Z,,2026-01-02T00:00:00Z

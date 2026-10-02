@@ -1,6 +1,5 @@
 import { Injectable } from '@nestjs/common';
 import type { z } from 'zod';
-import type { ProductKey } from '../../domain';
 import {
   FieldMappingSchema,
   type FieldMapping,
@@ -30,7 +29,7 @@ import {
   type LeadSourceSystem,
 } from '../config/lead-source-mappings';
 import { PolicySchemas, type Policy, type PolicyKind } from '../config/policies';
-import { ProductSchema, type Product, type ProductInput } from '../config/products';
+import type { Product } from '../config/products';
 import {
   modeRequiresJev,
   QualificationConfigInputSchema,
@@ -187,21 +186,14 @@ export class TenantConfigService {
   }
 
   // --- Products ---------------------------------------------------------------
+  // Read-only view of the `tenant_products` projection. Products are written
+  // only by publishing a product model version (products module, ADR 0016).
 
   async listProducts(
     ctx: TenantContext,
     options: { activeOnly?: boolean } = {},
   ): Promise<Product[]> {
     return await this.db.transaction(ctx, (tx) => this.repo.listProducts(tx, options));
-  }
-
-  async saveProduct(ctx: TenantContext, input: ProductInput): Promise<Product> {
-    const product = validate(ProductSchema, input, 'product');
-    return await this.db.transaction(ctx, (tx) => this.repo.saveProduct(tx, product));
-  }
-
-  async deleteProduct(ctx: TenantContext, key: ProductKey): Promise<boolean> {
-    return await this.db.transaction(ctx, (tx) => this.repo.deleteProduct(tx, key));
   }
 
   // --- Mappings ---------------------------------------------------------------

@@ -1,7 +1,6 @@
 {
   "description": "Juniper Education — initial configuration from the Lead Handover brief (13 Aug 2026). Only values stated in the brief are included; anything the brief marks TBC is recorded as tbc with no external field. Integrations and flows are always provisioned disabled/off.",
   "qualification": { "mode": "rules" },
-  "products": [],
   "leadSourceMappings": [
     {
       "system": "hubspot",

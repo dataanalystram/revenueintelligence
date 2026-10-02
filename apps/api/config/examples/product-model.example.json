@@ -1,0 +1,55 @@
+{
+  "products": [
+    {
+      "key": "core",
+      "name": "Core Platform",
+      "family": "platform",
+      "description": "Fictional example: the base product"
+    },
+    { "key": "core-plus", "name": "Core Platform Plus", "family": "platform" },
+    { "key": "insights", "name": "Insights Add-on", "family": "addons" },
+    { "key": "insights-pro", "name": "Insights Pro Add-on", "family": "addons" },
+    { "key": "reports", "name": "Reports Add-on", "family": "addons" },
+    {
+      "key": "classic-reports",
+      "name": "Classic Reports",
+      "family": "addons",
+      "status": "retired"
+    },
+    { "key": "starter-bundle", "name": "Starter Bundle", "family": "bundles" },
+    { "key": "self-hosted", "name": "Self-hosted Edition", "family": "platform" }
+  ],
+  "relationships": [
+    {
+      "id": "insights-requires-core",
+      "type": "requires",
+      "product": "insights",
+      "anyOf": ["core", "core-plus"]
+    },
+    {
+      "id": "insights-pro-requires-core",
+      "type": "requires",
+      "product": "insights-pro",
+      "anyOf": ["core", "core-plus"]
+    },
+    {
+      "id": "insights-pro-replaces-insights",
+      "type": "replaces",
+      "product": "insights-pro",
+      "replaced": "insights"
+    },
+    {
+      "id": "core-plus-replaces-core",
+      "type": "replaces",
+      "product": "core-plus",
+      "replaced": "core"
+    },
+    {
+      "id": "bundle-includes-reports",
+      "type": "includes",
+      "product": "starter-bundle",
+      "included": "reports"
+    },
+    { "id": "hosted-excludes-self-hosted", "type": "excludes", "products": ["core", "self-hosted"] }
+  ]
+}

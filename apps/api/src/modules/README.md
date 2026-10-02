@@ -10,6 +10,7 @@ listed below. Nothing is scaffolded ahead of its milestone.
 | `hubspot`       | ✅ Read-only connector and discovery (M3); OAuth, abstraction (M4); webhooks (M5)              | M3–M5     |
 | `crm`           | ✅ Vendor-neutral CRM ports (reader, receipt source, receipts listener)                        | M4–M6     |
 | `context`       | ✅ Event processing (BullMQ), canonical account/person context, references, provenance         | M6        |
+| `products`      | ✅ Product model versions, subscriptions (single writer, CSV import), eligibility, whitespace  | M7        |
 | `sugar`         | Sugar CRM connector interface + mock + real implementation                                     | M7, M17   |
 | `crossref`      | External-ID cross-reference (HubSpot ⇄ Sugar ⇄ Gainsight)                                      | M8        |
 | `mapping`       | Configurable field-mapping engine                                                              | M9        |

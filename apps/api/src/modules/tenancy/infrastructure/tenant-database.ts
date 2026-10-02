@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import type { Prisma } from '../../../generated/prisma/client';
 import { APP_CONFIG, type AppConfig } from '../../../platform/config';
@@ -32,6 +33,24 @@ export function tenantClient(tx: TenantTransaction): Client {
     throw new InvalidTenantContextError('not an open tenant transaction');
   }
   return client;
+}
+
+/**
+ * A transaction-scoped advisory lock on `(tenant, scope, value)`, released at
+ * commit or rollback. Shared by every module that must serialise work on the
+ * same tenant-scoped key (e.g. the canonical-company lock taken by the M6
+ * merge and the M7 subscription writer), so they always compute the same key.
+ */
+export async function tenantAdvisoryLock(
+  tx: TenantTransaction,
+  scope: string,
+  value: string,
+): Promise<void> {
+  const key = createHash('sha256')
+    .update(`${tx.tenantId}|${scope}|${value}`)
+    .digest()
+    .readBigInt64BE(0);
+  await tenantClient(tx).$executeRaw`SELECT pg_advisory_xact_lock(${key}::bigint)`;
 }
 
 async function bindTenant(client: Client, tenantId: string): Promise<string | null> {

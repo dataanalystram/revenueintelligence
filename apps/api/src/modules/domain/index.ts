@@ -24,3 +24,7 @@ export * from './shared/ids';
 export * from './shared/time';
 export * from './signals';
 export * from './source-observation';
+export * from './eligibility';
+export * from './product-model';
+export * from './shared/canonical-json';
+export * from './subscription';

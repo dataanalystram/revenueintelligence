@@ -157,6 +157,26 @@ export function decideApply(
   stored: StoredReference | undefined,
   observation: SourceObservation,
 ): ApplyDecision {
+  return decideApplyWithHash(
+    stored,
+    observation,
+    observation.presence === 'present' ? fieldHash(observation) : undefined,
+  );
+}
+
+/**
+ * The ordering rules of `decideApply` for any source record kind, given the
+ * hash of the observation's source values (M7 subscriptions reuse it).
+ */
+export function decideApplyWithHash(
+  stored: StoredReference | undefined,
+  observation: {
+    readonly presence: 'present' | 'absent';
+    readonly observedAt: Date;
+    readonly sourceUpdatedAt?: Date;
+  },
+  hash: string | undefined,
+): ApplyDecision {
   if (!stored) return observation.presence === 'present' ? 'create' : 'not_found';
 
   if (observation.presence === 'absent') {
@@ -170,7 +190,6 @@ export function decideApply(
     return stored.deletedAt && observation.observedAt > stored.deletedAt ? 'restore' : 'stale';
   }
 
-  const hash = fieldHash(observation);
   if (stored.sourceUpdatedAt && observation.sourceUpdatedAt) {
     if (observation.sourceUpdatedAt < stored.sourceUpdatedAt) return 'stale';
     if (

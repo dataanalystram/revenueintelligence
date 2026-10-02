@@ -127,6 +127,61 @@ module.exports = {
       to: { path: '^src/modules/context/infrastructure/context-store\\.ts$' },
     },
     {
+      name: 'subscription-store-only-from-writer',
+      severity: 'error',
+      comment:
+        'SubscriptionIngestionService is the single subscription writer (ADR 0017): imports and ' +
+        'connectors reach tenant_subscriptions only through it. The account-merge participant is ' +
+        'the one other writer (it repoints lines inside the M6 merge transaction).',
+      from: {
+        pathNot: [
+          '^src/modules/products/application/subscription-ingestion\\.service\\.ts$',
+          '^src/modules/products/application/subscription-merge\\.participant\\.ts$',
+          '^src/modules/products/products\\.module\\.ts$',
+          '^src/modules/products/subscription-merge\\.module\\.ts$',
+          '\\.spec\\.ts$',
+        ],
+      },
+      to: { path: '^src/modules/products/infrastructure/subscription\\.store\\.ts$' },
+    },
+    {
+      name: 'context-never-depends-on-products',
+      severity: 'error',
+      comment:
+        'Account merge is one workflow in the context module; products plugs in through the ' +
+        'CompanyMergeParticipant port (dependency inversion), never the other way round.',
+      from: { path: '^src/modules/context/' },
+      to: { path: '^src/modules/products/' },
+    },
+    {
+      name: 'eligibility-is-not-qualification',
+      severity: 'error',
+      comment:
+        'Qualification (AI) classifies; deterministic code decides. Eligibility is deterministic ' +
+        'and must not depend on any AI/qualification code (charter, ADR 0018).',
+      from: {
+        path: [
+          '^src/modules/products/',
+          '^src/modules/domain/(eligibility|product-model|subscription)\\.ts$',
+        ],
+      },
+      to: { path: ['^src/modules/qualification/', '^src/modules/domain/qualification'] },
+    },
+    {
+      name: 'qualification-never-reevaluates-eligibility',
+      severity: 'error',
+      comment:
+        'Qualification judges the strength of an eligible candidate; it never re-evaluates ' +
+        'eligibility or reads product relationships (ADR 0018 §7).',
+      from: { path: ['^src/modules/qualification/', '^src/modules/domain/qualification'] },
+      to: {
+        path: [
+          '^src/modules/products/',
+          '^src/modules/domain/(eligibility|product-model|subscription)\\.ts$',
+        ],
+      },
+    },
+    {
       name: 'no-test-code-in-production',
       severity: 'error',
       from: { pathNot: '\\.spec\\.ts$' },

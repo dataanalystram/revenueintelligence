@@ -33,24 +33,27 @@ model Tenant {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  integrations        TenantIntegration[]
-  flowSettings        TenantFlowSetting[]
-  credentialRefs      TenantCredentialRef[]
-  oauthTokens         TenantOAuthToken[]
-  oauthStates         TenantOAuthState[]
-  webhookReceipts     TenantWebhookReceipt[]
-  qualificationConfig TenantQualificationConfig?
-  products            TenantProduct[]
-  fieldMappings       TenantFieldMapping[]
-  leadSourceMappings  TenantLeadSourceMapping[]
-  policies            TenantPolicy[]
-  companies           Company[]
-  persons             Person[]
-  contextChanges      TenantContextChange[]
-  sourceRelationships TenantSourceRelationship[]
-  identityConflicts   TenantIdentityConflict[]
-  deadLetters         TenantDeadLetter[]
-  syncCheckpoints     TenantSyncCheckpoint[]
+  integrations         TenantIntegration[]
+  flowSettings         TenantFlowSetting[]
+  credentialRefs       TenantCredentialRef[]
+  oauthTokens          TenantOAuthToken[]
+  oauthStates          TenantOAuthState[]
+  webhookReceipts      TenantWebhookReceipt[]
+  qualificationConfig  TenantQualificationConfig?
+  products             TenantProduct[]
+  fieldMappings        TenantFieldMapping[]
+  leadSourceMappings   TenantLeadSourceMapping[]
+  policies             TenantPolicy[]
+  companies            Company[]
+  persons              Person[]
+  contextChanges       TenantContextChange[]
+  sourceRelationships  TenantSourceRelationship[]
+  identityConflicts    TenantIdentityConflict[]
+  deadLetters          TenantDeadLetter[]
+  syncCheckpoints      TenantSyncCheckpoint[]
+  productModels        TenantProductModel[]
+  subscriptions        TenantSubscription[]
+  eligibilitySnapshots TenantEligibilitySnapshot[]
 
   @@unique([id, slug])
   @@map("tenants")
@@ -221,20 +224,81 @@ model TenantQualificationConfig {
   @@map("tenant_qualification_config")
 }
 
+/// Read-only projection of the latest published product model (ADR 0016).
+/// Written only by publishing; rows are never deleted (K4).
 model TenantProduct {
-  tenantId    String   @map("tenant_id") @db.Uuid
-  key         String
-  name        String
-  description String?
-  active      Boolean  @default(true)
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  tenantId     String   @map("tenant_id") @db.Uuid
+  key          String
+  name         String
+  description  String?
+  active       Boolean  @default(true)
+  family       String?
+  /// Last published model version that defined this product
+  modelVersion Int?     @map("model_version")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  tenant    Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  ownership CompanyProduct[]
+  tenant        Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  subscriptions TenantSubscription[]
+  snapshots     TenantEligibilitySnapshot[]
 
   @@id([tenantId, key])
   @@map("tenant_products")
+}
+
+/// Immutable product model versions (ADR 0016): catalogue, relationships,
+/// conditions. Never updated or deleted (trigger).
+model TenantProductModel {
+  tenantId      String   @map("tenant_id") @db.Uuid
+  version       Int
+  document      Json
+  contentHash   String   @map("content_hash")
+  effectiveFrom DateTime @map("effective_from") @db.Timestamptz(3)
+  publishedAt   DateTime @default(now()) @map("published_at") @db.Timestamptz(3)
+  publishedBy   String   @map("published_by")
+
+  tenant    Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  snapshots TenantEligibilitySnapshot[]
+
+  @@id([tenantId, version])
+  @@index([tenantId, effectiveFrom])
+  @@map("tenant_product_models")
+}
+
+/// One source subscription line (ADR 0017). Ownership is derived, never stored.
+model TenantSubscription {
+  tenantId         String    @map("tenant_id") @db.Uuid
+  id               String    @db.Uuid
+  companyId        String    @map("company_id") @db.Uuid
+  productKey       String    @map("product_key")
+  /// active | trial | expired | cancelled | unknown
+  state            String
+  startsAt         DateTime? @map("starts_at") @db.Timestamptz(3)
+  endsAt           DateTime? @map("ends_at") @db.Timestamptz(3)
+  quantity         Int?
+  sourceSystem     String    @map("source_system")
+  sourceObjectType String    @map("source_object_type")
+  sourceRecordId   String    @map("source_record_id")
+  /// active | deleted (source tombstone)
+  recordState      String    @default("active") @map("record_state")
+  sourceUpdatedAt  DateTime? @map("source_updated_at") @db.Timestamptz(3)
+  observedAt       DateTime  @map("observed_at") @db.Timestamptz(3)
+  deletedAt        DateTime? @map("deleted_at") @db.Timestamptz(3)
+  /// SHA-256 of the source-provided values only (never the resolved company)
+  fieldHash        String?   @map("field_hash")
+  firstSeenAt      DateTime  @default(now()) @map("first_seen_at") @db.Timestamptz(3)
+  lastSeenAt       DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(3)
+  lastChangeId     String?   @map("last_change_id") @db.Uuid
+
+  tenant  Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  company Company       @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  product TenantProduct @relation(fields: [tenantId, productKey], references: [tenantId, key], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, id])
+  @@unique([tenantId, sourceSystem, sourceObjectType, sourceRecordId])
+  @@index([tenantId, companyId])
+  @@index([tenantId, productKey])
+  @@map("tenant_subscriptions")
 }
 
 model TenantFieldMapping {
@@ -315,32 +379,18 @@ model Company {
   createdAt      DateTime @map("created_at") @db.Timestamptz(3)
   updatedAt      DateTime @map("updated_at") @db.Timestamptz(3)
 
-  tenant       Tenant               @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  mergedInto   Company?             @relation("CompanyMergedInto", fields: [tenantId, mergedIntoId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
-  mergedFrom   Company[]            @relation("CompanyMergedInto")
-  products     CompanyProduct[]
-  externalRefs CompanyExternalRef[]
-  persons      Person[]
+  tenant             Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  mergedInto         Company?                    @relation("CompanyMergedInto", fields: [tenantId, mergedIntoId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  mergedFrom         Company[]                   @relation("CompanyMergedInto")
+  subscriptions      TenantSubscription[]
+  snapshotsRequested TenantEligibilitySnapshot[] @relation("SnapshotRequestedCompany")
+  snapshotsEvaluated TenantEligibilitySnapshot[] @relation("SnapshotEvaluatedCompany")
+  externalRefs       CompanyExternalRef[]
+  persons            Person[]
 
   @@unique([tenantId, id])
   @@index([tenantId, name])
   @@map("companies")
-}
-
-model CompanyProduct {
-  tenantId   String    @map("tenant_id") @db.Uuid
-  companyId  String    @map("company_id") @db.Uuid
-  productKey String    @map("product_key")
-  /// active | trial | expired | churned
-  status     String
-  since      DateTime? @db.Timestamptz(3)
-  until      DateTime? @db.Timestamptz(3)
-
-  company Company       @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Cascade, onUpdate: Restrict)
-  product TenantProduct @relation(fields: [tenantId, productKey], references: [tenantId, key], onDelete: Restrict, onUpdate: Restrict)
-
-  @@id([tenantId, companyId, productKey])
-  @@map("company_products")
 }
 
 model CompanyExternalRef {
@@ -542,9 +592,9 @@ model TenantSyncCheckpoint {
   tenantId       String    @map("tenant_id") @db.Uuid
   id             String    @db.Uuid
   system         String
-  /// company | person
+  /// company | person | subscription
   kind           String
-  /// backfill | reconcile
+  /// backfill | reconcile | import_full | import_incremental
   mode           String
   /// running | completed | failed | cancelled
   status         String    @default("running")
@@ -568,6 +618,8 @@ model TenantSyncCheckpoint {
   updatedAt      DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
   completedAt    DateTime? @map("completed_at") @db.Timestamptz(3)
   lastErrorCode  String?   @map("last_error_code")
+  /// Import runs: SHA-256 of the input file
+  inputHash      String?   @map("input_hash")
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
 
@@ -575,4 +627,41 @@ model TenantSyncCheckpoint {
   @@unique([tenantId, activeKey])
   @@index([tenantId, system, kind, mode, status, completedAt])
   @@map("tenant_sync_checkpoints")
+}
+
+/// Frozen eligibility evidence (ADR 0018): written only when a consumer relies
+/// on a result. Append-only (trigger); reproduces exactly from its inputs.
+model TenantEligibilitySnapshot {
+  tenantId           String   @map("tenant_id") @db.Uuid
+  id                 String   @db.Uuid
+  /// The company asked about (may have been merged away since)
+  requestedCompanyId String   @map("requested_company_id") @db.Uuid
+  /// The canonical company actually evaluated (merge lineage resolved)
+  evaluatedCompanyId String   @map("evaluated_company_id") @db.Uuid
+  productKey         String   @map("product_key")
+  asOf               DateTime @map("as_of") @db.Timestamptz(3)
+  evaluatedAt        DateTime @default(now()) @map("evaluated_at") @db.Timestamptz(3)
+  /// eligible | ineligible | unknown
+  status             String
+  /// owned | not_owned | unknown
+  ownership          String
+  modelVersion       Int      @map("model_version")
+  modelHash          String   @map("model_hash")
+  evaluatorVersion   Int      @map("evaluator_version")
+  factsHash          String   @map("facts_hash")
+  /// Checks plus the frozen input facts (identifiers, codes, dates)
+  result             Json
+  purpose            String
+  correlationId      String   @map("correlation_id") @db.Uuid
+
+  tenant           Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  requestedCompany Company            @relation("SnapshotRequestedCompany", fields: [tenantId, requestedCompanyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  evaluatedCompany Company            @relation("SnapshotEvaluatedCompany", fields: [tenantId, evaluatedCompanyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  product          TenantProduct      @relation(fields: [tenantId, productKey], references: [tenantId, key], onDelete: Restrict, onUpdate: Restrict)
+  model            TenantProductModel @relation(fields: [tenantId, modelVersion], references: [tenantId, version], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, id])
+  @@index([tenantId, evaluatedCompanyId, productKey, evaluatedAt])
+  @@index([tenantId, requestedCompanyId])
+  @@map("tenant_eligibility_snapshots")
 }

@@ -26,6 +26,7 @@ export * from './errors';
 export { translateDatabaseError } from './infrastructure/prisma-errors';
 export {
   TenantDatabase,
+  tenantAdvisoryLock,
   tenantClient,
   type TenantTransaction,
 } from './infrastructure/tenant-database';

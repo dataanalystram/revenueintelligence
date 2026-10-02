@@ -4,7 +4,6 @@ import {
   CompanyIdSchema,
   EmailAddressSchema,
   PersonIdSchema,
-  ProductKeySchema,
   type ExternalRef,
 } from '../../src/modules/domain';
 import {
@@ -22,6 +21,7 @@ import {
   type TenantTransaction,
 } from '../../src/modules/tenancy';
 import { PrismaService } from '../../src/platform/database';
+import { publishAdding } from '../support/product-models';
 import { startInfrastructure, withAdmin, type TestInfrastructure } from '../support/containers';
 import {
   company,
@@ -244,9 +244,30 @@ describe('tenant data isolation (real PostgreSQL, app role, RLS)', () => {
     });
 
     it('product keys and mapping keys are unique per tenant only', async () => {
-      await h.config.saveProduct(a, { key: 'marketplace', name: 'Marketplace (A)' });
-      await h.config.saveProduct(b, { key: 'marketplace', name: 'Marketplace (B)' });
-      await h.config.saveProduct(a, { key: 'marketplace', name: 'Marketplace (A, renamed)' }); // upsert, not duplicate
+      await h.catalogue.publish(
+        a,
+        { products: [{ key: 'marketplace', name: 'Marketplace (A)' }] },
+        { actor: 'test' },
+      );
+      await h.catalogue.publish(
+        b,
+        { products: [{ key: 'marketplace', name: 'Marketplace (B)' }] },
+        { actor: 'test' },
+      );
+      // A new version updates the projection row in place, not a duplicate.
+      await h.catalogue.publish(
+        a,
+        {
+          products: [
+            {
+              key: 'marketplace',
+              name: 'Marketplace (A, renamed)',
+              renamedFrom: 'Marketplace (A)',
+            },
+          ],
+        },
+        { actor: 'test' },
+      );
 
       await expect(h.config.listProducts(a)).resolves.toEqual([
         expect.objectContaining({ key: 'marketplace', name: 'Marketplace (A, renamed)' }),
@@ -266,33 +287,59 @@ describe('tenant data isolation (real PostgreSQL, app role, RLS)', () => {
       ).rejects.toBeInstanceOf(InvalidReferenceError);
     });
 
-    it("a company can only own products from its own tenant's catalogue", async () => {
-      await h.config.saveProduct(b, { key: 'portal', name: 'Portal' });
+    it("a subscription can only reference its own tenant's companies and catalogue", async () => {
+      await publishAdding(h.catalogue, b, [{ key: 'portal', name: 'Portal' }]);
+      const companyA = newCompanyId();
+      await inA((tx) => h.companies.save(tx, company(a.tenantId, companyA)));
+      const companyB = newCompanyId();
+      await inB((tx) => h.companies.save(tx, company(b.tenantId, companyB)));
+      const meta = {
+        cause: 'import' as const,
+        correlationId: randomUUID(),
+        adapter: 'test',
+        adapterVersion: '1',
+      };
+      const obs = (companyRef: string, recordId: string) => ({
+        presence: 'present' as const,
+        source: { system: 'import' as const, objectType: 'iso', recordId },
+        companyRef,
+        productRef: 'portal',
+        state: 'active' as const,
+        observedAt: new Date(),
+      });
+      // Tenant B's product is not in A's catalogue; B's company is not visible to A.
+      await expect(h.subscriptions.ingest(a, obs(companyA, 'r1'), meta)).resolves.toEqual({
+        outcome: 'rejected',
+        reason: 'unknown_product',
+      });
+      await publishAdding(h.catalogue, a, [{ key: 'portal', name: 'Portal' }]);
+      await expect(h.subscriptions.ingest(a, obs(companyB, 'r2'), meta)).resolves.toEqual({
+        outcome: 'rejected',
+        reason: 'unknown_account',
+      });
+      await expect(h.subscriptions.ingest(a, obs(companyA, 'r3'), meta)).resolves.toMatchObject({
+        outcome: 'created',
+      });
+      // The database refuses a cross-tenant company even when the writer is bypassed.
       await expect(
-        inA((tx) =>
-          h.companies.save(
-            tx,
-            company(a.tenantId, newCompanyId(), {
-              products: [{ productKey: 'portal', status: 'active' }],
-            }),
-          ),
+        inA(
+          (tx) =>
+            tenantClient(tx).$executeRaw`
+            INSERT INTO tenant_subscriptions (tenant_id, id, company_id, product_key, state,
+              source_system, source_object_type, source_record_id, observed_at, first_seen_at, last_seen_at)
+            VALUES (${a.tenantId}::uuid, gen_random_uuid(), ${companyB}::uuid, 'portal', 'active',
+              'import', 'iso', 'r4', now(), now(), now())`,
         ),
-      ).rejects.toBeInstanceOf(InvalidReferenceError);
-
-      await h.config.saveProduct(a, { key: 'portal', name: 'Portal' });
-      const saved = await inA((tx) =>
-        h.companies.save(
-          tx,
-          company(a.tenantId, newCompanyId(), {
-            products: [{ productKey: 'portal', status: 'active' }],
-          }),
-        ),
-      );
-      expect(saved.products).toEqual([{ productKey: 'portal', status: 'active' }]);
-      // In use: the catalogue entry cannot be deleted.
+      ).rejects.toThrow(/foreign key|23503/);
+      // Catalogue entries are never deleted (K4), referenced or not.
       await expect(
-        h.config.deleteProduct(a, ProductKeySchema.parse('portal')),
-      ).rejects.toBeInstanceOf(InvalidReferenceError);
+        inA((tx) => tenantClient(tx).$executeRaw`DELETE FROM tenant_products WHERE key = 'portal'`),
+      ).rejects.toThrow(/DELETE on tenant_products is not allowed/);
+      const lines = await h.subscriptionReads.accountSubscriptions(a, companyA);
+      expect(lines.subscriptions.map((l) => l.productKey)).toEqual(['portal']);
+      await expect(h.subscriptionReads.accountSubscriptions(b, companyA)).resolves.toMatchObject({
+        subscriptions: [],
+      });
     });
 
     it('companies: lookups, updates and deletes are tenant-scoped', async () => {
@@ -316,7 +363,7 @@ describe('tenant data isolation (real PostgreSQL, app role, RLS)', () => {
         inA((tx) => h.companies.save(tx, company(b.tenantId, idB))),
       ).rejects.toBeInstanceOf(TenantMismatchError);
 
-      // Update replaces refs and products; a company with people cannot be deleted.
+      // Update replaces refs; a company with people cannot be deleted.
       await inA((tx) =>
         h.companies.save(tx, company(a.tenantId, idA, { name: 'Renamed', externalRefs: [] })),
       );
@@ -341,13 +388,9 @@ describe('tenant data isolation (real PostgreSQL, app role, RLS)', () => {
     it('round-trips a full person and company', async () => {
       const companyId = newCompanyId();
       const personId = newPersonId();
-      await h.config.saveProduct(a, { key: 'mis', name: 'MIS' });
       const c = company(a.tenantId, companyId, {
         domains: ['abc.sch.uk'],
         customerStatus: 'customer',
-        products: [
-          { productKey: 'mis', status: 'active', since: new Date('2025-01-01T00:00:00Z') },
-        ],
         externalRefs: [{ system: 'gainsight_cs', objectType: 'Company', id: 'gs-1' }],
       });
       const p = person(a.tenantId, personId, {
@@ -554,7 +597,7 @@ describe('tenant data isolation (real PostgreSQL, app role, RLS)', () => {
       await expect(
         inA(async (tx) => {
           await h.persons.save(tx, person(a.tenantId, id));
-          await h.config.saveProduct(a, { key: 'rolled', name: 'Separate transaction' }); // own tx: commits
+          await publishAdding(h.catalogue, a, [{ key: 'rolled', name: 'Separate transaction' }]); // own tx: commits
           throw new Error('boom');
         }),
       ).rejects.toThrow('boom');
