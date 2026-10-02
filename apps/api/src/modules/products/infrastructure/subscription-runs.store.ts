@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
-import { tenantClient, type TenantTransaction } from '../../tenancy';
+import {
+  tenantClient,
+  translateDatabaseError,
+  UniqueConstraintError,
+  type TenantTransaction,
+} from '../../tenancy';
 
 /**
  * Subscription load runs, recorded in the M6 `tenant_sync_checkpoints` table
@@ -52,19 +57,30 @@ export class SubscriptionRunsStore {
     const existing = await this.running(tx);
     if (existing) throw new ImportAlreadyRunningError(existing.id);
     const id = randomUUID();
-    await tenantClient(tx).tenantSyncCheckpoint.create({
-      data: {
-        tenantId: tx.tenantId,
-        id,
-        system: 'import',
-        kind: 'subscription',
-        mode: input.mode,
-        status: 'running',
-        activeKey: IMPORT_ACTIVE_KEY,
-        correlationId: input.correlationId,
-        inputHash: input.inputHash,
-      },
-    });
+    try {
+      await tenantClient(tx).tenantSyncCheckpoint.create({
+        data: {
+          tenantId: tx.tenantId,
+          id,
+          system: 'import',
+          kind: 'subscription',
+          mode: input.mode,
+          status: 'running',
+          activeKey: IMPORT_ACTIVE_KEY,
+          correlationId: input.correlationId,
+          inputHash: input.inputHash,
+        },
+      });
+    } catch (error) {
+      // A run started concurrently holds the active key (unique per tenant).
+      try {
+        translateDatabaseError(error, 'subscription run');
+      } catch (translated) {
+        if (translated instanceof UniqueConstraintError)
+          throw new ImportAlreadyRunningError('concurrent');
+        throw translated;
+      }
+    }
     return id;
   }
 

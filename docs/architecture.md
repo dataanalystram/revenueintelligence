@@ -52,24 +52,25 @@ separate functions or services. See [ADR 0002](adr/0002-api-and-worker-process-r
 ```
 src/
   platform/     config · secrets · logging · database · redis · queue · metrics · health · telemetry · http
-  modules/      domain · tenancy · crm (ports) · hubspot · context · identity ·
+  modules/      domain · tenancy · crm (ports) · hubspot · context · identity · products ·
                 (later: sugar · gainsight · signals · qualification · policy · audit)
 ```
 
-| Module                          | Role                                                                                                                                                                                                                                                                     |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `domain`                        | Canonical entities: Person, Company, LeadCandidate, Lead, MarketingSignal, ProductSignal, AccountSignal, QualificationDecision, HumanOverride, SalesOutcome (M1)                                                                                                         |
-| `hubspot`, `sugar`, `gainsight` | Connectors: the only code that knows vendor payloads                                                                                                                                                                                                                     |
-| `identity`                      | Resolve the same person/company across systems                                                                                                                                                                                                                           |
-| `signals`                       | Aggregate signals into LeadCandidates; duplicate/requalification checks                                                                                                                                                                                                  |
-| `qualification`                 | `QualificationProvider` implementations and mode selection                                                                                                                                                                                                               |
-| `policy`                        | SLA, routing and sequence eligibility from the effective decision                                                                                                                                                                                                        |
-| `orchestration`                 | Drives a Lead's journey across modules                                                                                                                                                                                                                                   |
-| `sync` / `crossref` / `mapping` | Queues, idempotency, external-ID links, tenant field mappings                                                                                                                                                                                                            |
-| `audit`                         | Append-only history of decisions, overrides and outbound writes                                                                                                                                                                                                          |
-| `tenancy`                       | Tenants, per-tenant configuration and credentials                                                                                                                                                                                                                        |
-| `crm`                           | Vendor-neutral ports: `CrmConnector`/`CrmReader`, `CrmReceiptSource`, `ReceiptsStoredListener` (M4–M6)                                                                                                                                                                   |
-| `context`                       | M6: event processing on BullMQ; the single canonical writer for accounts and people; external references; provenance; backfill and reconciliation ([ADR 0013](adr/0013-event-processing-on-bullmq.md), [ADR 0014](adr/0014-canonical-identity-references-provenance.md)) |
+| Module                          | Role                                                                                                                                                                                                                                                                                                              |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `domain`                        | Canonical entities: Person, Company, LeadCandidate, Lead, MarketingSignal, ProductSignal, AccountSignal, QualificationDecision, HumanOverride, SalesOutcome (M1)                                                                                                                                                  |
+| `hubspot`, `sugar`, `gainsight` | Connectors: the only code that knows vendor payloads                                                                                                                                                                                                                                                              |
+| `identity`                      | Resolve the same person/company across systems                                                                                                                                                                                                                                                                    |
+| `signals`                       | Aggregate signals into LeadCandidates; duplicate/requalification checks                                                                                                                                                                                                                                           |
+| `qualification`                 | `QualificationProvider` implementations and mode selection                                                                                                                                                                                                                                                        |
+| `policy`                        | SLA, routing and sequence eligibility from the effective decision                                                                                                                                                                                                                                                 |
+| `orchestration`                 | Drives a Lead's journey across modules                                                                                                                                                                                                                                                                            |
+| `sync` / `crossref` / `mapping` | Queues, idempotency, external-ID links, tenant field mappings                                                                                                                                                                                                                                                     |
+| `audit`                         | Append-only history of decisions, overrides and outbound writes                                                                                                                                                                                                                                                   |
+| `tenancy`                       | Tenants, per-tenant configuration and credentials                                                                                                                                                                                                                                                                 |
+| `crm`                           | Vendor-neutral ports: `CrmConnector`/`CrmReader`, `CrmReceiptSource`, `ReceiptsStoredListener` (M4–M6)                                                                                                                                                                                                            |
+| `context`                       | M6: event processing on BullMQ; the single canonical writer for accounts and people; external references; provenance; backfill and reconciliation ([ADR 0013](adr/0013-event-processing-on-bullmq.md), [ADR 0014](adr/0014-canonical-identity-references-provenance.md))                                          |
+| `products`                      | M7: versioned per-tenant product model and catalogue projection; the single subscription writer and CSV import; ownership coverage; eligibility, whitespace and frozen snapshots; the account-merge participant ([ADR 0016](adr/0016-product-model-versioning.md)–[0018](adr/0018-eligibility-and-whitespace.md)) |
 
 Rules, enforced in CI by dependency-cruiser (`apps/api/.dependency-cruiser.cjs`):
 
@@ -108,6 +109,20 @@ PostgreSQL is the source of truth (receipts, checkpoints, dead letters);
 Redis only coordinates jobs. `CONTEXT_PROCESSING_ENABLED=false` returns to M5
 behaviour (receipts stored, nothing processed). Platform UUIDs are canonical;
 external ids are references; no cross-system matching rules exist yet.
+
+### Products, subscriptions and eligibility (M7)
+
+```
+product model JSON ──▶ ProductCatalogueService.publish (validate K1–K4 → immutable version + tenant_products projection, one tx)
+CSV import (M8: connectors) ──▶ SubscriptionIngestionService.ingest (the only subscription writer)
+                                  ──▶ tenant_subscriptions + provenance; full load ⇒ coverage known
+M6 company merge ──▶ CompanyMergeParticipant (same tx) ──▶ lines repointed to the survivor
+EligibilityService ──▶ one repeatable-read load ──▶ pure evaluator (domain) ──▶ result / whitespace / snapshot
+```
+
+Ownership is derived from lines, never stored. No coverage → `unknown`,
+never eligible. AI plays no part: eligibility is deterministic, and
+qualification may not import it (dependency rules).
 
 ## 4. Cross-cutting guarantees (built up over M5–M9)
 

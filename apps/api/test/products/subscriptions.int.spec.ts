@@ -453,6 +453,36 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
     });
   });
 
+  describe('concurrent imports', () => {
+    it('only one import runs at a time; the others are refused cleanly', async () => {
+      const t = await tenantWithCompanies('cimp', ['661']);
+      const file = csv(
+        'P1,hubspot:companies:661,core,active,,,,',
+        'P2,hubspot:companies:661,reporting,active,,,,',
+      );
+      const runs = await Promise.allSettled(
+        Array.from({ length: 4 }, () =>
+          c.h.imports.import(t, file, {
+            source: 'billing',
+            mode: 'full',
+            execute: true,
+            correlationId: randomUUID(),
+          }),
+        ),
+      );
+      const done = runs.filter((r) => r.status === 'fulfilled');
+      const refused = runs.filter((r) => r.status === 'rejected');
+      expect(done.length).toBeGreaterThanOrEqual(1);
+      expect(
+        refused.every(
+          (r) => (r as PromiseRejectedResult).reason instanceof ImportAlreadyRunningError,
+        ),
+      ).toBe(true);
+      expect(await lines(t)).toHaveLength(2);
+      await expect(c.h.subscriptionReads.coverage(t)).resolves.toMatchObject({ coverage: 'known' });
+    });
+  });
+
   describe('single writer', () => {
     it('orders by source time: a stale update is a no-op; concurrent duplicates create one row', async () => {
       const t = await tenantWithCompanies('wr', ['651']);
@@ -584,6 +614,17 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
         outcome: 'created',
       });
       expect((await lines(t)).find((l) => l.source_record_id === 'M4')!.company_id).toBe(c701);
+      // Re-delivered unchanged source lines are unchanged after the merge (the
+      // field hash covers source values, never the resolved canonical company).
+      const redelivered = await c.h.imports.import(
+        t,
+        csv(
+          'M1,hubspot:companies:701,core,active,,,,',
+          'M2,hubspot:companies:702,analytics,active,,,,',
+        ),
+        { source: 'billing', mode: 'incremental', execute: true, correlationId: randomUUID() },
+      );
+      expect(redelivered.outcomes).toEqual({ unchanged: 2 });
 
       // Chained merge: 701 into 703 carries every line, including those from 702.
       await merge(t, '703', ['701']);

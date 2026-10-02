@@ -168,6 +168,20 @@ module.exports = {
       to: { path: ['^src/modules/qualification/', '^src/modules/domain/qualification'] },
     },
     {
+      name: 'qualification-never-reevaluates-eligibility',
+      severity: 'error',
+      comment:
+        'Qualification judges the strength of an eligible candidate; it never re-evaluates ' +
+        'eligibility or reads product relationships (ADR 0018 §7).',
+      from: { path: ['^src/modules/qualification/', '^src/modules/domain/qualification'] },
+      to: {
+        path: [
+          '^src/modules/products/',
+          '^src/modules/domain/(eligibility|product-model|subscription)\\.ts$',
+        ],
+      },
+    },
+    {
       name: 'no-test-code-in-production',
       severity: 'error',
       from: { pathNot: '\\.spec\\.ts$' },

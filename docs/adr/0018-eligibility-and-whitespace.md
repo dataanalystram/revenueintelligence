@@ -1,7 +1,8 @@
 # ADR 0018: Eligibility and whitespace (Milestone 7)
 
-- Status: proposed (M7 plan approved with changes, 2026-10-02; becomes
-  accepted with the M7 implementation)
+- Status: accepted (M7 implementation, 2026-10-02; plan approved with
+  changes the same day). "As built" notes at the end record where the
+  implementation refines the plan.
 - Date: 2026-10-02
 
 ## Context
@@ -37,7 +38,9 @@ Later milestones rely on the answer:
    - `unknown` means the facts cannot decide. Its reasons are:
      - `ownership_not_loaded`;
      - `subscription_state_unknown`;
-     - `subscription_dates_unknown`;
+     - `subscription_state_conflict` (a cancelled or expired line whose term
+       is still running: the source contradicts itself, so ownership is not
+       decided either way);
      - `attribute_missing`.
    - `unknown` never defaults to eligible.
 4. **Whitespace** groups every catalogue product into `owned`,
@@ -71,9 +74,11 @@ Later milestones rely on the answer:
    - **M10**: signals are independent of eligibility.
    - **M11**: a candidate requires `eligible` and cites the snapshot id.
    - **M12**: qualification judges the strength of an eligible candidate. It
-     **never** re-evaluates eligibility or reads product relationships. A
-     dependency rule stops `qualification` from importing the eligibility
-     module.
+     **never** re-evaluates eligibility or reads product relationships.
+     Dependency rules stop qualification code from importing the products
+     module or the eligibility/product-model domain files
+     (`qualification-never-reevaluates-eligibility`), and the reverse
+     (`eligibility-is-not-qualification`).
 8. **No eligibility override in M7.** A wrong answer is fixed by publishing a
    corrected model version. If M11/M14 need overrides, they will be a separate
    append-only record (account × product, decision, reason, actor, time,
@@ -110,3 +115,30 @@ Later milestones rely on the answer:
   and decisions mistaken for facts.
 - **On-demand evaluation only.** Rejected: downstream evidence could not be
   reproduced once facts changed.
+
+## As built (M7)
+
+- **Checks.** `ownership_coverage` is the first built-in check (unknown with
+  `ownership_not_loaded` until coverage is known), followed by
+  `product_available`, `not_already_owned`, `not_superseded`, `not_excluded`,
+  `requirements_met` (one per `requires`) and configured `account_attribute`
+  checks. `EVALUATOR_VERSION = 1`. Whitespace classifies every product from
+  one evaluation context (ownership derived once); the service loads the
+  account, coverage and facts once per request (no N+1) and caches the
+  indexed model per version.
+- **Consistency.** `EligibilityService` reads model, account, coverage and
+  facts in one `REPEATABLE READ` transaction, so a concurrent import or
+  publish is seen entirely or not at all; the snapshot is inserted in the same
+  transaction.
+- **Snapshots.** `result` holds the checks and the frozen input
+  (`account {companyId, customerStatus}`, `ownership` with the subscription
+  facts, `asOf`), canonical JSON, ≤ 64 KiB (CHECK). Replay
+  (`eligibility:replay`) re-evaluates the frozen input against the stored
+  model version and reports `reproduced`, `evaluator_changed`,
+  `model_hash_mismatch`, `facts_hash_mismatch` or `result_differs`; it never
+  reads current subscriptions.
+- **CLI.** `eligibility:evaluate --company --product [--as-of]
+[--record --purpose <code> --execute]`, `eligibility:whitespace`,
+  `eligibility:replay --snapshot`, `products:report` (exit 3 when the
+  merged-company invariant is violated). `--company` takes a platform id or
+  `system:objectType:id`.

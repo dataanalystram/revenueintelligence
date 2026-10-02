@@ -1,7 +1,8 @@
 # ADR 0017: Subscriptions, ownership and account merges (Milestone 7)
 
-- Status: proposed (M7 plan approved with changes, 2026-10-02; becomes
-  accepted with the M7 implementation)
+- Status: accepted (M7 implementation, 2026-10-02; plan approved with
+  changes the same day). "As built" notes at the end record where the
+  implementation refines the plan.
 - Date: 2026-10-02
 
 ## Context
@@ -92,10 +93,11 @@ M6 canonical companies can be **merged** (ADR 0014):
    - **Where.** Inside the existing M6 merge transaction
      (`ContextIngestionService.merge`), at the point where `repointRefs` moves
      a same-system loser to the survivor. A **merge participant hook** runs
-     there: `onCompanyMerged(tx, {loserId, survivorId, mergeChange})`. Context
+     there: `onCompanyMerged(tx, {loserId, survivorId, provenance})`. Context
      defines the port. The products module implements it, so only the
      subscription module writes subscriptions. `ContextModule.register`
-     **requires** a `mergeParticipants` list. Both compositions that can run
+     **requires** `merge: {imports, participants}` with at least one
+     participant and throws at startup otherwise. Both compositions that can run
      a merge (worker, context CLI) must pass the subscription participant,
      and a test enforces it. There is **no separate "subscription merge"
      process**.
@@ -113,7 +115,8 @@ M6 canonical companies can be **merged** (ADR 0014):
      - the subscription's own source provenance is unchanged.
    - **Locking (no corruption, no deadlock).** Both paths take a
      **canonical-company advisory lock**
-     (`lockKey(tx, 'company', <canonical id>)`):
+     (`tenantAdvisoryLock(tx, 'company-canonical', <canonical id>)`, one
+     shared helper so both compute the same key):
      - The merge takes it for the loser and the survivor (sorted by id),
        after its existing reference locks and before repointing.
      - Subscription ingestion takes it after its line lock and **before
@@ -180,3 +183,37 @@ M6 canonical companies can be **merged** (ADR 0014):
   window in which ownership is wrong.
 - **Store ownership per account and product.** Rejected: it duplicates
   derived state and goes stale.
+
+## As built (M7)
+
+- **Writer and stores.** Writes go through `SubscriptionStore`, importable
+  only by `SubscriptionIngestionService` and `SubscriptionMergeParticipant`
+  (dependency rule `subscription-store-only-from-writer`); every read
+  (resolution, facts, read model, invariants) goes through
+  `SubscriptionQueries`. `context-never-depends-on-products` keeps the port
+  inverted. The writer's re-resolve loop is bounded (5 rounds) and fails
+  loudly if the lineage keeps changing.
+- **What a merge moves.** All of the loser's lines, tombstoned ones included
+  (the history belongs to the account), in one statement
+  (`SELECT … FOR UPDATE` → provenance `INSERT … SELECT` → `UPDATE`).
+- **CSV import (6).** `subscriptions:import --file --source <name> --mode
+full|incremental [--execute]`. The source name is the line's
+  `source_object_type` (system `import`); a full load tombstones only that
+  source's unseen lines, and `legacy_company_product` is reserved. The whole
+  file is validated first (strict UTF-8 with optional BOM, ≤ 10 MiB,
+  ≤ 100,000 rows, fixed columns, timestamps must carry an offset, duplicate
+  record ids refused); one bad row writes nothing. A full run in which any
+  row is rejected (`unknown_account`, `unknown_product`) is marked `failed`:
+  no tombstone pass, coverage unchanged. Every line of a run shares one read
+  time, so the tombstone pass can only hit lines absent from the file. A run
+  killed mid-way stays `running` and blocks the next import until
+  `--cancel <checkpointId> --execute`; coverage never changes because of it.
+- **Coverage (5).** Known when a checkpoint with `kind = subscription`,
+  `status = completed` and mode `import_full` (now) or `backfill` (M8)
+  exists. Incremental imports never establish it.
+- **Legacy migration (7).** Lossless: `since`/`until` become
+  `startsAt`/`endsAt` (a zero-length term is kept and never owned), record id
+  `<company_id>:<product_key>`, provenance adapter `migration`/`m7.0`; the
+  migration counts rows before dropping `company_products`. A dev/staging
+  down-script restores the table exactly and refuses when non-legacy data
+  exists.

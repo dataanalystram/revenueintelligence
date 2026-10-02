@@ -128,6 +128,15 @@ out="$(run_once ctxcli --network host -e DATABASE_URL="$APP" -e REDIS_URL="$REDI
   node dist/cli/context.js report --tenant dockerco 2>&1 || true)"
 grep -q '"processingEnabled": true' <<<"$out" && grep -q '"lip-receipts"' <<<"$out" \
   && pass "context CLI works inside the image (report)" || fail "context CLI in image"
+# M7: the products CLI runs inside the image and the fictional examples are shipped.
+out="$(run_once prodcli --network host -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" "$TAG-runtime" \
+  node dist/cli/products.js model validate --tenant dockerco --file config/examples/product-model.example.json 2>&1 || true)"
+grep -q '"ok": true' <<<"$out" && grep -q '"nextVersion": 1' <<<"$out" \
+  && pass "products CLI validates the shipped example model inside the image (M7)" || fail "products CLI model validate in image"
+out="$(run_once prodrep --network host -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" "$TAG-runtime" \
+  node dist/cli/products.js report --tenant dockerco 2>&1 || true)"
+grep -q '"noActiveLinesOnMergedCompanies": true' <<<"$out" && grep -q '"coverage": "unknown"' <<<"$out" \
+  && pass "products:report inside the image: invariants hold, coverage unknown before any load (M7)" || fail "products:report in image"
 
 echo "== Cleanup self-test"
 # The leftover detector must see every kind of resource this run creates, or

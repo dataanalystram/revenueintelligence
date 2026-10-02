@@ -1,7 +1,8 @@
 # ADR 0016: Product model — versioned per-tenant catalogue, relationships and conditions (Milestone 7)
 
-- Status: proposed (M7 plan approved with changes, 2026-10-02; becomes
-  accepted with the M7 implementation)
+- Status: accepted (M7 implementation, 2026-10-02; plan approved with
+  changes the same day). "As built" notes at the end record where the
+  implementation refines the plan.
 - Date: 2026-10-02
 
 ## Context
@@ -127,8 +128,12 @@ engine.
   makes key reuse detectable.
 - A retired key is permanent. Re-launching under a new identity needs a new
   key.
-- Concurrent publishes are serialised: the version is unique per tenant, the
-  loser gets a clear conflict, and a failed publish leaves no version and no
+- Concurrent publishes are serialised by a per-tenant advisory lock, and the
+  version is unique per tenant (primary key). Each publish validates against
+  the version committed before it. A publisher that prepared its document
+  against a specific version passes `basedOnVersion`; if another version was
+  published meanwhile it gets a clear `ConcurrentPublishError` instead of
+  silently superseding it. A failed publish leaves no version and no
   projection change, because both happen in one transaction.
 - Evaluation during activation is consistent. A model is selected by
   `effectiveFrom` from immutable rows, so an evaluation sees either the old or
@@ -144,3 +149,28 @@ engine.
   no stronger evidence of identity.
 - **A generic rules engine or expression language.** Rejected by ADR 0012:
   opaque, hard to explain, and it invites customer-specific logic.
+
+## As built (M7)
+
+- **Code.** The document schema, validator (`validateProductModel`) and the
+  indexed model live in the pure domain (`src/modules/domain/product-model.ts`,
+  protected by `domain-is-pure`) rather than inside the products module; the
+  products module holds the services and persistence
+  (`ProductCatalogueService`, `ProductModelStore`). Stored versions are
+  re-validated (structural checks and content hash) every time they are
+  indexed; a corrupt stored version fails with `CorruptProductModelError`
+  instead of being evaluated. Indexed models are cached per
+  (tenant, version, content hash).
+- **First version and pre-M7 rows.** Before any version exists, the
+  `tenant_products` rows created before M7 act as the "previous version" for
+  K1–K3, so the first model cannot drop or silently redefine them.
+- **Who writes `tenant_products`.** Only the publishing transaction.
+  `TenantConfigService.saveProduct`/`deleteProduct` and the tenant template's
+  `products` key were removed (the template did not gain `productModel`:
+  Juniper's products are `tbc`, and a template field would make tenancy depend
+  on products). `listProducts` remains as a read of the projection. ESLint
+  allows the `tenantProduct` delegate only in the products persistence layer.
+- **Limits.** 2,000 products, 10,000 rules, 50 `anyOf` members, 20 external
+  references per product (`model_too_large`).
+- **CLI.** `product:model validate | publish [--based-on N] --execute | show |
+diff`; publish is a dry run without `--execute`.
