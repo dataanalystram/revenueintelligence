@@ -5,14 +5,77 @@
 - Base: `main` at `e0e3fe7` (M0–M7 complete).
 - Approved design: [canonical extension and source mapping](../architecture/canonical-extension-and-source-mapping.md)
   (`e4fec65`, passed independent review).
-- Sugar evidence: local historical-code discovery (`1f51cde`) and platform
-  alignment (`6488cde`), held outside this repository. Verdict: the M7
-  canonical contract holds; Sugar is suitable as the first reference adapter;
-  Sugar is **not** proven to be the sole subscription-state authority.
+- Sugar evidence (sanitized, now in this repository): branch
+  `planning/m8-sugar-evidence`, commit `e2fe7d9` (cut from `e4fec65`; 19
+  files; no raw data, credentials or S3 details):
+  [local evidence](../discovery/sugarcrm-local-evidence.md),
+  [platform alignment](../discovery/sugarcrm-platform-alignment.md) and the 16
+  synthetic fixtures in `fixtures/sugarcrm/sanitized/` (links resolve once the
+  branch is brought in, §47 step 0). Verdict **B**: the M7 canonical contract
+  holds; Sugar is suitable as the first reference adapter; Sugar is **not**
+  proven to be the subscription-state authority.
+- Plan revision: refreshed against that evidence (see
+  [evidence refresh](#evidence-refresh-changes-from-521fbc6)); the first
+  version was `521fbc6`.
 - Inputs: ADR [0008](../adr/0008-tenant-isolation.md), [0010](../adr/0010-crm-connector-port-and-oauth.md),
   [0013](../adr/0013-event-processing-on-bullmq.md), [0014](../adr/0014-canonical-identity-references-provenance.md),
   [0016](../adr/0016-product-model-versioning.md)–[0018](../adr/0018-eligibility-and-whitespace.md);
   the [roadmap](../product/roadmap.md); technical debt #22–#28.
+
+## Evidence refresh (changes from `521fbc6`)
+
+The plan was first written from a verbal summary. It has now been checked
+line by line against the two discovery documents and all 16 fixtures on
+`planning/m8-sugar-evidence` (`e2fe7d9`). Legend used below: **CONFIRMED**
+(the evidence supports the plan as written), **CHANGED** (the plan changed
+because of the evidence), **LIVE** (`REQUIRES LIVE SUGAR VERIFICATION`),
+**BUSINESS** (requires Juniper business confirmation).
+
+| #   | Assumption                                                       | Result                  | Evidence (sanitized) and consequence                                                                                                                                                                                                                                                                                                                                                                                               |
+| --- | ---------------------------------------------------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `Accounts.id` is the account identity                            | CONFIRMED               | 36,035 rows, 0 duplicate ids; 99.2–99.5% of opportunities/lines resolve to it (§20)                                                                                                                                                                                                                                                                                                                                                |
+| 2   | `Contacts.id` is the person identity; Users are not people       | CONFIRMED, refined      | 59 duplicate ids of 153,946 (0.04%), 10% of contacts have no account; the historical code keyed people by `email1`, which M6 forbids (email is not identity); Users (491) are internal staff (§21)                                                                                                                                                                                                                                 |
+| 3   | Product catalogue `id` is product identity; `name` unsuitable    | CONFIRMED               | 1,203 rows, 0 duplicate ids, 106 duplicate-name rows (8.8%); 60% inactive, 9% retired; `type_name` holds a literal `'NULL'` string (§19)                                                                                                                                                                                                                                                                                           |
+| 4   | One RLI = one canonical subscription line                        | CONFIRMED, refined      | `RevenueLineItems.id` 15 duplicates of 255,684 (export-level); **but an RLI is not necessarily a holding**: RLIs carry pipeline stages (`sales_stage` 94.8% populated: Closed Won, Closed Lost, Pending Cancellation, Closed Won Credited, …), so line existence ≠ ownership claim → new holding-qualification filter (§8) and BUSINESS gate on `subscription_lines` authority (§15)                                               |
+| 5   | RLI → Account/Opportunity/Product relationships                  | CONFIRMED, refined      | RLI→Account 99.5% match / 0.5% null / 110 orphans; RLI→Opportunity 100% / <0.01% orphans; Opportunity→Account 99.2% / 0.8% null / 0% orphan; RLI→Product 96.5% / 2.1% null / **1.4% orphan (3,536 ids absent from the catalogue)** → orphan vs. unmodelled distinction (§23)                                                                                                                                                       |
+| 6   | State stored as explicit `unknown`                               | CONFIRMED               | RLI `status` 99.5% null, populated values are lead-qualification values; `sales_stage` is a MEDIUM candidate only → BUSINESS before any value map (§16)                                                                                                                                                                                                                                                                            |
+| 7   | No renewal deduplication                                         | CONFIRMED               | `renewal_rli_id` 33.6% populated, `renewal` flag 35.1% true, opportunity `renewal_parent_id` 34.2%: two mechanisms coexist, neither authoritative → renewal fields `ignored` (`semantics_unconfirmed`) in M8 (§18)                                                                                                                                                                                                                 |
+| 8   | Recurring vs one-time decided by an explicit product ignore list | CONFIRMED, refined      | `recurring_one_off_c` has three overlapping values + 4% null; product `renewable`/`service` are MEDIUM; none is authoritative → they are **report hints only**, never mapping logic (§19); fixtures 15/16                                                                                                                                                                                                                          |
+| 9   | Orphan product/account lines block coverage                      | **CHANGED**             | with 1.4% orphan products and 110 orphan accounts, blocking would keep coverage unknown forever; and silently skipping would risk false whitespace → **source orphans skip, but mark the account's ownership incomplete** (per-account ownership gaps, §23)                                                                                                                                                                        |
+| 10  | Multiple lines per account/product                               | CONFIRMED               | 88.7% of accounts with lines have 2+; fixtures 02, 03                                                                                                                                                                                                                                                                                                                                                                              |
+| 11  | Invalid dates follow `reject_record`                             | **CHANGED**             | dropping a real line risks false whitespace; a line with an invalid or conflicting term pair is **ingested with empty terms and state `unknown`**, counted `invalid_period` (§17); fixture 13                                                                                                                                                                                                                                      |
+| 12  | Full-read proof by keyset on `id`                                | **CHANGED**             | historical code used offset pagination ordered by `date_modified`, stop on short page; keyset by id is not evidenced → full-read proof = bounded set + count reconciliation, keyset only if LIVE proves it (§23)                                                                                                                                                                                                                   |
+| 13  | 16 scenarios cover M8 tests                                      | **CHANGED**             | fixtures contain RLI rows (plus one opportunity row) only: no Account, Contact, product catalogue, Users, schema-metadata, pipeline-stage (e.g. Closed Lost) or multi-page fixtures; README/CSV mismatches (06 "cancellation date" and 15/16 `renewable` columns are absent) → M8 adds companion synthetic fixtures (§28)                                                                                                          |
+| 14  | Planned transforms                                               | CONFIRMED, one addition | date-only values (`2026-01-01`) need the declared time zone (already planned); boolean `True`/`False` strings need declared sets (planned); literal `'NULL'` needs sentinel null handling (planned); **added: one declarative holding filter** (field ∈ confirmed values, §8) — not a transform language                                                                                                                           |
+| 15  | Sugar capabilities                                               | **CHANGED**             | evidenced historically: OAuth password grant (client `sugar`, empty secret), `/ping`, `GET /{Module}/fields`, list with `max_num`/`offset`, `filter[date_modified][$gt]`. **Not** evidenced: refresh-token grant, `readRecord`, keyset/`$gt` on id, counts, rate limits, deleted-record visibility, current API version (`v11_20` is only a placeholder) → all LIVE (§30); `readRecord` is not needed by sync and becomes optional |
+
+Decisions that go beyond the approved design (`e4fec65`) and need explicit
+approval in the plan review:
+
+1. **Holding filter** (§8): the approved design allows no conditions in
+   mappings. The evidence (RLIs include lost and open deals) needs exactly one
+   declarative membership test per subscription object. It is confined to one
+   field and one value set, confirmed per value, and validated against the
+   snapshot's enum options; without it, Sugar cannot be authoritative for
+   `subscription_lines`.
+2. **Per-account ownership gaps** (§23): a small extension of M7 coverage
+   (tech debt #22 anticipated per-account coverage) with a new reason code and
+   an evaluator version bump, so unattributable lines cannot create false
+   whitespace.
+
+Disagreement recorded: the alignment report (§6) suggests mapping product
+`active_status`/`renewable` to `TenantProduct.active`/`family` as `core`
+entries. This plan keeps the approved rule instead: **the connector never
+writes the product model** (ADR 0016; the model is authoritative and
+human-published). Those fields feed only the operator report and draft export
+(§19).
+
+Formatting finding: the three Markdown evidence files fail the repository's
+`prettier --check` (CI lint job). Step 0 keeps the evidence byte-for-byte and
+adds `docs/discovery/` and `fixtures/sugarcrm/sanitized/` to
+`.prettierignore`, instead of reformatting evidence.
+
+---
 
 ## 0. Objective
 
@@ -173,54 +236,64 @@ new port in M8.
 
 ### Historical code: what is reused
 
-| Old piece (Python/aiohttp → CSV → S3/Gainsight)                          | Treatment                                                                                  |
-| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
-| Module and field names, relationship fields, which ids are stable        | **Reusable knowledge** → schema expectations, fixtures, ADR evidence                       |
-| OAuth2 password/refresh flow against `/oauth2/token`, platform parameter | **Rewrite** in TypeScript behind `SecretProvider`; live-verified                           |
-| `date_modified` filter for changed records                               | **Port the idea**, replace rolling 7/14/90-day windows with a checkpointed watermark (§24) |
-| Offset pagination (`offset` / `max_num` / `next_offset`)                 | **Rewrite** as keyset by `id` where supported (full-read proof), offset only as fallback   |
-| Transformations to CSV columns, S3 upload, Gainsight load                | **Do not reuse** (replaced by mapping + canonical writers)                                 |
-| Ad-hoc retries and sleeps                                                | **Do not reuse**; use the platform HTTP retry/backoff and rate limiter pattern (M3)        |
-| Hard-coded business rules (e.g. "Closed Won ⇒ active")                   | **Do not reuse**; never inferred (§16)                                                     |
+| Old piece (Python/aiohttp → CSV → S3/Gainsight)                          | Treatment                                                                                                                                                |
+| ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Module and field names, relationship fields, which ids are stable        | **Reusable knowledge** → schema expectations, fixtures, ADR evidence                                                                                     |
+| OAuth2 password/refresh flow against `/oauth2/token`, platform parameter | **Rewrite** in TypeScript behind `SecretProvider`; live-verified                                                                                         |
+| `date_modified` filter for changed records                               | **Port the idea**, replace rolling 7/14/90-day windows with a checkpointed watermark (§24)                                                               |
+| Offset pagination (`offset` / `max_num`, stop on short page)             | **Port the knowledge**: offset is the evidenced mechanism; full-read proof adds a bounded set and count reconciliation (§23); keyset only if live-proven |
+| Transformations to CSV columns, S3 upload, Gainsight load                | **Do not reuse** (replaced by mapping + canonical writers)                                                                                               |
+| Ad-hoc retries and sleeps                                                | **Do not reuse**; use the platform HTTP retry/backoff and rate limiter pattern (M3)                                                                      |
+| Hard-coded business rules (e.g. "Closed Won ⇒ active")                   | **Do not reuse**; never inferred (§16)                                                                                                                   |
 
 ### Sugar-specific concerns
 
-| Concern              | Plan                                                                                                                                                                 | Live gate?    |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
-| Authentication       | OAuth2 password grant + refresh with client id/secret, username/password or a service user, all via `SecretProvider`; token cached per process; refresh lock (as M4) | yes           |
-| Module reads         | `GET /rest/{v}/{Module}` with `fields=` (mapped only), `filter`, `order_by`, `max_num`; `GET /{Module}/{id}` for read-back                                           | yes           |
-| Schema metadata      | `GET /rest/{v}/metadata?type_filter=modules` (fields, types, options, links) normalised into the snapshot                                                            | yes           |
-| Pagination           | keyset `order_by=id:asc` with `filter id $gt last` (stable full read); fallback `offset/next_offset`                                                                 | yes           |
-| Incremental          | `filter date_modified $gte (watermark − overlap)`, `order_by=date_modified:asc,id:asc`                                                                               | yes           |
-| Relationships        | link fields (`account_id`, `opportunity_id`, `product_template_id`, contact `account_id`) as declared relationships; link metadata where present                     | partly        |
-| Custom fields        | `_c` fields appear in metadata; mappable like any field; no assumption about any specific one                                                                        | yes           |
-| Delete visibility    | unknown for the current API (§25); capability `none` until proven                                                                                                    | **yes**       |
-| Retries, rate limits | platform backoff with `Retry-After`; per-connection limiter; 429/5xx retried, 4xx (except 429) permanent                                                             | yes           |
-| Schema drift         | pre-flight `describeSchema` diff against the mapping's snapshot (§12)                                                                                                | no (platform) |
-| Read-only            | transport guard: only `GET` and the token `POST` are allowed; anything else throws before sending (as the HubSpot guard, mutation-proven)                            | proof live    |
+Status per concern: **H** = shown by historical code only (not current
+certainty), **D** = current official docs (not tenant-verified), **LIVE** =
+`REQUIRES LIVE SUGAR VERIFICATION`.
 
-Exact module API names (e.g. the product catalogue module, standardly
-`ProductTemplates`; line items `RevenueLineItems`) are taken from the
-discovery evidence and confirmed at the live gate; the platform code never
-hard-codes them outside the `sugar` module and fixtures.
+| Concern              | Plan                                                                                                                                                                                                              | Evidence status                                                                 |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Authentication       | OAuth2 password grant (historically client id `sugar`, empty secret) with refresh; prefer the `refresh_token` grant if the tenant allows it; credentials only via `SecretProvider`; refresh single-flight (as M4) | H + D; refresh-token grant, token lifetime and platform parameter: **LIVE**     |
+| API version          | connection config (`apiVersion`), never hard-coded; historical `v11_20` is a placeholder                                                                                                                          | **LIVE**                                                                        |
+| Connection test      | `GET /ping` with the bearer token                                                                                                                                                                                 | H; **LIVE**                                                                     |
+| Schema metadata      | `GET /{Module}/fields` (historical); the newer metadata endpoint only if the live tenant needs it                                                                                                                 | H + D; response shape: **LIVE**                                                 |
+| List reads           | `GET /{Module}` with `fields=` (mapped only), `filter`, `order_by`, `max_num`, `offset`; stop on a short or empty page                                                                                            | H + D; **LIVE** for the current tenant                                          |
+| Full-read proof      | bounded set `date_modified <= runStart`, order `date_modified asc, id asc`, plus start/end count reconciliation (§23); keyset (`$gt` on `date_modified`+`id` with `$or`) only if proven                           | counts, `$or`, ordering stability: **LIVE**                                     |
+| Incremental          | `filter[date_modified][$gte] = watermark − overlap` (historical used `$gt` with rolling windows; replaced, §24)                                                                                                   | H + D; timestamp precision/time zone of `date_modified`: **LIVE**               |
+| Single-record read   | `GET /{Module}/{id}`, optional capability; the sync does not depend on it                                                                                                                                         | D only; **LIVE**                                                                |
+| Relationships        | link fields `account_id`, `opportunity_id`, `product_template_id`, contact `account_id`                                                                                                                           | data evidence (join rates); field names on the live API: **LIVE**               |
+| Custom fields        | `_c` fields appear in metadata and are mappable; none is assumed (e.g. `juniper_id_c`, `subscription_urn_c` are 100% null in the evidence)                                                                        | **LIVE**                                                                        |
+| Delete visibility    | capability `none` until proven; the fixture shape `deleted = True` is supported if the API returns such rows (§25)                                                                                                | export showed 0 deleted rows (cannot tell absence from API filtering): **LIVE** |
+| Retries, rate limits | platform backoff with `Retry-After`, per-connection limiter; 429/5xx retried, other 4xx permanent (historical code retried only 401)                                                                              | thresholds: **LIVE**                                                            |
+| Schema drift         | pre-flight schema diff against the mapping's snapshot (§12)                                                                                                                                                       | platform (no live dependency)                                                   |
+| Read-only            | transport guard: only `GET` and the token `POST`; anything else throws before sending                                                                                                                             | proof against the live tenant: **LIVE**                                         |
 
----
+Module API names (`Accounts`, `Contacts`, `Opportunities`, `RevenueLineItems`,
+and the product catalogue — `ProductCatalog` in the historical extract,
+`ProductTemplates` in standard Sugar) are taken from the evidence and
+confirmed live; outside the `sugar` module they appear only in fixtures and
+tenant configuration.
 
 ## 6. Sugar evidence the plan relies on (and nothing better)
 
-| Evidence                                      | Consequence in M8                                                                                                                            |
-| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| Account.id strong                             | identity for `account`                                                                                                                       |
-| Contact.id strong                             | identity for `person`                                                                                                                        |
-| Product catalogue id strong; name unsuitable  | product references by id only; name refused as identity (validator rule, mutation-proven)                                                    |
-| RLI.id strong source-line id                  | identity for `subscription` (one canonical line per RLI)                                                                                     |
-| RLI→Opportunity 100%, RLI→Account ~99.5%      | `subscription.account` from `account_id`, with an optional declared one-hop fallback via the opportunity's account (§22); conflicts reported |
-| RLI→Product ~96.5%                            | lines without a product reference are **skipped with a reason**, never guessed (§23)                                                         |
-| RLI state ~99.5% null/mis-populated           | `subscription.state` mapped as **explicit unknown** (§16)                                                                                    |
-| Multiple RLI lines per account/product normal | kept as separate lines (M7 supports it)                                                                                                      |
-| Renewal semantics ambiguous                   | no deduplication or collapsing (§18); dates only when confirmed (§17)                                                                        |
+All figures are aggregate counts from the sanitized evidence (§5, §6, §9,
+§11, §15 of the local evidence report).
 
----
+| Evidence                                                                                                | Consequence in M8                                                                                                                          |
+| ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `Accounts.id`: 0 duplicates; Opportunity→Account 99.2%, RLI→Account 99.5%                               | identity for `account`                                                                                                                     |
+| `Contacts.id`: 0.04% duplicate ids; Contact→Account 90% / 10% null                                      | identity for `person`; nullable company link                                                                                               |
+| Product catalogue `id` unique; `name` 8.8% duplicates; `type_name` literal `'NULL'`                     | product references by id only; name refused as identity; `'NULL'` declared as a null sentinel                                              |
+| `RevenueLineItems.id`: 0.006% duplicate ids (export)                                                    | identity for `subscription`; duplicates within a run are idempotent and counted                                                            |
+| RLI→Opportunity 100%; RLI→Account 99.5% / 0.5% null / 110 orphans                                       | `subscription.account` from `account_id`, optional confirmed fallback via the opportunity's account (§22)                                  |
+| RLI→Product 96.5% / 2.1% null / 1.4% orphan                                                             | null and orphan product references skip the line **and** mark the account's ownership incomplete (§23)                                     |
+| RLI `status` 99.5% null/mis-populated; `sales_stage` 94.8% populated with pipeline and post-sale values | `subscription.state` = explicit `unknown`; `sales_stage` usable only for the holding filter and only after business confirmation (§8, §16) |
+| `service_*` dates 33.5% null; `revenue_*_c` 8.6% null; `date_support_*` 100% null; the pairs disagree   | dates only by confirmed mapping, else empty (§17)                                                                                          |
+| Renewal links ~34% (two mechanisms)                                                                     | no deduplication; renewal fields ignored in M8 (§18)                                                                                       |
+| 88.7% of accounts with lines have 2+ lines                                                              | multiple lines per account/product (M7)                                                                                                    |
+| `juniper_id_c`, `subscription_urn_c` 100% null                                                          | no cross-system id assumed; `alsoReferences` stays an open question (§20)                                                                  |
+| 0 rows with `deleted = True` in the export                                                              | delete visibility unknown (§25)                                                                                                            |
 
 ## 7. Versioned mapping model
 
@@ -239,6 +312,11 @@ hard-codes them outside the `sugar` module and fixtures.
       "source": "RevenueLineItems",
       "entity": "subscription",
       "identity": { "field": "id" },
+      "holdingFilter": {
+        "field": "sales_stage",
+        "in": ["<values Juniper confirms denote a holding>"],
+        "confirmation": { "by": "<operator>", "note": "<business confirmation>" }
+      },
       "relationships": [
         {
           "target": "subscription.account",
@@ -281,7 +359,7 @@ hard-codes them outside the `sugar` module and fixtures.
 ```
 
 (Illustrative only; field names come from the discovery evidence and the
-snapshot, not from this plan.)
+snapshot, not from this plan. No `holdingFilter` values are known yet.)
 
 - Entry `kind` is a discriminated union: `identity`, `core`, `relationship`,
   `ignored` in M8. **`attribute` is reserved**: the schema has the slot, the
@@ -311,12 +389,13 @@ stored drafts are M14.
 
 ## 8. Mapping kinds (M8 subset)
 
-| Kind           | Rules                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `identity`     | exactly one per mapped object; the field must be an id/unique field in the snapshot or explicitly confirmed; transforms limited to null handling + trim; name-like fields refused; optional `alsoReferences` (a field holding another connection's id, e.g. a HubSpot company id stored in Sugar) adds a second external reference to the same canonical record, conflicts recorded as identity conflicts (M6), never merged |
-| `core`         | target in the entity's catalogue; type-compatible after transforms; enum targets need a complete value map with an unmapped policy; `explicit: unknown` (only for targets with an `unknown` value) or `explicit: null` (optional targets) states "no source" deliberately                                                                                                                                                    |
-| `relationship` | target in the catalogue; the field references a mapped object (or the product reference set); optional single-hop `fallbackVia` declared and confirmed; no multi-hop, no joins                                                                                                                                                                                                                                               |
-| `ignored`      | explicit, with a reason code; unmapped fields are reported as "not reviewed" (informational)                                                                                                                                                                                                                                                                                                                                 |
+| Kind                                                 | Rules                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `identity`                                           | exactly one per mapped object; the field must be an id/unique field in the snapshot or explicitly confirmed; transforms limited to null handling + trim; name-like fields refused; optional `alsoReferences` (a field holding another connection's id, e.g. a HubSpot company id stored in Sugar) adds a second external reference to the same canonical record, conflicts recorded as identity conflicts (M6), never merged            |
+| `core`                                               | target in the entity's catalogue; type-compatible after transforms; enum targets need a complete value map with an unmapped policy; `explicit: unknown` (only for targets with an `unknown` value) or `explicit: null` (optional targets) states "no source" deliberately                                                                                                                                                               |
+| `relationship`                                       | target in the catalogue; the field references a mapped object (or the product reference set); optional single-hop `fallbackVia` declared and confirmed; no multi-hop, no joins                                                                                                                                                                                                                                                          |
+| `holdingFilter` (object option, `subscription` only) | **added from evidence**: one declarative membership test on the line object's own field (`field ∈ values` or `∉`), values validated against the snapshot's enum options, confirmation required; records outside it are `filtered_out` (counted, never ingested, never tombstone others). It exists because a Sugar RLI can be an open, lost or credited deal rather than a holding. One field, one set: no expressions, no combinations |
+| `ignored`                                            | explicit, with a reason code; unmapped fields are reported as "not reviewed" (informational)                                                                                                                                                                                                                                                                                                                                            |
 
 ---
 
@@ -335,27 +414,30 @@ code. The engine is pure and property-tested.
 
 ## 10. Mapping validation (publish-blocking unless marked warning)
 
-| Code                                             | Meaning                                                                                                   |
-| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
-| `identity_missing`                               | a mapped object has no identity entry                                                                     |
-| `identity_unsuitable`                            | identity field not unique/id and not confirmed, or name-like (e.g. product name)                          |
-| `invalid_target` / `invalid_entity`              | not in the code catalogue                                                                                 |
-| `duplicate_target`                               | two entries write the same target for one object                                                          |
-| `unknown_source_object` / `unknown_source_field` | not in the schema snapshot                                                                                |
-| `unsupported_source_type`                        | source type cannot reach the target type with the allowed transforms                                      |
-| `missing_relationship_target`                    | relationship points at an object not mapped with identity                                                 |
-| `product_reference_required`                     | a `subscription` object without `subscription.product`                                                    |
-| `required_target_unstated`                       | `subscription.state`, `subscription.account`, `subscription.product` neither mapped nor explicitly stated |
-| `invalid_enum_map`                               | value map codes not in the canonical enum                                                                 |
-| `unconfirmed_consequential_entry`                | identity, state value map, dates or `fallbackVia` without a recorded confirmation                         |
-| `authority_conflict`                             | the entry writes a fact its connection is not authoritative for (§15)                                     |
-| `schema_snapshot_stale`                          | the document was validated against a snapshot that is not the latest                                      |
-| `attribute_mappings_not_enabled`                 | reserved kind used                                                                                        |
+| Code                                             | Meaning                                                                                                                                                                                                                 |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `identity_missing`                               | a mapped object has no identity entry                                                                                                                                                                                   |
+| `identity_unsuitable`                            | identity field not unique/id and not confirmed, or name-like (e.g. product name)                                                                                                                                        |
+| `invalid_target` / `invalid_entity`              | not in the code catalogue                                                                                                                                                                                               |
+| `duplicate_target`                               | two entries write the same target for one object                                                                                                                                                                        |
+| `unknown_source_object` / `unknown_source_field` | not in the schema snapshot                                                                                                                                                                                              |
+| `unsupported_source_type`                        | source type cannot reach the target type with the allowed transforms                                                                                                                                                    |
+| `missing_relationship_target`                    | relationship points at an object not mapped with identity                                                                                                                                                               |
+| `product_reference_required`                     | a `subscription` object without `subscription.product`                                                                                                                                                                  |
+| `required_target_unstated`                       | `subscription.state`, `subscription.account`, `subscription.product` neither mapped nor explicitly stated                                                                                                               |
+| `invalid_enum_map`                               | value map codes not in the canonical enum                                                                                                                                                                               |
+| `unconfirmed_consequential_entry`                | identity, state value map, dates or `fallbackVia` without a recorded confirmation                                                                                                                                       |
+| `authority_conflict`                             | the entry writes a fact its connection is not authoritative for (§15)                                                                                                                                                   |
+| `schema_snapshot_stale`                          | the document was validated against a snapshot that is not the latest                                                                                                                                                    |
+| `attribute_mappings_not_enabled`                 | reserved kind used                                                                                                                                                                                                      |
+| `holding_filter_unconfirmed`                     | a `holdingFilter` without a recorded confirmation, or values not in the field's enum options                                                                                                                            |
+| `holding_filter_required`                        | publishing a `subscription` object whose connection is (or is being made) authoritative for `subscription_lines` without a confirmed `holdingFilter` or an explicit, confirmed statement that every record is a holding |
 
 Preview (records read, nothing written) adds data-quality codes with counts:
 `unmapped_source_enum_value`, `invalid_date`, `duplicate_external_id`,
 `orphan_reference`, `unknown_product_reference`, `relationship_conflict`,
-`missing_reference` (skipped lines, §23).
+`missing_reference` (skipped lines, §23), `filtered_out`, `invalid_period`,
+`ownership_gap` (accounts marked incomplete).
 
 ---
 
@@ -417,13 +499,30 @@ update accordingly.
 
 ### Recommendation: five facts
 
-| Fact                 | Covers                                                | Why it is separate                                                      |
-| -------------------- | ----------------------------------------------------- | ----------------------------------------------------------------------- |
-| `account_profile`    | account name, domains (later `customerStatus`)        | HubSpot already writes these; Sugar must not overwrite them by accident |
-| `person_profile`     | person email, names, job title, primary company link  | same reason, for people                                                 |
-| `subscription_lines` | a line's existence, its account and product, quantity | Sugar evidence supports it; it decides ownership **coverage**           |
-| `subscription_state` | `subscription.state`                                  | Sugar evidence does not support it                                      |
-| `subscription_terms` | `startsAt`, `endsAt`                                  | Sugar date fields are candidates needing confirmation                   |
+| Fact                 | Covers                                                                                                | Why it is separate                                                                                                       |
+| -------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `account_profile`    | account name, domains (later `customerStatus`)                                                        | HubSpot already writes these; Sugar must not overwrite them by accident                                                  |
+| `person_profile`     | person email, names, job title, primary company link                                                  | same reason, for people                                                                                                  |
+| `subscription_lines` | which source records are **holdings** (the holding filter), each line's account and product, quantity | Sugar evidence supports identity and relationships; holding qualification is BUSINESS; it decides ownership **coverage** |
+| `subscription_state` | `subscription.state`                                                                                  | Sugar evidence does not support it                                                                                       |
+| `subscription_terms` | `startsAt`, `endsAt`                                                                                  | Sugar date fields are candidates needing confirmation                                                                    |
+
+**Re-evaluated against the evidence: the five facts remain the minimal
+correct set.**
+
+- Not too coarse: the evidence separates exactly along these lines. Sugar is
+  strong for line identity and relationships, ambiguous for terms (two
+  disagreeing date pairs), and unsupported for state. These are three facts.
+  It does not separate start from end dates (same candidate pairs, same
+  confirmation), so `subscription_terms` stays one fact.
+- Not too fine: account and person profiles cannot merge into the line facts
+  (different sources already write them: HubSpot today). Product identity and
+  renewal linkage are not facts: the product model governs products, and
+  renewal links are ignored in M8.
+- Sharpened: `subscription_lines` explicitly includes **holding
+  qualification**. Sugar cannot be made authoritative for it until Juniper
+  confirms which RLIs are holdings (`holding_filter_required`). This is a
+  business gate, not a precedence rule.
 
 **Identity is not an authority fact**: every source keeps its own external
 references (M6), and references from several systems coexist. Product
@@ -454,6 +553,11 @@ evidence. Until then an unassigned fact stays unknown/null.
   source state field only with a confirmed value map, from the line object
   itself — never from the opportunity's sales stage, revenue, existence or end
   dates). The adapter never derives state.
+- `sales_stage` (94.8% populated; pipeline and post-sale values) may be used
+  for the holding filter (§8) or, if Juniper confirms a mapping and assigns
+  `subscription_state` to Sugar, for a confirmed value map. Neither is
+  configured by default; e.g. `Pending Cancellation` (fixture 06) has no
+  agreed canonical meaning.
 - M7 handles this today (verified against the code):
   - **ownership**: a line in state `unknown` in force at `asOf` makes the
     product's ownership `unknown` (`subscription_state_unknown`), never owned or
@@ -473,14 +577,32 @@ evidence. Until then an unassigned fact stays unknown/null.
 
 ## 17. Subscription dates
 
-Date entries are consequential: publish requires a recorded confirmation
-(who, note) per date entry; otherwise the mapping states `explicit: null`
-and the canonical dates stay empty (an open-ended line). Parsing uses the
-declared format and time zone; invalid dates follow the entry policy
-(`reject_record` by default) and are counted. Provenance records the mapping
-version, so a later corrected mapping is distinguishable.
+Evidence: two candidate pairs (`service_start_date`/`service_end_date`,
+33.5% null; `revenue_start_date_c`/`revenue_end_date_c`, 8.6% null) that
+disagree in population, `date_support_*` unused (100% null), and opportunity
+`date_closed` is a deal date that must not become `startsAt`.
+
+- Date entries are consequential: publish requires a recorded confirmation per
+  entry (which pair, and that it means the service term); otherwise the mapping
+  states `explicit: null` and canonical dates stay empty. Choosing between the
+  pairs is a **BUSINESS** decision.
+- Values are date-only in the evidence (`2026-01-01`): the mapping declares the
+  time zone (e.g. `Europe/London` or `UTC`, BUSINESS) and whether an end date
+  is inclusive (the canonical end is exclusive, so an inclusive source end date
+  is converted to the next day's start by the declared rule, never guessed).
+- **Changed from `521fbc6`**: an unparseable date or an end before its start
+  (fixture 13) does not drop the line. The line is ingested with **both terms
+  empty and state `unknown`**, counted `invalid_period`, so it can only make
+  ownership `unknown`, never cause false whitespace. Dropping it could hide a
+  real holding.
+- Provenance records the mapping version, so later corrections are traceable.
 
 ## 18. Renewals
+
+Evidence: RLI `renewal_rli_id` (33.6%), `renewal` flag (35.1% true) and
+opportunity `renewal_parent_id` (34.2%) coexist; none is confirmed
+authoritative (BUSINESS). In M8 these fields are mapped as `ignored` with
+reason `semantics_unconfirmed`; fixtures 04 and 05 prove two lines result.
 
 One canonical line per source line (RLI). No deduplication, merging or
 "latest wins" across RLIs, even with identical account, product and dates.
@@ -504,17 +626,29 @@ new evidence-based rule, not a heuristic.
 - Source products that are not subscription products (services, one-off
   items) are listed in the mapping's `productReferences.ignored` with a reason;
   their lines are skipped (`non_subscription_product`), counted, and do not
-  block coverage.
+  block coverage or create ownership gaps (the exclusion is declared).
+- Evidence: 1,203 catalogue rows, 60% inactive and 9% retired; `renewable`
+  (37% true), `service` and RLI `recurring_one_off_c` (Recurring / Non
+  Recurring / One Off / null) are MEDIUM-confidence hints. The report shows
+  them per product to help the operator decide; **none is mapping logic** and
+  none writes the product model. Fixtures 15 (one-off) and 16 (recurring) test
+  both outcomes: ignored product → skipped; modelled product → ingested.
+- The catalogue is read in every full sync (small: ~1,200 rows) so the
+  pipeline can tell a **source orphan** (id absent from Sugar's catalogue) from
+  an **unmodelled product** (present in Sugar, absent from the product model
+  and not ignored) (§23).
 
 ## 20. Account identity
 
 Sugar `Accounts.id` → external reference `sugar/Accounts/<id>` through the
 M6 writer (`ContextIngestionService.ingest`, company observation). No second
 mechanism. Without `account_profile` authority, Sugar writes only the
-reference (the company row may have a null name, as M6 allows). Cross-system
-linking (the same account in HubSpot) happens only through a validated
+reference (the company row may have a null name, as M6 allows). Cross-system linking (the same account in HubSpot) happens only through a validated
 `alsoReferences` identity field if one exists, or later identity resolution
-(M11); never by name or domain.
+(M11); never by name or domain. The evidence shows no populated cross-system
+id (`juniper_id_c`, `subscription_urn_c` are 100% null on RLIs; account-level
+fields were not profiled), so Sugar accounts are expected to become separate
+canonical companies until identity resolution — documented, not a defect.
 
 ## 21. Contacts and people
 
@@ -524,6 +658,10 @@ otherwise reference only. The `Users` module (internal staff) is classified
 `internal_principal` in the snapshot and cannot be mapped to `person` (§7).
 For Juniper, Contacts ingestion is **off by default** (object not mapped)
 until authority is decided; the capability is built and tested with fixtures.
+Evidence: 10% of contacts have no account (company link stays empty, BUSINESS
+to decide whether they are orphans or unconverted leads); 0.04% duplicate ids
+are idempotent; the historical integration keyed people by `email1`, which M6
+forbids, so email is mapped (with authority) as a profile field only.
 
 ## 22. Relationships in M8
 
@@ -536,44 +674,93 @@ until authority is decided; the capability is built and tested with fixtures.
 | Opportunity → Account       | only as the fallback hop above                                                                                                                                         |
 
 When primary and fallback both exist and differ: primary wins and
-`relationship_conflict` is counted. Activities and timelines are out of scope.
+`relationship_conflict` is counted. Evidence supports the fallback's value:
+RLI→Opportunity resolves 100% and Opportunity→Account 99.2% with 0% orphans,
+so most of the 1,295 account-less RLIs can be attributed; whether the
+opportunity's account is the right owner for its lines is BUSINESS (the
+fallback needs confirmation). Fixture 09 (an opportunity whose account does not
+exist) proves the fallback fails safely (`orphan_reference`). Activities and timelines are out of scope.
 
 ---
 
 ## 23. Coverage
 
-Coverage stays tenant-level (M7, debt #22) but its source becomes explicit:
+Coverage stays tenant-level (M7, debt #22) at its root, with one
+evidence-driven refinement per account.
 
-> **known** when the latest completed **full** sync of the connection that is
-> authoritative for `subscription_lines`, under a published mapping version,
-> finished without blocking errors.
+> **Tenant coverage known** when the latest completed **full** sync of the
+> connection authoritative for `subscription_lines`, under a published mapping
+> version, finished without blocking errors and passed the full-read proof.
 
-Run lifecycle (checkpoint `kind = subscription`, `mode = backfill`,
-`source_connection_id`):
+### Run lifecycle (checkpoint `kind = subscription`, `mode = backfill`, `source_connection_id`)
 
 ```
-pre-flight (authority assigned? mapping published? schema drift?) → refuse or start
-→ accounts full read (references) → lines full read, page by page (keyset by id)
-→ per line: map → skip (declared reasons) | reject (blocking) | ingest via the single writer
-→ tombstone pass for lines of this connection not seen in the run (§25)
-→ completed (coverage known) | failed (coverage unchanged)
+pre-flight: authority assigned? holding filter confirmed? mapping published? schema drift? → refuse or start
+→ count(bounded set) at start
+→ accounts full read (references) → product catalogue full read (ids only)
+→ lines full read, page by page (bounded set, ordered)
+→ per line: holding filter → map → classify:
+     filtered_out | skip (declared) | skip + ownership gap | ingest (possibly as unknown) | reject (blocking)
+→ count(bounded set) at end; reconcile with records seen
+→ tombstone pass for this connection's lines not seen (only if the proof passed, §25)
+→ replace this connection's ownership gaps with the run's set
+→ completed (coverage known) | failed (coverage and gaps unchanged)
 ```
 
-- **Skips (do not block coverage)**: `missing_product_reference` (the source
-  line has no product), `non_subscription_product` (declared ignored),
-  `missing_account_reference` (the source line has no account and no fallback).
-  The source itself says there is nothing to attribute; counted and reported.
-- **Blocking (run fails, coverage unchanged, lines written so far stay valid)**:
-  `unknown_product_reference` (a product id the model does not know and the
-  mapping does not ignore), `unresolved_account_reference` (an account id that
-  was not ingested), invalid values under `reject_record`, schema drift.
-- A source never declares itself complete; completeness = the platform read
-  every page to the end under one run (keyset until an empty page) and, when
-  the adapter offers `totalCount`, the counts agree. Whether Sugar's keyset
-  ordering and counts hold live is a live-gate item; the mock proves the
-  mechanism.
-- M7's CSV import continues to set coverage for tenants whose authority is the
-  `import` connection.
+### Classification (changed from `521fbc6`)
+
+| Line condition                                                       | Example (fixture)          | Outcome                                                          | Blocks coverage?                                          | Ownership gap?                               |
+| -------------------------------------------------------------------- | -------------------------- | ---------------------------------------------------------------- | --------------------------------------------------------- | -------------------------------------------- |
+| outside the holding filter                                           | (new fixture: Closed Lost) | `filtered_out`                                                   | no                                                        | no                                           |
+| product declared non-subscription                                    | 15 (if ignored)            | skip `non_subscription_product`                                  | no                                                        | no                                           |
+| product id null                                                      | 12                         | skip `missing_product_reference`                                 | no                                                        | **yes**, for the line's account              |
+| product id absent from Sugar's catalogue (source orphan)             | 10                         | skip `orphan_product_reference`                                  | no                                                        | **yes**                                      |
+| product in Sugar's catalogue, not in the model, not ignored          | (new fixture)              | reject `unmodelled_product_reference`                            | **yes** (configuration gap: fix the model or ignore list) | —                                            |
+| account id null and no fallback                                      | (new fixture)              | skip `missing_account_reference`                                 | no                                                        | no (no account to mark; tenant-level count)  |
+| account id absent from Sugar's accounts (source orphan), no fallback | 09 via fallback            | skip `orphan_account_reference`                                  | no                                                        | no (tenant-level count)                      |
+| account present in Sugar but not ingested in this run                | —                          | reject `unresolved_account_reference`                            | **yes** (platform defect)                                 | —                                            |
+| invalid/conflicting term                                             | 13                         | ingest with empty terms, state `unknown`, count `invalid_period` | no                                                        | no (the line itself makes ownership unknown) |
+| unmapped enum value                                                  | 07 (`status` value)        | per entry policy; state stays `unknown`                          | no                                                        | no                                           |
+| schema drift                                                         | (new fixture)              | run refused                                                      | **yes**                                                   | —                                            |
+
+### Per-account ownership gaps (new)
+
+A skipped line whose account resolved but whose product cannot be known means
+"this account holds something we cannot attribute". Treating that account as
+fully covered could show a product it owns as eligible whitespace. So:
+
+- the full sync records `(account, source line, reason)` in
+  `tenant_ownership_gaps` (tenant-owned, forced RLS; replaced per completed
+  full run of the connection; never evidence, only derived state);
+- `EligibilityService.load` treats an account with an open gap as
+  `coverage: 'unknown'` with a new reason `ownership_incomplete` (instead of
+  `ownership_not_loaded`), so every product is `unknown` for that account and
+  the explanation says why;
+- this changes M7 only in the service's coverage input and one reason code:
+  **no Subscription shape change**; `EVALUATOR_VERSION` becomes 2 (old
+  snapshots replay as `evaluator_changed`, as designed). ADR 0018 note.
+  **Decision for the plan review** (alternative: reuse `ownership_not_loaded`
+  without an evaluator bump, at the cost of a less precise explanation).
+
+Lines with no attributable account cannot mark any account; they are counted
+per run and listed in the report (accepted residual risk, BUSINESS
+awareness).
+
+### Full-read proof
+
+A source never declares itself complete. With offset pagination (the
+evidenced mechanism), records modified during the run leave the bounded set
+(`date_modified <= runStart`) and can shift later records to earlier offsets.
+The run is therefore only accepted as complete when `count(bounded set)` at
+start = at end = records read; otherwise it fails with `unstable_read` and is
+retried. If the live tenant offers no count endpoint, keyset paging (`$gt` on
+`date_modified`+`id`) must be proven instead; if neither exists, coverage
+cannot be certified from Sugar (**LIVE**, new potential blocker for real use,
+not for implementation). The fake Sugar implements both so the mechanism is
+proven either way.
+
+M7's CSV import continues to set coverage for tenants whose authority is the
+`import` connection.
 
 ## 24. Incremental sync
 
@@ -589,12 +776,19 @@ date_modified`, field hashes, `decideApply` (older → stale, equal hash →
 - Incremental runs never establish coverage and cannot see deletions
   (unless delete visibility is proven); a scheduled full sync (configurable,
   e.g. weekly) does both.
-- No rolling 7/14/90-day windows, no CDC.
+- No rolling 7/14/90-day windows (historical delta scripts), no CDC. The
+  historical filter was `$gt` on a zone-less timestamp; the platform uses
+  `$gte` with overlap and the decision rules above, and the precision and time
+  zone of `date_modified` are **LIVE**.
 
 ## 25. Deletion and tombstones
 
 - Delete visibility in the current Sugar API is **unverified** → capability
-  `none` until the live gate proves a mechanism (e.g. a deleted-records filter).
+  `none` until the live gate proves a mechanism. Evidence: 0 of 255,684 RLIs
+  had `deleted = True` in the export, which cannot distinguish "no deletions"
+  from "the API omits deleted records by default" (**LIVE**). If the API returns
+  rows with `deleted = True` (fixture 14 shape), the adapter maps them to
+  `presence: absent` (capability `flag`).
 - Safe fallback (designed, not guessed): the **full sync tombstone pass** — a
   line of this connection not seen in a completed full run is tombstoned
   through the writer (`presence: absent`, as M7 CSV full imports do). Never in
@@ -616,34 +810,72 @@ id. Values are never recorded or logged. Checkpoints gain
 
 Per run, counts by stable code on the checkpoint (new jsonb `quality` column,
 codes → counts): `duplicate_external_id`, `orphan_reference`,
-`unknown_product_reference`, `missing_product_reference`,
+`unknown_product_reference` (renamed `unmodelled_product_reference`),
+`orphan_product_reference`, `missing_product_reference`,
+`orphan_account_reference`, `missing_account_reference`, `filtered_out`,
+`invalid_period`, `ownership_gap`, `unstable_read`,
 `unmapped_source_enum_value`, `invalid_date`, `relationship_conflict`,
 `schema_drift`, `coverage_incomplete`. Exposed by `sync:status` and
 `source:report`. No profiling or dashboards.
 
 ## 28. Synthetic fixtures
 
-The 16 sanitized Sugar scenarios become synthetic fixtures in
-`apps/api/test/fixtures/sugar/` (generic names, invented ids, no Juniper rows),
-with the discovery summary in `docs/integrations/sugar/discovery.md`. **These
-artefacts are not in this repository yet**; importing them is step 0 (§47).
-Test matrix (each scenario mapped to at least one case):
+### Discovery fixtures (evidence, kept verbatim)
 
-| Case                             | Expected                                                                                  |
-| -------------------------------- | ----------------------------------------------------------------------------------------- |
-| normal account + line            | company reference + one line, state `unknown`                                             |
-| multiple product lines           | one canonical line per RLI                                                                |
-| renewal (two RLIs, same product) | two lines; ownership via "any line"                                                       |
-| expired + renewal                | two lines; terms only if dates confirmed                                                  |
-| unknown state                    | `unknown` preserved; eligibility `unknown`                                                |
-| missing product                  | skipped `missing_product_reference`; coverage not blocked                                 |
-| unknown product id               | blocking `unknown_product_reference`; coverage unchanged                                  |
-| orphan account                   | skipped or fallback via opportunity; conflict counted                                     |
-| duplicate source line            | same RLI id twice → one line (idempotent), `duplicate_external_id` counted if in one page |
-| invalid dates                    | `reject_record` (blocking) or `empty` per policy                                          |
-| one-time item                    | `non_subscription_product` skip when ignored; ingested when it is a catalogue product     |
-| recurring item                   | normal line                                                                               |
-| deleted line                     | tombstoned by the full-run pass (and by a delete feed only if proven)                     |
+`fixtures/sugarcrm/sanitized/01–16` (from `planning/m8-sugar-evidence`):
+RLI-shaped rows (fixture 09 is one opportunity row), synthetic `FIX-…` ids.
+They are **not edited**: they are evidence. Two README/CSV mismatches are
+recorded, not fixed: fixture 06 has no cancellation-date column, and fixtures
+15/16 have no `renewable` column (`renewable` is a catalogue field). The
+companion catalogue fixture carries those values instead.
+
+### Companion fixtures (M8-authored, synthetic, `apps/api/test/fixtures/sugar/`)
+
+Needed because the discovery set has no: Account, Contact, product catalogue,
+Users, schema-metadata (`/{Module}/fields`) responses, pipeline stages other
+than Closed Won/Pending Cancellation, multi-page sets, deleted-record feeds,
+drift variants or authority conflicts. Companion files reference the same
+`FIX-` ids (e.g. `FIX-ACC-001`, `FIX-PROD-001`), add `FIX-ACC-*`/`FIX-PROD-*`
+rows the scenarios need (but **no** `FIX-PROD-DOES-NOT-EXIST` and **no**
+`FIX-ACC-DOES-NOT-EXIST`, so the orphans stay orphans), and add: a Closed Lost
+RLI, an open-pipeline RLI, an unmodelled product, an account-less RLI with and
+without a usable opportunity, a Users row, schema metadata v1/v2 (field removed,
+type changed, enum option added), and 1,000+ generated lines for pagination
+and count-reconciliation tests (generated by a seeded function, not committed
+as data).
+
+### Fixture-to-test matrix
+
+Columns: extraction (adapter against the fake), mapping validation, canonical
+ingestion, unknown-state behaviour, coverage, provenance, expected
+failure/warning, live verification needed. "Default mapping" = state
+`explicit: unknown`, dates confirmed to the `service_*` pair (test
+configuration only; the real choice is BUSINESS), holding filter = Closed Won
+(test configuration only).
+
+| #   | Fixture                                             | Extraction                                               | Mapping validation                                      | Canonical ingestion                                                                                                                     | Unknown state                                                         | Coverage                                                  | Provenance                                                                                  | Expected failure / warning                                                        | Live?                             |
+| --- | --------------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- | --------------------------------- |
+| 01  | normal case                                         | 1 RLI page; fields limited to mapped                     | passes                                                  | company ref + 1 line, terms 2026-01-01→2027-01-01 (inclusive end converted)                                                             | state `unknown` → product ownership `unknown`; eligibility `unknown`  | contributes; run completes                                | 1 `created` row: connection, `RevenueLineItems`, `FIX-RLI-001`, mapping v1, `date_modified` | none                                                                              | no                                |
+| 02  | several products                                    | 3 lines, one page                                        | passes                                                  | 3 lines, 3 products; line C (Non Recurring, no dates) ingested with empty terms if its product is modelled                              | all 3 `unknown`                                                       | contributes                                               | 3 rows                                                                                      | none (or `non_subscription_product` skip if FIX-PROD-012 is ignored in a variant) | no                                |
+| 03  | multiple lines same product                         | 2 lines                                                  | passes                                                  | 2 lines, same product, quantities 5 and 3 kept separately                                                                               | `unknown`                                                             | contributes                                               | 2 rows                                                                                      | none                                                                              | no                                |
+| 04  | renewal                                             | 2 lines (2 opportunities)                                | renewal fields `ignored` (`semantics_unconfirmed`)      | 2 lines, no collapse                                                                                                                    | `unknown`                                                             | contributes                                               | 2 rows                                                                                      | none                                                                              | no                                |
+| 05  | expired + active renewal                            | 2 lines                                                  | passes                                                  | 2 lines; with a test variant mapping state `active` (authority assigned) ownership is `owned` via the in-force line only                | default `unknown`; variant proves "any line in force"                 | contributes                                               | 2 rows                                                                                      | none                                                                              | no                                |
+| 06  | cancelled (Pending Cancellation)                    | 1 line                                                   | passes; value map for `sales_stage` absent by default   | 1 line                                                                                                                                  | `unknown` (no agreed meaning)                                         | with holding filter = Closed Won: `filtered_out`          | none if filtered                                                                            | `filtered_out` counted                                                            | no (BUSINESS)                     |
+| 07  | unknown status                                      | 1 line; `status` value unrecognised, `sales_stage` blank | `status` mapped only in a variant with policy `unknown` | 1 line (if filter allows blank, variant)                                                                                                | `unknown`; `unmapped_source_enum_value` counted in the variant        | contributes                                               | 1 row                                                                                       | warning count                                                                     | no                                |
+| 08  | future-dated line                                   | 1 line                                                   | passes                                                  | 1 line, terms in 2027–2028                                                                                                              | not in force before start; `unknown` once in force (state unknown)    | contributes                                               | 1 row                                                                                       | none                                                                              | no                                |
+| 09  | orphan opportunity                                  | opportunity read only for fallback                       | `fallbackVia` confirmed                                 | an RLI relying on the fallback is skipped                                                                                               | n/a                                                                   | not blocked; tenant-level `orphan_account_reference`      | none                                                                                        | `orphan_account_reference`                                                        | no                                |
+| 10  | orphan product                                      | 1 line; catalogue lacks the id                           | passes                                                  | skipped                                                                                                                                 | account FIX-ACC-009 → `ownership_incomplete` (all products `unknown`) | not blocked; gap recorded                                 | none for the line                                                                           | `orphan_product_reference`, `ownership_gap`                                       | no                                |
+| 11  | duplicate source line                               | same id twice (dates differ by one day)                  | passes                                                  | 1 line; second observation newer `date_modified`, same values → unchanged                                                               | `unknown`                                                             | contributes                                               | 1 `created` row only                                                                        | `duplicate_external_id` counted                                                   | export artefact vs API: **LIVE**  |
+| 12  | missing product id                                  | 1 line, empty `product_template_id`                      | passes                                                  | skipped                                                                                                                                 | account FIX-ACC-011 → `ownership_incomplete`                          | not blocked; gap recorded                                 | none                                                                                        | `missing_product_reference`, `ownership_gap`                                      | no                                |
+| 13  | conflicting dates                                   | 1 line, end before start                                 | passes                                                  | line ingested, terms empty, state `unknown`                                                                                             | `unknown`                                                             | contributes                                               | 1 row (changed fields exclude terms)                                                        | `invalid_period` counted                                                          | no                                |
+| 14  | deleted / tombstoned                                | 1 line with `deleted = True`                             | passes                                                  | with capability `flag`: `presence: absent` → tombstoned (or not created); with `none`: tombstoned by the next full-run pass when absent | n/a                                                                   | contributes                                               | `state_changed` row (`recordState`)                                                         | none                                                                              | delete visibility: **LIVE**       |
+| 15  | one-time product line                               | 1 line, One Off, no dates                                | passes                                                  | variant A (product ignored): skipped `non_subscription_product`; variant B (product modelled): ingested, empty terms                    | B: `unknown`                                                          | not blocked in A; no gap                                  | B: 1 row                                                                                    | A: skip count                                                                     | no (BUSINESS for the ignore list) |
+| 16  | recurring product line                              | 1 line, Recurring                                        | passes                                                  | 1 line                                                                                                                                  | `unknown`                                                             | contributes                                               | 1 row                                                                                       | none                                                                              | no                                |
+| C1  | Closed Lost RLI (companion)                         | 1 line                                                   | passes                                                  | `filtered_out`                                                                                                                          | n/a                                                                   | not blocked                                               | none                                                                                        | `filtered_out`                                                                    | BUSINESS                          |
+| C2  | unmodelled product (companion)                      | 1 line                                                   | passes                                                  | rejected                                                                                                                                | n/a                                                                   | **run fails**, coverage unchanged                         | none                                                                                        | `unmodelled_product_reference`                                                    | no                                |
+| C3  | schema drift v2 (companion)                         | describe at run start                                    | `schema_snapshot_stale` at publish                      | none                                                                                                                                    | n/a                                                                   | **run refused**                                           | none                                                                                        | `schema_drift`                                                                    | no                                |
+| C4  | 1,000+ lines with mid-run modifications (generated) | multi-page offset + count reconciliation                 | passes                                                  | all lines                                                                                                                               | `unknown`                                                             | count mismatch → `unstable_read`, run fails; retry passes | idempotent                                                                                  | `unstable_read`                                                                   | counts/keyset: **LIVE**           |
+| C5  | Users row (companion)                               | schema classifies `Users` as internal                    | mapping `Users → person` refused                        | none                                                                                                                                    | n/a                                                                   | n/a                                                       | none                                                                                        | `invalid_entity`                                                                  | no                                |
 
 ## 29. Mock-first adapter
 
@@ -653,24 +885,48 @@ metadata, list with filter/order/keyset and offset, get by id), seeded from
 the fixtures, with fault injection (429 with `Retry-After`, 5xx, timeouts,
 page interruption, schema change between calls, field disappearing mid-run).
 The real adapter runs against it in integration and runtime tests, so the
-code under test is the production adapter, not a stub.
+code under test is the production adapter, not a stub. Its responses are built
+from the discovery fixtures plus the companion fixtures (§28); its endpoint
+shapes follow the historical client and current docs and are re-checked at the
+live gate.
 
 ## 30. Live Sugar verification gate (separate from completion)
 
 Recorded in `docs/integrations/sugar/live-verification.md`, run only with
-Juniper-approved read-only credentials:
+Juniper-approved read-only credentials. Every item below is
+`REQUIRES LIVE SUGAR VERIFICATION`; none may be treated as certain because
+the historical code did it.
 
-current auth flow and token lifetime · API version · granted permissions per
-module · metadata endpoint shape · `readRecord` · keyset ordering by id and
-`$gt` filters · offset fallback · `totalCount`/count endpoint · rate limits
-and `Retry-After` · delete visibility · current schema and custom fields ·
-`date_modified` filter and ordering · live counts (accounts, lines, products)
-vs. a full run · **read-only proof** (transport guard counters: only GET and
-token POST).
+| Item                                                                                               | Why it is not proven locally                                                            |
+| -------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| API version in use (`v11_20` is a placeholder)                                                     | not a real tenant value                                                                 |
+| Auth flow: password grant still permitted; refresh-token grant; token lifetime; platform parameter | historical code re-authenticated with the password; refresh-token grant never exercised |
+| `/ping` connection test                                                                            | historical only                                                                         |
+| `GET /{Module}/fields` (or metadata) response shape                                                | historical shape, current docs not tenant-verified                                      |
+| Module and field API names on the live tenant (incl. the product catalogue module)                 | export names may differ from API names                                                  |
+| Permissions per module (least privilege, read only)                                                | never checked                                                                           |
+| List reads with `fields`, `filter`, `order_by`, `max_num`/`offset`                                 | historical only                                                                         |
+| Count endpoint (full-read proof) or keyset with `$or`/`$gt` on `date_modified`+`id`                | never exercised                                                                         |
+| `date_modified` precision, time zone and update-on-every-change                                    | historical used zone-less `$gt`                                                         |
+| `GET /{Module}/{id}`                                                                               | not in historical code                                                                  |
+| Rate limits, `Retry-After`, 5xx behaviour                                                          | not documented in the evidence                                                          |
+| Delete visibility (`deleted = True` rows, filters)                                                 | 0 deleted rows in the export                                                            |
+| Duplicate ids returned by the API (vs export artefacts)                                            | 15 duplicate RLI ids in the export                                                      |
+| Current schema and custom fields (`juniper_id_c`, `subscription_urn_c` dead tenant-wide?)          | export window only                                                                      |
+| Live counts vs a full run (accounts, lines, products)                                              | export may have been truncated (e.g. Notes at exactly 50,000)                           |
+| Read-only proof (transport guard counters)                                                         | needs the live tenant                                                                   |
 
 M8 may be reported **IMPLEMENTATION COMPLETE** without it; the record then
 states **LIVE SUGAR VERIFICATION PENDING**, and no tenant may enable a real
 Sugar connection until the gate passes.
+
+Separate **BUSINESS** gate (Juniper, not a data question): which RLIs are
+holdings (holding filter); which date pair is the service term and its time
+zone/inclusive end; whether any field means "active"; renewal semantics;
+which products are non-subscription; whether contacts without accounts are
+orphans; whether the opportunity's account may stand in for a line's missing
+account; who is authoritative for `subscription_lines`, `subscription_terms`
+and `subscription_state`.
 
 ## 31. Future UI readiness
 
@@ -776,7 +1032,12 @@ missed) · provenance mapping version (column not written) · adapter
 registration guard · secret isolation (another tenant's credential name) ·
 coverage gate (a failed or partial run marks coverage known) · tombstone pass
 in an incremental run · read-only transport guard · single-writer rule (a
-mapping path writing tables directly) · `sugar` imported by business code.
+mapping path writing tables directly) · `sugar` imported by business code ·
+holding filter ignored (a Closed Lost line ingested) · ownership gap ignored
+(an account with an orphan-product line evaluated as covered) · invalid period
+dropping the line instead of ingesting it as unknown · count reconciliation
+removed (an unstable read marks coverage known) · orphan vs unmodelled
+classification swapped.
 
 ## 40. Second-customer portability
 
@@ -803,7 +1064,7 @@ GDPR deletion; timeline/activity ingestion; several connections of one kind.
 | #   | Name                                     | Up                                                                                                                                                                                                                                                                                                                                                                                                                                      | Down (dev/staging) / refusal                                                                                                                                                                                           |
 | --- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1   | `m8_connector_kinds_and_connections`     | create `connector_kinds` (seeded); replace system CHECK lists with FKs on all source-system columns; create `tenant_source_connections` (RLS, tenant trigger); add `source_connection_id`, `mapping_version` to `tenant_context_changes` and `tenant_sync_checkpoints`, `quality` to checkpoints; backfill `import` (all tenants) and `hubspot` (configured tenants) connections; set `source_connection_id` on existing M7 import runs | refuses if any connection beyond the backfilled ones exists, any provenance/checkpoint row references a connection or mapping version, or any kind outside the original five is used; restores the CHECK lists exactly |
-| 2   | `m8_schema_snapshots_mappings_authority` | create snapshots, mapping versions, authority versions (immutable triggers, RLS, composite tenant FKs); seed the default authority version per tenant (§15)                                                                                                                                                                                                                                                                             | refuses if any snapshot, mapping version, or authority version beyond the seeded one exists                                                                                                                            |
+| 2   | `m8_schema_snapshots_mappings_authority` | create snapshots, mapping versions, authority versions (immutable triggers, RLS, composite tenant FKs); create `tenant_ownership_gaps` (tenant-owned, RLS, composite FKs to companies and connections; rows replaced per completed full run); seed the default authority version per tenant (§15)                                                                                                                                       | refuses if any snapshot, mapping version, authority version beyond the seeded one, or ownership gap exists                                                                                                             |
 | 3   | `m8_retire_tenant_field_mappings`        | refuse if any `confirmed` row; drop `tenant_field_mappings`                                                                                                                                                                                                                                                                                                                                                                             | recreates the table, constraints and RLS (data via the export restore script); refuses if the name is taken                                                                                                            |
 
 All three run with the migration (owner) role; the app role stays
@@ -869,9 +1130,13 @@ Product-model base-version hardening is a note in ADR 0016 (no new ADR).
 7. Unknown Sugar state is preserved as `unknown` end to end (ownership,
    eligibility, whitespace).
 8. Coverage becomes known only from a completed full sync of the
-   `subscription_lines` authority; skips never block, blocking errors never
-   complete.
+   `subscription_lines` authority that passed the full-read proof; declared
+   skips never block, blocking errors never complete; accounts with
+   unattributable lines are `ownership_incomplete`; non-holdings are filtered
+   only by a confirmed holding filter.
 9. Provenance identifies connection, source object/record and mapping version.
+   9a. Every one of the 16 discovery fixtures and the companion fixtures has its
+   matrix row (§28) implemented as a passing test.
 10. `tenant_field_mappings` is retired with its intent preserved for M15.
 11. All gates green: verify, runtime (script 70), Docker, fresh clone, CI,
     mutation proofs.
@@ -894,9 +1159,14 @@ The suggested order is adjusted: pure mapping logic before persistence (as
 M7 did), and the legacy table retired early (it removes `MappedSystem`
 before the catalogue refactor touches the same files).
 
-1. **Step 0**: import the sanitized Sugar discovery summary and the 16
-   synthetic scenarios into the repository (`docs/integrations/sugar/`,
-   `test/fixtures/sugar/`); ADRs 0019–0021 (draft).
+1. **Step 0**: bring the sanitized evidence into the M8 implementation branch
+   with a clean merge of `planning/m8-sugar-evidence` (`e2fe7d9`, one commit
+   on `e4fec65`, no discovery-repository history) — or a cherry-pick of that
+   single commit — and nothing else: no raw data, no discovery history. In the
+   same step add `docs/discovery/` and `fixtures/sugarcrm/sanitized/` to
+   `.prettierignore` (the evidence fails `prettier --check`; it is kept
+   byte-for-byte), and confirm with `git diff --stat` that only those 19 files
+   and the ignore entries changed. Then ADRs 0019–0021 (draft).
 2. Product model base-version hardening (small, independent).
 3. Legacy `tenant_field_mappings` export, intent document, migration 3.
 4. Connector-kind catalogue and source connections (migration 1).
@@ -913,15 +1183,18 @@ before the catalogue refactor touches the same files).
 
 ## Risks
 
-| Risk                                                                  | Mitigation                                                                                 |
-| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Catalogue refactor touches many M3–M7 files and constraints           | values unchanged; FK swap in one migration; existing suites and mutation proofs as net     |
-| Sugar keyset ordering or counts behave differently live               | offset fallback; coverage requires the live gate before real use                           |
-| Product references missing from the model block coverage forever      | operator report + draft export; explicit ignore list for non-subscription products         |
-| Owner assigns `subscription_lines` to Sugar while state stays unknown | correct but mostly `unknown` eligibility; documented as expected, not a defect             |
-| Separate canonical companies for Sugar and HubSpot accounts           | `alsoReferences` if a cross-id field exists; otherwise M11 identity resolution; documented |
-| Delete visibility unavailable                                         | full-run tombstone pass; scheduled full syncs                                              |
-| Discovery artefacts not in the repo                                   | step 0 precondition; plan uses only the stated evidence                                    |
+| Risk                                                                              | Mitigation                                                                                                   |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Catalogue refactor touches many M3–M7 files and constraints                       | values unchanged; FK swap in one migration; existing suites and mutation proofs as net                       |
+| Sugar keyset ordering or counts behave differently live                           | offset fallback; coverage requires the live gate before real use                                             |
+| Product references missing from the model block coverage forever                  | operator report + draft export; explicit ignore list for non-subscription products                           |
+| Owner assigns `subscription_lines` to Sugar while state stays unknown             | correct but mostly `unknown` eligibility; documented as expected, not a defect                               |
+| Separate canonical companies for Sugar and HubSpot accounts                       | `alsoReferences` if a cross-id field exists; otherwise M11 identity resolution; documented                   |
+| Delete visibility unavailable                                                     | full-run tombstone pass; scheduled full syncs                                                                |
+| Evidence branch merged with formatting or extra history                           | step 0: single-commit merge or cherry-pick, `.prettierignore`, diff-stat check                               |
+| Holding qualification never confirmed by Juniper                                  | Sugar cannot be authoritative for `subscription_lines`; coverage stays unknown (safe); BUSINESS gate tracked |
+| Many accounts marked `ownership_incomplete` (3.5% of lines lack a usable product) | expected and safe; the report lists them so data owners can fix the source                                   |
+| Sugar offers neither counts nor keyset paging                                     | coverage cannot be certified from Sugar; detected at the live gate before any real use                       |
 
 ## Open questions
 
@@ -935,8 +1208,18 @@ before the catalogue refactor touches the same files).
 5. The current Sugar API version, auth flow and delete visibility (live gate).
 6. Should Contacts be ingested for Juniper at all while HubSpot owns people?
 7. Full-sync cadence for tombstones and coverage refresh.
+8. Which `sales_stage` values denote a holding (holding filter), and does
+   `Pending Cancellation` or `Closed Won Credited` count? (BUSINESS, new)
+9. Is an inclusive source end date the convention, and which time zone do the
+   date-only values use? (BUSINESS, new)
+10. Plan-review decision: new reason `ownership_incomplete` with
+    `EVALUATOR_VERSION` 2, or reuse `ownership_not_loaded` (new).
+11. Does the live API return duplicate ids (export showed 15 duplicate RLI
+    ids), and does it expose a count endpoint? (LIVE, new)
 
 ## Confirmation
 
-Planning only. No code, dependency, Prisma schema, migration or connector was
-added. **M8 implementation has NOT started.** M9 has not started.
+Planning only (refreshed against the sanitized evidence on
+`planning/m8-sugar-evidence` @ `e2fe7d9`). No code, dependency, Prisma schema,
+migration or connector was added, and the evidence branch was read, not
+merged. **M8 implementation has NOT started.** M9 has not started.
