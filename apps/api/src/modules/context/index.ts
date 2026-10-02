@@ -15,3 +15,9 @@ export { PROCESSORS_DISABLED_MESSAGE } from './application/context-processors';
 export { ContextIntakeModule, ContextModule, type ContextModuleOptions } from './context.module';
 export { classifyFailure, type FailureInfo } from './errors';
 export { CONTEXT_ADAPTER_VERSION, JOBS, QUEUES, jobIds } from './jobs';
+export {
+  COMPANY_CANONICAL_LOCK_SCOPE,
+  COMPANY_MERGE_PARTICIPANTS,
+  type CompanyMerge,
+  type CompanyMergeParticipant,
+} from './merge-participants';

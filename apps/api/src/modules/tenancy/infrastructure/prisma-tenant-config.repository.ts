@@ -1,6 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { APP_CONFIG, type AppConfig } from '../../../platform/config';
-import type { ProductKey } from '../../domain';
 import {
   CredentialNameSchema,
   type CredentialName,
@@ -240,37 +239,6 @@ export class PrismaTenantConfigRepository {
       orderBy: { key: 'asc' },
     });
     return rows.map(toProduct);
-  }
-
-  async findProduct(tx: TenantTransaction, key: ProductKey): Promise<Product | undefined> {
-    const row = await tenantClient(tx).tenantProduct.findUnique({
-      where: { tenantId_key: { tenantId: tx.tenantId, key } },
-    });
-    return row ? toProduct(row) : undefined;
-  }
-
-  async saveProduct(tx: TenantTransaction, product: Product): Promise<Product> {
-    const data = {
-      name: product.name,
-      description: product.description,
-      active: product.active,
-    };
-    const row = await guard('product', () =>
-      tenantClient(tx).tenantProduct.upsert({
-        where: { tenantId_key: { tenantId: tx.tenantId, key: product.key } },
-        create: { tenantId: tx.tenantId, key: product.key, ...data },
-        update: data,
-      }),
-    );
-    return toProduct(row);
-  }
-
-  /** Fails with InvalidReferenceError while any company still owns the product. */
-  async deleteProduct(tx: TenantTransaction, key: ProductKey): Promise<boolean> {
-    const { count } = await guard('product', () =>
-      tenantClient(tx).tenantProduct.deleteMany({ where: { tenantId: tx.tenantId, key } }),
-    );
-    return count > 0;
   }
 
   // --- Field mappings -------------------------------------------------------

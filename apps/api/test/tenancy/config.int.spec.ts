@@ -12,6 +12,7 @@ import {
   TenantTemplateSchema,
   type TenantContext,
 } from '../../src/modules/tenancy';
+import { ProductModelInvalidError } from '../../src/modules/products';
 import { PrismaTenantConfigRepository } from '../../src/modules/tenancy/infrastructure/prisma-tenant-config.repository';
 import { startInfrastructure, withAdmin, type TestInfrastructure } from '../support/containers';
 import { provisionTenant, startTenancy, uniqueSlug, type TenancyHarness } from '../support/tenancy';
@@ -104,19 +105,14 @@ describe('tenant provisioning and configuration rules', () => {
       const slug = uniqueSlug('atomic');
       await expect(
         h.db.provision({ slug: slug as never, name: 'Atomic' }, async (tx) => {
-          await h.app.get(PrismaTenantConfigRepository).saveProduct(tx, {
-            key: 'mis' as never,
-            name: 'MIS',
-            description: null,
-            active: true,
-          });
+          await h.app.get(PrismaTenantConfigRepository).saveFlow(tx, 'hubspot_enrichment', 'off');
           throw new Error('failure after the tenant row and a config row were written');
         }),
       ).rejects.toThrow('failure after');
       await expect(h.contexts.forSlug(slug)).rejects.toBeInstanceOf(TenantNotFoundError);
       const orphans = await withAdmin(infra.adminUrl, (db) =>
         db.query(
-          "SELECT count(*)::int AS n FROM tenant_products WHERE name = 'MIS' AND tenant_id NOT IN (SELECT id FROM tenants)",
+          'SELECT count(*)::int AS n FROM tenant_flow_settings WHERE tenant_id NOT IN (SELECT id FROM tenants)',
         ),
       );
       expect(orphans.rows[0]).toEqual({ n: 0 });
@@ -262,19 +258,23 @@ describe('tenant provisioning and configuration rules', () => {
   });
 
   describe('catalogue, mappings and policies', () => {
-    it('manages the product catalogue', async () => {
-      await h.config.saveProduct(t, {
-        key: 'marketplace',
-        name: 'Marketplace',
-        description: 'Buying platform',
-      });
-      await h.config.saveProduct(t, { key: 'legacy', name: 'Legacy', active: false });
+    it('lists the product catalogue as the projection of the published model', async () => {
+      await h.catalogue.publish(
+        t,
+        {
+          products: [
+            { key: 'marketplace', name: 'Marketplace', description: 'Buying platform' },
+            { key: 'legacy', name: 'Legacy', status: 'retired' },
+          ],
+        },
+        { actor: 'test' },
+      );
       await expect(h.config.listProducts(t, { activeOnly: true })).resolves.toEqual([
         { key: 'marketplace', name: 'Marketplace', description: 'Buying platform', active: true },
       ]);
-      await expect(h.config.saveProduct(t, { key: 'Bad Key', name: 'x' })).rejects.toBeInstanceOf(
-        TenantConfigError,
-      );
+      await expect(
+        h.catalogue.publish(t, { products: [{ key: 'Bad Key', name: 'x' }] }, { actor: 'test' }),
+      ).rejects.toBeInstanceOf(ProductModelInvalidError);
     });
 
     it('field mappings: TBC means no external field, and keys are unique per canonical field', async () => {

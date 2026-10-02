@@ -13,6 +13,7 @@ import {
 import type { ReceiptStatus } from '../modules/crm';
 import { ContextKindSchema, ExternalSystemSchema, type ContextKind } from '../modules/domain';
 import { HubSpotModule } from '../modules/hubspot';
+import { SubscriptionMergeModule, SubscriptionMergeParticipant } from '../modules/products';
 import { TenancyModule, TenantContextService } from '../modules/tenancy';
 import { loadConfig } from '../platform/config';
 import { PlatformModule } from '../platform/platform.module';
@@ -48,7 +49,11 @@ async function withContext<T>(work: (app: INestApplicationContext) => Promise<T>
       TenancyModule,
       HubSpotModule,
       ContextIntakeModule,
-      ContextModule.register({ connector: HubSpotModule, processors: false }),
+      ContextModule.register({
+        connector: HubSpotModule,
+        processors: false,
+        merge: { imports: [SubscriptionMergeModule], participants: [SubscriptionMergeParticipant] },
+      }),
     ],
   })
   class ContextCliModule {}

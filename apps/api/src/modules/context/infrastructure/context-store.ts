@@ -7,7 +7,7 @@ import type {
   RecordState,
   SourceCompanyLink,
 } from '../../domain';
-import { tenantClient, type TenantTransaction } from '../../tenancy';
+import { tenantAdvisoryLock, tenantClient, type TenantTransaction } from '../../tenancy';
 
 /**
  * Persistence for canonical context (M6, ADR 0014). Only
@@ -136,11 +136,7 @@ export class ContextStore {
    * order is fixed and cannot deadlock.
    */
   async lockKey(tx: TenantTransaction, scope: string, value: string): Promise<void> {
-    const key = createHash('sha256')
-      .update(`${tx.tenantId}|${scope}|${value}`)
-      .digest()
-      .readBigInt64BE(0);
-    await tenantClient(tx).$executeRaw`SELECT pg_advisory_xact_lock(${key}::bigint)`;
+    await tenantAdvisoryLock(tx, scope, value);
   }
 
   async findRef(

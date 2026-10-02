@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import {
   decideApply,
   fieldHash,
@@ -11,6 +11,11 @@ import {
 } from '../../domain';
 import { TenantDatabase, type TenantContext, type TenantTransaction } from '../../tenancy';
 import { CONTEXT_ADAPTER_VERSION, type Cause } from '../jobs';
+import {
+  COMPANY_CANONICAL_LOCK_SCOPE,
+  COMPANY_MERGE_PARTICIPANTS,
+  type CompanyMergeParticipant,
+} from '../merge-participants';
 import {
   ContextStore,
   type CompanyValues,
@@ -66,6 +71,8 @@ export class ContextIngestionService {
   constructor(
     private readonly db: TenantDatabase,
     private readonly store: ContextStore,
+    @Inject(COMPANY_MERGE_PARTICIPANTS)
+    private readonly mergeParticipants: readonly CompanyMergeParticipant[],
   ) {}
 
   async ingest(
@@ -476,8 +483,23 @@ export class ContextIngestionService {
         });
         continue;
       }
+      if (input.kind === 'company') {
+        // Writers of company-owned facts (e.g. subscriptions) take the same
+        // lock before touching their rows: nothing can land on the loser
+        // while it is being merged. Sorted, so two merges cannot deadlock.
+        for (const id of [loserId, survivorId].sort()) {
+          await this.store.lockKey(tx, COMPANY_CANONICAL_LOCK_SCOPE, id);
+        }
+      }
       await this.store.repointRefs(tx, input.kind, loserId, survivorId);
       if (input.kind === 'company') {
+        for (const participant of this.mergeParticipants) {
+          await participant.onCompanyMerged(tx, {
+            loserId,
+            survivorId,
+            provenance: this.change(meta, ref, undefined),
+          });
+        }
         await this.store.updateCompany(
           tx,
           loserId,

@@ -32,6 +32,14 @@
     "context:dead-letters": "node dist/cli/context.js dead-letters",
     "context:show": "node dist/cli/context.js show",
     "context:state-hash": "node dist/cli/context.js state-hash",
+    "product:model": "node dist/cli/products.js model",
+    "subscriptions:import": "node dist/cli/products.js import",
+    "subscriptions:show": "node dist/cli/products.js show",
+    "subscriptions:coverage": "node dist/cli/products.js coverage",
+    "eligibility:evaluate": "node dist/cli/products.js evaluate",
+    "eligibility:whitespace": "node dist/cli/products.js whitespace",
+    "eligibility:replay": "node dist/cli/products.js replay",
+    "products:report": "node dist/cli/products.js report",
     "test:live": "vitest run --config vitest.live.config.mts"
   },
   "dependencies": {

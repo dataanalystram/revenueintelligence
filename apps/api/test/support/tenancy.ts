@@ -1,4 +1,4 @@
-import type { INestApplicationContext } from '@nestjs/common';
+import { Module, type INestApplicationContext } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import {
   CompanySchema,
@@ -13,6 +13,13 @@ import {
   type CompanyRepository,
   type PersonRepository,
 } from '../../src/modules/identity';
+import {
+  ProductCatalogueService,
+  ProductsModule,
+  SubscriptionImportService,
+  SubscriptionIngestionService,
+  SubscriptionReadModel,
+} from '../../src/modules/products';
 import {
   TenantConfigService,
   TenantContextService,
@@ -33,13 +40,19 @@ export interface TenancyHarness {
   readonly credentials: TenantCredentialsService;
   readonly persons: PersonRepository;
   readonly companies: CompanyRepository;
+  readonly catalogue: ProductCatalogueService;
+  readonly subscriptions: SubscriptionIngestionService;
+  readonly imports: SubscriptionImportService;
+  readonly subscriptionReads: SubscriptionReadModel;
   close(): Promise<void>;
 }
 
 export async function startTenancy(config: AppConfig): Promise<TenancyHarness> {
-  const app = await NestFactory.createApplicationContext(WorkerModule.forRoot(config), {
-    logger: false,
-  });
+  // The worker composition (with its merge participants) plus the products
+  // services the CLI composes (M7).
+  @Module({ imports: [WorkerModule.forRoot(config), ProductsModule] })
+  class TenancyTestModule {}
+  const app = await NestFactory.createApplicationContext(TenancyTestModule, { logger: false });
   await app.init();
   return {
     app,
@@ -50,6 +63,10 @@ export async function startTenancy(config: AppConfig): Promise<TenancyHarness> {
     credentials: app.get(TenantCredentialsService),
     persons: app.get<PersonRepository>(PERSON_REPOSITORY),
     companies: app.get<CompanyRepository>(COMPANY_REPOSITORY),
+    catalogue: app.get(ProductCatalogueService),
+    subscriptions: app.get(SubscriptionIngestionService),
+    imports: app.get(SubscriptionImportService),
+    subscriptionReads: app.get(SubscriptionReadModel),
     close: () => app.close(),
   };
 }

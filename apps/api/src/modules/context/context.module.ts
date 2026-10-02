@@ -11,6 +11,7 @@ import { ReceiptEnqueuer } from './application/receipt-enqueuer';
 import { ContextReadModel } from './infrastructure/context-read-model';
 import { ContextStore } from './infrastructure/context-store';
 import { ProcessingRecordsRepository } from './infrastructure/processing-records.repository';
+import { COMPANY_MERGE_PARTICIPANTS, type CompanyMergeParticipant } from './merge-participants';
 
 /**
  * Intake side (API and worker): queues receipts after they are stored. Global
@@ -33,6 +34,16 @@ export interface ContextModuleOptions {
   readonly connector: Type;
   /** Register job processors (worker process only). */
   readonly processors: boolean;
+  /**
+   * Account-merge participants (ADR 0017 §8): required, never empty. Every
+   * composition that can run a merge must pass them, so no module's
+   * company-owned facts are silently left on a merged-away company.
+   */
+  readonly merge: {
+    /** Modules exporting the participants. */
+    readonly imports: readonly Type[];
+    readonly participants: readonly Type<CompanyMergeParticipant>[];
+  };
 }
 
 /**
@@ -43,10 +54,20 @@ export interface ContextModuleOptions {
 @Module({})
 export class ContextModule {
   static register(options: ContextModuleOptions): DynamicModule {
+    if (!options.merge?.participants?.length) {
+      throw new Error(
+        'ContextModule.register: merge.participants is required (account merges must move company-owned facts)',
+      );
+    }
     return {
       module: ContextModule,
-      imports: [TenancyModule, options.connector],
+      imports: [TenancyModule, options.connector, ...options.merge.imports],
       providers: [
+        {
+          provide: COMPANY_MERGE_PARTICIPANTS,
+          useFactory: (...participants: CompanyMergeParticipant[]) => participants,
+          inject: [...options.merge.participants],
+        },
         ContextStore,
         ContextReadModel,
         ProcessingRecordsRepository,
