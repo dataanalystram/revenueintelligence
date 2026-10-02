@@ -1,7 +1,18 @@
 # Milestone 7 — Product catalogue, subscriptions and eligibility
 
-- Status: **implementation plan, awaiting approval**. No M7 code, dependency,
-  schema, migration or connector change exists.
+- Status: **implementation plan; architecture approved, corrections applied**.
+  Independent planning review of `0d60808`: PASS WITH CHANGES REQUIRED.
+  - Correction 1 (account merge and subscriptions) is resolved in
+    [account merge](#account-merge-and-subscriptions) and ADR 0017.
+  - Correction 2 (product-key reuse across versions) is resolved in §2, §6, §8
+    and ADR 0016.
+  - No M7 code, dependency, schema, migration or connector change exists.
+- Approved decisions (review of 2026-10-02): see
+  [approved decisions](#approved-decisions).
+- ADRs (proposed):
+  - [0016 product model](../adr/0016-product-model-versioning.md);
+  - [0017 subscriptions and ownership](../adr/0017-subscriptions-and-ownership.md);
+  - [0018 eligibility and whitespace](../adr/0018-eligibility-and-whitespace.md).
 - Base: `main` at `fb4c6eb` (M0–M6 complete; M6 closed in PR #9).
 - Inputs: [charter](../product/revenue-opportunity-intelligence.md) §5–7, §13–15,
   §18–19; [roadmap](../product/roadmap.md) (M7 and the pre-M8 Subscription
@@ -81,11 +92,37 @@ A product is **tenant configuration**, owned by the tenant's product model
 There is no free-form metadata bag in M7: no rule type needs one, and an
 untyped bag would invite customer-specific logic.
 
-**Identity.** `(tenant_id, key)` remains the product identity (as in M2), and
-no extra UUID is added. ADR 0014's platform-UUID rule exists for records
+**Identity.** `(tenant_id, key)` remains the product identity (as in M2). No
+internal UUID is added. ADR 0014's platform-UUID rule exists for records
 mirrored from external systems. A product is tenant-defined: its key is the
-platform identity and external ids are references (`externalRefs`). Keys are
-never reused for a different product; renaming changes `name`, never `key`.
+platform identity, and external ids are references (`externalRefs`).
+
+**Identity continuity across versions** (ADR 0016 §8). A key, once published,
+can never represent a different product. Four rules enforce this:
+
+- **K1, no removal.** Every key in the previous version must still be
+  present; a product leaves sale only by becoming `retired`.
+- **K2, a retired product's name and family are frozen.** Reactivating it
+  keeps them, and must be declared in the document's `lifecycle` section.
+- **K3, a changed name on an active product needs `renamedFrom`** equal to
+  the previous name.
+- **K4, `tenant_products` rows are never deleted.**
+
+So `analytics` retired in v2 and reappearing in v5 as "School Payments" is
+rejected:
+
+- it must stay listed in v3–v4;
+- v5's name change on a retired product fails
+  `retired_product_identity_change`.
+
+"Analytics" → "Analytics Pro" with `renamedFrom` is a legitimate rename.
+Description, family, availability and status may change freely.
+
+A UUID would add nothing. It would be assigned by looking up the key, so it
+would carry no extra evidence, and keys are immutable and never reassigned.
+The evidence that tells a rename from reuse is the key's unbroken presence
+across versions, plus an explicit, audited declaration in the immutable
+version.
 
 ## 3. Q2 — Product family: entity or attribute?
 
@@ -152,21 +189,26 @@ published (`publish` and `validate --dry-run`). A model that fails is never
 stored. Errors are reported with stable codes and the JSON path of the
 offending entry:
 
-| Check                                                                                       | Code                          |
-| ------------------------------------------------------------------------------------------- | ----------------------------- |
-| duplicate product key                                                                       | `duplicate_product_key`       |
-| duplicate external reference (two products claim one source id)                             | `duplicate_external_ref`      |
-| relationship or rule references an unknown product or family                                | `unknown_product_reference`   |
-| self-reference (`requires P anyOf [P]`, `excludes [P, P]`, `replaces P→P`, `includes P→P`)  | `self_reference`              |
-| cycle in `requires` (A requires B, B requires A; longer cycles too)                         | `requires_cycle`              |
-| cycle in `includes ∪ replaces` (A includes B, B replaces A; A replaces B replaces A)        | `supersession_cycle`          |
-| `requires P anyOf S` where every member of S is excluded with P                             | `unsatisfiable_requirement`   |
-| `includes B→A` while `excludes [A, B]`                                                      | `contradictory_relationship`  |
-| duplicate relationship or rule id                                                           | `duplicate_rule`              |
-| `availableUntil` ≤ `availableFrom`                                                          | `invalid_availability_window` |
-| `effectiveFrom` earlier than the latest published version's `effectiveFrom`, or in the past | `invalid_effective_from`      |
-| rule attribute not in the canonical attribute list (§7)                                     | `unknown_attribute`           |
-| size limits (≤ 2 000 products, ≤ 10 000 relationships and rules, ≤ 50 members in `anyOf`)   | `model_too_large`             |
+| Check                                                                                       | Code                              |
+| ------------------------------------------------------------------------------------------- | --------------------------------- |
+| duplicate product key                                                                       | `duplicate_product_key`           |
+| duplicate external reference (two products claim one source id)                             | `duplicate_external_ref`          |
+| relationship or rule references an unknown product or family                                | `unknown_product_reference`       |
+| self-reference (`requires P anyOf [P]`, `excludes [P, P]`, `replaces P→P`, `includes P→P`)  | `self_reference`                  |
+| cycle in `requires` (A requires B, B requires A; longer cycles too)                         | `requires_cycle`                  |
+| cycle in `includes ∪ replaces` (A includes B, B replaces A; A replaces B replaces A)        | `supersession_cycle`              |
+| `requires P anyOf S` where every member of S is excluded with P                             | `unsatisfiable_requirement`       |
+| `includes B→A` while `excludes [A, B]`                                                      | `contradictory_relationship`      |
+| duplicate relationship or rule id                                                           | `duplicate_rule`                  |
+| `availableUntil` ≤ `availableFrom`                                                          | `invalid_availability_window`     |
+| a key in the previous version is missing (K1)                                               | `product_key_removed`             |
+| a retired product changes name or family (K2)                                               | `retired_product_identity_change` |
+| a retired product becomes active without a `lifecycle` reactivate entry (K2)                | `undeclared_reactivation`         |
+| an active product's name changes without a matching `renamedFrom` (K3)                      | `undeclared_rename`               |
+| `requires` uses anything but `anyOf` (`allOf` is not supported in M7)                       | `unsupported_relationship_form`   |
+| `effectiveFrom` earlier than the latest published version's `effectiveFrom`, or in the past | `invalid_effective_from`          |
+| rule attribute not in the canonical attribute list (§7)                                     | `unknown_attribute`               |
+| size limits (≤ 2 000 products, ≤ 10 000 relationships and rules, ≤ 50 members in `anyOf`)   | `model_too_large`                 |
 
 Cycles are found by an iterative DFS with an explicit stack and three colours
 (no recursion), reporting **one witness path** (`A → B → A`). Warnings, which
@@ -248,10 +290,26 @@ product from a different version.
 - **Publishing** validates the document. It then inserts row `version = n+1`,
   holding the document, its SHA-256 `contentHash`, `effectiveFrom` (default
   now; future scheduling allowed; monotonic), the publishing actor and
-  `publishedAt`. It also upserts the `tenant_products` projection: new keys are
-  added, and keys absent from the new version are marked retired (never
-  deleted, because subscriptions reference them). Versions are **never edited
-  or deleted** (immutability trigger). A correction is a new version.
+  `publishedAt`. In the **same transaction** it upserts the `tenant_products`
+  projection (new keys added; name, family and status updated). Keys are never
+  absent from a later version (K1), and projection rows are never deleted
+  (K4). Versions are **never edited or deleted** (immutability trigger). A
+  correction is a new version.
+- **Failed and concurrent publication.** Validation, version insert and
+  projection update are one transaction. A failure leaves no version and no
+  projection change. Two concurrent publishes for one tenant are serialised by
+  a per-tenant advisory lock plus the unique `(tenant_id, version)`. The
+  second gets a clear `concurrent_publish` conflict and must re-validate
+  against the new latest version, because K1–K3 compare with it.
+- **Evaluation during activation.** Models are selected from immutable rows
+  by `effectiveFrom`. An evaluation sees exactly one version (old or new),
+  recorded in its result.
+- **Renames and reactivations** are declared in the document: `renamedFrom`
+  on the product, and `lifecycle: [{ "key": "…", "action": "reactivate" }]`.
+  Both are kept in the version and shown by `product:model diff`.
+- **`requires` supports `anyOf` only.** Several `requires` entries on one
+  product already mean "all of these groups". `allOf` is not added until a
+  real requirement shows a need for it (approved).
 - **Selection**: the version in force at `asOf` is the highest version with
   `effectiveFrom ≤ asOf`. There are no drafts in the database; a draft is a file
   checked by `validate`.
@@ -579,7 +637,7 @@ CLI-only.
 | Change                               | Detail                                                                                                                                                                                                                                                                                                                                                       |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `tenant_product_models` (new)        | `tenant_id`, `version` (int, unique per tenant), `document` jsonb, `content_hash` (CHECK hex 64), `effective_from`, `published_at`, `published_by` (actor code). Immutability trigger (no UPDATE/DELETE), forced RLS                                                                                                                                         |
-| `tenant_products` (evolve)           | add `family` (code, nullable) and `model_version` (last version defining it). `active` is set by publishing. The PK `(tenant_id, key)` is unchanged                                                                                                                                                                                                          |
+| `tenant_products` (evolve)           | add `family` (code, nullable) and `model_version` (last version defining it). `active` is set by publishing. The PK `(tenant_id, key)` is unchanged. A trigger refuses DELETE (K4)                                                                                                                                                                           |
 | `tenant_subscriptions` (new)         | fields of §4; FKs `(tenant_id, company_id)` → companies (RESTRICT) and `(tenant_id, product_key)` → tenant_products (RESTRICT); unique `(tenant_id, source_system, source_object_type, source_record_id)`; CHECKs: states, dates, quantity > 0, hash format, id formats; indexes `(tenant_id, company_id)` and `(tenant_id, product_key)`; forced RLS        |
 | `company_products` (drop)            | rows migrated first into `tenant_subscriptions` (`source_system = import`, `source_object_type = legacy_company_product`, `source_record_id = <company_id>:<product_key>`, `churned → cancelled`), one provenance row each (cause `import`)                                                                                                                  |
 | `tenant_context_changes` (extend)    | CHECKs: `entity_kind` += `subscription`; `cause` += `import`; `source_system` += `import`                                                                                                                                                                                                                                                                    |
@@ -593,9 +651,18 @@ CLI-only.
 - New domain types: `ProductModel`, `Subscription`, `EligibilityResult`.
 - The tenant template's `products` becomes an optional `productModel`.
 - `TenantConfigService.saveProduct` is removed; `listProducts` stays.
-- Two dependency rules:
-  - only `SubscriptionIngestionService` writes subscriptions;
-  - the evaluator module imports nothing with I/O.
+- **The M6 merge is extended, not rewritten** (see
+  [account merge](#account-merge-and-subscriptions)):
+  - context defines a `CompanyMergeParticipant` port;
+  - `ContextModule.register` requires `mergeParticipants`;
+  - `ContextIngestionService.merge` calls the participants inside its
+    transaction, right after `repointRefs`, and takes canonical-company locks
+    for the loser and the survivor.
+- Three dependency rules:
+  - only `SubscriptionIngestionService` and its merge participant write
+    subscriptions;
+  - the evaluator module imports nothing with I/O;
+  - `qualification` may not import the eligibility module.
 
 ## 22. Q22 — Migrations (proposed, not created)
 
@@ -616,20 +683,37 @@ forward-fix.
 
 ## 23. Q23 — ADRs (proposed)
 
-- **ADR 0016 — Product model: versioned per-tenant catalogue, relationships
-  and conditions.** Covers: one immutable document per version; the projection;
-  the validation and cycle rules; effective dates; rules as data with semantics
-  in code; no rules engine; why this replaces the mutable-row config pattern
-  for rules.
-- **ADR 0017 — Subscriptions and ownership.** Covers: the canonical
-  subscription contract; multiple lines with ownership derived from them;
-  ownership coverage and `unknown`; provenance; the single writer; what a
-  source connector must supply; the migration away from `company_products`.
-- **ADR 0018 — Eligibility and whitespace.** Covers: built-in versus configured
-  checks; result statuses and precedence; the whitespace categories; the
-  hybrid persistence; explainability and reproducibility; override deferred
-  (see "Human override of eligibility"); the boundaries with M10, M11 and
-  M12.
+- **[ADR 0016](../adr/0016-product-model-versioning.md), product model:**
+  - one immutable, validated document per tenant and version (catalogue,
+    relationships, conditions, owned states);
+  - selection by `effectiveFrom`;
+  - a transactional read-only projection;
+  - rules as data and semantics as code, with no engine or expression
+    language;
+  - `requires` supports `anyOf` only;
+  - the cross-version identity rules K1–K4, with no internal UUID;
+  - failed and concurrent publication.
+- **[ADR 0017](../adr/0017-subscriptions-and-ownership.md), subscriptions and
+  ownership:**
+  - the canonical subscription contract, with multiple lines per product and
+    derived ownership;
+  - the single writer, with a field hash over source values only;
+  - tenant-level coverage (provisional);
+  - the legacy migration;
+  - **account merge**: participant hook, set-based repoint, merge provenance,
+    canonical-company locks, idempotency, snapshots unchanged, and a
+    detect-only invariant;
+  - privacy and retention deferred to technical debt #15/#17.
+- **[ADR 0018](../adr/0018-eligibility-and-whitespace.md), eligibility and
+  whitespace:**
+  - the pure evaluator, its checks and precedence;
+  - what `unknown` means;
+  - whitespace categories;
+  - hybrid snapshots;
+  - the explainability and UI contract;
+  - the M10, M11 and M12 boundaries;
+  - override deferred;
+  - snapshots and tenant deletion deferred to the retention policy.
 
 ## 24. Q24 — Unit, integration and property-based tests
 
@@ -671,6 +755,22 @@ forward-fix.
   - Tenant isolation (§17).
   - The single writer under concurrency: one line ingested twice
     concurrently gives one row and one provenance entry.
+  - **Account merge after subscriptions exist.** Merging A into B moves
+    A's lines to B:
+    - same ids and source references, nothing created or deleted;
+    - one `merged` provenance row each, carrying the merge's cause;
+    - the survivor's ownership includes both;
+    - a replayed merge is a no-op;
+    - a chain merge (B into C) moves them again;
+    - a cross-system refusal leaves them untouched;
+    - a snapshot recorded before the merge is byte-identical afterwards;
+    - evaluating A resolves to B and reports both ids.
+  - **Concurrent merge and import.** A merge and an import of A's lines run
+    in parallel, with forced interleaving (as in the M6 race tests). No line
+    ends on the merged company and there is no deadlock. The orphan
+    invariant holds.
+  - **Composition.** The worker and the context CLI register the subscription
+    merge participant.
 
 ## 25. Q25 — Mutation and failure tests
 
@@ -692,7 +792,17 @@ the right reason**, then passes again once restored (as in M6):
 - another module writes subscriptions directly, bypassing the single writer →
   the dependency rule fails;
 - import without a tombstone pass in full mode;
-- snapshot written outside the evaluation transaction.
+- snapshot written outside the evaluation transaction;
+- the merge participant call removed → the merge test finds orphaned lines
+  on the merged company;
+- the canonical-company lock removed from ingestion or the merge → the
+  forced-interleaving race test fails;
+- the field hash includes the canonical company → a re-delivered line after
+  a merge is reported as changed;
+- each of K1, K2 and K3 disabled → the key-reuse and undeclared-rename tests
+  fail;
+- the `tenant_products` DELETE trigger removed → the key-permanence test
+  fails.
 
 **Failure tests:**
 
@@ -718,6 +828,12 @@ Every row of §6 has a test, plus:
 - an unknown attribute;
 - an invalid availability window;
 - an `effectiveFrom` in the past or before the previous version;
+- key reuse: a key retired in v2 reappears in v5 with a different name
+  (`retired_product_identity_change`);
+- a key dropped from a later version (`product_key_removed`);
+- an undeclared rename, and a wrong `renamedFrom`;
+- an undeclared reactivation;
+- an `allOf` form;
 - a version that refers to a product removed in the same version;
 - an oversize model;
 - unknown JSON keys (strict schema);
@@ -782,14 +898,22 @@ the CLI against real PostgreSQL:
 6. Snapshots are append-only and reproduce exactly. A later model version
    never changes an old snapshot.
 7. Tenant isolation is proven on every new table and on evaluation.
-8. No Juniper product, rule or field appears in code. Juniper configuration
-   stays `tbc`. The generic examples are labelled fictional.
-9. No connector, signal, candidate, lead, qualification, routing, CRM write,
-   UI or AI code is added.
-10. The following all pass, with evidence on the final SHA: `pnpm verify`,
+8. An account merge moves subscriptions to the survivor:
+   - in the M6 merge transaction;
+   - as the same rows, with merge provenance, under the canonical-company
+     lock;
+   - with no orphans, duplicates or lost provenance;
+   - leaving earlier snapshots unchanged.
+9. A product key can never be reused for a different product (K1–K4).
+   Renames and reactivations are explicit and audited.
+10. No Juniper product, rule or field appears in code. Juniper configuration
+    stays `tbc`. The generic examples are labelled fictional.
+11. No connector, signal, candidate, lead, qualification, routing, CRM write,
+    UI or AI code is added.
+12. The following all pass, with evidence on the final SHA: `pnpm verify`,
     runtime (with script 60), Docker, the fresh clone and CI, plus the
     upgrade migration and down-scripts.
-11. ADRs 0016–0018, this record, the operations guide and technical debt are
+13. ADRs 0016–0018, this record, the operations guide and technical debt are
     updated. The independent review passes.
 
 ## 30. Q30 — Unresolved until Subscription Source Discovery
@@ -809,6 +933,122 @@ the CLI against real PostgreSQL:
 - Juniper's actual products, families, relationships and conditions.
 
 ---
+
+## Account merge and subscriptions
+
+Decision (ADR 0017 §8): **subscriptions follow the surviving canonical
+company, as the same source facts, inside the existing M6 merge
+transaction.**
+
+```
+Before                         Merge A → B (M6, same system)          After
+Company A ── S1 (sugar:…:1)    one tenant transaction:                Company A  state=merged, mergedInto=B
+Company B ── S2 (sugar:…:2)    lock refs → lock canonical A,B →        Company B ── S1 (same row, same source ref)
+                               repointRefs → participants:                       └─ S2
+                               UPDATE subscriptions SET company=B     provenance: S1 merged [companyId], merge's cause
+```
+
+- **Hook.** The `CompanyMergeParticipant` port is defined by context and
+  implemented by products. It is called by `ContextIngestionService.merge`
+  right after `repointRefs` for a same-system loser. `ContextModule.register`
+  **requires** `mergeParticipants`, and a test proves that both merge-capable
+  compositions (worker, context CLI) register the subscription participant.
+  There is no second merge process.
+- **Repoint.** One set-based
+  `UPDATE tenant_subscriptions SET company_id = :survivor WHERE company_id = :loser`.
+  It touches the same rows, source references, states, dates and hashes, and
+  creates or deletes nothing. Source uniqueness does not involve
+  `company_id`, so no duplicates can appear.
+- **Provenance.** One `tenant_context_changes` row per moved line:
+  - `change_type = merged`, `changed_fields = [companyId]`;
+  - the merge's cause, source and correlation id;
+  - written by `INSERT … SELECT` in the same transaction.
+
+  Each line's source provenance is kept.
+
+- **Locking.**
+  - The merge takes canonical-company advisory locks for the loser and the
+    survivor (sorted), after its reference locks and before repointing.
+  - Subscription ingestion takes the canonical-company lock (or locks, when a
+    line moves between accounts) after its line lock, **before touching any
+    subscription row**. It then re-resolves the merge lineage.
+  - Result: an import never writes onto a company merged away during it, and
+    no lock cycle is possible.
+- **Idempotency.**
+  - A replayed merge finds no lines on the loser: a no-op with no provenance.
+  - Chains (B later into C) move the lines again.
+  - A re-delivered source line for a merged-away account resolves to the
+    survivor, with an unchanged hash (the hash covers source values only).
+- **Cross-system refusal.** Nothing is merged and nothing moves.
+- **Foreign keys.** The loser row is kept (never deleted), so RESTRICT FKs
+  never block a merge.
+- **Snapshots.** Snapshots recorded before a merge are immutable and keep the
+  loser's id and their frozen facts. Readers reach them through the merge
+  lineage. New evaluations of the loser id resolve to the survivor and return
+  `requestedCompanyId` and `evaluatedCompanyId`.
+- **Invariant.** A non-deleted subscription on a `merged` company is
+  reported by `products:report`, runtime script 60 and a test, as a defect
+  signal. Reads never silently re-home it.
+- **Feasibility check (done).** The M6 merge already repoints external
+  references, people and merge chains in one tenant transaction
+  (`ContextStore.repointRefs`). The participant call and the canonical lock
+  extend it, with no change to its semantics. Nothing found so far prevents
+  this. If implementation finds otherwise, work stops and is reported first.
+
+## Production edge cases (coverage map)
+
+| Edge case                               | Where handled                                                                                           | Test                              |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| missing / null fields                   | optional fields stay absent, never defaulted; dates or state missing where needed → `unknown` (§4, §11) | unit + import validation          |
+| duplicate subscription lines            | unique source reference; per-line lock; re-import is a no-op (§18)                                      | integration (concurrent)          |
+| stale / out-of-order updates            | `decideApply` with source times (§18)                                                                   | unit + integration                |
+| source tombstones                       | `presence: absent`; full-load tombstone pass; a tombstone is never resurrected by an older snapshot     | integration                       |
+| partial imports                         | checkpoint stays incomplete; coverage unchanged; rows written so far are valid facts                    | failure test (killed import)      |
+| future-dated subscriptions              | not owned before `startsAt` (§9)                                                                        | unit                              |
+| expired + renewed overlap               | multiple lines; owned if any line qualifies at `asOf` (§9)                                              | unit + property                   |
+| retired-but-owned products              | owned stays owned; retired is never whitespace (§13)                                                    | unit                              |
+| product rename                          | same key, `renamedFrom` declared (K3)                                                                   | validation                        |
+| product-key reuse                       | rejected (K1, K2, K4)                                                                                   | validation + mutation             |
+| bundle nesting                          | iterative `includes` closure, acyclic by validation (§5, §6)                                            | unit + property                   |
+| replacement chains                      | `replaces` is direct-only for supersession; cycles rejected                                             | unit + validation                 |
+| rule cycles                             | `requires_cycle`, `supersession_cycle` (§6)                                                             | validation + mutation             |
+| conflicting rules                       | `unsatisfiable_requirement`, `contradictory_relationship` (§6)                                          | validation                        |
+| failed publication transaction          | one transaction; nothing persisted (§8)                                                                 | failure test                      |
+| concurrent publication                  | per-tenant lock + unique version; `concurrent_publish` (§8)                                             | integration (concurrent)          |
+| concurrent subscription ingestion       | per-line lock, single writer (§18)                                                                      | integration (concurrent)          |
+| account merge after subscriptions exist | [account merge](#account-merge-and-subscriptions)                                                       | integration + race + mutation     |
+| evaluation during model activation      | immutable versions selected by `effectiveFrom` (§8)                                                     | integration                       |
+| source completeness unknown             | coverage gating → `unknown` (§11)                                                                       | integration + mutation            |
+| large catalogue                         | size limits; validation is linear (DFS); model cached per immutable version (§6)                        | unit (limit) + runtime timing     |
+| historical snapshots after data changes | frozen inputs and versions; reproduced exactly (§14–15)                                                 | integration                       |
+| tenant isolation                        | forced RLS, tenant-scoped keys, cache key includes tenant (§17)                                         | integration + mutation            |
+| privacy / retention                     | identifiers only; retention and erasure under technical debt #15/#17 (ADR 0017 §9, ADR 0018 §9)         | none in M7 (deferred, documented) |
+| eventual UI needs                       | [future UI contract](#future-ui-contract)                                                               | service contract tests            |
+
+## Future UI contract
+
+M7 is backend and domain work: **no frontend code**. Its service and CLI
+contracts must still be enough for the future production operator UI (M14)
+to show the following **without reconstructing business logic from logs**:
+
+| UI need                                   | Provided by                                                                              |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------- |
+| product catalogue                         | `listProducts`, `getProduct` (model version in force)                                    |
+| active / retired status                   | product `status`, availability window                                                    |
+| product relationships                     | the model's relationships, keyed by product                                              |
+| account-owned products                    | `whitespace(…).owned`, with the qualifying lines                                         |
+| subscription state and dates              | `accountSubscriptions` (state, `startsAt`, `endsAt`, quantity, `recordState`)            |
+| source / provenance                       | source reference and times on each line; the provenance trail (field names, cause, time) |
+| eligible whitespace                       | `eligible_whitespace`                                                                    |
+| ineligible whitespace                     | `ineligible_whitespace`, with failing checks                                             |
+| unknown / missing-data states             | `unknown`, with reason codes (`ownership_not_loaded`, …)                                 |
+| exact eligibility reasons                 | `checks[]`: check, rule id, outcome, reason code, facts                                  |
+| product model version                     | `modelVersion`, `modelHash`, `evaluatorVersion` on every result                          |
+| evaluation timestamp                      | `asOf`, `evaluatedAt`                                                                    |
+| persisted historical eligibility evidence | snapshots by account (merge lineage included), product and time                          |
+
+Contract tests assert that these fields exist and are populated. Reason codes
+are stable identifiers, and display text is rendered from them.
 
 ## Human override of eligibility
 
@@ -939,14 +1179,35 @@ places:
 - **Product model:** publish a corrected version. Old versions stay, because
   they are the audit trail.
 
-## Points where approval may be needed
+## Approved decisions
 
-1. This plan.
-2. `fast-check` as a direct devDependency (or the in-repo generator).
-3. Dropping `company_products`, and removing `Company.products` from the
-   Company aggregate.
-4. Any change the ADR review makes to persistence or override.
-5. The PR and independent review before merge.
+From the planning review of 2026-10-02:
+
+- `fast-check` is added as a direct devDependency **during implementation**.
+  It is not installed yet.
+- Legacy `company_products` is dropped after safe migration into
+  subscriptions.
+- `Company.products` and `ownsProduct()` are removed.
+- Product family is an attribute, not an entity.
+- The immutable versioned product model is authoritative, and
+  `tenant_products` is its transactional, read-only projection.
+- Ownership is derived and never stored.
+- Eligibility statuses are `eligible | ineligible | unknown`.
+- Hybrid persistence: evaluate on demand, and persist frozen snapshots only
+  when relied upon.
+- Tenant-level coverage is accepted for M7. It is provisional until the
+  discovery gate.
+- No generic rule engine and no expression language.
+- `requires` supports `anyOf` only. `allOf` needs a demonstrated requirement.
+
+## Points where approval may still be needed
+
+1. Accepting ADRs 0016–0018 (proposed) with the corrections.
+2. Approving the plan for implementation.
+3. Any change to the M6 merge beyond the participant hook and canonical lock.
+   If implementation finds the merge transaction cannot host them safely, work
+   stops and the exact reason is reported.
+4. The PR and independent review before merge.
 
 ## Risks
 
