@@ -124,6 +124,12 @@ Ownership is derived from lines, never stored. No coverage → `unknown`,
 never eligible. AI plays no part: eligibility is deterministic, and
 qualification may not import it (dependency rules).
 
+### Canonical extension and source mapping (pre-M8 design)
+
+How tenants add governed business context and map their own source schemas
+without forking the canonical core: [canonical-extension-and-source-mapping](architecture/canonical-extension-and-source-mapping.md)
+(design for review; nothing implemented).
+
 ## 4. Cross-cutting guarantees (built up over M5–M9)
 
 | Guarantee                              | Mechanism                                                                                             |
