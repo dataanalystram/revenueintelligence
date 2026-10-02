@@ -1,0 +1,4 @@
+id,name,account_id,opportunity_id,product_template_id,quantity,sales_stage,status,renewal,renewal_rli_id,recurring_one_off_c,service,service_start_date,service_end_date,date_closed,date_entered,date_modified,deleted,mrr_c
+FIX-RLI-010,Line A,FIX-ACC-002,FIX-OPP-002,FIX-PROD-010,1,Closed Won,,False,,Recurring,True,2026-01-01,2026-12-31,2025-12-01,2025-12-01,2025-12-01,False,50.00
+FIX-RLI-011,Line B,FIX-ACC-002,FIX-OPP-002,FIX-PROD-011,2,Closed Won,,False,,Recurring,True,2026-01-01,2026-12-31,2025-12-01,2025-12-01,2025-12-01,False,75.00
+FIX-RLI-012,Line C,FIX-ACC-002,FIX-OPP-002,FIX-PROD-012,1,Closed Won,,False,,Non Recurring,False,,,2025-12-01,2025-12-01,2025-12-01,False,0.00

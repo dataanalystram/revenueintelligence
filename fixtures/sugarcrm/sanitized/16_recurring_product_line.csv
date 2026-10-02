@@ -1,0 +1,2 @@
+id,name,account_id,opportunity_id,product_template_id,quantity,sales_stage,status,renewal,renewal_rli_id,recurring_one_off_c,service,service_start_date,service_end_date,date_closed,date_entered,date_modified,deleted,mrr_c
+FIX-RLI-140,Annual Platform Subscription,FIX-ACC-015,FIX-OPP-018,FIX-PROD-140,1,Closed Won,,False,,Recurring,True,2026-01-01,2026-12-31,2025-12-01,2025-12-01,2025-12-01,False,150.00
