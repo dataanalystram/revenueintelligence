@@ -25,12 +25,12 @@ async function createDatabase(
   return databaseUrl(container, name);
 }
 
-/** A Prisma config whose migrations folder holds only the migrations shipped up to M5. */
-function m5MigrationsConfig(dir: string): string {
+/** A Prisma config whose migrations folder holds only the migrations named before `cutoff`. */
+function migrationsBefore(dir: string, cutoff: string): string {
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(resolve(dir, 'migrations'), { recursive: true });
   for (const name of readdirSync(resolve('prisma/migrations'))) {
-    if (name < '20261005' || name === 'migration_lock.toml') {
+    if (name < cutoff || name === 'migration_lock.toml') {
       cpSync(resolve('prisma/migrations', name), resolve(dir, 'migrations', name), {
         recursive: true,
       });
@@ -48,6 +48,11 @@ export default defineConfig({
   );
   return config;
 }
+
+/** The migrations shipped up to M5 (before M6). */
+const m5MigrationsConfig = (dir: string) => migrationsBefore(dir, '20261005');
+/** The migrations shipped up to M6 (before M7). */
+const m6MigrationsConfig = (dir: string) => migrationsBefore(dir, '20261010');
 
 /** Everything a migration can change, as sorted text (for exact schema comparison). */
 async function schemaSnapshot(url: string): Promise<Record<string, string[]>> {
@@ -77,6 +82,10 @@ async function schemaSnapshot(url: string): Promise<Record<string, string[]>> {
 const ROLLBACK = {
   processing: resolve('prisma/rollback/20261005130000_m6_event_processing_state.down.sql'),
   identity: resolve('prisma/rollback/20261005120000_m6_canonical_identity_provenance.down.sql'),
+  snapshots: resolve('prisma/rollback/20261010130000_m7_eligibility_snapshots.down.sql'),
+  productModel: resolve(
+    'prisma/rollback/20261010120000_m7_product_model_and_subscriptions.down.sql',
+  ),
 };
 
 describe('database migrations and schema guard', () => {
@@ -108,6 +117,8 @@ describe('database migrations and schema guard', () => {
         '20260928120000_webhook_receipts_and_routing',
         '20261005120000_m6_canonical_identity_provenance',
         '20261005130000_m6_event_processing_state',
+        '20261010120000_m7_product_model_and_subscriptions',
+        '20261010130000_m7_eligibility_snapshots',
       ]);
       expect(rows.every((r) => r.finished_at !== null)).toBe(true);
     });
@@ -438,9 +449,12 @@ describe('database migrations and schema guard', () => {
       try {
         await migrate(m5Url, ['--config', m5MigrationsConfig(dir)]);
         await migrate(url);
-        const m6 = await schemaSnapshot(url);
+        const latest = await schemaSnapshot(url);
         const tenant = '44444444-4444-4444-8444-444444444444';
         await withAdmin(url, async (db) => {
+          // Later milestones roll back first (M7), then M6.
+          await db.query(readFileSync(ROLLBACK.snapshots, 'utf8'));
+          await db.query(readFileSync(ROLLBACK.productModel, 'utf8'));
           await db.query(
             `INSERT INTO tenants (id, slug, name, updated_at) VALUES ($1, 'mdown', 'Down', now())`,
             [tenant],
@@ -468,10 +482,233 @@ describe('database migrations and schema guard', () => {
         const output = await migrate(url);
         expect(output).toMatch(/20261005120000_m6_canonical_identity_provenance/);
         expect(output).toMatch(/20261005130000_m6_event_processing_state/);
-        expect(await schemaSnapshot(url)).toEqual(m6);
+        expect(await schemaSnapshot(url)).toEqual(latest);
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
+    });
+  });
+
+  describe('upgrading from the Milestone 6 state (M7 migrations on existing data)', () => {
+    const tenant = '55555555-5555-4555-8555-555555555555';
+    const company = '66666666-6666-4666-8666-666666666666';
+    const t0 = '2026-01-01T00:00:00.000Z';
+    async function seedM6(url: string) {
+      await withAdmin(url, async (db) => {
+        await db.query(
+          `INSERT INTO tenants (id, slug, name, updated_at) VALUES ($1, 'msix', 'M6', now())`,
+          [tenant],
+        );
+        await db.query(
+          `INSERT INTO tenant_products (tenant_id, key, name, updated_at) VALUES ($1, 'portal', 'Portal', now()), ($1, 'mis', 'MIS', now()), ($1, 'zero', 'Zero', now())`,
+          [tenant],
+        );
+        await db.query(
+          `INSERT INTO companies (id, tenant_id, name, created_at, updated_at) VALUES ($1, $2, 'School', now(), now())`,
+          [company, tenant],
+        );
+        await db.query(
+          `INSERT INTO company_products (tenant_id, company_id, product_key, status, since, until) VALUES
+             ($1, $2, 'portal', 'active', $3, NULL),
+             ($1, $2, 'mis', 'churned', $3, '2026-06-01T00:00:00Z'),
+             ($1, $2, 'zero', 'trial', $3, $3)`,
+          [tenant, company, t0],
+        );
+      });
+    }
+
+    it('migrates legacy ownership into subscriptions with honest provenance, then drops the table', async () => {
+      const url = await createDatabase(pg, 'm6_state_db');
+      const dir = resolve('test/.tmp/m6-state');
+      try {
+        await migrate(url, ['--config', m6MigrationsConfig(dir)]);
+        await seedM6(url);
+        const output = await migrate(url);
+        expect(output).toMatch(/20261010120000_m7_product_model_and_subscriptions/);
+        expect(output).toMatch(/20261010130000_m7_eligibility_snapshots/);
+        await withAdmin(url, async (db) => {
+          const gone = await db.query(`SELECT to_regclass('public.company_products') AS t`);
+          expect(gone.rows).toEqual([{ t: null }]);
+          const subs = await db.query(
+            `SELECT product_key, state, starts_at, ends_at, source_system, source_object_type, source_record_id, record_state, company_id
+               FROM tenant_subscriptions ORDER BY product_key`,
+          );
+          expect(subs.rows).toEqual([
+            {
+              product_key: 'mis',
+              state: 'cancelled',
+              starts_at: new Date(t0),
+              ends_at: new Date('2026-06-01T00:00:00Z'),
+              source_system: 'import',
+              source_object_type: 'legacy_company_product',
+              source_record_id: `${company}:mis`,
+              record_state: 'active',
+              company_id: company,
+            },
+            {
+              product_key: 'portal',
+              state: 'active',
+              starts_at: new Date(t0),
+              ends_at: null,
+              source_system: 'import',
+              source_object_type: 'legacy_company_product',
+              source_record_id: `${company}:portal`,
+              record_state: 'active',
+              company_id: company,
+            },
+            // A zero-length legacy period is kept exactly (never owned), not dropped.
+            {
+              product_key: 'zero',
+              state: 'trial',
+              starts_at: new Date(t0),
+              ends_at: new Date(t0),
+              source_system: 'import',
+              source_object_type: 'legacy_company_product',
+              source_record_id: `${company}:zero`,
+              record_state: 'active',
+              company_id: company,
+            },
+          ]);
+          const prov = await db.query(
+            `SELECT c.change_type, c.cause, c.source_system, c.adapter, c.changed_fields
+               FROM tenant_context_changes c JOIN tenant_subscriptions s ON s.id = c.entity_id
+              WHERE c.entity_kind = 'subscription' ORDER BY s.product_key`,
+          );
+          expect(prov.rows).toEqual([
+            {
+              change_type: 'created',
+              cause: 'import',
+              source_system: 'import',
+              adapter: 'migration',
+              changed_fields: ['companyId', 'productKey', 'state', 'startsAt', 'endsAt'],
+            },
+            {
+              change_type: 'created',
+              cause: 'import',
+              source_system: 'import',
+              adapter: 'migration',
+              changed_fields: ['companyId', 'productKey', 'state', 'startsAt'],
+            },
+            {
+              change_type: 'created',
+              cause: 'import',
+              source_system: 'import',
+              adapter: 'migration',
+              changed_fields: ['companyId', 'productKey', 'state', 'startsAt', 'endsAt'],
+            },
+          ]);
+          // K4 and immutability hold at the database level.
+          await expect(
+            db.query(`DELETE FROM tenant_products WHERE key = 'portal'`),
+          ).rejects.toThrow(/never deleted/);
+          await db.query(
+            `INSERT INTO tenant_product_models (tenant_id, version, document, content_hash, effective_from, published_by) VALUES ($1, 1, '{}', $2, now(), 'test')`,
+            [tenant, 'a'.repeat(64)],
+          );
+          await expect(
+            db.query(`UPDATE tenant_product_models SET published_by = 'x'`),
+          ).rejects.toThrow(/immutable/);
+          await expect(db.query(`DELETE FROM tenant_product_models`)).rejects.toThrow(/immutable/);
+        });
+        await expect(migrate(url)).resolves.toMatch(/No pending migrations/);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('the M7 down-scripts restore exactly the M6 schema and the legacy rows, refuse data M6 cannot hold, and M7 re-applies', async () => {
+      const m6Url = await createDatabase(pg, 'm6_reference_db');
+      const url = await createDatabase(pg, 'm7_down_db');
+      const dirRef = resolve('test/.tmp/m6-reference');
+      const dir = resolve('test/.tmp/m6-down');
+      try {
+        await migrate(m6Url, ['--config', m6MigrationsConfig(dirRef)]);
+        await migrate(url, ['--config', m6MigrationsConfig(dir)]);
+        await seedM6(url);
+        await migrate(url);
+        const latest = await schemaSnapshot(url);
+        await withAdmin(url, async (db) => {
+          // A subscription from a real import cannot be held by the legacy table: refused, nothing changed.
+          await db.query(
+            `INSERT INTO tenant_subscriptions (tenant_id, id, company_id, product_key, state, source_system, source_object_type, source_record_id, observed_at)
+             VALUES ($1, gen_random_uuid(), $2, 'portal', 'active', 'import', 'csv_line', 'line-1', now())`,
+            [tenant, company],
+          );
+          await db.query(readFileSync(ROLLBACK.snapshots, 'utf8'));
+          await expect(db.query(readFileSync(ROLLBACK.productModel, 'utf8'))).rejects.toThrow(
+            /cannot be rolled back/,
+          );
+          await db.query('ROLLBACK');
+          const still = await db.query(`SELECT to_regclass('public.tenant_subscriptions') AS t`);
+          expect(still.rows).toEqual([{ t: 'tenant_subscriptions' }]);
+          await db.query(`DELETE FROM tenant_subscriptions WHERE source_object_type = 'csv_line'`);
+          await db.query(readFileSync(ROLLBACK.productModel, 'utf8'));
+          const restored = await db.query(
+            `SELECT product_key, status, since, until FROM company_products ORDER BY product_key`,
+          );
+          expect(restored.rows).toEqual([
+            {
+              product_key: 'mis',
+              status: 'churned',
+              since: new Date(t0),
+              until: new Date('2026-06-01T00:00:00Z'),
+            },
+            { product_key: 'portal', status: 'active', since: new Date(t0), until: null },
+            { product_key: 'zero', status: 'trial', since: new Date(t0), until: new Date(t0) },
+          ]);
+        });
+
+        expect(await schemaSnapshot(url)).toEqual(await schemaSnapshot(m6Url));
+
+        const output = await migrate(url);
+        expect(output).toMatch(/20261010120000_m7_product_model_and_subscriptions/);
+        expect(await schemaSnapshot(url)).toEqual(latest);
+      } finally {
+        rmSync(dirRef, { recursive: true, force: true });
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('the M7 down-scripts refuse while a published model or a snapshot exists (recorded history)', async () => {
+      const url = await createDatabase(pg, 'm7_refuse_db');
+      await migrate(url);
+      await withAdmin(url, async (db) => {
+        await db.query(
+          `INSERT INTO tenants (id, slug, name, updated_at) VALUES ($1, 'mref', 'Ref', now())`,
+          [tenant],
+        );
+        await db.query(
+          `INSERT INTO companies (id, tenant_id, created_at, updated_at) VALUES ($1, $2, now(), now())`,
+          [company, tenant],
+        );
+        await db.query(
+          `INSERT INTO tenant_products (tenant_id, key, name, updated_at) VALUES ($1, 'core', 'Core', now())`,
+          [tenant],
+        );
+        await db.query(
+          `INSERT INTO tenant_product_models (tenant_id, version, document, content_hash, effective_from, published_by) VALUES ($1, 1, '{}', $2, now(), 'test')`,
+          [tenant, 'b'.repeat(64)],
+        );
+        await expect(db.query(readFileSync(ROLLBACK.productModel, 'utf8'))).rejects.toThrow(
+          /product model versions exist/,
+        );
+        await db.query('ROLLBACK');
+        await db.query(
+          `INSERT INTO tenant_eligibility_snapshots (tenant_id, id, requested_company_id, evaluated_company_id, product_key, as_of, status, ownership, model_version, model_hash, evaluator_version, facts_hash, result, purpose, correlation_id)
+           VALUES ($1, gen_random_uuid(), $2, $2, 'core', now(), 'unknown', 'unknown', 1, $3, 1, $3, '{}', 'audit', gen_random_uuid())`,
+          [tenant, company, 'c'.repeat(64)],
+        );
+        await expect(db.query(readFileSync(ROLLBACK.snapshots, 'utf8'))).rejects.toThrow(
+          /snapshots exist/,
+        );
+        await db.query('ROLLBACK');
+        await expect(
+          db.query(`UPDATE tenant_eligibility_snapshots SET purpose = 'x'`),
+        ).rejects.toThrow(/append-only/);
+        await expect(db.query(`DELETE FROM tenant_eligibility_snapshots`)).rejects.toThrow(
+          /append-only/,
+        );
+      });
     });
   });
 

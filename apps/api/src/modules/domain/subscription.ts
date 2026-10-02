@@ -53,8 +53,9 @@ export const SubscriptionFactSchema = z
     endsAt: InstantSchema.optional(),
     quantity: PositiveQuantity.optional(),
   })
-  .refine((s) => !s.startsAt || !s.endsAt || s.startsAt < s.endsAt, {
-    message: 'endsAt must be after startsAt',
+  // Equal start and end is a zero-length term (never in force): kept, not lost.
+  .refine((s) => !s.startsAt || !s.endsAt || s.startsAt <= s.endsAt, {
+    message: 'endsAt must not be before startsAt',
     path: ['endsAt'],
   })
   .readonly();

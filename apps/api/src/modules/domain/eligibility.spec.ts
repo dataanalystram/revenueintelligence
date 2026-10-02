@@ -134,10 +134,16 @@ describe('ownership derivation (ADR 0017 §2)', () => {
     expect(() => deriveOwnership(model, known(line('ghost')), AS_OF)).not.toThrow();
   });
 
-  it('rejects a subscription whose end is not after its start', () => {
+  it('rejects a subscription that ends before it starts; a zero-length term is never owned', () => {
     expect(
-      SubscriptionFactSchema.safeParse({ ...line('core'), startsAt: AS_OF, endsAt: AS_OF }).success,
+      SubscriptionFactSchema.safeParse({
+        ...line('core'),
+        startsAt: AS_OF,
+        endsAt: new Date(AS_OF.getTime() - 1),
+      }).success,
     ).toBe(false);
+    const zero = SubscriptionFactSchema.parse({ ...line('core'), startsAt: AS_OF, endsAt: AS_OF });
+    expect(own(known(zero), 'core')).toBe('not_owned');
   });
 });
 
