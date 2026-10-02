@@ -11,7 +11,6 @@ import {
   LeadCandidateSchema,
   LeadSchema,
   markConverted,
-  ownsProduct,
   PersonSchema,
   ProductKeySchema,
   QualificationDecisionSchema,
@@ -39,7 +38,6 @@ describe('canonical model: end-to-end journey', () => {
       tenantId: ids.tenant,
       name: 'ABC Academy',
       customerStatus: 'customer',
-      products: [{ productKey: 'portal', status: 'active', since: at(-60 * 24 * 365) }],
       externalRefs: [{ system: 'gainsight_cs', objectType: 'Company', id: 'gs-co-1' }],
       createdAt: at(0),
       updatedAt: at(0),
@@ -68,7 +66,7 @@ describe('canonical model: end-to-end journey', () => {
       receivedAt: at(1),
       correlationId: ids.correlation,
     });
-    expect(ownsProduct(company, marketplace)).toBe(false); // white space: an upsell
+    // Whether marketplace is whitespace is decided by eligibility (M7), not here.
 
     let candidate = LeadCandidateSchema.parse({
       id: ids.candidate,

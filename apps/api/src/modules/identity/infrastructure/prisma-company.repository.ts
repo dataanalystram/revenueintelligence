@@ -9,7 +9,7 @@ import {
 } from '../../tenancy';
 import type { CompanyRepository } from '../repositories';
 
-const include = { externalRefs: true, products: true } as const;
+const include = { externalRefs: true } as const;
 
 interface CompanyRow {
   id: string;
@@ -22,7 +22,6 @@ interface CompanyRow {
   createdAt: Date;
   updatedAt: Date;
   externalRefs: { system: string; objectType: string; externalId: string }[];
-  products: { productKey: string; status: string; since: Date | null; until: Date | null }[];
 }
 
 function toCompany(row: CompanyRow): Company {
@@ -34,14 +33,6 @@ function toCompany(row: CompanyRow): Company {
     customerStatus: row.customerStatus,
     recordState: row.recordState,
     mergedIntoId: row.mergedIntoId ?? undefined,
-    products: [...row.products]
-      .sort((a, b) => a.productKey.localeCompare(b.productKey))
-      .map((p) => ({
-        productKey: p.productKey,
-        status: p.status,
-        since: p.since ?? undefined,
-        until: p.until ?? undefined,
-      })),
     externalRefs: [...row.externalRefs]
       .sort((a, b) =>
         `${a.system}${a.objectType}${a.externalId}`.localeCompare(
@@ -111,9 +102,6 @@ export class PrismaCompanyRepository implements CompanyRepository {
             })),
           },
         });
-        await db.companyProduct.deleteMany({
-          where: { tenantId: tx.tenantId, companyId: company.id },
-        });
       } else {
         await db.company.create({ data: { id: company.id, tenantId: tx.tenantId, ...data } });
       }
@@ -135,18 +123,6 @@ export class PrismaCompanyRepository implements CompanyRepository {
               objectType: r.objectType,
               externalId: r.id,
             })),
-        });
-      }
-      if (company.products.length > 0) {
-        await db.companyProduct.createMany({
-          data: company.products.map((p) => ({
-            tenantId: tx.tenantId,
-            companyId: company.id,
-            productKey: p.productKey,
-            status: p.status,
-            since: p.since ?? null,
-            until: p.until ?? null,
-          })),
         });
       }
     } catch (error) {

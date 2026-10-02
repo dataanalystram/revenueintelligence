@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { at, ids } from '../../../test/fixtures/domain';
-import { CompanySchema, isCustomer, ownsProduct, type CompanyInput } from './company';
+import { CompanySchema, isCustomer, type CompanyInput } from './company';
 import { EmailAddressSchema, emailDomain } from './email';
-import { ProductKeySchema, ProductOwnershipSchema } from './product';
 import { hasRole, PersonSchema, personDisplayName, personEmails, type PersonInput } from './person';
 
 const person = (over: Partial<PersonInput> = {}) =>
@@ -106,53 +105,23 @@ describe('Person', () => {
   });
 });
 
-describe('Company and product ownership', () => {
-  const marketplace = ProductKeySchema.parse('marketplace');
-  const portal = ProductKeySchema.parse('portal');
-  const mis = ProductKeySchema.parse('mis');
-
-  it('knows which products are currently owned', () => {
-    const c = company({
-      customerStatus: 'customer',
-      domains: ['ABCAcademy.sch.uk'],
-      products: [
-        { productKey: 'portal', status: 'active' },
-        { productKey: 'marketplace', status: 'trial' },
-        { productKey: 'mis', status: 'churned' },
-      ],
-    });
+// Product ownership moved to subscriptions (M7, ADR 0017): see eligibility.spec.ts.
+describe('Company', () => {
+  it('normalises domains and knows customer status', () => {
+    const c = company({ customerStatus: 'customer', domains: ['ABCAcademy.sch.uk'] });
     expect(c.domains).toEqual(['abcacademy.sch.uk']);
     expect(isCustomer(c)).toBe(true);
-    expect(ownsProduct(c, portal)).toBe(true);
-    expect(ownsProduct(c, marketplace)).toBe(true);
-    expect(ownsProduct(c, mis)).toBe(false);
+  });
+
+  it('carries no product ownership (derived from subscriptions instead)', () => {
+    expect('products' in company()).toBe(false);
   });
 
   it.each<[string, Partial<CompanyInput>]>([
-    [
-      'duplicate product',
-      {
-        products: [
-          { productKey: 'mis', status: 'active' },
-          { productKey: 'mis', status: 'churned' },
-        ],
-      },
-    ],
     ['invalid domain', { domains: ['not a domain'] }],
     ['duplicate domain', { domains: ['abc.sch.uk', 'ABC.sch.uk'] }],
     ['blank name', { name: '  ' }],
   ])('rejects %s', (_label, over) => {
     expect(() => company(over)).toThrow();
-  });
-
-  it('rejects an ownership period that ends before it starts', () => {
-    expect(
-      ProductOwnershipSchema.safeParse({
-        productKey: 'mis',
-        status: 'expired',
-        since: at(10),
-        until: at(0),
-      }).success,
-    ).toBe(false);
   });
 });
