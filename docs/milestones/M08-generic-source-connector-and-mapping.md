@@ -1461,7 +1461,7 @@ Fix, in `scripts/verify-runtime.sh` only:
 
 A client the app left behind persists for the whole window. Proved able to fail: with a persistent `redis-cli SUBSCRIBE` client started just before the check, it reported `FAIL no app Redis clients left after shutdown` and listed `age=8 cmd=subscribe` (132/1). After restore: `pnpm verify:runtime` exit 0, 133/0.
 
-Fresh clone of the final closure head: recorded in the docs-only commit that follows it.
+Fresh clone of the final closure head `1920429`: HEAD matched; install exit 0; `pnpm verify` exit 0 (unit **47 files, 651 tests**; integration **21 files, 344 tests**); `pnpm verify:runtime` exit 0 (**133 passed, 0 failed**); `pnpm verify:docker` exit 0 **on the first attempt** (**19 passed, 0 failed**; both processor checks registered without waiting); no resources before or after; clone removed. No retries were used.
 
 ### Production code and tech debt
 
