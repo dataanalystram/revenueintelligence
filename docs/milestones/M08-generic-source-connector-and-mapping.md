@@ -1445,14 +1445,31 @@ Fix, in `scripts/verify-docker.sh` only:
 
 Proved able to fail: with the expected line mutated, the check reported `FAIL worker container source processor` after 20 s and printed the worker messages (`"processors":4`); the run's other 18 checks passed. After restore: `pnpm verify:docker` exit 0, 19/0.
 
-Fresh clone of the final closure head (script fix and this record): recorded in the docs-only commit that follows it.
+Fresh clone of `01457fb` (the Docker fix and the first version of this record):
+
+- HEAD matched; install exit 0; `pnpm verify` exit 0 (unit 47/651, integration 21/344).
+- `pnpm verify:docker` exit 0 **on the first attempt** (19/0, both processor checks registered without waiting).
+- **`pnpm verify:runtime` failed, 132 passed and 1 failed**: `no app Redis clients left after shutdown`. Every other shutdown check passed (both processes exited on SIGTERM with their shutdown hooks; no DB sessions; no process with the run tag).
+- No resources before or after; clone removed.
+
+Diagnosis: that check counted Redis clients once, at the instant after shutdown, and printed nothing. The DB check beside it polls for 5 s. The compose Redis healthcheck (`redis-cli ping` every 5 s) is itself a client. Against a throwaway Redis with concurrent `redis-cli ping` clients, the check's own counting expression reported a non-zero count in 44 of 200 samples. A healthcheck ping at the instant of the read is therefore a false failure. It is the leading explanation, not proven for that run, because the check captured nothing.
+
+Fix, in `scripts/verify-runtime.sh` only:
+
+- poll for up to 5 s for zero clients, like the DB check;
+- on failure, list the remaining clients (address, name, age, command; no data).
+
+A client the app left behind persists for the whole window. Proved able to fail: with a persistent `redis-cli SUBSCRIBE` client started just before the check, it reported `FAIL no app Redis clients left after shutdown` and listed `age=8 cmd=subscribe` (132/1). After restore: `pnpm verify:runtime` exit 0, 133/0.
+
+Fresh clone of the final closure head: recorded in the docs-only commit that follows it.
 
 ### Production code and tech debt
 
 The only production change is the `SugarHttp` refactor (one guarded request
 pipeline, same behaviour). There are no migrations, schema, API, CLI, queue
 or configuration changes. The rest is tests, the dependency-cruiser
-config and the `verify-docker.sh` processor checks. New tech debt: item 42 (raw-query FK errors are not translated to
+config, the `verify-docker.sh` processor checks and the
+`verify-runtime.sh` Redis shutdown check. New tech debt: item 42 (raw-query FK errors are not translated to
 `InvalidReferenceError`; safety is unaffected). Remaining M8 debt: items
 29–42.
 
