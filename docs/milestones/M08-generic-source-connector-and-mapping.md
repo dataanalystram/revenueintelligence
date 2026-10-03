@@ -1376,3 +1376,84 @@ The live and business gates are recorded in
 
 M8 implementation only. **M9 has NOT been started.** No live Sugar call was
 made; **LIVE SUGAR VERIFICATION: PENDING**. Not merged to `main`.
+
+## Review closure (after the independent implementation review)
+
+Verdict received: **PASS WITH NON-BLOCKING FINDINGS — M8 READY TO MERGE**,
+with four test/enforcement gaps to close before merge. Closed in `b2daf1a`
+without architecture or scope changes. The evidence above is historical and
+unchanged; this section adds to it.
+
+### Findings and fixes
+
+| #   | Finding                                                                                                   | Fix                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| --- | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | No adversarial cross-tenant tests per new table (only counts from tenant B and two writes)                | `apps/api/test/sources/source-isolation.int.spec.ts` (34 tests, real PostgreSQL, app role, forced RLS): for each of the five tables tenant A issues raw SQL against tenant B — SELECT (0 rows, only own tenant visible), INSERT with B's `tenant_id` (RLS refusal), UPDATE and DELETE of B's rows (0 rows; for the three immutable tables no trigger fired, so the rows were invisible), composite-FK hijacks naming the exact constraint (snapshot, mapping, all five authority facts, gap connection and gap company), moving A's own connection/gap to B (refused); B's rows are byte-for-byte unchanged afterwards (admin read) |
+| 2   | The read-only Sugar proof refused requests at the guard function, not through the connector and transport | `SugarHttp.get()` now runs through one private guarded `request()` pipeline (behaviour unchanged; `attempt()` sends `req.method`). Connector-level test in `sugar-connector.spec.ts`: through the real `SugarConnector` and fake Sugar, POST to `/Accounts` and to a link endpoint, PUT, PATCH, DELETE and DELETE `/oauth2/token` all fail `read_only_violation` with **no outbound request**; the fake recorded PUT/PATCH/DELETE = 0 and exactly one POST (`/oauth2/token`); reads still work                                                                                                                                      |
+| 3   | No boundary rule for the `sources` module                                                                 | `.dependency-cruiser.cjs`: `core-never-depends-on-sources` (domain, products/eligibility, context, identity, tenancy, crm and the sugar/hubspot adapters never import `sources`) and `sources-never-imports-concrete-adapters` (`sources` never imports `sugar` or `hubspot`; adapters are registered by the composition roots)                                                                                                                                                                                                                                                                                                     |
+| 4   | Single-writer proof was a static scan only                                                                | Static scan kept. New behavioural test in `source-sync.int.spec.ts`: the writer instances wired into `SourceSyncService` are instrumented during a real full run; every subscription line in the tenant must have been **created** by the writer (same id and source record; a later writer call cannot launder a row), each line's `last_change_id` is a provenance row of this run, connection and mapping version, and every Sugar account reference reached the context writer                                                                                                                                                  |
+
+### Proved able to fail (10 of 10 failed for the stated reason, all passed after restore)
+
+| Mechanism broken                                                           | Failing test(s)                                                                                                                           |
+| -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| RLS removed from `tenant_source_connections` (migration 1)                 | 7 isolation tests (SELECT, lookup by id, INSERT, UPDATE, DELETE …)                                                                        |
+| `tenant_ownership_gaps` dropped from the RLS loop (migration 2)            | 6 isolation tests                                                                                                                         |
+| Policy `USING (true) WITH CHECK (true)` on the four migration-2 tables     | 19 isolation tests                                                                                                                        |
+| Gap company FK dropped                                                     | "ownership gap on B's connection, and on B's company"                                                                                     |
+| Guard call removed from the request pipeline                               | "mutating requests are refused before anything leaves the process; only GET and the token POST reach Sugar"                               |
+| `products` imports `sources`                                               | `pnpm depcheck:boundaries`: `error core-never-depends-on-sources: …/eligibility.service.ts → src/modules/sources/index.ts`                |
+| `context` imports `sources`                                                | `error core-never-depends-on-sources: src/modules/context/index.ts → src/modules/sources/index.ts`                                        |
+| `sources` imports `hubspot`                                                | `error sources-never-imports-concrete-adapters` (and `business-code-uses-crm-port`)                                                       |
+| `sources` imports `sugar`                                                  | `error sources-never-imports-concrete-adapters` (and `business-code-uses-source-port`)                                                    |
+| Direct `INSERT INTO tenant_subscriptions` from the sync, beside the writer | behavioural test: `expected Map{ …(32) } to deeply equal Map{ …(16) }`, listing exactly the 16 `*-bypass` rows; the static scan fails too |
+
+A first attempt at the last mutation failed the run itself (a duplicate
+fixture id hit the unique key), which is not evidence. The mutation was made
+`ON CONFLICT DO NOTHING`, and the test was tightened from "any writer outcome"
+to "`created` by the writer", because otherwise the tombstone pass would
+pass a bypass row through the writer as `deleted`. The mutation was then
+re-run and failed for the right reason. Also checked by hand: with `domain`
+importing `sources`, both `core-never-depends-on-sources` and `domain-is-pure`
+fire.
+
+### Verification
+
+At `b2daf1a` (working tree):
+
+- `pnpm verify` exit 0: unit **47 files, 651 tests**; integration **21 files, 344 tests**.
+- `pnpm verify:runtime` exit 0: `== Summary: 133 passed, 0 failed`.
+- `pnpm verify:docker` exit 0: `== Summary: 19 passed, 0 failed`.
+- Targeted: isolation spec 34/34; single-writer 1/1; Sugar adapter spec 21/21; static single-writer scan 1/1; `pnpm depcheck:boundaries` no violations (289 modules, 1219 dependencies).
+
+Fresh clone of `b2daf1a`:
+
+- HEAD matched; install exit 0; `pnpm verify` exit 0 (unit 47/651, integration 21/344); `pnpm verify:runtime` exit 0 (133/0).
+- `pnpm verify:docker` **attempt 1 failed, 18 passed and 1 failed** (`worker container source processor`); attempt 2 passed 19/0.
+- No resources before or after; clone removed.
+
+That Docker failure is not accepted as a flake. Diagnosis:
+
+- the M8 check read the worker log once and printed nothing on failure;
+- both processors register in the worker bootstrap, or, by design, silently about 5 s later when the start-up Redis policy check cannot reach Redis (the same family as tech debt 41).
+
+Fix, in `scripts/verify-docker.sh` only:
+
+- both processor checks wait up to 20 s for registration;
+- a late registration is reported with the elapsed time and the start-up processor count;
+- the worker's messages are printed on failure.
+
+Proved able to fail: with the expected line mutated, the check reported `FAIL worker container source processor` after 20 s and printed the worker messages (`"processors":4`); the run's other 18 checks passed. After restore: `pnpm verify:docker` exit 0, 19/0.
+
+Fresh clone of the final closure head (script fix and this record): recorded in the docs-only commit that follows it.
+
+### Production code and tech debt
+
+The only production change is the `SugarHttp` refactor (one guarded request
+pipeline, same behaviour). There are no migrations, schema, API, CLI, queue
+or configuration changes. The rest is tests, the dependency-cruiser
+config and the `verify-docker.sh` processor checks. New tech debt: item 42 (raw-query FK errors are not translated to
+`InvalidReferenceError`; safety is unaffected). Remaining M8 debt: items
+29–42.
+
+**M9 has NOT been started. LIVE SUGAR VERIFICATION: PENDING. Not merged to `main`.**
