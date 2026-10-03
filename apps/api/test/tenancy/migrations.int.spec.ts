@@ -4,12 +4,15 @@ import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { CONNECTOR_KIND_CATALOGUE } from '../../src/modules/domain/connector-kinds';
 import { migrate, startPostgres, withAdmin } from '../support/containers';
 
 const run = promisify(execFile);
 
 /** Tables that are not tenant-owned. Anything else must satisfy every tenancy rule. */
-const PLATFORM_TABLES = ['tenants'];
+const PLATFORM_TABLES = ['tenants', 'connector_kinds'];
+/** Platform reference tables the app role may only read (ADR 0019). */
+const READ_ONLY_TABLES = ['connector_kinds'];
 
 function databaseUrl(container: StartedPostgreSqlContainer, database: string): string {
   const url = new URL(container.getConnectionUri());
@@ -57,7 +60,10 @@ const m6MigrationsConfig = (dir: string) => migrationsBefore(dir, '20261010');
 const m7MigrationsConfig = (dir: string) => migrationsBefore(dir, '20261020');
 
 /** M8 migrations in apply order. */
-const M8_MIGRATIONS = ['20261020110000_m8_retire_tenant_field_mappings'];
+const M8_MIGRATIONS = [
+  '20261020110000_m8_retire_tenant_field_mappings',
+  '20261020120000_m8_connector_kinds_and_connections',
+];
 
 /** Everything a migration can change, as sorted text (for exact schema comparison). */
 async function schemaSnapshot(url: string): Promise<Record<string, string[]>> {
@@ -283,16 +289,37 @@ describe('database migrations and schema guard', () => {
       expect(rows.length).toBeGreaterThan(10);
     });
 
-    it('the app role can use every table except the migration history', async () => {
+    it('the app role can use every table except the migration history and read-only reference data', async () => {
       const { rows } = await withAdmin(cleanUrl, (db) =>
-        db.query<{ table: string; ok: boolean }>(`
+        db.query<{ table: string; ok: boolean; read: boolean; write: boolean }>(`
           SELECT c.relname AS table,
-                 has_table_privilege('lip_app', c.oid, 'SELECT,INSERT,UPDATE,DELETE') AS ok
+                 has_table_privilege('lip_app', c.oid, 'SELECT,INSERT,UPDATE,DELETE') AS ok,
+                 has_table_privilege('lip_app', c.oid, 'SELECT') AS read,
+                 has_table_privilege('lip_app', c.oid, 'INSERT,UPDATE,DELETE,TRUNCATE') AS write
           FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
           WHERE n.nspname = 'public' AND c.relkind = 'r'`),
       );
-      expect(rows.filter((r) => r.table !== '_prisma_migrations').every((r) => r.ok)).toBe(true);
+      const tenantOwned = rows.filter(
+        (r) => r.table !== '_prisma_migrations' && !READ_ONLY_TABLES.includes(r.table),
+      );
+      expect(tenantOwned.every((r) => r.ok)).toBe(true);
       expect(rows.find((r) => r.table === '_prisma_migrations')?.ok).toBe(false);
+      for (const table of READ_ONLY_TABLES) {
+        expect(rows.find((r) => r.table === table)).toMatchObject({ read: true, write: false });
+      }
+    });
+
+    it('the connector-kind catalogue in the database equals the code catalogue', async () => {
+      const { rows } = await withAdmin(cleanUrl, (db) =>
+        db.query<{ kind: string; display_name: string; has_adapter: boolean }>(
+          'SELECT kind, display_name, has_adapter FROM connector_kinds ORDER BY kind',
+        ),
+      );
+      expect(rows).toEqual(
+        [...CONNECTOR_KIND_CATALOGUE]
+          .map((k) => ({ kind: k.kind, display_name: k.displayName, has_adapter: k.hasAdapter }))
+          .sort((a, b) => a.kind.localeCompare(b.kind)),
+      );
     });
 
     it('the app role cannot bypass row-level security', async () => {
@@ -858,6 +885,329 @@ describe('database migrations and schema guard', () => {
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
+    });
+  });
+
+  describe('connector-kind catalogue and source connections (M8 migration on M7 data)', () => {
+    const tenantA = '7a7a7a7a-7a7a-47a7-87a7-7a7a7a7a7a7a';
+    const tenantB = '7b7b7b7b-7b7b-47b7-87b7-7b7b7b7b7b7b';
+    const company = '7c7c7c7c-7c7c-47c7-87c7-7c7c7c7c7c7c';
+    const importRun = '7d7d7d7d-7d7d-47d7-87d7-7d7d7d7d7d7d';
+    const hubspotRun = '7e7e7e7e-7e7e-47e7-87e7-7e7e7e7e7e7e';
+    let url: string;
+    let before: { refs: string[]; runs: string[]; changes: string[] };
+
+    const values = (u: string) =>
+      withAdmin(u, async (db) => ({
+        refs: (
+          await db.query<{ v: string }>(
+            `SELECT tenant_id || ' ' || system || ' ' || object_type || ' ' || external_id AS v FROM company_external_refs ORDER BY 1`,
+          )
+        ).rows.map((r) => r.v),
+        runs: (
+          await db.query<{ v: string }>(
+            `SELECT id || ' ' || system || ' ' || kind || ' ' || mode || ' ' || status AS v FROM tenant_sync_checkpoints ORDER BY 1`,
+          )
+        ).rows.map((r) => r.v),
+        changes: (
+          await db.query<{ v: string }>(
+            `SELECT id || ' ' || source_system || ' ' || source_record_id AS v FROM tenant_context_changes ORDER BY 1`,
+          )
+        ).rows.map((r) => r.v),
+      }));
+
+    /** Runs `sql` as the application role inside a rolled-back transaction. */
+    const asApp = (u: string, sql: string) =>
+      withAdmin(u, async (db) => {
+        await db.query('BEGIN');
+        try {
+          await db.query('SET LOCAL ROLE lip_app');
+          await db.query(sql);
+        } finally {
+          await db.query('ROLLBACK');
+        }
+      });
+
+    beforeAll(async () => {
+      url = await createDatabase(pg, 'm8_connectors_db');
+      const dir = resolve('test/.tmp/m7-state-connectors');
+      try {
+        await migrate(url, ['--config', m7MigrationsConfig(dir)]);
+        await withAdmin(url, async (db) => {
+          await db.query(
+            `INSERT INTO tenants (id, slug, name, updated_at) VALUES ($1, 'msevena', 'A', now()), ($2, 'msevenb', 'B', now())`,
+            [tenantA, tenantB],
+          );
+          await db.query(
+            `INSERT INTO tenant_integrations (tenant_id, system, access, updated_at)
+             VALUES ($1, 'hubspot', 'read_only', now()), ($2, 'hubspot', 'disabled', now()), ($2, 'sugar', 'read_only', now())`,
+            [tenantA, tenantB],
+          );
+          await db.query(
+            `INSERT INTO companies (id, tenant_id, name, created_at, updated_at) VALUES ($1, $2, 'School', now(), now())`,
+            [company, tenantA],
+          );
+          await db.query(
+            `INSERT INTO company_external_refs (tenant_id, system, object_type, external_id, company_id)
+             VALUES ($1, 'hubspot', 'companies', '201', $2), ($1, 'sugar', 'Accounts', 'acc-1', $2)`,
+            [tenantA, company],
+          );
+          await db.query(
+            `INSERT INTO tenant_sync_checkpoints (tenant_id, id, system, kind, mode, status, correlation_id, completed_at)
+             VALUES ($1, $2, 'import', 'subscription', 'import_full', 'completed', gen_random_uuid(), now()),
+                    ($1, $3, 'hubspot', 'company', 'backfill', 'completed', gen_random_uuid(), now())`,
+            [tenantA, importRun, hubspotRun],
+          );
+          await db.query(
+            `INSERT INTO tenant_context_changes (tenant_id, id, entity_kind, entity_id, change_type, source_system,
+               source_object_type, source_record_id, cause, adapter, adapter_version, correlation_id)
+             VALUES ($1, gen_random_uuid(), 'company', $2, 'created', 'hubspot', 'companies', '201', 'backfill', 'hubspot', 'm6', gen_random_uuid())`,
+            [tenantA, company],
+          );
+        });
+        before = await values(url);
+        const output = await migrate(url);
+        expect(output).toMatch(/20261020120000_m8_connector_kinds_and_connections/);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('keeps every stored source-system value unchanged', async () => {
+      expect(await values(url)).toEqual(before);
+    });
+
+    it('backfills an import connection per tenant and a hubspot connection only where HubSpot is configured', async () => {
+      const { rows } = await withAdmin(url, (db) =>
+        db.query<{ tenant_id: string; kind: string; status: string; mapping_mode: string }>(
+          'SELECT tenant_id, kind, status, mapping_mode FROM tenant_source_connections ORDER BY tenant_id, kind',
+        ),
+      );
+      expect(rows).toEqual([
+        { tenant_id: tenantA, kind: 'hubspot', status: 'enabled', mapping_mode: 'code' },
+        { tenant_id: tenantA, kind: 'import', status: 'enabled', mapping_mode: 'code' },
+        { tenant_id: tenantB, kind: 'import', status: 'enabled', mapping_mode: 'code' },
+      ]);
+    });
+
+    it('links existing import runs to the import connection and leaves other history untouched', async () => {
+      const { rows } = await withAdmin(url, (db) =>
+        db.query<{ id: string; kind: string | null }>(
+          `SELECT c.id, s.kind FROM tenant_sync_checkpoints c
+             LEFT JOIN tenant_source_connections s ON s.tenant_id = c.tenant_id AND s.id = c.source_connection_id
+            ORDER BY c.id`,
+        ),
+      );
+      expect(rows).toEqual([
+        { id: importRun, kind: 'import' },
+        { id: hubspotRun, kind: null },
+      ]);
+      const changes = await withAdmin(url, (db) =>
+        db.query<{ n: number }>(
+          'SELECT count(*)::int AS n FROM tenant_context_changes WHERE source_connection_id IS NOT NULL OR mapping_version IS NOT NULL',
+        ),
+      );
+      expect(changes.rows[0]!.n).toBe(0);
+    });
+
+    it('refuses an unknown connector kind on every source-system column (foreign key)', async () => {
+      await expect(
+        withAdmin(url, (db) =>
+          db.query(
+            `INSERT INTO company_external_refs (tenant_id, system, object_type, external_id, company_id)
+             VALUES ($1, 'salesforce', 'Account', 'x', $2)`,
+            [tenantA, company],
+          ),
+        ),
+      ).rejects.toThrow(/company_external_refs_system_fkey/);
+      await expect(
+        withAdmin(url, (db) =>
+          db.query(
+            `INSERT INTO tenant_source_connections (tenant_id, id, kind, label, mapping_mode)
+             VALUES ($1, gen_random_uuid(), 'salesforce', 'SF', 'versioned')`,
+            [tenantB],
+          ),
+        ),
+      ).rejects.toThrow(/tenant_source_connections_kind_fkey/);
+    });
+
+    it('keeps `import` out of external references, relationships and dead-letter subjects', async () => {
+      await expect(
+        withAdmin(url, (db) =>
+          db.query(
+            `INSERT INTO company_external_refs (tenant_id, system, object_type, external_id, company_id)
+             VALUES ($1, 'import', 'rows', 'x', $2)`,
+            [tenantA, company],
+          ),
+        ),
+      ).rejects.toThrow(/company_external_refs_system_not_import/);
+    });
+
+    it('allows one connection per tenant and kind', async () => {
+      await expect(
+        withAdmin(url, (db) =>
+          db.query(
+            `INSERT INTO tenant_source_connections (tenant_id, id, kind, label, mapping_mode)
+             VALUES ($1, gen_random_uuid(), 'import', 'Second', 'code')`,
+            [tenantA],
+          ),
+        ),
+      ).rejects.toThrow(/tenant_source_connections_tenant_id_kind_key/);
+    });
+
+    it.each([
+      ['a top-level secret-like key', { apiToken: 'x' }],
+      ['a nested secret-like key', { oauth: { client_secret: 'x' } }],
+      ['a secret-like key inside an array', { endpoints: [{ password: 'x' }] }],
+      ['a separator-disguised key', { 'Pass-Word': 'x' }],
+    ])('refuses connection config with %s', async (_label, config) => {
+      await expect(
+        withAdmin(url, (db) =>
+          db.query(
+            `INSERT INTO tenant_source_connections (tenant_id, id, kind, label, mapping_mode, config)
+             VALUES ($1, gen_random_uuid(), 'sugar', 'Sugar', 'versioned', $2)`,
+            [tenantB, JSON.stringify(config)],
+          ),
+        ),
+      ).rejects.toThrow(/tenant_source_connections_config_no_secrets/);
+    });
+
+    it('accepts non-secret config and refuses a credential name that is not registered for the tenant and kind', async () => {
+      await withAdmin(url, async (db) => {
+        await db.query('BEGIN');
+        try {
+          await db.query(
+            `INSERT INTO tenant_source_connections (tenant_id, id, kind, label, mapping_mode, config)
+             VALUES ($1, gen_random_uuid(), 'sugar', 'Sugar', 'versioned', $2)`,
+            [
+              tenantB,
+              JSON.stringify({ instanceUrl: 'https://crm.example.test', apiVersion: 'tbc' }),
+            ],
+          );
+        } finally {
+          await db.query('ROLLBACK');
+        }
+      });
+      await expect(
+        withAdmin(url, (db) =>
+          db.query(
+            `INSERT INTO tenant_source_connections (tenant_id, id, kind, label, mapping_mode, credential_name)
+             VALUES ($1, gen_random_uuid(), 'sugar', 'Sugar', 'versioned', 'sugar_oauth')`,
+            [tenantB],
+          ),
+        ),
+      ).rejects.toThrow(/tenant_source_connections_tenant_id_kind_credential_name_fkey/);
+    });
+
+    it('the application role may read the catalogue but never change it', async () => {
+      await expect(asApp(url, 'SELECT count(*) FROM connector_kinds')).resolves.toBeUndefined();
+      for (const sql of [
+        `INSERT INTO connector_kinds (kind, display_name, has_adapter) VALUES ('salesforce', 'Salesforce', false)`,
+        `UPDATE connector_kinds SET display_name = 'X' WHERE kind = 'sugar'`,
+        `DELETE FROM connector_kinds WHERE kind = 'gainsight_px'`,
+      ]) {
+        await expect(asApp(url, sql)).rejects.toThrow(/permission denied/);
+      }
+    });
+
+    it.each([
+      [
+        'a connection the migration did not create',
+        `INSERT INTO tenant_source_connections (tenant_id, id, kind, label, mapping_mode)
+         VALUES ('${tenantB}', gen_random_uuid(), 'sugar', 'Sugar', 'versioned')`,
+        /source connections beyond the backfilled ones/,
+      ],
+      [
+        'a configured backfilled connection',
+        `UPDATE tenant_source_connections SET config = '{"note":"x"}' WHERE tenant_id = '${tenantA}' AND kind = 'hubspot'`,
+        /source connections beyond the backfilled ones/,
+      ],
+      [
+        'provenance that references a connection',
+        `UPDATE tenant_context_changes SET source_connection_id =
+           (SELECT id FROM tenant_source_connections WHERE tenant_id = '${tenantA}' AND kind = 'hubspot')`,
+        /provenance rows reference a connection/,
+      ],
+      [
+        'a run with quality data',
+        `UPDATE tenant_sync_checkpoints SET quality = '{}' WHERE id = '${importRun}'`,
+        /runs reference a connection, mapping version or quality/,
+      ],
+    ])('the down-script refuses (and changes nothing) with %s', async (_label, sql, message) => {
+      const target = await createDatabase(
+        pg,
+        `m8_conn_down_${Math.random().toString(36).slice(2, 8)}`,
+      );
+      await migrate(target);
+      await withAdmin(target, async (db) => {
+        await db.query(
+          `INSERT INTO tenants (id, slug, name, updated_at) VALUES ($1, 'msevena', 'A', now()), ($2, 'msevenb', 'B', now())`,
+          [tenantA, tenantB],
+        );
+        await db.query(
+          `INSERT INTO tenant_integrations (tenant_id, system, access, updated_at) VALUES ($1, 'hubspot', 'read_only', now())`,
+          [tenantA],
+        );
+        await db.query(
+          `INSERT INTO tenant_source_connections (tenant_id, id, kind, label, status, mapping_mode)
+           VALUES ($1, gen_random_uuid(), 'import', 'Operator import (CSV)', 'enabled', 'code'),
+                  ($2, gen_random_uuid(), 'import', 'Operator import (CSV)', 'enabled', 'code'),
+                  ($1, gen_random_uuid(), 'hubspot', 'HubSpot', 'enabled', 'code')`,
+          [tenantA, tenantB],
+        );
+        await db.query(
+          `INSERT INTO companies (id, tenant_id, name, created_at, updated_at) VALUES ($1, $2, 'School', now(), now())`,
+          [company, tenantA],
+        );
+        await db.query(
+          `INSERT INTO tenant_sync_checkpoints (tenant_id, id, system, kind, mode, status, correlation_id, completed_at, source_connection_id)
+           VALUES ($1, $2, 'import', 'subscription', 'import_full', 'completed', gen_random_uuid(), now(),
+                   (SELECT id FROM tenant_source_connections WHERE tenant_id = $1 AND kind = 'import'))`,
+          [tenantA, importRun],
+        );
+        await db.query(
+          `INSERT INTO tenant_context_changes (tenant_id, id, entity_kind, entity_id, change_type, source_system,
+             source_object_type, source_record_id, cause, adapter, adapter_version, correlation_id)
+           VALUES ($1, gen_random_uuid(), 'company', $2, 'created', 'hubspot', 'companies', '201', 'backfill', 'hubspot', 'm6', gen_random_uuid())`,
+          [tenantA, company],
+        );
+        await db.query(sql);
+      });
+      const snapshot = await schemaSnapshot(target);
+      const down = readFileSync(
+        resolve('prisma/rollback/20261020120000_m8_connector_kinds_and_connections.down.sql'),
+        'utf8',
+      );
+      await expect(withAdmin(target, (db) => db.query(down))).rejects.toThrow(message);
+      expect(await schemaSnapshot(target)).toEqual(snapshot);
+    });
+
+    it('the down-script succeeds on backfilled-only data and restores the M7 CHECK lists', async () => {
+      const target = await createDatabase(pg, 'm8_conn_down_ok');
+      await migrate(target);
+      await withAdmin(target, async (db) => {
+        await db.query(
+          `INSERT INTO tenants (id, slug, name, updated_at) VALUES ($1, 'msevena', 'A', now())`,
+          [tenantA],
+        );
+        await db.query(
+          `INSERT INTO tenant_source_connections (tenant_id, id, kind, label, status, mapping_mode)
+           VALUES ($1, gen_random_uuid(), 'import', 'Operator import (CSV)', 'enabled', 'code')`,
+          [tenantA],
+        );
+        // Later M8 down-scripts first (newest first), then this one.
+        for (const file of M8_DOWNS) {
+          await db.query(readFileSync(file, 'utf8'));
+          if (file.includes('20261020120000_m8_connector_kinds_and_connections')) break;
+        }
+      });
+      const { rows } = await withAdmin(target, (db) =>
+        db.query<{ def: string }>(
+          `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'company_external_refs_system_valid'`,
+        ),
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.def).toMatch(/hubspot.*sugar.*gainsight_cs.*gainsight_px/);
     });
   });
 

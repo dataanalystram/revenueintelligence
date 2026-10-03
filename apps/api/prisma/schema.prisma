@@ -53,9 +53,31 @@ model Tenant {
   productModels        TenantProductModel[]
   subscriptions        TenantSubscription[]
   eligibilitySnapshots TenantEligibilitySnapshot[]
+  sourceConnections    TenantSourceConnection[]
 
   @@unique([id, slug])
   @@map("tenants")
+}
+
+/// Connector-kind catalogue (ADR 0019): platform reference data mirrored from
+/// `domain/connector-kinds.ts`, seeded by migration, read-only to the app role.
+/// Every source-system column references it; there is no tenant_id.
+model ConnectorKind {
+  kind        String  @id
+  displayName String  @map("display_name")
+  /// A source adapter module ships for this kind in this release
+  hasAdapter  Boolean @map("has_adapter")
+
+  companyExternalRefs CompanyExternalRef[]
+  personExternalRefs  PersonExternalRef[]
+  contextChanges      TenantContextChange[]
+  sourceRelationships TenantSourceRelationship[]
+  deadLetters         TenantDeadLetter[]
+  syncCheckpoints     TenantSyncCheckpoint[]
+  subscriptions       TenantSubscription[]
+  sourceConnections   TenantSourceConnection[]
+
+  @@map("connector_kinds")
 }
 
 // ---------------------------------------------------------------------------
@@ -104,7 +126,8 @@ model TenantCredentialRef {
   createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  tenant Tenant @relation(fields: [tenantId, tenantSlug], references: [id, slug], onDelete: Restrict, onUpdate: Restrict)
+  tenant            Tenant                   @relation(fields: [tenantId, tenantSlug], references: [id, slug], onDelete: Restrict, onUpdate: Restrict)
+  sourceConnections TenantSourceConnection[]
 
   @@id([tenantId, system, name])
   @@map("tenant_credential_refs")
@@ -292,6 +315,7 @@ model TenantSubscription {
   tenant  Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   company Company       @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
   product TenantProduct @relation(fields: [tenantId, productKey], references: [tenantId, key], onDelete: Restrict, onUpdate: Restrict)
+  source  ConnectorKind @relation(fields: [sourceSystem], references: [kind], onDelete: Restrict, onUpdate: Restrict)
 
   @@id([tenantId, id])
   @@unique([tenantId, sourceSystem, sourceObjectType, sourceRecordId])
@@ -385,7 +409,8 @@ model CompanyExternalRef {
   fieldHash            String?   @map("field_hash")
   lastChangeId         String?   @map("last_change_id") @db.Uuid
 
-  company Company @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Cascade, onUpdate: Restrict)
+  company   Company       @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Cascade, onUpdate: Restrict)
+  connector ConnectorKind @relation(fields: [system], references: [kind], onDelete: Restrict, onUpdate: Restrict)
 
   @@id([tenantId, system, objectType, externalId])
   @@index([tenantId, companyId])
@@ -437,7 +462,8 @@ model PersonExternalRef {
   fieldHash            String?   @map("field_hash")
   lastChangeId         String?   @map("last_change_id") @db.Uuid
 
-  person Person @relation(fields: [tenantId, personId], references: [tenantId, id], onDelete: Cascade, onUpdate: Restrict)
+  person    Person        @relation(fields: [tenantId, personId], references: [tenantId, id], onDelete: Cascade, onUpdate: Restrict)
+  connector ConnectorKind @relation(fields: [system], references: [kind], onDelete: Restrict, onUpdate: Restrict)
 
   @@id([tenantId, system, objectType, externalId])
   @@index([tenantId, personId])
@@ -471,8 +497,14 @@ model TenantContextChange {
   adapter            String
   adapterVersion     String    @map("adapter_version")
   correlationId      String    @map("correlation_id") @db.Uuid
+  /// M8: the tenant source connection that produced the change (NULL before M8)
+  sourceConnectionId String?   @map("source_connection_id") @db.Uuid
+  /// M8: the mapping version that produced the change (versioned connections only)
+  mappingVersion     Int?      @map("mapping_version")
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  tenant     Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  source     ConnectorKind           @relation(fields: [sourceSystem], references: [kind], onDelete: Restrict, onUpdate: Restrict)
+  connection TenantSourceConnection? @relation(fields: [tenantId, sourceConnectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
 
   @@id([tenantId, id])
   @@index([tenantId, entityKind, entityId, ingestedAt])
@@ -496,7 +528,8 @@ model TenantSourceRelationship {
   sourceObservedAt  DateTime? @map("source_observed_at") @db.Timestamptz(3)
   lastSeenAt        DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(3)
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  tenant    Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  connector ConnectorKind @relation(fields: [system], references: [kind], onDelete: Restrict, onUpdate: Restrict)
 
   @@id([tenantId, system, fromObjectType, fromExternalId, toObjectType, toExternalId, associationTypeId])
   @@index([tenantId, system, toObjectType, toExternalId])
@@ -553,7 +586,8 @@ model TenantDeadLetter {
   /// operator reason code (replay | discarded_<code>)
   resolution         String?
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  subjectSource ConnectorKind? @relation(fields: [subjectSystem], references: [kind], onDelete: Restrict, onUpdate: Restrict)
 
   @@id([tenantId, id])
   @@unique([tenantId, jobId])
@@ -563,39 +597,47 @@ model TenantDeadLetter {
 
 /// Progress of a backfill or reconciliation run; the cursor lives here, not in Redis.
 model TenantSyncCheckpoint {
-  tenantId       String    @map("tenant_id") @db.Uuid
-  id             String    @db.Uuid
-  system         String
+  tenantId           String    @map("tenant_id") @db.Uuid
+  id                 String    @db.Uuid
+  system             String
   /// company | person | subscription
-  kind           String
+  kind               String
   /// backfill | reconcile | import_full | import_incremental
-  mode           String
+  mode               String
   /// running | completed | failed | cancelled
-  status         String    @default("running")
+  status             String    @default("running")
   /// system:kind:mode while running, NULL afterwards: one active run per kind and mode
-  activeKey      String?   @map("active_key")
+  activeKey          String?   @map("active_key")
   /// Opaque source paging cursor for the next page
-  cursor         String?
+  cursor             String?
   /// Reconcile: inclusive lower bound of the current search window (source time)
-  windowSince    DateTime? @map("window_since") @db.Timestamptz(3)
+  windowSince        DateTime? @map("window_since") @db.Timestamptz(3)
   /// Highest source modification time fully processed
-  highWatermark  DateTime? @map("high_watermark") @db.Timestamptz(3)
-  pageNo         Int       @default(0) @map("page_no")
-  recordsSeen    Int       @default(0) @map("records_seen")
-  recordsChanged Int       @default(0) @map("records_changed")
-  recordsSkipped Int       @default(0) @map("records_skipped")
-  recordsFailed  Int       @default(0) @map("records_failed")
-  maxRecords     Int?      @map("max_records")
-  pageSize       Int       @default(100) @map("page_size")
-  correlationId  String    @map("correlation_id") @db.Uuid
-  startedAt      DateTime  @default(now()) @map("started_at") @db.Timestamptz(3)
-  updatedAt      DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
-  completedAt    DateTime? @map("completed_at") @db.Timestamptz(3)
-  lastErrorCode  String?   @map("last_error_code")
+  highWatermark      DateTime? @map("high_watermark") @db.Timestamptz(3)
+  pageNo             Int       @default(0) @map("page_no")
+  recordsSeen        Int       @default(0) @map("records_seen")
+  recordsChanged     Int       @default(0) @map("records_changed")
+  recordsSkipped     Int       @default(0) @map("records_skipped")
+  recordsFailed      Int       @default(0) @map("records_failed")
+  maxRecords         Int?      @map("max_records")
+  pageSize           Int       @default(100) @map("page_size")
+  correlationId      String    @map("correlation_id") @db.Uuid
+  startedAt          DateTime  @default(now()) @map("started_at") @db.Timestamptz(3)
+  updatedAt          DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+  completedAt        DateTime? @map("completed_at") @db.Timestamptz(3)
+  lastErrorCode      String?   @map("last_error_code")
   /// Import runs: SHA-256 of the input file
-  inputHash      String?   @map("input_hash")
+  inputHash          String?   @map("input_hash")
+  /// M8: the tenant source connection the run read (NULL for pre-M8 non-import runs)
+  sourceConnectionId String?   @map("source_connection_id") @db.Uuid
+  /// M8: the mapping version the run applied (versioned connections only)
+  mappingVersion     Int?      @map("mapping_version")
+  /// M8: run quality counters and codes (counts and codes only, never values)
+  quality            Json?
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  tenant     Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  connector  ConnectorKind           @relation(fields: [system], references: [kind], onDelete: Restrict, onUpdate: Restrict)
+  connection TenantSourceConnection? @relation(fields: [tenantId, sourceConnectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
 
   @@id([tenantId, id])
   @@unique([tenantId, activeKey])
@@ -638,4 +680,40 @@ model TenantEligibilitySnapshot {
   @@index([tenantId, evaluatedCompanyId, productKey, evaluatedAt])
   @@index([tenantId, requestedCompanyId])
   @@map("tenant_eligibility_snapshots")
+}
+
+// ---------------------------------------------------------------------------
+// Source connectors (Milestone 8, ADR 0019 / 0020)
+// ---------------------------------------------------------------------------
+
+/// One configured source per tenant and connector kind (M8). Non-secret
+/// configuration only; credentials are names resolved through SecretProvider.
+model TenantSourceConnection {
+  tenantId       String    @map("tenant_id") @db.Uuid
+  id             String    @db.Uuid
+  kind           String
+  label          String
+  /// enabled | disabled
+  status         String    @default("disabled")
+  /// versioned (mapping versions) | code (adapter code: hubspot, import)
+  mappingMode    String    @map("mapping_mode")
+  /// Adapter-validated non-secret configuration (a CHECK refuses secret-like keys)
+  config         Json      @default("{}")
+  /// Logical credential name in tenant_credential_refs (kind, name); never a value
+  credentialName String?   @map("credential_name")
+  /// Outcome code of the last testConnection (no payload)
+  lastTestCode   String?   @map("last_test_code")
+  lastTestedAt   DateTime? @map("last_tested_at") @db.Timestamptz(3)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  tenant          Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  connector       ConnectorKind          @relation(fields: [kind], references: [kind], onDelete: Restrict, onUpdate: Restrict)
+  credential      TenantCredentialRef?   @relation(fields: [tenantId, kind, credentialName], references: [tenantId, system, name], onDelete: Restrict, onUpdate: Restrict)
+  contextChanges  TenantContextChange[]
+  syncCheckpoints TenantSyncCheckpoint[]
+
+  @@id([tenantId, id])
+  @@unique([tenantId, kind])
+  @@map("tenant_source_connections")
 }

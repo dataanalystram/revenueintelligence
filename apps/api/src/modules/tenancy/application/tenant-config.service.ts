@@ -122,7 +122,12 @@ export class TenantConfigService {
             problems,
           );
         }
-        return this.repo.saveIntegration(tx, s, access, settings as never);
+        const saved = await this.repo.saveIntegration(tx, s, access, settings as never);
+        // An enabled HubSpot integration is a code-mapped source connection (ADR 0019).
+        if (s === 'hubspot' && access !== 'disabled') {
+          await this.repo.ensureCodeConnection(tx, 'hubspot');
+        }
+        return saved;
       },
       CONFIG_CHANGE_TX,
     );

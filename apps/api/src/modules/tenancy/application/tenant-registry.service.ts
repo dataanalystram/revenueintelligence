@@ -77,6 +77,8 @@ export class TenantRegistryService {
         for (const flow of FlowSchema.options) {
           await this.config.saveFlow(tx, flow, 'off');
         }
+        // Every tenant can import subscriptions from an operator file (M7/M8).
+        await this.config.ensureCodeConnection(tx, 'import');
         await this.config.createQualificationConfig(
           tx,
           template?.qualification

@@ -53,6 +53,16 @@ describe('tenant provisioning and configuration rules', () => {
       });
       await expect(h.config.getPolicy(t, 'sla')).resolves.toBeUndefined();
       await expect(h.credentials.list(t)).resolves.toEqual([]);
+      // M8: every tenant can import subscriptions: its `import` connection exists.
+      const connections = await withAdmin(infra.adminUrl, (db) =>
+        db.query<{ kind: string; status: string; mapping_mode: string }>(
+          'SELECT kind, status, mapping_mode FROM tenant_source_connections WHERE tenant_id = $1',
+          [t.tenantId],
+        ),
+      );
+      expect(connections.rows).toEqual([
+        { kind: 'import', status: 'enabled', mapping_mode: 'code' },
+      ]);
     });
 
     it('applies the Juniper template (values from the brief only)', async () => {
@@ -143,6 +153,16 @@ describe('tenant provisioning and configuration rules', () => {
         settings: { portalId: '123456' },
       });
       await h.config.configureIntegration(t, 'sugar', { access: 'read_only' });
+      // Enabling HubSpot registers its code-mapped source connection once; Sugar
+      // needs an explicit, configured connection (never created implicitly).
+      await h.config.configureIntegration(t, 'hubspot', { access: 'read_only' });
+      const connections = await withAdmin(infra.adminUrl, (db) =>
+        db.query<{ kind: string }>(
+          'SELECT kind FROM tenant_source_connections WHERE tenant_id = $1 ORDER BY kind',
+          [t.tenantId],
+        ),
+      );
+      expect(connections.rows.map((r) => r.kind)).toEqual(['hubspot', 'import']);
       await expect(
         h.config.setFlowMode(t, 'hubspot_to_sugar_handover', 'coexist'),
       ).resolves.toMatchObject({

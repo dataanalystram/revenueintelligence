@@ -8,6 +8,7 @@
 export * from './attribution';
 export * from './company';
 export * from './connector-error';
+export * from './connector-kinds';
 export * from './crm-reader';
 export * from './email';
 export * from './external-ref';

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { APP_CONFIG, type AppConfig } from '../../../platform/config';
 import {
@@ -37,6 +38,9 @@ import { QualificationConfigInputSchema, type QualificationConfig } from '../con
 import { ConcurrencyConflictError, RecordNotFoundError } from '../errors';
 import { translateDatabaseError } from './prisma-errors';
 import { tenantClient, type TenantTransaction } from './tenant-database';
+
+/** Labels of the connections the platform creates itself (match the M8 backfill). */
+const CODE_CONNECTION_LABELS = { import: 'Operator import (CSV)', hubspot: 'HubSpot' } as const;
 
 /** Stored rows are re-validated on read, so bad data can never enter the application. */
 @Injectable()
@@ -103,6 +107,31 @@ export class PrismaTenantConfigRepository {
       }),
     );
     return toIntegration(row) as IntegrationConfig<S>;
+  }
+
+  // --- Source connections (M8, ADR 0019) -------------------------------------
+
+  /**
+   * Ensures the tenant's code-mapped source connection of `kind` exists
+   * (`import` at provisioning, `hubspot` once the integration is enabled).
+   * Idempotent: an existing connection is left exactly as it is.
+   */
+  async ensureCodeConnection(tx: TenantTransaction, kind: 'import' | 'hubspot'): Promise<void> {
+    await guard('source connection', () =>
+      tenantClient(tx).tenantSourceConnection.createMany({
+        data: [
+          {
+            tenantId: tx.tenantId,
+            id: randomUUID(),
+            kind,
+            label: CODE_CONNECTION_LABELS[kind],
+            status: 'enabled',
+            mappingMode: 'code',
+          },
+        ],
+        skipDuplicates: true,
+      }),
+    );
   }
 
   // --- Flows ----------------------------------------------------------------

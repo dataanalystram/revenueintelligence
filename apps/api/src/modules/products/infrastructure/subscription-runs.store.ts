@@ -57,6 +57,11 @@ export class SubscriptionRunsStore {
     const existing = await this.running(tx);
     if (existing) throw new ImportAlreadyRunningError(existing.id);
     const id = randomUUID();
+    // Every tenant has an `import` connection (provisioning and the M8 backfill).
+    const connection = await tenantClient(tx).tenantSourceConnection.findUnique({
+      where: { tenantId_kind: { tenantId: tx.tenantId, kind: 'import' } },
+      select: { id: true },
+    });
     try {
       await tenantClient(tx).tenantSyncCheckpoint.create({
         data: {
@@ -69,6 +74,7 @@ export class SubscriptionRunsStore {
           activeKey: IMPORT_ACTIVE_KEY,
           correlationId: input.correlationId,
           inputHash: input.inputHash,
+          sourceConnectionId: connection?.id ?? null,
         },
       });
     } catch (error) {

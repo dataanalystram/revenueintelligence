@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ExternalSystemSchema } from './external-ref';
+import { ConnectorKindSchema } from './connector-kinds';
 import { ProductKeySchema } from './product';
 import { type CompanyIdSchema } from './shared/ids';
 import { InstantSchema } from './shared/time';
@@ -26,7 +26,7 @@ export type OwnableState = z.infer<typeof OwnableStateSchema>;
  * Where a subscription line comes from. `import` is an operator-supplied file
  * (M7 CSV import, legacy migration); connectors use their `ExternalSystem`.
  */
-export const SubscriptionSourceSystemSchema = z.union([ExternalSystemSchema, z.literal('import')]);
+export const SubscriptionSourceSystemSchema = ConnectorKindSchema;
 export type SubscriptionSourceSystem = z.infer<typeof SubscriptionSourceSystemSchema>;
 
 export const SubscriptionSourceSchema = z
