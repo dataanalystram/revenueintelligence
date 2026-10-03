@@ -1,0 +1,2 @@
+id,name,account_id,amount,sales_stage,date_closed,date_entered,date_modified,deleted
+FIX-OPP-011,Orphan Opp,FIX-ACC-DOES-NOT-EXIST,1000.00,Closed Won,2025-05-01,2025-04-01,2025-05-01,False
