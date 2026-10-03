@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { SubscriptionMergeParticipant } from './application/subscription-merge.participant';
+import { OwnershipGapStore } from './infrastructure/ownership-gap.store';
 import { SubscriptionStore } from './infrastructure/subscription.store';
 
 /**
@@ -9,7 +10,7 @@ import { SubscriptionStore } from './infrastructure/subscription.store';
  * the context module needs nothing else from products.
  */
 @Module({
-  providers: [SubscriptionStore, SubscriptionMergeParticipant],
+  providers: [SubscriptionStore, OwnershipGapStore, SubscriptionMergeParticipant],
   exports: [SubscriptionMergeParticipant],
 })
 export class SubscriptionMergeModule {}

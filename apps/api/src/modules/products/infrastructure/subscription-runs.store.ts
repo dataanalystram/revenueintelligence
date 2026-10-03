@@ -41,6 +41,17 @@ export class ImportAlreadyRunningError extends Error {
   }
 }
 
+export type TenantCoverage =
+  | {
+      readonly known: true;
+      readonly knownAsOf: Date;
+      /** The connection whose run established coverage (ownership gaps are scoped to it). */
+      readonly connectionId: string;
+      /** Versioned sources: only this system's lines are ownership facts (no cross-source lines). */
+      readonly sourceSystem?: string;
+    }
+  | { readonly known: false; readonly reason: 'authority_unassigned' | 'no_complete_run' };
+
 @Injectable()
 export class SubscriptionRunsStore {
   async running(tx: TenantTransaction): Promise<SubscriptionRun | undefined> {
@@ -58,10 +69,7 @@ export class SubscriptionRunsStore {
     if (existing) throw new ImportAlreadyRunningError(existing.id);
     const id = randomUUID();
     // Every tenant has an `import` connection (provisioning and the M8 backfill).
-    const connection = await tenantClient(tx).tenantSourceConnection.findUnique({
-      where: { tenantId_kind: { tenantId: tx.tenantId, kind: 'import' } },
-      select: { id: true },
-    });
+    const connectionId = await this.importConnectionId(tx);
     try {
       await tenantClient(tx).tenantSyncCheckpoint.create({
         data: {
@@ -74,7 +82,7 @@ export class SubscriptionRunsStore {
           activeKey: IMPORT_ACTIVE_KEY,
           correlationId: input.correlationId,
           inputHash: input.inputHash,
-          sourceConnectionId: connection?.id ?? null,
+          sourceConnectionId: connectionId ?? null,
         },
       });
     } catch (error) {
@@ -118,19 +126,104 @@ export class SubscriptionRunsStore {
     });
   }
 
-  /** When ownership facts became complete for the tenant, if ever. */
-  async coverageKnownAsOf(tx: TenantTransaction): Promise<Date | undefined> {
-    const row = await tenantClient(tx).tenantSyncCheckpoint.findFirst({
+  /**
+   * Tenant ownership coverage (ADR 0020 §12). Known only from the connection
+   * authoritative for `subscription_lines`:
+   * - the `import` connection: its latest completed full import (M7 rule);
+   * - a versioned connection: its latest completed full source run under the
+   *   connection's latest mapping version, started after that connection
+   *   became the authority. A run only completes when its full-read proof
+   *   passed, so failed, partial or unstable runs never count.
+   * Unassigned authority: unknown.
+   */
+  async coverage(tx: TenantTransaction): Promise<TenantCoverage> {
+    const db = tenantClient(tx);
+    const authority = await db.tenantSourceAuthorityVersion.findFirst({
+      where: { tenantId: tx.tenantId },
+      orderBy: { version: 'desc' },
+    });
+    const linesConnectionId = authority?.subscriptionLinesConnectionId ?? null;
+    if (!authority || !linesConnectionId) return { known: false, reason: 'authority_unassigned' };
+    const connection = await db.tenantSourceConnection.findUnique({
+      where: { tenantId_id: { tenantId: tx.tenantId, id: linesConnectionId } },
+      select: { id: true, kind: true },
+    });
+    if (!connection) return { known: false, reason: 'authority_unassigned' };
+    if (connection.kind === 'import') {
+      const row = await db.tenantSyncCheckpoint.findFirst({
+        where: {
+          tenantId: tx.tenantId,
+          system: 'import',
+          kind: 'subscription',
+          status: 'completed',
+          mode: 'import_full',
+        },
+        orderBy: { completedAt: 'desc' },
+        select: { completedAt: true },
+      });
+      return row?.completedAt
+        ? { known: true, knownAsOf: row.completedAt, connectionId: connection.id }
+        : { known: false, reason: 'no_complete_run' };
+    }
+    // The current authority streak: since the last version that named someone else.
+    const before = await db.tenantSourceAuthorityVersion.findFirst({
       where: {
         tenantId: tx.tenantId,
+        OR: [
+          { subscriptionLinesConnectionId: null },
+          { subscriptionLinesConnectionId: { not: connection.id } },
+        ],
+      },
+      orderBy: { version: 'desc' },
+      select: { version: true },
+    });
+    const since = await db.tenantSourceAuthorityVersion.findFirst({
+      where: { tenantId: tx.tenantId, version: { gt: before?.version ?? 0 } },
+      orderBy: { version: 'asc' },
+      select: { publishedAt: true },
+    });
+    const mapping = await db.tenantSourceMappingVersion.findFirst({
+      where: { tenantId: tx.tenantId, connectionId: connection.id },
+      orderBy: { version: 'desc' },
+      select: { version: true },
+    });
+    if (!mapping || !since) return { known: false, reason: 'no_complete_run' };
+    const row = await db.tenantSyncCheckpoint.findFirst({
+      where: {
+        tenantId: tx.tenantId,
+        sourceConnectionId: connection.id,
         kind: 'subscription',
+        mode: 'backfill',
         status: 'completed',
-        mode: { in: ['import_full', 'backfill'] },
+        mappingVersion: mapping.version,
+        startedAt: { gte: since.publishedAt },
       },
       orderBy: { completedAt: 'desc' },
       select: { completedAt: true },
     });
-    return row?.completedAt ?? undefined;
+    return row?.completedAt
+      ? {
+          known: true,
+          knownAsOf: row.completedAt,
+          connectionId: connection.id,
+          sourceSystem: connection.kind,
+        }
+      : { known: false, reason: 'no_complete_run' };
+  }
+
+  /** When ownership facts became complete for the tenant, if ever. */
+  async coverageKnownAsOf(tx: TenantTransaction): Promise<Date | undefined> {
+    const coverage = await this.coverage(tx);
+    return coverage.known ? coverage.knownAsOf : undefined;
+  }
+
+  /** The tenant's `import` connection (M7 runs and provenance record it). */
+  async importConnectionId(tx: TenantTransaction): Promise<string | undefined> {
+    const row = await tenantClient(tx).tenantSourceConnection.findUnique({
+      where: { tenantId_kind: { tenantId: tx.tenantId, kind: 'import' } },
+      select: { id: true },
+    });
+    return row?.id;
   }
 
   async list(tx: TenantTransaction, limit = 20): Promise<SubscriptionRun[]> {

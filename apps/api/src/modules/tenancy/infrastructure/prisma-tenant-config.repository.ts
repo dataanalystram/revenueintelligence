@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { APP_CONFIG, type AppConfig } from '../../../platform/config';
+import { authorityContentHash } from '../../domain';
 import {
   CredentialNameSchema,
   type CredentialName,
@@ -130,6 +131,43 @@ export class PrismaTenantConfigRepository {
           },
         ],
         skipDuplicates: true,
+      }),
+    );
+  }
+
+  /**
+   * Seeds authority version 1 at provisioning (ADR 0020 §8): subscription
+   * facts to the tenant's `import` connection (the M7 default), profiles
+   * unassigned. Later changes are publications with a base version.
+   */
+  async seedDefaultAuthority(tx: TenantTransaction): Promise<void> {
+    const client = tenantClient(tx);
+    const imported = await client.tenantSourceConnection.findUnique({
+      where: { tenantId_kind: { tenantId: tx.tenantId, kind: 'import' } },
+      select: { id: true },
+    });
+    if (!imported) throw new RecordNotFoundError('source connection', 'import');
+    const doc = {
+      facts: {
+        account_profile: null,
+        person_profile: null,
+        subscription_lines: imported.id,
+        subscription_state: imported.id,
+        subscription_terms: imported.id,
+      },
+    };
+    await guard('source authority', () =>
+      client.tenantSourceAuthorityVersion.create({
+        data: {
+          tenantId: tx.tenantId,
+          version: 1,
+          baseVersion: 0,
+          subscriptionLinesConnectionId: imported.id,
+          subscriptionStateConnectionId: imported.id,
+          subscriptionTermsConnectionId: imported.id,
+          contentHash: authorityContentHash(doc),
+          publishedBy: 'provisioning',
+        },
       }),
     );
   }

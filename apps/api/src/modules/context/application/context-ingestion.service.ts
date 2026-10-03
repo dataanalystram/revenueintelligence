@@ -29,6 +29,9 @@ export interface IngestMeta {
   readonly correlationId: string;
   readonly receiptDeliveryKey?: string;
   readonly checkpointId?: string;
+  /** M8 versioned sources: the producing adapter version and mapping version. */
+  readonly adapterVersion?: string;
+  readonly mappingVersion?: number;
 }
 
 export interface IngestResult {
@@ -123,6 +126,7 @@ export class ContextIngestionService {
     | 'adapter'
     | 'adapterVersion'
     | 'correlationId'
+    | 'mappingVersion'
   > {
     return {
       source,
@@ -131,8 +135,9 @@ export class ContextIngestionService {
       ...(meta.checkpointId ? { checkpointId: meta.checkpointId } : {}),
       ...(sourceUpdatedAt ? { sourceUpdatedAt } : {}),
       adapter: source.system,
-      adapterVersion: CONTEXT_ADAPTER_VERSION,
+      adapterVersion: meta.adapterVersion ?? CONTEXT_ADAPTER_VERSION,
       correlationId: meta.correlationId,
+      ...(meta.mappingVersion !== undefined ? { mappingVersion: meta.mappingVersion } : {}),
     };
   }
 

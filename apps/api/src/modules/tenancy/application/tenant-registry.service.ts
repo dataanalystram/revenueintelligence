@@ -79,6 +79,7 @@ export class TenantRegistryService {
         }
         // Every tenant can import subscriptions from an operator file (M7/M8).
         await this.config.ensureCodeConnection(tx, 'import');
+        await this.config.seedDefaultAuthority(tx);
         await this.config.createQualificationConfig(
           tx,
           template?.qualification

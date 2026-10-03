@@ -211,6 +211,8 @@ export class FakeSugar {
   countEndpoint: boolean;
   passwordGrants = 0;
   refreshGrants = 0;
+  /** Called once per request with the method and path (never tokens, bodies or values). */
+  onRequest: ((method: string, path: string) => void) | undefined;
   /** Called after each list page is served (e.g. modify a record mid-read). */
   afterListPage: ((module: string, offset: number) => void) | undefined;
   /** Fields omitted from list responses (drift mid-run). */
@@ -318,6 +320,7 @@ export class FakeSugar {
       token: typeof token === 'string' ? token : undefined,
     };
     this.requests.push(entry);
+    this.onRequest?.(method, path);
 
     const fault = this.faults.find(
       (f) => (f.times ?? 1) > 0 && f.match.test(`${method} ${path}`) && (!f.when || f.when(entry)),
@@ -471,6 +474,8 @@ if (process.argv[1]?.endsWith('fake-sugar.ts')) {
     ...(arg('generated') ? { generatedLines: Number(arg('generated')) } : {}),
     ...(process.argv.includes('--unmodelled') ? { includeUnmodelledProduct: true } : {}),
   });
+  // Methods and paths only: proves read-only behaviour in runtime checks.
+  fake.onRequest = (method, path) => process.stdout.write(`request ${method} ${path}\n`);
   void fake.start(Number(arg('port') ?? 0)).then(() => {
     process.stdout.write(`fake Sugar listening on ${fake.url}\n`);
   });

@@ -158,6 +158,26 @@ describe('eligibility checks (ADR 0018)', () => {
     expect(r.ownership).toBe('unknown');
   });
 
+  it('an account with an ownership gap is unknown with ownership_incomplete (M8), distinct from not loaded', () => {
+    const r = evaluate('analytics', { coverage: 'unknown', reason: 'ownership_incomplete' });
+    expect(r.status).toBe('unknown');
+    expect(r.ownership).toBe('unknown');
+    expect(check(r, 'ownership_coverage')[0]).toMatchObject({
+      outcome: 'unknown',
+      reason: 'ownership_incomplete',
+    });
+    // Never a not-owned inference for any product of the account.
+    for (const own of deriveOwnership(
+      model,
+      { coverage: 'unknown', reason: 'ownership_incomplete' },
+      AS_OF,
+    ).values()) {
+      expect(own).toMatchObject({ status: 'unknown', reason: 'ownership_incomplete' });
+    }
+    // The reason is part of the frozen facts (a gap and "not loaded" never hash alike).
+    expect(r.factsHash).not.toBe(evaluate('analytics', { coverage: 'unknown' }).factsHash);
+  });
+
   it('is eligible when every check passes, and explains each one', () => {
     const r = evaluate('analytics', known(line('core')));
     expect(r.status).toBe('eligible');
@@ -174,7 +194,7 @@ describe('eligibility checks (ADR 0018)', () => {
       ruleId: 'analytics-needs-core',
       outcome: 'pass',
     });
-    expect(r).toMatchObject({ modelVersion: 1, evaluatorVersion: 1 });
+    expect(r).toMatchObject({ modelVersion: 1, evaluatorVersion: 2 });
     expect(r.modelHash).toMatch(/^[0-9a-f]{64}$/);
     expect(r.factsHash).toMatch(/^[0-9a-f]{64}$/);
   });
@@ -439,6 +459,17 @@ describe('whitespace (ADR 0018 §4)', () => {
     expect(keys('unknown')).toEqual(['reporting']);
     const total = Object.values(ws.categories).reduce((n, list) => n + list.length, 0);
     expect(total).toBe(model.products.size);
+  });
+
+  it('an account with an ownership gap has no eligible whitespace and nothing owned', () => {
+    const ws = classifyWhitespace({
+      model,
+      account: { companyId: COMPANY, customerStatus: 'customer' },
+      ownership: { coverage: 'unknown', reason: 'ownership_incomplete' },
+      asOf: AS_OF,
+    });
+    expect(ws.categories.eligible_whitespace).toEqual([]);
+    expect(ws.categories.owned).toEqual([]);
   });
 
   it('with unknown coverage nothing is eligible whitespace', () => {

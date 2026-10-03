@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 /**
@@ -54,4 +55,14 @@ export function isAuthoritative(
 /** Facts a connection holds (sorted, for stable output). */
 export function factsHeldBy(doc: AuthorityDocument, connectionId: string): AuthorityFact[] {
   return AUTHORITY_FACTS.filter((f) => doc.facts[f] === connectionId);
+}
+
+/**
+ * Content hash of an authority version: the five connection ids (or `-`)
+ * joined by `|` in fact order (also computed by the M8 migration's seed).
+ */
+export function authorityContentHash(doc: AuthorityDocument): string {
+  return createHash('sha256')
+    .update(AUTHORITY_FACTS.map((f) => doc.facts[f] ?? '-').join('|'))
+    .digest('hex');
 }

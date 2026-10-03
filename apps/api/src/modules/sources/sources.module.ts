@@ -1,0 +1,58 @@
+import { Module, type DynamicModule } from '@nestjs/common';
+import type { SourceAdapterFactory } from '../domain';
+import { ProductsModule } from '../products';
+import { TenancyModule } from '../tenancy';
+import { MappingPreviewService } from './application/mapping-preview.service';
+import { SchemaSnapshotsService } from './application/schema-snapshots.service';
+import { SourceAuthorityService } from './application/source-authority.service';
+import { SourceConnectionsService } from './application/source-connections.service';
+import { SourceMappingsService } from './application/source-mappings.service';
+import { SourceReportService } from './application/source-report.service';
+import { SourceSyncProcessor } from './application/source-sync.processor';
+import { SourceSyncService } from './application/source-sync.service';
+import { SourcesRepository } from './infrastructure/sources.repository';
+import { SOURCE_ADAPTERS, SourceAdapterRegistry } from './source-adapters';
+
+export interface SourcesModuleOptions {
+  /**
+   * The composition's ContextModule registration (the same object it imports),
+   * so source runs reach the single canonical context writer.
+   */
+  readonly context: DynamicModule;
+  /** Adapter factories (composition root; e.g. `sugarAdapterFactory()`). */
+  readonly adapters: readonly SourceAdapterFactory[];
+  /** Register the `source.sync` processor (worker only). */
+  readonly processors: boolean;
+}
+
+/**
+ * Generic source connectors (M8, ADRs 0019–0021): connections, schema
+ * snapshots, versioned mappings, authority, preview, synchronisation and
+ * reporting. Vendor-neutral: adapters are injected by the composition root.
+ */
+@Module({})
+export class SourcesModule {
+  static register(options: SourcesModuleOptions): DynamicModule {
+    const services = [
+      SourceConnectionsService,
+      SchemaSnapshotsService,
+      SourceMappingsService,
+      SourceAuthorityService,
+      MappingPreviewService,
+      SourceSyncService,
+      SourceReportService,
+    ];
+    return {
+      module: SourcesModule,
+      imports: [TenancyModule, ProductsModule, options.context],
+      providers: [
+        { provide: SOURCE_ADAPTERS, useValue: options.adapters },
+        SourceAdapterRegistry,
+        SourcesRepository,
+        ...services,
+        ...(options.processors ? [SourceSyncProcessor] : []),
+      ],
+      exports: [SourceAdapterRegistry, ...services],
+    };
+  }
+}

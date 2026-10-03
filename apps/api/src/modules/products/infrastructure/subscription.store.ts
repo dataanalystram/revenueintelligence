@@ -35,6 +35,8 @@ export interface SubscriptionChange {
   readonly sourceUpdatedAt?: Date;
   readonly adapter: string;
   readonly adapterVersion: string;
+  readonly sourceConnectionId?: string;
+  readonly mappingVersion?: number;
   readonly correlationId: string;
 }
 
@@ -143,6 +145,16 @@ export class SubscriptionStore {
         adapter: change.adapter,
         adapterVersion: change.adapterVersion,
         correlationId: change.correlationId,
+        sourceConnectionId:
+          change.sourceConnectionId ??
+          (
+            await tenantClient(tx).tenantSourceConnection.findUnique({
+              where: { tenantId_kind: { tenantId: tx.tenantId, kind: change.source.system } },
+              select: { id: true },
+            })
+          )?.id ??
+          null,
+        mappingVersion: change.mappingVersion ?? null,
       },
     });
     await this.update(tx, change.subscriptionId, { lastChangeId: id });

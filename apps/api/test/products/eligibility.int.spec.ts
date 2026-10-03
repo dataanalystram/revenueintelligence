@@ -155,7 +155,7 @@ describe('eligibility: evaluate, whitespace, snapshots, replay', () => {
       ownership: 'not_owned',
       modelVersion: 1,
       modelHash: r.modelHash,
-      evaluatorVersion: 1,
+      evaluatorVersion: 2,
       factsHash: r.factsHash,
       purpose: 'test_evidence',
     });
@@ -201,6 +201,23 @@ describe('eligibility: evaluate, whitespace, snapshots, replay', () => {
         (tx) => tenantClient(tx).$executeRaw`UPDATE tenant_eligibility_snapshots SET purpose = 'x'`,
       ),
     ).rejects.toThrow(/UPDATE on tenant_eligibility_snapshots is not allowed/);
+    // Replay safety (M8 bumped the evaluator to 2 for ownership_incomplete): a
+    // snapshot recorded by evaluator 1 is never reinterpreted by evaluator 2.
+    const oldId = randomUUID();
+    await c.sql(
+      `INSERT INTO tenant_eligibility_snapshots (tenant_id, id, requested_company_id, evaluated_company_id,
+         product_key, as_of, status, ownership, model_version, model_hash, evaluator_version, facts_hash,
+         result, purpose, correlation_id)
+       SELECT tenant_id, $2, requested_company_id, evaluated_company_id, product_key, as_of, status,
+              ownership, model_version, model_hash, 1, facts_hash, result, purpose, correlation_id
+         FROM tenant_eligibility_snapshots WHERE tenant_id = $1 AND id = $3`,
+      [t.tenantId, oldId, r.snapshotId],
+    );
+    await expect(eligibility.replay(t, oldId)).resolves.toMatchObject({
+      reproduced: false,
+      reason: 'evaluator_changed',
+      recorded: { status: 'eligible' },
+    });
     await expect(eligibility.replay(t, randomUUID())).rejects.toBeInstanceOf(SnapshotNotFoundError);
     await expect(eligibility.evaluate(t, randomUUID(), 'core')).rejects.toBeInstanceOf(
       UnknownCompanyError,

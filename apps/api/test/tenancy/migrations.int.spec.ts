@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import type { StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CONNECTOR_KIND_CATALOGUE } from '../../src/modules/domain/connector-kinds';
+import { authorityContentHash } from '../../src/modules/domain/source-authority';
 import { migrate, startPostgres, withAdmin } from '../support/containers';
 
 const run = promisify(execFile);
@@ -63,6 +64,7 @@ const m7MigrationsConfig = (dir: string) => migrationsBefore(dir, '20261020');
 const M8_MIGRATIONS = [
   '20261020110000_m8_retire_tenant_field_mappings',
   '20261020120000_m8_connector_kinds_and_connections',
+  '20261020130000_m8_schema_snapshots_mappings_authority',
 ];
 
 /** Everything a migration can change, as sorted text (for exact schema comparison). */
@@ -1208,6 +1210,146 @@ describe('database migrations and schema guard', () => {
       );
       expect(rows).toHaveLength(1);
       expect(rows[0]!.def).toMatch(/hubspot.*sugar.*gainsight_cs.*gainsight_px/);
+    });
+  });
+
+  describe('schema snapshots, mappings, authority and gaps (M8 migration on M7 data)', () => {
+    const tenantA = '8a8a8a8a-8a8a-48a8-88a8-8a8a8a8a8a8a';
+    const tenantB = '8b8b8b8b-8b8b-48b8-88b8-8b8b8b8b8b8b';
+    let url: string;
+
+    beforeAll(async () => {
+      url = await createDatabase(pg, 'm8_authority_db');
+      const dir = resolve('test/.tmp/m7-state-authority');
+      try {
+        await migrate(url, ['--config', m7MigrationsConfig(dir)]);
+        await withAdmin(url, async (db) => {
+          await db.query(
+            `INSERT INTO tenants (id, slug, name, updated_at) VALUES ($1, 'meighta', 'A', now()), ($2, 'meightb', 'B', now())`,
+            [tenantA, tenantB],
+          );
+          await db.query(
+            `INSERT INTO tenant_integrations (tenant_id, system, access, updated_at) VALUES ($1, 'hubspot', 'read_only', now())`,
+            [tenantA],
+          );
+        });
+        await migrate(url);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('seeds authority version 1 per tenant: subscriptions to import, profiles to HubSpot where configured', async () => {
+      const { rows } = await withAdmin(url, (db) =>
+        db.query<Record<string, string | null>>(
+          `SELECT a.tenant_id, a.version, ap.kind AS account_profile, pp.kind AS person_profile,
+                  sl.kind AS lines, ss.kind AS state, st.kind AS terms, a.content_hash, a.published_by
+             FROM tenant_source_authority_versions a
+             LEFT JOIN tenant_source_connections ap ON ap.tenant_id = a.tenant_id AND ap.id = a.account_profile_connection_id
+             LEFT JOIN tenant_source_connections pp ON pp.tenant_id = a.tenant_id AND pp.id = a.person_profile_connection_id
+             LEFT JOIN tenant_source_connections sl ON sl.tenant_id = a.tenant_id AND sl.id = a.subscription_lines_connection_id
+             LEFT JOIN tenant_source_connections ss ON ss.tenant_id = a.tenant_id AND ss.id = a.subscription_state_connection_id
+             LEFT JOIN tenant_source_connections st ON st.tenant_id = a.tenant_id AND st.id = a.subscription_terms_connection_id
+            ORDER BY a.tenant_id`,
+        ),
+      );
+      expect(rows.map(({ content_hash: _h, ...r }) => r)).toEqual([
+        {
+          tenant_id: tenantA,
+          version: 1,
+          account_profile: 'hubspot',
+          person_profile: 'hubspot',
+          lines: 'import',
+          state: 'import',
+          terms: 'import',
+          published_by: 'migration:m8',
+        },
+        {
+          tenant_id: tenantB,
+          version: 1,
+          account_profile: null,
+          person_profile: null,
+          lines: 'import',
+          state: 'import',
+          terms: 'import',
+          published_by: 'migration:m8',
+        },
+      ]);
+    });
+
+    it('the seeded content hash equals the service hash (same positional rule)', async () => {
+      const { rows } = await withAdmin(url, (db) =>
+        db.query<{
+          a: string | null;
+          p: string | null;
+          l: string | null;
+          s: string | null;
+          t: string | null;
+          content_hash: string;
+        }>(
+          `SELECT account_profile_connection_id AS a, person_profile_connection_id AS p,
+                  subscription_lines_connection_id AS l, subscription_state_connection_id AS s,
+                  subscription_terms_connection_id AS t, content_hash FROM tenant_source_authority_versions`,
+        ),
+      );
+      for (const r of rows) {
+        expect(
+          authorityContentHash({
+            facts: {
+              account_profile: r.a,
+              person_profile: r.p,
+              subscription_lines: r.l,
+              subscription_state: r.s,
+              subscription_terms: r.t,
+            },
+          }),
+        ).toBe(r.content_hash);
+      }
+    });
+
+    it.each([
+      [
+        'a schema snapshot',
+        `INSERT INTO tenant_source_schema_snapshots (tenant_id, connection_id, hash, document, captured_by)
+         SELECT tenant_id, id, repeat('a', 64), '{"objects":[]}', 'test' FROM tenant_source_connections WHERE kind = 'import' LIMIT 1`,
+        /schema snapshots exist/,
+      ],
+      [
+        'a published authority version beyond the default',
+        `INSERT INTO tenant_source_authority_versions (tenant_id, version, base_version, content_hash, published_by)
+         VALUES ('${tenantB}', 2, 1, repeat('b', 64), 'test')`,
+        /authority versions beyond the default/,
+      ],
+    ])('the down-script refuses (and changes nothing) with %s', async (_label, sql, message) => {
+      const target = await createDatabase(
+        pg,
+        `m8_auth_down_${Math.random().toString(36).slice(2, 8)}`,
+      );
+      await migrate(target);
+      await withAdmin(target, async (db) => {
+        await db.query(
+          `INSERT INTO tenants (id, slug, name, updated_at) VALUES ($1, 'meightb', 'B', now())`,
+          [tenantB],
+        );
+        await db.query(
+          `INSERT INTO tenant_source_connections (tenant_id, id, kind, label, status, mapping_mode)
+           VALUES ($1, gen_random_uuid(), 'import', 'Operator import (CSV)', 'enabled', 'code')`,
+          [tenantB],
+        );
+        await db.query(
+          `INSERT INTO tenant_source_authority_versions (tenant_id, version, base_version, content_hash, published_by)
+           VALUES ($1, 1, 0, repeat('c', 64), 'provisioning')`,
+          [tenantB],
+        );
+        await db.query(sql);
+      });
+      const snapshot = await schemaSnapshot(target);
+      const down = readFileSync(
+        resolve('prisma/rollback/20261020130000_m8_schema_snapshots_mappings_authority.down.sql'),
+        'utf8',
+      );
+      await expect(withAdmin(target, (db) => db.query(down))).rejects.toThrow(message);
+      expect(await schemaSnapshot(target)).toEqual(snapshot);
     });
   });
 

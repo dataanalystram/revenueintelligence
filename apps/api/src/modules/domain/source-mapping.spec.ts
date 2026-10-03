@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   OTHER_CONNECTION_ID,
@@ -503,6 +505,19 @@ describe('mapping validation (ADR 0020)', () => {
         ),
       ).toContain('product_reference_required');
     });
+  });
+
+  it('the runtime TEST mapping file equals the test configuration (plus the ignored companion product) and is valid', () => {
+    const file = JSON.parse(
+      readFileSync(resolve(__dirname, '../../../test/fixtures/sugar/mapping.test.json'), 'utf8'),
+    ) as unknown;
+    const expected = testMapping();
+    expected.productReferences = {
+      ...expected.productReferences!,
+      ignored: [{ id: 'FIX-PROD-900', reason: 'test_not_offered' }],
+    };
+    expect(file).toEqual(expected);
+    expect(codes(file)).toEqual([]);
   });
 
   describe('snapshot and document limits', () => {

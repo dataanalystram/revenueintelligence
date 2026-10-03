@@ -26,6 +26,9 @@ export interface SubscriptionIngestMeta {
   /** Producing adapter (e.g. `csv_import`, later a connector) and its version. */
   readonly adapter: string;
   readonly adapterVersion: string;
+  /** M8 provenance: the producing source connection and mapping version. */
+  readonly sourceConnectionId?: string;
+  readonly mappingVersion?: number;
 }
 
 export type SubscriptionIngestOutcome =
@@ -57,6 +60,17 @@ export class SubscriptionIngestionService {
     private readonly queries: SubscriptionQueries,
     private readonly catalogue: ProductCatalogueService,
   ) {}
+
+  /** Source record ids of a source's non-deleted lines (full-run tombstone pass). */
+  async activeSourceRecordIds(
+    ctx: TenantContext,
+    system: string,
+    objectType: string,
+  ): Promise<string[]> {
+    return this.db.transaction(ctx, (tx) =>
+      this.queries.activeSourceRecordIds(tx, system, objectType),
+    );
+  }
 
   async ingest(
     ctx: TenantContext,
@@ -97,6 +111,8 @@ export class SubscriptionIngestionService {
         ...(obs.sourceUpdatedAt ? { sourceUpdatedAt: obs.sourceUpdatedAt } : {}),
         adapter: meta.adapter,
         adapterVersion: meta.adapterVersion,
+        ...(meta.sourceConnectionId ? { sourceConnectionId: meta.sourceConnectionId } : {}),
+        ...(meta.mappingVersion !== undefined ? { mappingVersion: meta.mappingVersion } : {}),
         correlationId: meta.correlationId,
       });
       return { outcome: 'deleted', subscriptionId: stored.id, changedFields: ['recordState'] };
@@ -157,6 +173,8 @@ export class SubscriptionIngestionService {
         ...(obs.sourceUpdatedAt ? { sourceUpdatedAt: obs.sourceUpdatedAt } : {}),
         adapter: meta.adapter,
         adapterVersion: meta.adapterVersion,
+        ...(meta.sourceConnectionId ? { sourceConnectionId: meta.sourceConnectionId } : {}),
+        ...(meta.mappingVersion !== undefined ? { mappingVersion: meta.mappingVersion } : {}),
         correlationId: meta.correlationId,
       });
 

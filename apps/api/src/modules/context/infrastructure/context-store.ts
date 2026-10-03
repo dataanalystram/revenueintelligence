@@ -76,6 +76,8 @@ export interface ChangeWrite {
   readonly adapter: string;
   readonly adapterVersion: string;
   readonly correlationId: string;
+  /** M8: the versioned mapping that produced the change (versioned connections only). */
+  readonly mappingVersion?: number;
 }
 
 const refKey = (r: { system: string; objectType: string; id: string }) =>
@@ -548,8 +550,23 @@ export class ContextStore {
         adapter: change.adapter,
         adapterVersion: change.adapterVersion,
         correlationId: change.correlationId,
+        // M8: every write names the tenant's connection of its source system.
+        sourceConnectionId: await sourceConnectionId(tx, change.source.system),
+        mappingVersion: change.mappingVersion ?? null,
       },
     });
     return id;
   }
+}
+
+/** The tenant's source connection of a kind (one per kind in M8), if registered. */
+export async function sourceConnectionId(
+  tx: TenantTransaction,
+  kind: string,
+): Promise<string | null> {
+  const row = await tenantClient(tx).tenantSourceConnection.findUnique({
+    where: { tenantId_kind: { tenantId: tx.tenantId, kind } },
+    select: { id: true },
+  });
+  return row?.id ?? null;
 }
