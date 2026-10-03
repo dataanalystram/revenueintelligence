@@ -5,7 +5,6 @@ import {
   type CredentialName,
   type CredentialRef,
 } from '../config/credentials';
-import { FieldMappingSchema, type FieldMapping, type MappedSystem } from '../config/field-mappings';
 import {
   FlowModeSchema,
   FlowSchema,
@@ -241,54 +240,6 @@ export class PrismaTenantConfigRepository {
     return rows.map(toProduct);
   }
 
-  // --- Field mappings -------------------------------------------------------
-
-  async listFieldMappings(
-    tx: TenantTransaction,
-    filter: { system?: MappedSystem; objectType?: string } = {},
-  ): Promise<(FieldMapping & { id: string })[]> {
-    const rows = await tenantClient(tx).tenantFieldMapping.findMany({
-      where: { tenantId: tx.tenantId, ...filter },
-      orderBy: [{ system: 'asc' }, { objectType: 'asc' }, { canonicalField: 'asc' }],
-    });
-    return rows.map(toFieldMapping);
-  }
-
-  async saveFieldMapping(
-    tx: TenantTransaction,
-    mapping: FieldMapping,
-  ): Promise<FieldMapping & { id: string }> {
-    const key = {
-      tenantId: tx.tenantId,
-      system: mapping.system,
-      objectType: mapping.objectType,
-      canonicalEntity: mapping.canonicalEntity,
-      canonicalField: mapping.canonicalField,
-    };
-    const data = {
-      externalField: mapping.externalField,
-      direction: mapping.direction,
-      status: mapping.status,
-      valueMap: mapping.valueMap,
-      notes: mapping.notes,
-    };
-    const row = await guard('field mapping', () =>
-      tenantClient(tx).tenantFieldMapping.upsert({
-        where: { tenantId_system_objectType_canonicalEntity_canonicalField: key },
-        create: { ...key, ...data },
-        update: data,
-      }),
-    );
-    return toFieldMapping(row);
-  }
-
-  async deleteFieldMapping(tx: TenantTransaction, id: string): Promise<boolean> {
-    const { count } = await tenantClient(tx).tenantFieldMapping.deleteMany({
-      where: { tenantId: tx.tenantId, id },
-    });
-    return count > 0;
-  }
-
   // --- Lead source mappings ---------------------------------------------------
 
   async listLeadSourceMappings(
@@ -443,33 +394,6 @@ function toProduct(row: {
   });
 }
 
-function toFieldMapping(row: {
-  id: string;
-  system: string;
-  objectType: string;
-  canonicalEntity: string;
-  canonicalField: string;
-  externalField: string | null;
-  direction: string;
-  status: string;
-  valueMap: unknown;
-  notes: string | null;
-}): FieldMapping & { id: string } {
-  return {
-    id: row.id,
-    ...FieldMappingSchema.parse({
-      system: row.system,
-      objectType: row.objectType,
-      canonicalEntity: row.canonicalEntity,
-      canonicalField: row.canonicalField,
-      externalField: row.externalField,
-      direction: row.direction,
-      status: row.status,
-      valueMap: row.valueMap,
-      notes: row.notes,
-    }),
-  };
-}
 
 function toLeadSourceMapping(row: {
   id: string;

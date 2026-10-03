@@ -1,12 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { z } from 'zod';
 import {
-  FieldMappingSchema,
-  type FieldMapping,
-  type FieldMappingInput,
-  type MappedSystem,
-} from '../config/field-mappings';
-import {
   flowConfigurationProblems,
   FlowModeSchema,
   FlowSchema,
@@ -196,26 +190,7 @@ export class TenantConfigService {
     return await this.db.transaction(ctx, (tx) => this.repo.listProducts(tx, options));
   }
 
-  // --- Mappings ---------------------------------------------------------------
-
-  async listFieldMappings(
-    ctx: TenantContext,
-    filter: { system?: MappedSystem; objectType?: string } = {},
-  ): Promise<(FieldMapping & { id: string })[]> {
-    return await this.db.transaction(ctx, (tx) => this.repo.listFieldMappings(tx, filter));
-  }
-
-  async saveFieldMapping(
-    ctx: TenantContext,
-    input: FieldMappingInput,
-  ): Promise<FieldMapping & { id: string }> {
-    const mapping = validate(FieldMappingSchema, input, 'field mapping');
-    return await this.db.transaction(ctx, (tx) => this.repo.saveFieldMapping(tx, mapping));
-  }
-
-  async deleteFieldMapping(ctx: TenantContext, id: string): Promise<boolean> {
-    return await this.db.transaction(ctx, (tx) => this.repo.deleteFieldMapping(tx, id));
-  }
+  // --- Lead source mappings ---------------------------------------------------
 
   async listLeadSourceMappings(
     ctx: TenantContext,

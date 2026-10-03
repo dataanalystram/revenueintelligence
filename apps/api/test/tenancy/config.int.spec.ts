@@ -73,14 +73,6 @@ describe('tenant provisioning and configuration rules', () => {
       expect(sources.map((s) => s.channel)).toContain('demo_request');
       expect(sources[0]).toMatchObject({ sourceValue: 'Checklist', priority: 10 });
 
-      const mappings = await h.config.listFieldMappings(ctx, { system: 'sugar' });
-      expect(mappings.find((m) => m.canonicalField === 'stage')).toMatchObject({
-        externalField: 'status',
-        status: 'proposed',
-      });
-      const tbc = mappings.filter((m) => m.status === 'tbc');
-      expect(tbc.length).toBeGreaterThan(0);
-      expect(tbc.every((m) => m.externalField === null)).toBe(true);
       // Still safe: nothing enabled.
       expect((await h.config.listIntegrations(ctx)).every((i) => i.access === 'disabled')).toBe(
         true,
@@ -279,41 +271,6 @@ describe('tenant provisioning and configuration rules', () => {
           { actor: 'test', basedOnVersion: 1 },
         ),
       ).rejects.toBeInstanceOf(ProductModelInvalidError);
-    });
-
-    it('field mappings: TBC means no external field, and keys are unique per canonical field', async () => {
-      await expect(
-        h.config.saveFieldMapping(t, {
-          system: 'sugar',
-          objectType: 'Leads',
-          canonicalEntity: 'lead',
-          canonicalField: 'lead_type',
-          externalField: 'lead_type_c',
-          direction: 'outbound',
-          status: 'tbc',
-        }),
-      ).rejects.toBeInstanceOf(TenantConfigError);
-      const first = await h.config.saveFieldMapping(t, {
-        system: 'sugar',
-        objectType: 'Leads',
-        canonicalEntity: 'lead',
-        canonicalField: 'lead_type',
-        externalField: null,
-        direction: 'outbound',
-        status: 'tbc',
-      });
-      const confirmed = await h.config.saveFieldMapping(t, {
-        system: 'sugar',
-        objectType: 'Leads',
-        canonicalEntity: 'lead',
-        canonicalField: 'lead_type',
-        externalField: 'lead_type_c',
-        direction: 'outbound',
-        status: 'confirmed',
-        valueMap: { new_business: 'New Business', upsell: 'Upsell' },
-      });
-      expect(confirmed.id).toBe(first.id);
-      expect(confirmed).toMatchObject({ status: 'confirmed', valueMap: { upsell: 'Upsell' } });
     });
 
     it('lead source mappings validate the channel against the source system', async () => {

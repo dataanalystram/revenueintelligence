@@ -186,18 +186,16 @@ describe('tenant data isolation (real PostgreSQL, app role, RLS)', () => {
     });
 
     it('config deletes are tenant-scoped', async () => {
-      const mapping = await h.config.saveFieldMapping(a, {
-        system: 'sugar',
-        objectType: 'Leads',
-        canonicalEntity: 'lead',
-        canonicalField: 'stage',
-        externalField: 'status',
-        direction: 'bidirectional',
-        status: 'proposed',
+      const mapping = await h.config.saveLeadSourceMapping(a, {
+        system: 'hubspot',
+        sourceProperty: 'recent_conversion',
+        matchType: 'contains',
+        sourceValue: 'Scoped delete',
+        channel: 'demo_request',
       });
-      await expect(h.config.deleteFieldMapping(b, mapping.id)).resolves.toBe(false);
-      await expect(h.config.listFieldMappings(a)).resolves.toHaveLength(1);
-      await expect(h.config.deleteFieldMapping(a, mapping.id)).resolves.toBe(true);
+      await expect(h.config.deleteLeadSourceMapping(b, mapping.id)).resolves.toBe(false);
+      await expect(h.config.listLeadSourceMappings(a)).resolves.toHaveLength(1);
+      await expect(h.config.deleteLeadSourceMapping(a, mapping.id)).resolves.toBe(true);
     });
   });
 
@@ -463,16 +461,7 @@ describe('tenant data isolation (real PostgreSQL, app role, RLS)', () => {
       await expect(h.config.getQualificationConfig(b)).resolves.toMatchObject({ mode: 'hybrid' });
     });
 
-    it('field mappings and lead source mappings are isolated per tenant', async () => {
-      await h.config.saveFieldMapping(b, {
-        system: 'sugar',
-        objectType: 'Leads',
-        canonicalEntity: 'lead',
-        canonicalField: 'temperature',
-        externalField: null,
-        direction: 'bidirectional',
-        status: 'tbc',
-      });
+    it('lead source mappings are isolated per tenant', async () => {
       await h.config.saveLeadSourceMapping(b, {
         system: 'hubspot',
         sourceProperty: 'recent_conversion',
@@ -480,9 +469,6 @@ describe('tenant data isolation (real PostgreSQL, app role, RLS)', () => {
         sourceValue: 'Demo',
         channel: 'demo_request',
       });
-      expect(
-        (await h.config.listFieldMappings(a)).some((m) => m.canonicalField === 'temperature'),
-      ).toBe(false);
       await expect(h.config.listLeadSourceMappings(a)).resolves.toEqual([]);
       await expect(h.config.listLeadSourceMappings(b)).resolves.toHaveLength(1);
     });

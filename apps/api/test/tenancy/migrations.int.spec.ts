@@ -53,6 +53,11 @@ export default defineConfig({
 const m5MigrationsConfig = (dir: string) => migrationsBefore(dir, '20261005');
 /** The migrations shipped up to M6 (before M7). */
 const m6MigrationsConfig = (dir: string) => migrationsBefore(dir, '20261010');
+/** The migrations shipped up to M7 (before M8). */
+const m7MigrationsConfig = (dir: string) => migrationsBefore(dir, '20261020');
+
+/** M8 migrations in apply order. */
+const M8_MIGRATIONS = ['20261020110000_m8_retire_tenant_field_mappings'];
 
 /** Everything a migration can change, as sorted text (for exact schema comparison). */
 async function schemaSnapshot(url: string): Promise<Record<string, string[]>> {
@@ -77,6 +82,15 @@ async function schemaSnapshot(url: string): Promise<Record<string, string[]>> {
     }
     return out;
   });
+}
+
+/** M8 down-scripts, in the order they must run (newest first). */
+const M8_DOWNS = [...M8_MIGRATIONS]
+  .reverse()
+  .map((name) => resolve(`prisma/rollback/${name}.down.sql`));
+
+async function rollbackM8(db: { query: (sql: string) => Promise<unknown> }): Promise<void> {
+  for (const file of M8_DOWNS) await db.query(readFileSync(file, 'utf8'));
 }
 
 const ROLLBACK = {
@@ -119,6 +133,7 @@ describe('database migrations and schema guard', () => {
         '20261005130000_m6_event_processing_state',
         '20261010120000_m7_product_model_and_subscriptions',
         '20261010130000_m7_eligibility_snapshots',
+        ...M8_MIGRATIONS,
       ]);
       expect(rows.every((r) => r.finished_at !== null)).toBe(true);
     });
@@ -452,7 +467,8 @@ describe('database migrations and schema guard', () => {
         const latest = await schemaSnapshot(url);
         const tenant = '44444444-4444-4444-8444-444444444444';
         await withAdmin(url, async (db) => {
-          // Later milestones roll back first (M7), then M6.
+          // Later milestones roll back first (M8, M7), then M6.
+          await rollbackM8(db);
           await db.query(readFileSync(ROLLBACK.snapshots, 'utf8'));
           await db.query(readFileSync(ROLLBACK.productModel, 'utf8'));
           await db.query(
@@ -634,6 +650,7 @@ describe('database migrations and schema guard', () => {
              VALUES ($1, gen_random_uuid(), $2, 'portal', 'active', 'import', 'csv_line', 'line-1', now())`,
             [tenant, company],
           );
+          await rollbackM8(db);
           await db.query(readFileSync(ROLLBACK.snapshots, 'utf8'));
           await expect(db.query(readFileSync(ROLLBACK.productModel, 'utf8'))).rejects.toThrow(
             /cannot be rolled back/,
@@ -709,6 +726,138 @@ describe('database migrations and schema guard', () => {
           /append-only/,
         );
       });
+    });
+  });
+
+  describe('upgrading from the Milestone 7 state (M8 migrations on existing data)', () => {
+    const tenant = '77777777-7777-4777-8777-777777777777';
+    const templateRows = JSON.parse(
+      readFileSync(resolve('../../docs/integrations/sugar/lead-handover-field-intent.md'), 'utf8')
+        .split('```json')[1]!
+        .split('```')[0]!,
+    ) as {
+      system: string;
+      objectType: string;
+      canonicalEntity: string;
+      canonicalField: string;
+      externalField: string | null;
+      direction: string;
+      status: string;
+      notes: string;
+    }[];
+    async function seedLegacy(url: string, mutate?: (rows: typeof templateRows) => void) {
+      const rows = templateRows.map((r) => ({ ...r }));
+      mutate?.(rows);
+      await withAdmin(url, async (db) => {
+        await db.query(
+          `INSERT INTO tenants (id, slug, name, updated_at) VALUES ($1, 'mseven', 'M7', now())`,
+          [tenant],
+        );
+        for (const r of rows) {
+          await db.query(
+            `INSERT INTO tenant_field_mappings (tenant_id, system, object_type, canonical_entity, canonical_field, external_field, direction, status, notes, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())`,
+            [
+              tenant,
+              r.system,
+              r.objectType,
+              r.canonicalEntity,
+              r.canonicalField,
+              r.externalField,
+              r.direction,
+              r.status,
+              r.notes,
+            ],
+          );
+        }
+      });
+    }
+    const tableExists = (url: string) =>
+      withAdmin(
+        url,
+        async (db) =>
+          (await db.query(`SELECT to_regclass('public.tenant_field_mappings') AS t`)).rows[0]!.t as
+            string | null,
+      );
+
+    it('the intent document preserves exactly the ten template rows', () => {
+      expect(templateRows).toHaveLength(10);
+      expect(templateRows.every((r) => r.system === 'sugar' && r.objectType === 'Leads')).toBe(
+        true,
+      );
+      expect(
+        templateRows.filter((r) => r.status === 'tbc').every((r) => r.externalField === null),
+      ).toBe(true);
+    });
+
+    it('retires tenant_field_mappings when every row is a documented template row', async () => {
+      const url = await createDatabase(pg, 'm8_retire_ok_db');
+      const dir = resolve('test/.tmp/m7-state-ok');
+      try {
+        await migrate(url, ['--config', m7MigrationsConfig(dir)]);
+        await seedLegacy(url);
+        const output = await migrate(url);
+        expect(output).toMatch(/20261020110000_m8_retire_tenant_field_mappings/);
+        expect(await tableExists(url)).toBeNull();
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it.each([
+      [
+        'a confirmed row',
+        (rows: typeof templateRows) => {
+          rows[0]!.status = 'confirmed';
+        },
+        /confirmed field mappings exist/,
+      ],
+      [
+        'an edited row',
+        (rows: typeof templateRows) => {
+          rows[1]!.notes = 'changed by an operator';
+        },
+        /differ from the documented template rows/,
+      ],
+      [
+        'an extra row',
+        (rows: typeof templateRows) => {
+          rows.push({ ...rows[1]!, canonicalField: 'extra_field' });
+        },
+        /differ from the documented template rows/,
+      ],
+    ])('refuses (and keeps the table) with %s', async (_label, mutate, message) => {
+      const url = await createDatabase(
+        pg,
+        `m8_retire_refuse_${Math.random().toString(36).slice(2, 8)}`,
+      );
+      const dir = resolve(`test/.tmp/m7-state-${Math.random().toString(36).slice(2, 8)}`);
+      try {
+        await migrate(url, ['--config', m7MigrationsConfig(dir)]);
+        await seedLegacy(url, mutate);
+        await expect(migrate(url)).rejects.toThrow(message);
+        expect(await tableExists(url)).toBe('tenant_field_mappings');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('the M8 down-scripts restore exactly the M7 schema and M8 re-applies', async () => {
+      const m7Url = await createDatabase(pg, 'm7_reference_db');
+      const url = await createDatabase(pg, 'm8_down_db');
+      const dir = resolve('test/.tmp/m7-reference');
+      try {
+        await migrate(m7Url, ['--config', m7MigrationsConfig(dir)]);
+        await migrate(url);
+        const latest = await schemaSnapshot(url);
+        await withAdmin(url, (db) => rollbackM8(db));
+        expect(await schemaSnapshot(url)).toEqual(await schemaSnapshot(m7Url));
+        const output = await migrate(url);
+        for (const name of M8_MIGRATIONS) expect(output).toMatch(new RegExp(name));
+        expect(await schemaSnapshot(url)).toEqual(latest);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     });
   });
 

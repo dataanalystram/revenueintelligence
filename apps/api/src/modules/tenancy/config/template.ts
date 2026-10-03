@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { FieldMappingSchema } from './field-mappings';
 import { IntegrationSettingsSchemas } from './integrations';
 import { LeadSourceMappingSchema } from './lead-source-mappings';
 import { PolicySchemas } from './policies';
@@ -27,7 +26,6 @@ export const TenantTemplateSchema = z.strictObject({
     })
     .default({}),
   qualification: QualificationConfigInputSchema.optional(),
-  fieldMappings: z.array(FieldMappingSchema).default([]),
   leadSourceMappings: z.array(LeadSourceMappingSchema).default([]),
   policies: z
     .strictObject({

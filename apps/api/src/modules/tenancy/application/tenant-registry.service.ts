@@ -83,8 +83,6 @@ export class TenantRegistryService {
             ? QualificationConfigInputSchema.parse(template.qualification)
             : DEFAULT_QUALIFICATION_CONFIG,
         );
-        for (const mapping of template?.fieldMappings ?? [])
-          await this.config.saveFieldMapping(tx, mapping);
         for (const mapping of template?.leadSourceMappings ?? []) {
           await this.config.saveLeadSourceMapping(tx, mapping);
         }

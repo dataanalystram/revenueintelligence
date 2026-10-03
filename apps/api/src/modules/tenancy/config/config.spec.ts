@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest';
 import { EnvSecretProvider } from '../../../platform/secrets';
 import { TenantSlugSchema } from '../tenant';
 import { credentialSecretKey, CredentialNameSchema, isOwnedSecretKey } from './credentials';
-import { FieldMappingSchema } from './field-mappings';
 import {
   ALLOWED_FLOW_MODES,
   flowConfigurationProblems,
@@ -215,30 +214,6 @@ describe('qualification config', () => {
 });
 
 describe('mappings and policies', () => {
-  const base = {
-    system: 'sugar',
-    objectType: 'Leads',
-    canonicalEntity: 'lead',
-    canonicalField: 'stage',
-    direction: 'bidirectional',
-  } as const;
-
-  it('field mappings: tbc ⇔ no external field', () => {
-    expect(
-      FieldMappingSchema.safeParse({ ...base, externalField: null, status: 'tbc' }).success,
-    ).toBe(true);
-    expect(
-      FieldMappingSchema.safeParse({ ...base, externalField: 'status', status: 'tbc' }).success,
-    ).toBe(false);
-    expect(
-      FieldMappingSchema.safeParse({ ...base, externalField: null, status: 'confirmed' }).success,
-    ).toBe(false);
-    expect(
-      FieldMappingSchema.safeParse({ ...base, externalField: 'status', status: 'proposed' })
-        .success,
-    ).toBe(true);
-  });
-
   it('lead source mappings: channel must suit the source system', () => {
     const m = { sourceProperty: 'p', matchType: 'contains', sourceValue: 'Demo' } as const;
     expect(
@@ -276,11 +251,10 @@ describe('tenant templates', () => {
     expect(raw).not.toHaveProperty('flows');
     expect(raw).not.toHaveProperty('credentials');
     expect(template.policies.sla).toEqual({ responseMinutes: { hot: 60, warm: 1440, cold: 4320 } });
-    expect(
-      template.fieldMappings
-        .filter((m) => m.status === 'tbc')
-        .every((m) => m.externalField === null),
-    ).toBe(true);
+    // M8: the legacy Sugar Leads field-mapping intent lives in
+    // docs/integrations/sugar/lead-handover-field-intent.md, not in templates.
+    expect(raw).not.toHaveProperty('fieldMappings');
+    expect(TenantTemplateSchema.safeParse({ ...raw, fieldMappings: [] }).success).toBe(false);
   });
 
   it('rejects templates that try to set access levels or flows', () => {

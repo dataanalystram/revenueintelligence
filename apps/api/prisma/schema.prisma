@@ -41,7 +41,6 @@ model Tenant {
   webhookReceipts      TenantWebhookReceipt[]
   qualificationConfig  TenantQualificationConfig?
   products             TenantProduct[]
-  fieldMappings        TenantFieldMapping[]
   leadSourceMappings   TenantLeadSourceMapping[]
   policies             TenantPolicy[]
   companies            Company[]
@@ -299,31 +298,6 @@ model TenantSubscription {
   @@index([tenantId, companyId])
   @@index([tenantId, productKey])
   @@map("tenant_subscriptions")
-}
-
-model TenantFieldMapping {
-  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId        String   @map("tenant_id") @db.Uuid
-  system          String
-  objectType      String   @map("object_type")
-  canonicalEntity String   @map("canonical_entity")
-  canonicalField  String   @map("canonical_field")
-  /// NULL while the external field is still TBC (never guessed)
-  externalField   String?  @map("external_field")
-  /// inbound | outbound | bidirectional
-  direction       String
-  /// tbc | proposed | confirmed
-  status          String   @default("tbc")
-  valueMap        Json     @default("{}") @map("value_map")
-  notes           String?
-  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
-
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-
-  @@unique([tenantId, id])
-  @@unique([tenantId, system, objectType, canonicalEntity, canonicalField])
-  @@map("tenant_field_mappings")
 }
 
 model TenantLeadSourceMapping {
