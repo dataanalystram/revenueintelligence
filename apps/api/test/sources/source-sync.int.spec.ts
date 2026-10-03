@@ -1,5 +1,10 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { EligibilityService } from '../../src/modules/products';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { ContextIngestionService } from '../../src/modules/context';
+import {
+  EligibilityService,
+  SubscriptionIngestionService,
+  type SubscriptionIngestOutcome,
+} from '../../src/modules/products';
 import { tenantClient, type TenantContext } from '../../src/modules/tenancy';
 import { startContextHarness, type ContextHarness } from '../support/context';
 import { FakeSugar } from '../support/fake-sugar';
@@ -681,6 +686,86 @@ describe('source synchronisation (Sugar adapter, fake Sugar)', () => {
       await expect(s.sync.start(f.ctx, id, 'full', { enqueue: false })).rejects.toMatchObject({
         code: 'adapter_not_registered',
       });
+    });
+  });
+
+  describe('single writer: behavioural proof (complements the static scan)', () => {
+    it('every canonical row a sync writes was produced by a call to the approved writers', async () => {
+      const f = await sugarTenant(c, fake, { prefix: 'srcwriter' });
+      // Instrument the writer instances actually injected into the sync service.
+      const wired = sourcesServices(c).sync as unknown as {
+        context: ContextIngestionService;
+        subscriptions: SubscriptionIngestionService;
+      };
+      expect(wired.subscriptions).toBeInstanceOf(SubscriptionIngestionService);
+      expect(wired.context).toBeInstanceOf(ContextIngestionService);
+      const subs = vi.spyOn(wired.subscriptions, 'ingest');
+      const ctxw = vi.spyOn(wired.context, 'ingest');
+      let result: Awaited<ReturnType<typeof runSync>>;
+      let subCalls: typeof subs.mock.calls;
+      let subResults: typeof subs.mock.results;
+      let ctxCalls: typeof ctxw.mock.calls;
+      try {
+        result = await runSync(c, f, 'full');
+      } finally {
+        // Copy the recorded history first: mockRestore() clears it.
+        [subCalls, subResults, ctxCalls] = [
+          [...subs.mock.calls],
+          [...subs.mock.results],
+          [...ctxw.mock.calls],
+        ];
+        subs.mockRestore();
+        ctxw.mockRestore();
+      }
+      expect(result.status).toBe('completed');
+      expect(subCalls.length).toBeGreaterThan(0);
+      expect(ctxCalls.length).toBeGreaterThan(0);
+      // Collect what the writers reported writing.
+      const subOutcomes: SubscriptionIngestOutcome[] = await Promise.all(
+        subResults.map((r) => r.value as Promise<SubscriptionIngestOutcome>),
+      );
+      const written = new Map<string, string>();
+      subOutcomes.forEach((o, i) => {
+        const [ctx, obs] = subCalls[i]!;
+        expect(ctx.tenantId).toBe(f.ctx.tenantId);
+        // Only a `created` outcome brings a row into existence; a later
+        // writer call (update, tombstone) on a row must not launder it.
+        if (o.outcome === 'created') written.set(o.subscriptionId, obs.source.recordId);
+      });
+      const contextRefs = new Set(
+        ctxCalls
+          .filter(([ctx]) => ctx.tenantId === f.ctx.tenantId)
+          .map(([, obs]) => `${obs.ref.objectType}|${obs.ref.id}`),
+      );
+
+      // 1. Every subscription line in the tenant is one the writer reported
+      //    creating (same id, same source record) — no row appeared any other way.
+      const rows = await c.sql<{ id: string; source_record_id: string }>(
+        'SELECT id::text, source_record_id FROM tenant_subscriptions WHERE tenant_id = $1',
+        [f.ctx.tenantId],
+      );
+      expect(rows.length).toBeGreaterThan(0);
+      expect(new Map(rows.map((r) => [r.id, r.source_record_id]))).toEqual(written);
+
+      // 2. Each line's last change is a provenance row of this run, this
+      //    connection and the published mapping version (set only by the writer).
+      const linked = await c.sql<{ n: number }>(
+        `SELECT count(*)::int AS n FROM tenant_subscriptions s
+           JOIN tenant_context_changes ch ON ch.tenant_id = s.tenant_id AND ch.id = s.last_change_id
+          WHERE s.tenant_id = $1 AND ch.checkpoint_id = $2 AND ch.source_connection_id = $3
+            AND ch.mapping_version = 2 AND ch.source_record_id = s.source_record_id`,
+        [f.ctx.tenantId, result.runId, f.connectionId],
+      );
+      expect(linked[0]!.n).toBe(rows.length);
+
+      // 3. Every Sugar account reference was handed to the context writer.
+      const refs = await c.sql<{ object_type: string; external_id: string }>(
+        `SELECT object_type, external_id FROM company_external_refs
+          WHERE tenant_id = $1 AND system = 'sugar'`,
+        [f.ctx.tenantId],
+      );
+      expect(refs.length).toBeGreaterThan(0);
+      for (const r of refs) expect(contextRefs).toContain(`${r.object_type}|${r.external_id}`);
     });
   });
 

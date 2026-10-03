@@ -110,7 +110,15 @@ export class SugarHttpClient {
 
   /** GET with authentication, retries and response validation. */
   async get<T>(path: string, query: URLSearchParams | undefined, schema: z.ZodType<T>): Promise<T> {
-    const req: SugarRequest = { method: 'GET', path, ...(query ? { query } : {}) };
+    return this.request({ method: 'GET', path, ...(query ? { query } : {}) }, schema);
+  }
+
+  /**
+   * The one authenticated request pipeline: the read-only guard runs first,
+   * before the limiter, the token and the network. Only `get` uses it today;
+   * any future caller passing another method is refused here.
+   */
+  private async request<T>(req: SugarRequest, schema: z.ZodType<T>): Promise<T> {
     this.guard(req);
     let reauthenticated = false;
     for (let attempt = 1; ; attempt += 1) {
@@ -264,7 +272,7 @@ export class SugarHttpClient {
     let response: Response;
     try {
       response = await this.fetchFn(this.url(req), {
-        method: 'GET',
+        method: req.method,
         headers: { accept: 'application/json', 'oauth-token': access },
         signal: AbortSignal.timeout(this.config.timeoutMs),
         redirect: 'error',

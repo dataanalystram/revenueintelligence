@@ -95,6 +95,73 @@ describe('Sugar adapter against the deterministic fake (no live Sugar)', () => {
     });
   });
 
+  describe('read-only proof through the real connector transport (fake Sugar)', () => {
+    it('mutating requests are refused before anything leaves the process; only GET and the token POST reach Sugar', async () => {
+      const sent: string[] = [];
+      const config = SugarConnectionConfigSchema.parse({
+        instanceUrl: fake.url,
+        apiVersion: fake.version,
+        modules: MODULES,
+        referenceModules: ['ProductTemplates'],
+        maxRetries: 0,
+      });
+      // The real transport and connector; fetch is wrapped only to record what goes out.
+      const c = new SugarConnector(
+        config,
+        'tenant:conn',
+        () => Promise.resolve(secret(JSON.stringify(FAKE_SUGAR_CREDENTIALS))),
+        {
+          fetch: (url, init) => {
+            sent.push(`${init?.method ?? 'GET'} ${new URL(url).pathname}`);
+            return fetch(url, init);
+          },
+        },
+      );
+      await expect(c.testConnection()).resolves.toMatchObject({ ok: true }); // token POST + GET /ping
+      // The transport's single request pipeline, used by every connector read.
+      const request = (
+        c as unknown as {
+          http: {
+            request: (req: { method: string; path: string }, schema: unknown) => Promise<unknown>;
+          };
+        }
+      ).http.request.bind((c as unknown as { http: object }).http);
+      const attempts = [
+        { method: 'POST', path: '/Accounts' },
+        { method: 'POST', path: '/RevenueLineItems/FIX-RLI-001/link/x' },
+        { method: 'PUT', path: '/Accounts/FIX-ACC-001' },
+        { method: 'PATCH', path: '/Accounts/FIX-ACC-001' },
+        { method: 'DELETE', path: '/Accounts/FIX-ACC-001' },
+        { method: 'DELETE', path: '/oauth2/token' },
+      ];
+      const sentBefore = sent.length;
+      for (const req of attempts) {
+        const err = await request(req, SugarConnectionConfigSchema).catch((e: unknown) => e);
+        expect(isConnectorError(err, 'read_only_violation')).toBe(true);
+      }
+      // Nothing was sent for any refused request, and the source saw no write.
+      expect(sent.length).toBe(sentBefore);
+      expect(c.counters.refused).toBe(attempts.length);
+      expect(fake.methodCounts.PUT ?? 0).toBe(0);
+      expect(fake.methodCounts.PATCH ?? 0).toBe(0);
+      expect(fake.methodCounts.DELETE ?? 0).toBe(0);
+      expect(fake.requests.filter((r) => r.method === 'POST').map((r) => r.path)).toEqual([
+        '/oauth2/token',
+      ]);
+      expect(
+        sent
+          .filter((x) => !x.startsWith('GET '))
+          .map((x) => x.replace(/^.*\/rest\/[^/]+/, 'POST ')),
+      ).toEqual(['POST /oauth2/token']);
+      // Reads still work after the refusals.
+      await expect(c.readRecord('Accounts', 'FIX-ACC-001', ['name'])).resolves.toMatchObject({
+        id: 'FIX-ACC-001',
+      });
+      expect(Object.keys(fake.methodCounts).sort()).toEqual(['GET', 'POST']);
+      expect(fake.methodCounts.POST).toBe(1);
+    });
+  });
+
   describe('connection test and credentials (SecretProvider only)', () => {
     it('passes with valid credentials', async () => {
       await expect((await connector()).testConnection()).resolves.toEqual({
