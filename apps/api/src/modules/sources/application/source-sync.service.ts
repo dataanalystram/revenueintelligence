@@ -312,6 +312,12 @@ export class SourceSyncService {
     if (connection.status !== 'enabled') {
       throw new SyncRefusedError('connection_disabled', 'The connection is disabled');
     }
+    if (!this.connections.hasAdapter(connection.kind)) {
+      throw new SyncRefusedError(
+        'adapter_not_registered',
+        `No source adapter is registered for ${connection.kind} in this process`,
+      );
+    }
     if (!mapping) throw new SyncRefusedError('mapping_not_published', 'No published mapping');
     if (!authority) throw new SyncRefusedError('authority_missing', 'No authority version');
     const lineObjects = mapping.objects.filter((o) => o.entity === 'subscription');

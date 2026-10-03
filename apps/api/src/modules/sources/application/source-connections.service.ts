@@ -148,6 +148,11 @@ export class SourceConnectionsService {
     return result;
   }
 
+  /** Whether this process can synchronise connections of a kind (ADR 0019 §4). */
+  hasAdapter(kind: string): boolean {
+    return this.registry.has(kind);
+  }
+
   /** An adapter instance for this connection; credentials resolve through the SecretProvider. */
   connector(ctx: TenantContext, connection: SourceConnection): SourceConnector {
     const factory = this.registry.get(connection.kind);

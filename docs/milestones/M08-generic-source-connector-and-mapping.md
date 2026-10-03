@@ -1,7 +1,8 @@
 # Milestone 8 — Generic source connector and versioned mapping foundation, with SugarCRM as the first reference adapter
 
-- Status: **implementation plan for review**. No M8 code, dependency, schema,
-  migration or connector exists.
+- Status: **M8 IMPLEMENTATION COMPLETE — pending independent review**
+  (plan approved at `a8b61fb`; see [implementation record](#implementation-record-m8)).
+  **LIVE SUGAR VERIFICATION: PENDING.** M9 not started; not merged to `main`.
 - Base: `main` at `e0e3fe7` (M0–M7 complete).
 - Approved design: [canonical extension and source mapping](../architecture/canonical-extension-and-source-mapping.md)
   (`e4fec65`, passed independent review).
@@ -1219,7 +1220,159 @@ before the catalogue refactor touches the same files).
 
 ## Confirmation
 
-Planning only (refreshed against the sanitized evidence on
+(Planning-stage confirmation, kept for the record.) Planning only (refreshed against the sanitized evidence on
 `planning/m8-sugar-evidence` @ `e2fe7d9`). No code, dependency, Prisma schema,
 migration or connector was added, and the evidence branch was read, not
 merged. **M8 implementation has NOT started.** M9 has not started.
+
+---
+
+## Implementation record (M8)
+
+**Status: M8 IMPLEMENTATION COMPLETE — pending independent review.**
+**LIVE SUGAR VERIFICATION: PENDING** (`docs/integrations/sugar/live-verification.md`).
+M9 not started. Not merged to `main`.
+
+Branch `claude/blissful-mendel-urbh4r`; ancestry: production `main`
+`e0e3fe7`, canonical mapping architecture `e4fec65`, sanitized Sugar evidence
+`e2fe7d9` (merged once as `972a8cf`, no discovery-repo history, no raw data),
+approved plan `a8b61fb`.
+
+### What was built (by plan section)
+
+| Plan §                     | As built                                                                                                                                                                                                                            |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2 Catalogue                | `domain/connector-kinds.ts` + `connector_kinds` (seeded, forced RLS, SELECT-only for `lip_app`); FKs replace the CHECK lists on 7 source-system columns; values unchanged; HubSpot unaffected                                       |
+| 3 Connections              | `tenant_source_connections` (one per kind, forced RLS, tenant trigger, secret-like-key CHECK, credential name FK); `import` at provisioning/backfill, `hubspot` when enabled                                                        |
+| 4 Port                     | `SourceConnector` (`capabilities`, `testConnection`, `describeSchema`, `readRecords`, optional `countRecords`/`readRecord`); `SourceAdapterFactory`, `SOURCE_ADAPTERS`                                                              |
+| 5 Sugar adapter            | `modules/sugar`: read-only transport guard, OAuth password + refresh (single-flight), SecretProvider JSON bundle, limiter, retries with Retry-After, metadata normalisation, bounded offset reads, count, mid-run drift; mock-first |
+| 7–10 Mapping               | immutable `tenant_source_mapping_versions`; document schema (identity/core/relationship/ignored; `attribute` refused); closed transforms; validator codes; holding filter `{field, operator: in                                     | not_in, values, confirmation}` |
+| 11–12 Snapshots/drift      | immutable metadata-only snapshots; mapped-surface drift; run refused before writes; mid-run drift fails the run                                                                                                                     |
+| 13–14 Concurrency          | `expectedBaseVersion` required (mapping, authority) and `basedOnVersion` required (product model); advisory locks; `concurrent_publish`                                                                                             |
+| 15 Authority               | five facts, versioned, one connection or none, composite FKs; holding gate; `cross_source_unsupported`; v1 seeded                                                                                                                   |
+| 16–18 State/dates/renewals | explicit unknown; never inferred; invalid period keeps the line (empty terms, unknown); renewals ignored                                                                                                                            |
+| 19 Products                | external references only; catalogue phase first; unmodelled fails before lines; product model never changed                                                                                                                         |
+| 23 Coverage                | authority-based; full-read proof (start/end count = read); per-account ownership gaps; `ownership_incomplete`, evaluator v2                                                                                                         |
+| 24–25 Incremental/deletes  | watermark − configurable overlap; advance on success only; tombstones only in full runs                                                                                                                                             |
+| 26–27 Provenance/quality   | `source_connection_id` + `mapping_version` on provenance and runs (FK to the mapping version); quality codes on the run                                                                                                             |
+| 32 CLI                     | `sources:*`, `mappings:*`, `authority:*`, `sync:*`, `source:report` (+ `sources:configure`, see deviations)                                                                                                                         |
+| 33 Legacy                  | 10 Juniper Leads rows preserved verbatim (M15 input), migration refuses unsafe data, table retired                                                                                                                                  |
+
+### Deviations and additions (reviewed against the plan)
+
+1. `source.sync` on a dedicated queue `lip-sources` instead of `lip-bulk`
+   (no module cycle; same platform semantics).
+2. `sources:configure` CLI added (operator face of the planned
+   `SourceConnections.create`); it registers the credential name.
+3. Authority v1 assigns subscription facts to `import` for **every** tenant
+   (plan: where an M7 full import completed) so later CSV imports keep
+   establishing coverage exactly as in M7.
+4. Unmodelled products detected at catalogue level (per the M8 instruction
+   "validate the catalogue before line processing").
+5. Port gained optional `countRecords()` (full-read proof).
+6. Full runs restart (not resume mid-read) after a transient failure.
+
+### Evidence
+
+Commands run from the repository root on the branch head (results in the
+scratch logs of the implementing session; counts reproduced here verbatim).
+
+| Gate                                                           | Command                                 | Result                                                                                                                                                                                                                                   |
+| -------------------------------------------------------------- | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Format, lint, typecheck, boundaries, unit, integration         | `pnpm verify`                           | exit 0 — Prettier clean; `no dependency violations found (289 modules, 1219 dependencies cruised)`; unit **47 files, 650 tests passed**; integration **20 files, 309 tests passed**                                                      |
+| Runtime (real processes, compose PostgreSQL/Redis, fake Sugar) | `pnpm verify:runtime`                   | exit 0 — `== Summary: 133 passed, 0 failed` (incl. `70-source-connectors.sh`; a first run failed 1 check because the script's read-only pattern included the API version prefix the fake does not log — script fixed, product unchanged) |
+| Docker image                                                   | `pnpm verify:docker`                    | exit 0 — `== Summary: 19 passed, 0 failed` (incl. 3 M8 checks; a first run failed the M6 context-processor check once, cause unproven, tech debt 41)                                                                                     |
+| Fresh clone (install, verify, runtime, Docker)                 | clone of the branch at the reviewed SHA | FRESH_RESULT                                                                                                                                                                                                                             |
+
+#### Mutation and failure proofs (32 of 32 failed for the stated reason, all passed after restore)
+
+Each mechanism was broken in place, the guarding test(s) run, then the code
+restored and the same tests re-run.
+
+| Mechanism broken                                        | Guarding test under mutation                                                                                          | After restore |
+| ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ------------- |
+| Mapping versions immutable (trigger)                    | fails: published mapping versions, snapshots and authority versions are immutable 303ms                               | passes        |
+| Required base version (mapping)                         | fails: mapping and authority publication require the base version and refuse a stale one 318ms                        | passes        |
+| Required base version (authority)                       | fails: mapping and authority publication require the base version and refuse a stale one 347ms                        | passes        |
+| Required base version (product model)                   | fails: publication requires the base version                                                                          | passes        |
+| Stale base refused (mapping concurrency)                | fails: mapping and authority publication require the base version and refuse a stale one 294ms                        | passes        |
+| Schema snapshot mismatch at publish (stale)             | fails: refuses a document validated against a snapshot that is not the latest 9ms                                     | passes        |
+| Schema drift checked at run start                       | fails: schema drift on the mapped surface refuses the run before any write 948ms                                      | passes        |
+| Forced RLS on the new M8 tables                         | fails: every table has row-level security enabled and forced 10ms                                                     | passes        |
+| Authority enforced at publish (state/terms/profiles)    | fails: a mapped state needs authority, a confirmation and a complete value map into canonical states 15ms             | passes        |
+| Authority enforced in the pipeline (terms dropped)      | fails: terms from a connection that is not (or no longer) their authority are dropped 9ms                             | passes        |
+| Unknown state preserved (never active by default)       | fails: ingests one line per holding RLI with state unknown (never active from Closed Won) 25ms                        | passes        |
+| Product name refused as identity                        | fails: refuses a name as identity, confirmed or not 7ms                                                               | passes        |
+| Duplicate external ids counted                          | fails: completes with stable quality counts (codes and counts only) 12ms                                              | passes        |
+| Transient failure keeps the run resumable               | fails: a transient failure mid-read leaves the run running                                                            | passes        |
+| Watermark overlap applied                               | fails: an incremental run reads from the watermark minus the overlap and advances it only on success 1002ms           | passes        |
+| Provenance records the mapping version                  | fails: provenance names the connection, object, record, mapping version, source time and run 28ms                     | passes        |
+| Adapter registration guard                              | fails: a kind without a registered adapter cannot be configured or synchronised 193ms                                 | passes        |
+| Coverage gate: only completed runs                      | fails: unstable read: a record modified during the read fails the run (unstable_read) 7285ms                          | passes        |
+| Incremental runs never tombstone (mode dispatch)        | fails: only the full-run tombstone pass deletes                                                                       | passes        |
+| Read-only transport guard                               | fails: lets only GET and the OAuth token POST through 20ms                                                            | passes        |
+| Single-writer rule (direct canonical write)             | fails: never writes canonical tables or provenance directly 8ms                                                       | passes        |
+| sugar imported by business code (dependency rule)       | fails: x 1 dependency violations (1 errors, 0 warnings). 289 modules, 1220 dependencies cruised.; error business-code | passes        |
+| Holding filter applied                                  | fails: completes with stable quality counts (codes and counts only) 13ms                                              | passes        |
+| Ownership gap makes the account ownership_incomplete    | fails: establishes coverage                                                                                           | passes        |
+| Invalid period keeps the holding (not dropped)          | fails: ingests one line per holding RLI with state unknown (never active from Closed Won) 30ms                        | passes        |
+| Count reconciliation (full-read proof)                  | fails: unstable read: a record modified during the read fails the run (unstable_read) 7458ms                          | passes        |
+| Orphan vs unmodelled classification                     | fails: 10 orphan product: skipped, and the whole account becomes an ownership gap 8ms                                 | passes        |
+| Holding gate on lines authority                         | fails: a connection becomes authoritative for lines only with confirmed holdings 269ms                                | passes        |
+| ownership_incomplete distinct from ownership_not_loaded | fails: an account with an ownership gap is unknown with ownership_incomplete (M8), distinct from not loaded 9ms       | passes        |
+| Connection config refuses secret-like keys (CHECK)      | fails: refuses connection config with a top-level secret-like key 34ms                                                | passes        |
+| Connector kind FK on source-system columns              | fails: refuses an unknown connector kind on every source-system column (foreign key) 26ms                             | passes        |
+| connector_kinds read-only for the app role              | fails: the app role can use every table except the migration history and read-only reference data 26ms                | passes        |
+
+Not mutated at M8 level: secret isolation rests on the M2 key derivation
+(`tenant.<slug>.<system>.<name>`) and its database CHECK (proved in M2); M8
+proves behaviourally that a second tenant using the same credential name gets
+its own key and fails closed (`auth_failed`, no grant at the source).
+
+#### Fixture-to-test matrix (as built)
+
+| #             | Fixture                                                           | Where proved                                             | Outcome                                                                   |
+| ------------- | ----------------------------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------- |
+| 01            | normal case                                                       | engine spec; sync int; runtime 70                        | 1 line, inclusive end → 2027-01-01, state `unknown`                       |
+| 02–05, 08, 16 | several/same products, renewal, expired+active, future, recurring | engine spec; sync int                                    | one line per RLI, no collapse, state `unknown`                            |
+| 06            | Pending Cancellation                                              | engine; sync int                                         | `filtered_out` (TEST filter Closed Won)                                   |
+| 07            | blank stage / unknown status                                      | engine (in/not_in, mapped-status variant)                | `filtered_out`; variant: `unknown` + `unmapped_source_enum_value`         |
+| 09            | orphan opportunity                                                | engine; sync int (C: RLI via FIX-OPP-011)                | `orphan_account_reference`                                                |
+| 10            | orphan product                                                    | engine; sync int; runtime 70                             | skipped, gap for FIX-ACC-009 → `ownership_incomplete`                     |
+| 11            | duplicate source line                                             | engine; sync int                                         | 1 line, `duplicate_external_id` 1                                         |
+| 12            | missing product id                                                | engine; sync int; runtime 70                             | skipped, gap for FIX-ACC-011                                              |
+| 13            | conflicting dates                                                 | engine; sync int                                         | line kept, terms empty, `unknown`, `invalid_period`                       |
+| 14            | deleted                                                           | engine (flag → absent); adapter spec (hidden by default) | absence / tombstone only in full runs                                     |
+| 15            | one-off product                                                   | engine (ignored vs modelled)                             | skip `non_subscription_product` / ingested, empty terms                   |
+| C1            | Closed Lost, open pipeline                                        | engine; sync int                                         | `filtered_out`                                                            |
+| C2            | unmodelled product                                                | sync int                                                 | run fails `unmodelled_product_reference` before any line; model unchanged |
+| C3            | drift (field removed; enum added/removed; type/relationship)      | drift spec; sync int (start and mid-run)                 | `schema_drift`, nothing written                                           |
+| C4            | 1,000+ lines, modification mid-read                               | adapter spec; sync int                                   | pagination + count proof; `unstable_read`; retry passes                   |
+| C5            | Users                                                             | validator spec; adapter spec                             | `internal_principal`; mapping to person refused (`invalid_entity`)        |
+
+### Security
+
+- Credentials: one SecretProvider secret per connection (credential name
+  only in the database; FK to `tenant_credential_refs`; key derived from the
+  tenant slug); never logged, never echoed in errors (adapter spec).
+- No secrets in configuration: recursive secret-like-key CHECK on connection
+  config, snapshot and mapping documents (migrations spec; mutation proven).
+- Read-only Sugar transport guard (unit, mutation, runtime fake request log).
+- Preview: ≤ 20 records, mapped fields only, hashed references, nothing
+  persisted or logged.
+- No PII in logs/metrics: metric labels are codes (enforced by
+  `MetricsService`); runtime 70 greps CLI output and worker logs for fixture
+  names and the fixture password.
+- Repository scan: no credentials; the only secret-shaped values are the fake
+  Sugar's synthetic fixture credentials in test code.
+
+### Known limitations and technical debt
+
+Technical-debt items 29–40 (`docs/tech-debt.md`); items 22 and 26 resolved.
+The live and business gates are recorded in
+`docs/integrations/sugar/live-verification.md`.
+
+### Confirmation
+
+M8 implementation only. **M9 has NOT been started.** No live Sugar call was
+made; **LIVE SUGAR VERIFICATION: PENDING**. Not merged to `main`.

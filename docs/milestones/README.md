@@ -1,6 +1,6 @@
 # Delivery plan
 
-> **M0–M7 are complete** (M6 and M7 with documented non-blocking technical debt). The next activity is the **Subscription Source Discovery** gate before M8. From M6 onward the plan follows the **approved
+> **M0–M7 are complete** (M6 and M7 with documented non-blocking technical debt). **M8 is implemented and awaits independent review** (LIVE SUGAR VERIFICATION: PENDING); M9 has not started. From M6 onward the plan follows the **approved
 > roadmap** in [docs/product/roadmap.md](../product/roadmap.md), which follows
 > the [product charter](../product/revenue-opportunity-intelligence.md) and
 > [ADR 0012](../adr/0012-revenue-opportunity-intelligence-direction.md). The
@@ -33,6 +33,6 @@ committed separately with its own record in this folder.
 | 16  | Outcomes / attribution / measurement                                       | As connected                                      |
 | 17  | Juniper pilot: shadow → coexist → active                                   | Juniper accounts + approvals                      |
 
-Records: [M0](M00-foundation.md) · [M1](M01-canonical-domain-model.md) · [M2](M02-tenancy-data-isolation.md) · [M3](M03-hubspot-test-environment.md) · [M4](M04-hubspot-connector-abstraction.md) · [M5](M05-hubspot-webhooks.md) · [M6](M06-event-processing-canonical-context.md) · [M7](M07-product-catalogue-subscriptions-eligibility.md) · [M8 (plan, awaiting approval)](M08-generic-source-connector-and-mapping.md)
+Records: [M0](M00-foundation.md) · [M1](M01-canonical-domain-model.md) · [M2](M02-tenancy-data-isolation.md) · [M3](M03-hubspot-test-environment.md) · [M4](M04-hubspot-connector-abstraction.md) · [M5](M05-hubspot-webhooks.md) · [M6](M06-event-processing-canonical-context.md) · [M7](M07-product-catalogue-subscriptions-eligibility.md) · [M8 (implemented, pending review; live Sugar pending)](M08-generic-source-connector-and-mapping.md)
 
 Known non-blocking items: [technical-debt register](../tech-debt.md).

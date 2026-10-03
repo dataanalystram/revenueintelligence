@@ -123,7 +123,8 @@ out="$(run_once cli --network host -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" 
 grep -q '"slug": "dockerco"' <<<"$out" && pass "provisioning CLI works inside the image (template shipped)" || fail "provisioning CLI in image"
 # M6: the worker consumes the context queues (Redis noeviction verified at start-up).
 docker logs "$PROJECT-worker" 2>&1 | grep -q 'Context processors registered' \
-  && pass "worker container registered the context processors (M6)" || fail "worker container context processors"
+  && pass "worker container registered the context processors (M6)" \
+  || { fail "worker container context processors"; docker logs "$PROJECT-worker" 2>&1 | grep -o '"msg":"[^"]*"' | tail -15; }
 out="$(run_once ctxcli --network host -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" "$TAG-runtime" \
   node dist/cli/context.js report --tenant dockerco 2>&1 || true)"
 grep -q '"processingEnabled": true' <<<"$out" && grep -q '"lip-receipts"' <<<"$out" \
@@ -137,6 +138,19 @@ out="$(run_once prodrep --network host -e DATABASE_URL="$APP" -e REDIS_URL="$RED
   node dist/cli/products.js report --tenant dockerco 2>&1 || true)"
 grep -q '"noActiveLinesOnMergedCompanies": true' <<<"$out" && grep -q '"coverage": "unknown"' <<<"$out" \
   && pass "products:report inside the image: invariants hold, coverage unknown before any load (M7)" || fail "products:report in image"
+
+# M8: the worker registers the source sync processor and the sources CLI runs
+# inside the image (the platform-created import connection and authority v1).
+docker logs "$PROJECT-worker" 2>&1 | grep -q 'Source sync processor registered' \
+  && pass "worker container registered the source sync processor (M8)" || fail "worker container source processor"
+out="$(run_once srccli --network host -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" "$TAG-runtime" \
+  node dist/cli/sources.js list --tenant dockerco 2>&1 || true)"
+grep -q '"kind": "import"' <<<"$out" && grep -q '"mappingMode": "code"' <<<"$out" \
+  && pass "sources CLI lists the import connection inside the image (M8)" || fail "sources CLI list in image"
+out="$(run_once srcauth --network host -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" "$TAG-runtime" \
+  node dist/cli/sources.js authority-show --tenant dockerco 2>&1 || true)"
+grep -q '"version": 1' <<<"$out" && grep -q '"subscription_lines"' <<<"$out" \
+  && pass "sources CLI shows authority version 1 inside the image (M8)" || fail "sources CLI authority-show in image"
 
 echo "== Cleanup self-test"
 # The leftover detector must see every kind of resource this run creates, or

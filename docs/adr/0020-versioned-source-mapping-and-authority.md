@@ -147,3 +147,28 @@ source object can mix holdings with lost or open deals.
   unattributable holdings cannot create false whitespace.
 - Relational holding filters, cross-source line matching and field-level
   precedence are explicit future work.
+
+## As built (M8)
+
+- **Governance order** for a new source: publish a mapping whose
+  subscription objects have confirmed holdings and state terms/state
+  explicitly → publish authority (lines, and terms if confirmed) → publish the
+  next mapping version with the confirmed date mapping. Mapped state, terms and
+  profiles are refused until the connection holds that fact; lines are gated
+  at run start (`not_authoritative_for_lines`) and by the authority holding
+  gate. Authority also refuses `cross_source_unsupported` (state/terms from a
+  connection other than the lines') and `authority_not_supported` (a
+  code-mapped kind for a fact it cannot provide).
+- **Authority version 1** is seeded for every tenant: subscription facts →
+  `import` (keeps M7 CSV coverage behaviour for every tenant), profiles → the
+  HubSpot connection where configured; provisioning seeds the same (profiles
+  unassigned).
+- **Unmodelled products** are detected at catalogue level (any catalogue
+  product neither modelled nor ignored), before any line is processed; the
+  ignore list therefore also carries inactive catalogue entries (tech debt).
+- **Resume**: a full run interrupted by a transient failure restarts its read
+  under the same boundary (writes are idempotent); an incremental run resumes
+  from its stored position.
+- **Wire precision**: the Sugar adapter sends second-precision timestamps
+  (LIVE); the incremental window start is floored, so reads only start
+  earlier.

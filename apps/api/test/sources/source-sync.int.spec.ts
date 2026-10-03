@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { EligibilityService } from '../../src/modules/products';
-import { type TenantContext } from '../../src/modules/tenancy';
+import { tenantClient, type TenantContext } from '../../src/modules/tenancy';
 import { startContextHarness, type ContextHarness } from '../support/context';
 import { FakeSugar } from '../support/fake-sugar';
 import {
@@ -580,6 +580,173 @@ describe('source synchronisation (Sugar adapter, fake Sugar)', () => {
           },
         }),
       ).rejects.toMatchObject({ code: 'invalid_config' });
+    });
+  });
+
+  describe('reliability: interruption, resume and partial loads', () => {
+    it('a transient failure mid-read leaves the run running; executing again resumes and completes idempotently', async () => {
+      const local = await new FakeSugar({ generatedLines: 450 }).start();
+      try {
+        const f = await sugarTenant(c, local, { prefix: 'srcresume' });
+        const s = sourcesServices(c);
+        const started = await s.sync.start(f.ctx, f.connectionId, 'full', { enqueue: false });
+        // Page 2 of the lines keeps failing with 503 beyond the adapter's retries.
+        local.fail({
+          match: /^GET \/RevenueLineItems$/,
+          status: 503,
+          times: 10,
+          when: (r) => r.query.get('offset') === '200',
+        });
+        await expect(s.sync.execute(f.ctx, started.runId)).rejects.toMatchObject({
+          kind: 'server_error',
+        });
+        expect((await run(f.ctx, started.runId))[0]!.status).toBe('running');
+        local.faults.length = 0;
+        const resumed = await s.sync.execute(f.ctx, started.runId);
+        expect(resumed.status).toBe('completed');
+        expect((await lines(f.ctx)).length).toBe(16 + 450);
+        // Every line was created exactly once despite the re-read.
+        const created = await c.sql<{ n: number }>(
+          `SELECT count(*)::int AS n FROM tenant_context_changes
+            WHERE tenant_id = $1 AND entity_kind = 'subscription' AND change_type = 'created'`,
+          [f.ctx.tenantId],
+        );
+        expect(created[0]!.n).toBe(16 + 450);
+      } finally {
+        await local.stop();
+      }
+    });
+
+    it('a permanent failure mid-run fails it without tombstones and without changing coverage or gaps', async () => {
+      const local = await new FakeSugar({ generatedLines: 450 }).start();
+      try {
+        const f = await sugarTenant(c, local, { prefix: 'srcpartial' });
+        expect((await runSync(c, f, 'full')).status).toBe('completed');
+        const gapsBefore = await c.sql(
+          'SELECT * FROM tenant_ownership_gaps WHERE tenant_id = $1 ORDER BY source_record_id',
+          [f.ctx.tenantId],
+        );
+        local.remove('RevenueLineItems', 'FIX-RLI-140');
+        local.fail({
+          match: /^GET \/RevenueLineItems$/,
+          status: 400,
+          when: (r) => r.query.get('offset') === '200',
+        });
+        const failed = await runSync(c, f, 'full');
+        expect(failed).toMatchObject({ status: 'failed', errorCode: 'source_bad_request' });
+        expect(
+          (await lines(f.ctx)).find((r) => r.source_record_id === 'FIX-RLI-140')!.record_state,
+        ).toBe('active');
+        expect(
+          await c.sql(
+            'SELECT * FROM tenant_ownership_gaps WHERE tenant_id = $1 ORDER BY source_record_id',
+            [f.ctx.tenantId],
+          ),
+        ).toEqual(gapsBefore);
+        // Coverage still rests on the earlier completed run (a failed run never establishes it).
+        expect(await c.h.subscriptionReads.coverage(f.ctx)).toMatchObject({ coverage: 'known' });
+      } finally {
+        await local.stop();
+      }
+    });
+
+    it('a mapped field disappearing mid-run fails the run as schema drift (nothing reinterpreted)', async () => {
+      const local = await new FakeSugar().start();
+      try {
+        const f = await sugarTenant(c, local, { prefix: 'srcmiddrift' });
+        local.droppedFields.add('service_start_date');
+        const r = await runSync(c, f, 'full');
+        expect(r).toMatchObject({ status: 'failed', errorCode: 'schema_drift' });
+        expect(await c.h.subscriptionReads.coverage(f.ctx)).toMatchObject({ coverage: 'unknown' });
+      } finally {
+        await local.stop();
+      }
+    });
+
+    it('a kind without a registered adapter cannot be configured or synchronised', async () => {
+      const s = sourcesServices(c);
+      const f = await sugarTenant(c, fake, { prefix: 'srcnoadapter', stopAfter: 'connection' });
+      await expect(
+        s.connections.configure(f.ctx, { kind: 'gainsight_cs', label: 'GS', config: {} }),
+      ).rejects.toMatchObject({ code: 'adapter_not_registered' });
+      await expect(
+        s.connections.configure(f.ctx, { kind: 'hubspot', label: 'HS', config: {} }),
+      ).rejects.toMatchObject({ code: 'kind_not_configurable' });
+      // A connection of such a kind (created outside the service) cannot start a run.
+      const [{ id }] = (await c.sql<{ id: string }>(
+        `INSERT INTO tenant_source_connections (tenant_id, id, kind, label, status, mapping_mode)
+         VALUES ($1, gen_random_uuid(), 'gainsight_cs', 'GS', 'enabled', 'versioned') RETURNING id::text`,
+        [f.ctx.tenantId],
+      )) as [{ id: string }];
+      await expect(s.sync.start(f.ctx, id, 'full', { enqueue: false })).rejects.toMatchObject({
+        code: 'adapter_not_registered',
+      });
+    });
+  });
+
+  describe('tenant isolation of the new tables', () => {
+    it("tenant B cannot read or reference tenant A's connections, snapshots, mappings, authority or gaps", async () => {
+      const a = await sugarTenant(c, fake, { prefix: 'srcisoa' });
+      expect((await runSync(c, a, 'full')).status).toBe('completed');
+      const b = await sugarTenant(c, fake, { prefix: 'srcisob', stopAfter: 'connection' });
+      const counts = await c.h.db.transaction(b.ctx, async (tx) => {
+        const db = tenantClient(tx);
+        return {
+          connections: await db.tenantSourceConnection.count({ where: { id: a.connectionId } }),
+          snapshots: await db.tenantSourceSchemaSnapshot.count({
+            where: { connectionId: a.connectionId },
+          }),
+          mappings: await db.tenantSourceMappingVersion.count({
+            where: { connectionId: a.connectionId },
+          }),
+          authority: await db.tenantSourceAuthorityVersion.count({
+            where: { tenantId: a.ctx.tenantId },
+          }),
+          gaps: await db.tenantOwnershipGap.count({ where: { connectionId: a.connectionId } }),
+          runs: await db.tenantSyncCheckpoint.count({
+            where: { sourceConnectionId: a.connectionId },
+          }),
+        };
+      });
+      expect(counts).toEqual({
+        connections: 0,
+        snapshots: 0,
+        mappings: 0,
+        authority: 0,
+        gaps: 0,
+        runs: 0,
+      });
+      // Writing A's rows from B's transaction is refused by RLS …
+      await expect(
+        c.h.db.transaction(b.ctx, (tx) =>
+          tenantClient(tx).tenantOwnershipGap.create({
+            data: {
+              tenantId: a.ctx.tenantId,
+              connectionId: a.connectionId,
+              sourceObjectType: 'RevenueLineItems',
+              sourceRecordId: 'X',
+              companyId: '00000000-0000-4000-8000-000000000000',
+              reason: 'orphan_product_reference',
+              checkpointId: '00000000-0000-4000-8000-000000000000',
+            },
+          }),
+        ),
+      ).rejects.toThrow();
+      // … and B's own rows cannot point at A's connection (composite tenant FK).
+      await expect(
+        c.h.db.transaction(b.ctx, (tx) =>
+          tenantClient(tx).tenantSourceAuthorityVersion.create({
+            data: {
+              tenantId: b.ctx.tenantId,
+              version: 2,
+              baseVersion: 1,
+              subscriptionLinesConnectionId: a.connectionId,
+              contentHash: 'a'.repeat(64),
+              publishedBy: 'test',
+            },
+          }),
+        ),
+      ).rejects.toThrow();
     });
   });
 

@@ -217,3 +217,17 @@ full|incremental [--execute]`. The source name is the line's
   migration counts rows before dropping `company_products`. A dev/staging
   down-script restores the table exactly and refuses when non-legacy data
   exists.
+
+## As built (M8)
+
+- **Coverage follows source authority** (ADR 0020 §12): known only from the
+  connection authoritative for `subscription_lines`. `import`: the M7 rule
+  (latest completed `import_full`). A versioned source: its latest completed
+  full run (`mode = backfill`, full-read proof passed) under the connection's
+  latest mapping version, started after the connection became the authority.
+  For a versioned authority only that source's lines are ownership facts (no
+  cross-source line matching). Tech-debt item 22 is resolved by this rule plus
+  per-account ownership gaps.
+- **Provenance**: every writer row records the producing connection
+  (`source_connection_id`, the tenant's connection of the source system) and,
+  for versioned sources, the mapping version (composite FK).

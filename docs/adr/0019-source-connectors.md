@@ -71,3 +71,30 @@ adapter and configuration, never by changing the canonical core.
   per adapter).
 - Making Sugar implement `CrmReader`: rejected (a CRM context port, not a
   subscription-source contract).
+
+## As built (M8)
+
+- **Catalogue**: `connector_kinds (kind, display_name, has_adapter)`; the
+  migration replaces the CHECK lists on `company_external_refs`,
+  `person_external_refs`, `tenant_context_changes`,
+  `tenant_source_relationships`, `tenant_sync_checkpoints`,
+  `tenant_subscriptions` and `tenant_dead_letters` (the subject CHECK keeps its
+  other clauses) with FKs, and keeps `import` out of external references,
+  relationships and dead-letter subjects. Integration tables
+  (`tenant_integrations`, `tenant_credential_refs`, `jev`) and the
+  HubSpot-only tables keep their own CHECKs. A test asserts the database
+  catalogue equals the code catalogue.
+- **Connections**: `import` is created at provisioning; `hubspot` when the
+  HubSpot integration is enabled; versioned kinds through
+  `SourceConnectionsService.configure` (CLI `sources:configure`), which also
+  registers the credential **name** for the tenant (the key is derived from
+  the tenant slug). The Sugar credential is one SecretProvider secret holding
+  a JSON bundle.
+- **Adapters** are injected by the composition root (`SourcesModule.register`,
+  worker and CLI only); `start()` refuses a kind without a registered adapter
+  (`adapter_not_registered`). The port gained an optional
+  `countRecords()` (capability-dependent, used for the full-read proof).
+- **Jobs**: `source.sync` runs on a dedicated queue `lip-sources` (same BullMQ
+  platform, retries/backoff/Retry-After, dead letters through the M6
+  recorder) instead of `lip-bulk`, so the context module's `lip-bulk`
+  dispatcher never receives source jobs (no module cycle).
