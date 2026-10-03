@@ -1,0 +1,17 @@
+id,name,type_name,renewable,service,date_modified,deleted
+FIX-PROD-001,Fixture Product 1,Subscription,True,False,2025-10-01,False
+FIX-PROD-010,Platform Licence,Subscription,True,False,2025-10-01,False
+FIX-PROD-011,Platform Licence,Subscription,True,False,2025-10-01,False
+FIX-PROD-012,Implementation Service,Subscription,False,True,2025-10-01,False
+FIX-PROD-020,Fixture Product 20,NULL,True,False,2025-10-01,False
+FIX-PROD-030,Fixture Product 30,NULL,True,False,2025-10-01,False
+FIX-PROD-040,Fixture Product 40,Subscription,True,False,2025-10-01,False
+FIX-PROD-050,Fixture Product 50,Subscription,True,False,2025-10-01,False
+FIX-PROD-060,Fixture Product 60,Subscription,True,False,2025-10-01,False
+FIX-PROD-070,Fixture Product 70,Subscription,True,False,2025-10-01,False
+FIX-PROD-090,Fixture Product 90,Subscription,True,False,2025-10-01,False
+FIX-PROD-110,Fixture Product 110,Subscription,True,False,2025-10-01,False
+FIX-PROD-120,Fixture Product 120,Subscription,True,False,2025-10-01,False
+FIX-PROD-130,Setup Fee,Subscription,False,True,2025-10-01,False
+FIX-PROD-140,Annual Platform Subscription,Subscription,True,False,2025-10-01,False
+FIX-PROD-900,Unmodelled Add-on,Subscription,True,False,2025-10-01,False

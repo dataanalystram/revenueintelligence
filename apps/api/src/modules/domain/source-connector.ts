@@ -258,3 +258,24 @@ export interface SourceConnectionSettings {
   readonly config: Readonly<Record<string, unknown>>;
   readonly credentialName?: string;
 }
+
+/** A secret as adapters see it: revealed only at the point of use, never logged. */
+export interface RevealableSecret {
+  reveal(): string;
+}
+
+/**
+ * How an adapter is registered under its kind (ADR 0019 §4). The composition
+ * root provides the factories; a process refuses to synchronise a connection
+ * whose kind has none.
+ */
+export interface SourceAdapterFactory {
+  readonly kind: ConnectorKind;
+  readonly adapterVersion: string;
+  /** Validates the adapter's non-secret connection configuration. */
+  validateConfig(config: unknown): { ok: true } | { ok: false; issues: readonly string[] };
+  create(
+    settings: SourceConnectionSettings,
+    deps: { readonly resolveCredential: (name: string) => Promise<RevealableSecret> },
+  ): SourceConnector;
+}

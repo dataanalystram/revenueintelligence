@@ -1,0 +1,304 @@
+{
+  "Accounts": {
+    "fields": {
+      "id": {
+        "name": "id",
+        "type": "id",
+        "label": "Id"
+      },
+      "name": {
+        "name": "name",
+        "type": "name",
+        "label": "Name"
+      },
+      "website": {
+        "name": "website",
+        "type": "url",
+        "label": "Website"
+      },
+      "date_modified": {
+        "name": "date_modified",
+        "type": "datetime",
+        "label": "Date Modified"
+      },
+      "deleted": {
+        "name": "deleted",
+        "type": "bool",
+        "label": "Deleted"
+      }
+    }
+  },
+  "Contacts": {
+    "fields": {
+      "id": {
+        "name": "id",
+        "type": "id",
+        "label": "Id"
+      },
+      "email1": {
+        "name": "email1",
+        "type": "varchar",
+        "label": "Email1"
+      },
+      "first_name": {
+        "name": "first_name",
+        "type": "varchar",
+        "label": "First Name"
+      },
+      "last_name": {
+        "name": "last_name",
+        "type": "varchar",
+        "label": "Last Name"
+      },
+      "title": {
+        "name": "title",
+        "type": "varchar",
+        "label": "Title"
+      },
+      "account_id": {
+        "name": "account_id",
+        "type": "id",
+        "label": "Account Id",
+        "module": "Accounts"
+      },
+      "date_modified": {
+        "name": "date_modified",
+        "type": "datetime",
+        "label": "Date Modified"
+      }
+    }
+  },
+  "Opportunities": {
+    "fields": {
+      "id": {
+        "name": "id",
+        "type": "id",
+        "label": "Id"
+      },
+      "name": {
+        "name": "name",
+        "type": "name",
+        "label": "Name"
+      },
+      "account_id": {
+        "name": "account_id",
+        "type": "id",
+        "label": "Account Id",
+        "module": "Accounts"
+      },
+      "sales_stage": {
+        "name": "sales_stage",
+        "type": "enum",
+        "label": "Sales Stage",
+        "options": {
+          "Prospecting": "Prospecting",
+          "Qualification": "Qualification",
+          "Proposal": "Proposal",
+          "Negotiation": "Negotiation",
+          "Closed Won": "Closed Won",
+          "Closed Lost": "Closed Lost",
+          "Pending Cancellation": "Pending Cancellation"
+        }
+      },
+      "date_closed": {
+        "name": "date_closed",
+        "type": "date",
+        "label": "Date Closed"
+      },
+      "date_modified": {
+        "name": "date_modified",
+        "type": "datetime",
+        "label": "Date Modified"
+      },
+      "deleted": {
+        "name": "deleted",
+        "type": "bool",
+        "label": "Deleted"
+      }
+    }
+  },
+  "RevenueLineItems": {
+    "fields": {
+      "id": {
+        "name": "id",
+        "type": "id",
+        "label": "Id"
+      },
+      "name": {
+        "name": "name",
+        "type": "name",
+        "label": "Name"
+      },
+      "account_id": {
+        "name": "account_id",
+        "type": "id",
+        "label": "Account Id",
+        "module": "Accounts"
+      },
+      "opportunity_id": {
+        "name": "opportunity_id",
+        "type": "id",
+        "label": "Opportunity Id",
+        "module": "Opportunities"
+      },
+      "product_template_id": {
+        "name": "product_template_id",
+        "type": "id",
+        "label": "Product Template Id",
+        "module": "ProductTemplates"
+      },
+      "quantity": {
+        "name": "quantity",
+        "type": "decimal",
+        "label": "Quantity"
+      },
+      "sales_stage": {
+        "name": "sales_stage",
+        "type": "enum",
+        "label": "Sales Stage",
+        "options": {
+          "Prospecting": "Prospecting",
+          "Qualification": "Qualification",
+          "Proposal": "Proposal",
+          "Negotiation": "Negotiation",
+          "Closed Won": "Closed Won",
+          "Closed Lost": "Closed Lost",
+          "Pending Cancellation": "Pending Cancellation"
+        }
+      },
+      "status": {
+        "name": "status",
+        "type": "enum",
+        "label": "Status",
+        "options": {
+          "Active": "Active",
+          "Expired": "Expired"
+        }
+      },
+      "renewal": {
+        "name": "renewal",
+        "type": "bool",
+        "label": "Renewal"
+      },
+      "renewal_rli_id": {
+        "name": "renewal_rli_id",
+        "type": "id",
+        "label": "Renewal Rli Id",
+        "module": "RevenueLineItems"
+      },
+      "recurring_one_off_c": {
+        "name": "recurring_one_off_c",
+        "type": "enum",
+        "label": "Recurring One Off C",
+        "options": {
+          "Recurring": "Recurring",
+          "Non Recurring": "Non Recurring",
+          "One Off": "One Off"
+        }
+      },
+      "service": {
+        "name": "service",
+        "type": "bool",
+        "label": "Service"
+      },
+      "service_start_date": {
+        "name": "service_start_date",
+        "type": "date",
+        "label": "Service Start Date"
+      },
+      "service_end_date": {
+        "name": "service_end_date",
+        "type": "date",
+        "label": "Service End Date"
+      },
+      "date_closed": {
+        "name": "date_closed",
+        "type": "date",
+        "label": "Date Closed"
+      },
+      "date_entered": {
+        "name": "date_entered",
+        "type": "datetime",
+        "label": "Date Entered"
+      },
+      "date_modified": {
+        "name": "date_modified",
+        "type": "datetime",
+        "label": "Date Modified"
+      },
+      "deleted": {
+        "name": "deleted",
+        "type": "bool",
+        "label": "Deleted"
+      },
+      "mrr_c": {
+        "name": "mrr_c",
+        "type": "currency",
+        "label": "Mrr C"
+      }
+    }
+  },
+  "ProductTemplates": {
+    "fields": {
+      "id": {
+        "name": "id",
+        "type": "id",
+        "label": "Id"
+      },
+      "name": {
+        "name": "name",
+        "type": "name",
+        "label": "Name"
+      },
+      "type_name": {
+        "name": "type_name",
+        "type": "varchar",
+        "label": "Type Name"
+      },
+      "renewable": {
+        "name": "renewable",
+        "type": "bool",
+        "label": "Renewable"
+      },
+      "service": {
+        "name": "service",
+        "type": "bool",
+        "label": "Service"
+      },
+      "date_modified": {
+        "name": "date_modified",
+        "type": "datetime",
+        "label": "Date Modified"
+      },
+      "deleted": {
+        "name": "deleted",
+        "type": "bool",
+        "label": "Deleted"
+      }
+    }
+  },
+  "Users": {
+    "fields": {
+      "id": {
+        "name": "id",
+        "type": "id",
+        "label": "Id"
+      },
+      "user_name": {
+        "name": "user_name",
+        "type": "varchar",
+        "label": "User Name"
+      },
+      "date_modified": {
+        "name": "date_modified",
+        "type": "datetime",
+        "label": "Date Modified"
+      },
+      "deleted": {
+        "name": "deleted",
+        "type": "bool",
+        "label": "Deleted"
+      }
+    }
+  }
+}

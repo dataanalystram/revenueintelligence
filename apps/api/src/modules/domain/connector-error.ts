@@ -20,7 +20,9 @@ export type ConnectorErrorKind =
   | 'server_error'
   | 'timeout'
   | 'network'
-  | 'invalid_payload';
+  | 'invalid_payload'
+  /** The source's schema no longer matches the published mapping (M8). */
+  | 'schema_drift';
 
 export class ConnectorError extends Error {
   constructor(

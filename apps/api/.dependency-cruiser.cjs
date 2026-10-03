@@ -84,6 +84,23 @@ module.exports = {
       to: { path: '^src/modules/hubspot/' },
     },
     {
+      name: 'business-code-uses-source-port',
+      severity: 'error',
+      comment:
+        'Business code reaches a source system only through the generic SourceConnector port ' +
+        '(ADR 0019). Only the Sugar adapter itself, the composition roots and the CLI may import it.',
+      from: {
+        path: '^src/',
+        pathNot: [
+          '^src/modules/sugar/',
+          '^src/cli/',
+          '^src/app\\.module\\.ts$',
+          '^src/worker\\.module\\.ts$',
+        ],
+      },
+      to: { path: '^src/modules/sugar/' },
+    },
+    {
       name: 'gainsight-access-only-in-gainsight-connector',
       severity: 'error',
       from: { pathNot: '^src/modules/gainsight/' },
