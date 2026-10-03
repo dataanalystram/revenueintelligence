@@ -42,7 +42,7 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
   /** A tenant with the generic model published and HubSpot companies by id. */
   async function tenantWithCompanies(prefix: string, ids: string[]): Promise<TenantContext> {
     const t = await c.tenant(prefix, 1001);
-    await c.h.catalogue.publish(t, genericModel(), { actor: 'test' });
+    await c.h.catalogue.publish(t, genericModel(), { actor: 'test', basedOnVersion: 0 });
     for (const id of ids) await company(t, id);
     return t;
   }
@@ -544,7 +544,7 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
               : p,
           ),
         }),
-        { actor: 'test' },
+        { actor: 'test', basedOnVersion: 1 },
       );
       await expect(
         c.h.subscriptions.ingest(t, present('D3', ref, 'gainsight_cs:Product:GS-REP'), meta()),

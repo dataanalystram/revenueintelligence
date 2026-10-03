@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { CompanyMerge, CompanyMergeParticipant } from '../../context';
 import type { TenantTransaction } from '../../tenancy';
+import { OwnershipGapStore } from '../infrastructure/ownership-gap.store';
 import { SubscriptionStore } from '../infrastructure/subscription.store';
 
 /**
@@ -14,10 +15,16 @@ import { SubscriptionStore } from '../infrastructure/subscription.store';
 export class SubscriptionMergeParticipant implements CompanyMergeParticipant {
   private readonly logger = new Logger(SubscriptionMergeParticipant.name);
 
-  constructor(private readonly store: SubscriptionStore) {}
+  constructor(
+    private readonly store: SubscriptionStore,
+    private readonly gaps: OwnershipGapStore,
+  ) {}
 
   async onCompanyMerged(tx: TenantTransaction, merge: CompanyMerge): Promise<void> {
     const moved = await this.store.repointCompany(tx, merge);
     if (moved > 0) this.logger.log(`subscriptions_repointed count=${moved}`);
+    // An ownership gap belongs to the account, whichever company id it now has.
+    const gaps = await this.gaps.repointCompany(tx, merge);
+    if (gaps > 0) this.logger.log(`ownership_gaps_repointed count=${gaps}`);
   }
 }

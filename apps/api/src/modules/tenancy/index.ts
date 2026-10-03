@@ -14,7 +14,6 @@ export {
   type ProvisionTenantInput,
 } from './application/tenant-registry.service';
 export * from './config/credentials';
-export * from './config/field-mappings';
 export * from './config/flows';
 export * from './config/integrations';
 export * from './config/lead-source-mappings';

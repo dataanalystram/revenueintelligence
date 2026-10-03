@@ -90,18 +90,18 @@ export const COMPANY = '11111111-1111-4111-8111-111111111111' as CompanyId;
  */
 export async function publishAdding(
   catalogue: {
-    show(ctx: never, version?: number): Promise<{ document: unknown } | undefined>;
+    show(ctx: never, version?: number): Promise<{ document: unknown; version: number } | undefined>;
     publish(
       ctx: never,
       document: unknown,
-      options: { actor: string },
+      options: { actor: string; basedOnVersion: number },
     ): Promise<{ version: number }>;
   },
   ctx: unknown,
   products: readonly { key: string; name: string; status?: 'active' | 'retired' }[],
 ): Promise<{ version: number }> {
-  const latest = (await catalogue.show(ctx as never))?.document as
-    ProductModelDocumentInput | undefined;
+  const stored = await catalogue.show(ctx as never);
+  const latest = stored?.document as ProductModelDocumentInput | undefined;
   const existing = latest?.products ?? [];
   const keys = new Set(existing.map((p) => p.key));
   return catalogue.publish(
@@ -114,6 +114,6 @@ export async function publishAdding(
         ...products.filter((p) => !keys.has(p.key)),
       ],
     },
-    { actor: 'test' },
+    { actor: 'test', basedOnVersion: stored?.version ?? 0 },
   );
 }

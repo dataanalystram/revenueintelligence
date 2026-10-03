@@ -53,6 +53,16 @@ describe('tenant provisioning and configuration rules', () => {
       });
       await expect(h.config.getPolicy(t, 'sla')).resolves.toBeUndefined();
       await expect(h.credentials.list(t)).resolves.toEqual([]);
+      // M8: every tenant can import subscriptions: its `import` connection exists.
+      const connections = await withAdmin(infra.adminUrl, (db) =>
+        db.query<{ kind: string; status: string; mapping_mode: string }>(
+          'SELECT kind, status, mapping_mode FROM tenant_source_connections WHERE tenant_id = $1',
+          [t.tenantId],
+        ),
+      );
+      expect(connections.rows).toEqual([
+        { kind: 'import', status: 'enabled', mapping_mode: 'code' },
+      ]);
     });
 
     it('applies the Juniper template (values from the brief only)', async () => {
@@ -73,14 +83,6 @@ describe('tenant provisioning and configuration rules', () => {
       expect(sources.map((s) => s.channel)).toContain('demo_request');
       expect(sources[0]).toMatchObject({ sourceValue: 'Checklist', priority: 10 });
 
-      const mappings = await h.config.listFieldMappings(ctx, { system: 'sugar' });
-      expect(mappings.find((m) => m.canonicalField === 'stage')).toMatchObject({
-        externalField: 'status',
-        status: 'proposed',
-      });
-      const tbc = mappings.filter((m) => m.status === 'tbc');
-      expect(tbc.length).toBeGreaterThan(0);
-      expect(tbc.every((m) => m.externalField === null)).toBe(true);
       // Still safe: nothing enabled.
       expect((await h.config.listIntegrations(ctx)).every((i) => i.access === 'disabled')).toBe(
         true,
@@ -151,6 +153,16 @@ describe('tenant provisioning and configuration rules', () => {
         settings: { portalId: '123456' },
       });
       await h.config.configureIntegration(t, 'sugar', { access: 'read_only' });
+      // Enabling HubSpot registers its code-mapped source connection once; Sugar
+      // needs an explicit, configured connection (never created implicitly).
+      await h.config.configureIntegration(t, 'hubspot', { access: 'read_only' });
+      const connections = await withAdmin(infra.adminUrl, (db) =>
+        db.query<{ kind: string }>(
+          'SELECT kind FROM tenant_source_connections WHERE tenant_id = $1 ORDER BY kind',
+          [t.tenantId],
+        ),
+      );
+      expect(connections.rows.map((r) => r.kind)).toEqual(['hubspot', 'import']);
       await expect(
         h.config.setFlowMode(t, 'hubspot_to_sugar_handover', 'coexist'),
       ).resolves.toMatchObject({
@@ -267,49 +279,18 @@ describe('tenant provisioning and configuration rules', () => {
             { key: 'legacy', name: 'Legacy', status: 'retired' },
           ],
         },
-        { actor: 'test' },
+        { actor: 'test', basedOnVersion: 0 },
       );
       await expect(h.config.listProducts(t, { activeOnly: true })).resolves.toEqual([
         { key: 'marketplace', name: 'Marketplace', description: 'Buying platform', active: true },
       ]);
       await expect(
-        h.catalogue.publish(t, { products: [{ key: 'Bad Key', name: 'x' }] }, { actor: 'test' }),
+        h.catalogue.publish(
+          t,
+          { products: [{ key: 'Bad Key', name: 'x' }] },
+          { actor: 'test', basedOnVersion: 1 },
+        ),
       ).rejects.toBeInstanceOf(ProductModelInvalidError);
-    });
-
-    it('field mappings: TBC means no external field, and keys are unique per canonical field', async () => {
-      await expect(
-        h.config.saveFieldMapping(t, {
-          system: 'sugar',
-          objectType: 'Leads',
-          canonicalEntity: 'lead',
-          canonicalField: 'lead_type',
-          externalField: 'lead_type_c',
-          direction: 'outbound',
-          status: 'tbc',
-        }),
-      ).rejects.toBeInstanceOf(TenantConfigError);
-      const first = await h.config.saveFieldMapping(t, {
-        system: 'sugar',
-        objectType: 'Leads',
-        canonicalEntity: 'lead',
-        canonicalField: 'lead_type',
-        externalField: null,
-        direction: 'outbound',
-        status: 'tbc',
-      });
-      const confirmed = await h.config.saveFieldMapping(t, {
-        system: 'sugar',
-        objectType: 'Leads',
-        canonicalEntity: 'lead',
-        canonicalField: 'lead_type',
-        externalField: 'lead_type_c',
-        direction: 'outbound',
-        status: 'confirmed',
-        valueMap: { new_business: 'New Business', upsell: 'Upsell' },
-      });
-      expect(confirmed.id).toBe(first.id);
-      expect(confirmed).toMatchObject({ status: 'confirmed', valueMap: { upsell: 'Upsell' } });
     });
 
     it('lead source mappings validate the channel against the source system', async () => {

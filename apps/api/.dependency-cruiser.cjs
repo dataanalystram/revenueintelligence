@@ -84,6 +84,46 @@ module.exports = {
       to: { path: '^src/modules/hubspot/' },
     },
     {
+      name: 'business-code-uses-source-port',
+      severity: 'error',
+      comment:
+        'Business code reaches a source system only through the generic SourceConnector port ' +
+        '(ADR 0019). Only the Sugar adapter itself, the composition roots and the CLI may import it.',
+      from: {
+        path: '^src/',
+        pathNot: [
+          '^src/modules/sugar/',
+          '^src/cli/',
+          '^src/app\\.module\\.ts$',
+          '^src/worker\\.module\\.ts$',
+        ],
+      },
+      to: { path: '^src/modules/sugar/' },
+    },
+    {
+      name: 'core-never-depends-on-sources',
+      severity: 'error',
+      comment:
+        'The sources module is an application layer on top of the core (ADR 0019): the pure ' +
+        'domain, products/eligibility, context, identity, tenancy, CRM and the connector ' +
+        'adapters (which implement the domain SourceConnector port) never import it. ' +
+        'Only the composition roots and the CLI wire it in.',
+      from: {
+        path: '^src/modules/(domain|products|context|identity|tenancy|crm|sugar|hubspot)/',
+      },
+      to: { path: '^src/modules/sources/' },
+    },
+    {
+      name: 'sources-never-imports-concrete-adapters',
+      severity: 'error',
+      comment:
+        'The generic source pipeline knows connectors only through the SourceConnector port and ' +
+        'the adapter registry; concrete adapters are registered by the composition roots ' +
+        '(ADR 0019), never imported by the sources module.',
+      from: { path: '^src/modules/sources/' },
+      to: { path: '^src/modules/(sugar|hubspot)/' },
+    },
+    {
       name: 'gainsight-access-only-in-gainsight-connector',
       severity: 'error',
       from: { pathNot: '^src/modules/gainsight/' },

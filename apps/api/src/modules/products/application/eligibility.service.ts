@@ -74,7 +74,10 @@ const FrozenInputSchema = z.strictObject({
       knownAsOf: InstantSchema,
       subscriptions: z.array(SubscriptionFactSchema),
     }),
-    z.strictObject({ coverage: z.literal('unknown') }),
+    z.strictObject({
+      coverage: z.literal('unknown'),
+      reason: z.literal('ownership_incomplete').optional(),
+    }),
   ]),
   asOf: InstantSchema,
 });
@@ -249,14 +252,25 @@ export class EligibilityService {
     if (!company) throw new UnknownCompanyError(evaluatedId);
     const model = await this.catalogue.modelAtTx(tx, asOf);
     if (!model) throw new NoProductModelError(asOf);
-    const knownAsOf = await this.runs.coverageKnownAsOf(tx);
-    const ownership: OwnershipInput = knownAsOf
-      ? {
-          coverage: 'known',
-          knownAsOf,
-          subscriptions: await this.queries.factsForCompany(tx, evaluatedId),
-        }
-      : { coverage: 'unknown' };
+    const coverage = await this.runs.coverage(tx);
+    let ownership: OwnershipInput = { coverage: 'unknown' };
+    if (coverage.known) {
+      // An account holding a line whose product cannot be known is never
+      // "covered": no not-owned inference, no eligible whitespace (ADR 0020 §15).
+      const gaps = await this.queries.ownershipGapCount(tx, coverage.connectionId, evaluatedId);
+      ownership =
+        gaps > 0
+          ? { coverage: 'unknown', reason: 'ownership_incomplete' }
+          : {
+              coverage: 'known',
+              knownAsOf: coverage.knownAsOf,
+              subscriptions: await this.queries.factsForCompany(
+                tx,
+                evaluatedId,
+                coverage.sourceSystem,
+              ),
+            };
+    }
     return {
       input: {
         model,

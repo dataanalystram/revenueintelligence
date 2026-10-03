@@ -2,11 +2,13 @@ import { Module } from '@nestjs/common';
 import { IdentityModule } from '../identity';
 import { TenancyModule } from '../tenancy';
 import { EligibilityService } from './application/eligibility.service';
+import { OwnershipGapService } from './application/ownership-gaps.service';
 import { ProductCatalogueService } from './application/product-catalogue.service';
 import { SubscriptionImportService } from './application/subscription-import.service';
 import { SubscriptionIngestionService } from './application/subscription-ingestion.service';
 import { SubscriptionReadModel } from './application/subscription-read-model';
 import { EligibilitySnapshotStore } from './infrastructure/eligibility-snapshot.store';
+import { OwnershipGapStore } from './infrastructure/ownership-gap.store';
 import { ProductModelStore } from './infrastructure/product-model.store';
 import { SubscriptionRunsStore } from './infrastructure/subscription-runs.store';
 import { SubscriptionQueries } from './infrastructure/subscription.queries';
@@ -30,9 +32,12 @@ import { SubscriptionStore } from './infrastructure/subscription.store';
     SubscriptionReadModel,
     EligibilitySnapshotStore,
     EligibilityService,
+    OwnershipGapStore,
+    OwnershipGapService,
   ],
   exports: [
     EligibilityService,
+    OwnershipGapService,
     ProductCatalogueService,
     SubscriptionIngestionService,
     SubscriptionImportService,

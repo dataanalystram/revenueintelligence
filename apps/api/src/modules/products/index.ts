@@ -11,7 +11,9 @@ export {
   type ReplayReport,
   type WhitespaceReport,
 } from './application/eligibility.service';
+export { OwnershipGapService, type OwnershipGap } from './application/ownership-gaps.service';
 export {
+  BaseVersionRequiredError,
   ConcurrentPublishError,
   NoProductModelError,
   ProductCatalogueService,

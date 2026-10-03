@@ -36,6 +36,27 @@ free_port() {
 }
 pass() { PASSED=$((PASSED + 1)); printf '  PASS  %s\n' "$*"; }
 fail() { FAILED=$((FAILED + 1)); printf '  FAIL  %s\n' "$*"; }
+# A processor registers in the worker's bootstrap, or — by design — about 5 s
+# later when the start-up Redis policy check could not reach Redis (silent
+# retry). Wait for the registration line rather than reading the log once,
+# and make a late registration visible (elapsed time and the worker's
+# processor count at start), never silent. On failure, print the worker's
+# log messages.
+worker_registered() { # <log line> <pass message> <fail message>
+  local waited=0
+  until docker logs "$PROJECT-worker" 2>&1 | grep -q "$1"; do
+    if (( waited >= 20 )); then
+      fail "$3"; docker logs "$PROJECT-worker" 2>&1 | grep -o '"msg":"[^"]*"\|"processors":[0-9]*' | tail -20
+      return
+    fi
+    sleep 1; waited=$((waited + 1))
+  done
+  if (( waited > 0 )); then
+    pass "$2 (after ${waited}s; at start: $(docker logs "$PROJECT-worker" 2>&1 | grep -o '"processors":[0-9]*' | head -1))"
+  else
+    pass "$2"
+  fi
+}
 compose() { docker compose -p "$PROJECT" -f "$ROOT/docker-compose.yml" "$@"; }
 # Lists this run's remaining resources, one "<kind> <id>" per line. Docker
 # errors are listed too, so a broken daemon cannot look like a clean state.
@@ -122,8 +143,8 @@ out="$(run_once cli --network host -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" 
   node dist/cli/provision-tenant.js --slug dockerco --name "Docker Co" --template juniper 2>&1 || true)"
 grep -q '"slug": "dockerco"' <<<"$out" && pass "provisioning CLI works inside the image (template shipped)" || fail "provisioning CLI in image"
 # M6: the worker consumes the context queues (Redis noeviction verified at start-up).
-docker logs "$PROJECT-worker" 2>&1 | grep -q 'Context processors registered' \
-  && pass "worker container registered the context processors (M6)" || fail "worker container context processors"
+worker_registered 'Context processors registered' \
+  "worker container registered the context processors (M6)" "worker container context processors"
 out="$(run_once ctxcli --network host -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" "$TAG-runtime" \
   node dist/cli/context.js report --tenant dockerco 2>&1 || true)"
 grep -q '"processingEnabled": true' <<<"$out" && grep -q '"lip-receipts"' <<<"$out" \
@@ -137,6 +158,19 @@ out="$(run_once prodrep --network host -e DATABASE_URL="$APP" -e REDIS_URL="$RED
   node dist/cli/products.js report --tenant dockerco 2>&1 || true)"
 grep -q '"noActiveLinesOnMergedCompanies": true' <<<"$out" && grep -q '"coverage": "unknown"' <<<"$out" \
   && pass "products:report inside the image: invariants hold, coverage unknown before any load (M7)" || fail "products:report in image"
+
+# M8: the worker registers the source sync processor and the sources CLI runs
+# inside the image (the platform-created import connection and authority v1).
+worker_registered 'Source sync processor registered' \
+  "worker container registered the source sync processor (M8)" "worker container source processor"
+out="$(run_once srccli --network host -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" "$TAG-runtime" \
+  node dist/cli/sources.js list --tenant dockerco 2>&1 || true)"
+grep -q '"kind": "import"' <<<"$out" && grep -q '"mappingMode": "code"' <<<"$out" \
+  && pass "sources CLI lists the import connection inside the image (M8)" || fail "sources CLI list in image"
+out="$(run_once srcauth --network host -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" "$TAG-runtime" \
+  node dist/cli/sources.js authority-show --tenant dockerco 2>&1 || true)"
+grep -q '"version": 1' <<<"$out" && grep -q '"subscription_lines"' <<<"$out" \
+  && pass "sources CLI shows authority version 1 inside the image (M8)" || fail "sources CLI authority-show in image"
 
 echo "== Cleanup self-test"
 # The leftover detector must see every kind of resource this run creates, or

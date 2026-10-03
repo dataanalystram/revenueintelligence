@@ -167,19 +167,21 @@ export class SubscriptionImportService {
     // lastSeenAt >= runObservedAt, so the tombstone pass (lastSeenAt <
     // runObservedAt) can only hit lines this file did not contain.
     const runObservedAt = new Date();
-    const checkpointId = await this.db.transaction(ctx, (tx) =>
-      this.runs.start(tx, {
+    const { checkpointId, connectionId } = await this.db.transaction(ctx, async (tx) => ({
+      checkpointId: await this.runs.start(tx, {
         mode,
         inputHash: base.inputHash,
         correlationId: request.correlationId,
       }),
-    );
+      connectionId: await this.runs.importConnectionId(tx),
+    }));
     const meta = {
       cause: 'import' as const,
       correlationId: request.correlationId,
       checkpointId,
       adapter: CSV_IMPORT_ADAPTER,
       adapterVersion: CSV_IMPORT_ADAPTER_VERSION,
+      ...(connectionId ? { sourceConnectionId: connectionId } : {}),
     };
     const outcomes: Record<string, number> = {};
     const rejected: RowRejection[] = [];

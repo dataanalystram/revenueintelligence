@@ -64,9 +64,18 @@ export class SubscriptionQueries {
   }
 
   /** Non-deleted lines of one company: the facts the evaluator reads. */
-  async factsForCompany(tx: TenantTransaction, companyId: string): Promise<SubscriptionFact[]> {
+  async factsForCompany(
+    tx: TenantTransaction,
+    companyId: string,
+    sourceSystem?: string,
+  ): Promise<SubscriptionFact[]> {
     const rows = await tenantClient(tx).tenantSubscription.findMany({
-      where: { tenantId: tx.tenantId, companyId, recordState: 'active' },
+      where: {
+        tenantId: tx.tenantId,
+        companyId,
+        recordState: 'active',
+        ...(sourceSystem ? { sourceSystem } : {}),
+      },
       orderBy: { id: 'asc' },
     });
     return rows.map((r) => ({
@@ -147,5 +156,35 @@ export class SubscriptionQueries {
     const out: Record<string, number> = {};
     for (const r of rows) out[`${r.recordState}:${r.state}`] = r._count._all;
     return out;
+  }
+
+  /** Open ownership gaps of one company for one connection (ADR 0020 §15). */
+  async ownershipGapCount(
+    tx: TenantTransaction,
+    connectionId: string,
+    companyId: string,
+  ): Promise<number> {
+    return tenantClient(tx).tenantOwnershipGap.count({
+      where: { tenantId: tx.tenantId, connectionId, companyId },
+    });
+  }
+
+  /** Source record ids of a system's non-deleted lines (full-run tombstone pass). */
+  async activeSourceRecordIds(
+    tx: TenantTransaction,
+    system: string,
+    objectType: string,
+  ): Promise<string[]> {
+    const rows = await tenantClient(tx).tenantSubscription.findMany({
+      where: {
+        tenantId: tx.tenantId,
+        sourceSystem: system,
+        sourceObjectType: objectType,
+        recordState: 'active',
+      },
+      select: { sourceRecordId: true },
+      orderBy: { sourceRecordId: 'asc' },
+    });
+    return rows.map((r) => r.sourceRecordId);
   }
 }

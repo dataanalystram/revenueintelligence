@@ -243,7 +243,25 @@ check "worker ran its shutdown hooks (Application shut down cleanly)" grep -q 'A
 check "no app DB sessions left after shutdown" bash -c "for i in \$(seq 1 20); do [ \"\$(docker compose -p '$PROJECT' -f '$ROOT/docker-compose.yml' exec -T -e PGPASSWORD=lip postgres psql -h 127.0.0.1 -U lip -d lip -Atc \"SELECT count(*) FROM pg_stat_activity WHERE usename = 'lip_api'\")\" = 0 ] && exit 0; sleep 0.25; done; exit 1"
 no_tagged_processes() { [[ -z "$(tagged_pids)" ]]; }
 check "no application process from this run remains (by run tag)" no_tagged_processes
-check "no app Redis clients left after shutdown" bash -c "[ \"\$(docker compose -p '$PROJECT' -f '$ROOT/docker-compose.yml' exec -T redis redis-cli CLIENT LIST | awk '!/cmd=client/ { n++ } END { print n + 0 }')\" = 0 ]"
+# Polled like the DB check: the compose healthcheck's own `redis-cli ping`
+# (every 5 s) is a client too and can be counted at any single instant
+# (shown in the M8 closure). A client the app left behind persists for the
+# whole window. On failure the remaining clients are listed (no data).
+no_redis_clients() {
+  local i
+  for i in $(seq 1 20); do
+    [[ "$(redis_clients)" == 0 ]] && return 0
+    sleep 0.25
+  done
+  return 1
+}
+if no_redis_clients; then
+  pass "no app Redis clients left after shutdown"
+else
+  fail "no app Redis clients left after shutdown"
+  compose exec -T redis redis-cli CLIENT LIST | grep -v 'cmd=client' \
+    | grep -o 'addr=[^ ]*\|name=[^ ]*\|age=[^ ]*\|cmd=[^ ]*' | paste -sd' ' -
+fi
 
 printf '\n== Summary: %d passed, %d failed\n' "$PASSED" "$FAILED"
 [[ $FAILED -eq 0 ]]

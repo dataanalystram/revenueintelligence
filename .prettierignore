@@ -4,3 +4,8 @@ coverage
 pnpm-lock.yaml
 apps/api/src/generated
 apps/api/prisma/migrations
+# Sanitized SugarCRM discovery evidence (M8): kept byte-for-byte as reviewed.
+# Narrow entries only; other discovery files stay formatted.
+docs/discovery/sugarcrm-local-evidence.md
+docs/discovery/sugarcrm-platform-alignment.md
+fixtures/sugarcrm/sanitized/

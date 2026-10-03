@@ -44,7 +44,7 @@ pe_unknown_first() {
 check "model validate and publish dry run write nothing" pe_unknown_first
 
 pe_publish() {
-  pe_cli model publish --tenant "$PE_TENANT" --file "$PE_EXAMPLES/product-model.example.json" --actor runtime --execute >"$PE_OUT/publish.json" || return 1
+  pe_cli model publish --tenant "$PE_TENANT" --file "$PE_EXAMPLES/product-model.example.json" --actor runtime --based-on 0 --execute >"$PE_OUT/publish.json" || return 1
   [[ "$(pe_json 'o.published.version' <"$PE_OUT/publish.json")" == "1" ]] || return 1
   [[ "$(pe_sql "SELECT count(*) FROM tenant_products p JOIN tenants t ON t.id = p.tenant_id WHERE t.slug = '$PE_TENANT' AND p.model_version = 1")" == "8" ]]
 }
@@ -57,7 +57,7 @@ pe_k1() {
     m.relationships = m.relationships.filter((r) => r.id !== "hosted-excludes-self-hosted");
     process.stdout.write(JSON.stringify(m));' "$PE_EXAMPLES/product-model.example.json" >"$PE_OUT/removed.json"
   local code=0
-  pe_cli model publish --tenant "$PE_TENANT" --file "$PE_OUT/removed.json" --execute >"$PE_OUT/k1.json" || code=$?
+  pe_cli model publish --tenant "$PE_TENANT" --file "$PE_OUT/removed.json" --based-on 1 --execute >"$PE_OUT/k1.json" || code=$?
   [[ $code -eq 2 ]] && grep -q '"product_key_removed"' "$PE_OUT/k1.json" &&
     [[ "$(pe_sql "SELECT max(version) FROM tenant_product_models m JOIN tenants t ON t.id = m.tenant_id WHERE t.slug = '$PE_TENANT'")" == "1" ]]
 }

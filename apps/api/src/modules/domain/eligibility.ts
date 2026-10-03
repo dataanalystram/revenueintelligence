@@ -11,8 +11,11 @@ import type { OwnableState, SubscriptionFact } from './subscription';
  * explanation is complete; precedence is fail > unknown > eligible.
  */
 
-/** Bumped whenever built-in check semantics change. Recorded on every result. */
-export const EVALUATOR_VERSION = 1;
+/**
+ * Bumped whenever built-in check semantics change. Recorded on every result.
+ * 2 (M8): per-account ownership gaps (`ownership_incomplete`).
+ */
+export const EVALUATOR_VERSION = 2;
 
 export type EligibilityStatus = 'eligible' | 'ineligible' | 'unknown';
 export type OwnershipStatus = 'owned' | 'not_owned' | 'unknown';
@@ -31,6 +34,8 @@ export type ReasonCode =
   | 'ok'
   | 'not_applicable'
   | 'ownership_not_loaded'
+  /** The account holds a line whose product cannot be known (M8 ownership gap). */
+  | 'ownership_incomplete'
   | 'subscription_state_unknown'
   | 'subscription_state_conflict'
   | 'attribute_missing'
@@ -61,7 +66,23 @@ export type OwnershipInput =
       readonly knownAsOf: Date;
       readonly subscriptions: readonly SubscriptionFact[];
     }
-  | { readonly coverage: 'unknown' };
+  | {
+      readonly coverage: 'unknown';
+      /**
+       * Why ownership is not known: the tenant's facts are not loaded (default)
+       * or this account has an ownership gap (ADR 0020 §15). Tenant-level
+       * `ownership_not_loaded` and account-level `ownership_incomplete` stay
+       * distinct.
+       */
+      readonly reason?: 'ownership_incomplete';
+    };
+
+/** The reason an unknown ownership input carries. */
+export function unknownOwnershipReason(
+  ownership: Extract<OwnershipInput, { coverage: 'unknown' }>,
+): 'ownership_not_loaded' | 'ownership_incomplete' {
+  return ownership.reason ?? 'ownership_not_loaded';
+}
 
 export interface AccountFacts {
   readonly companyId: CompanyId;
@@ -119,8 +140,9 @@ export function deriveOwnership(
 ): ReadonlyMap<ProductKey, ProductOwnership> {
   const result = new Map<ProductKey, ProductOwnership>();
   if (ownership.coverage === 'unknown') {
+    const reason = unknownOwnershipReason(ownership);
     for (const key of model.products.keys()) {
-      result.set(key, { status: 'unknown', reason: 'ownership_not_loaded', facts: [] });
+      result.set(key, { status: 'unknown', reason, facts: [] });
     }
     return result;
   }
@@ -237,7 +259,7 @@ function evaluateInContext(ctx: EvaluationContext, productKey: ProductKey): Elig
       : {
           check: 'ownership_coverage',
           outcome: 'unknown',
-          reason: 'ownership_not_loaded',
+          reason: unknownOwnershipReason(ctx.input.ownership),
           facts: [],
         },
   );
@@ -352,7 +374,9 @@ function evaluateInContext(ctx: EvaluationContext, productKey: ProductKey): Elig
 export function factsHash(input: Pick<EligibilityInput, 'account' | 'ownership' | 'asOf'>): string {
   const ownership =
     input.ownership.coverage === 'unknown'
-      ? { coverage: 'unknown' }
+      ? input.ownership.reason
+        ? { coverage: 'unknown', reason: input.ownership.reason }
+        : { coverage: 'unknown' }
       : {
           coverage: 'known',
           knownAsOf: input.ownership.knownAsOf,

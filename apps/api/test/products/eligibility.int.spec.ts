@@ -48,6 +48,7 @@ describe('eligibility: evaluate, whitespace, snapshots, replay', () => {
     const t = await c.tenant(prefix, 1001);
     await c.h.catalogue.publish(t, genericModel(), {
       actor: 'test',
+      basedOnVersion: 0,
       effectiveFrom: new Date('2026-01-01T00:00:00Z'),
       now: new Date('2026-01-01T00:00:00Z'),
     });
@@ -154,7 +155,7 @@ describe('eligibility: evaluate, whitespace, snapshots, replay', () => {
       ownership: 'not_owned',
       modelVersion: 1,
       modelHash: r.modelHash,
-      evaluatorVersion: 1,
+      evaluatorVersion: 2,
       factsHash: r.factsHash,
       purpose: 'test_evidence',
     });
@@ -188,6 +189,7 @@ describe('eligibility: evaluate, whitespace, snapshots, replay', () => {
       }),
       {
         actor: 'test',
+        basedOnVersion: 1,
       },
     );
     await expect(eligibility.replay(t, r.snapshotId!)).resolves.toMatchObject({ reproduced: true });
@@ -199,6 +201,23 @@ describe('eligibility: evaluate, whitespace, snapshots, replay', () => {
         (tx) => tenantClient(tx).$executeRaw`UPDATE tenant_eligibility_snapshots SET purpose = 'x'`,
       ),
     ).rejects.toThrow(/UPDATE on tenant_eligibility_snapshots is not allowed/);
+    // Replay safety (M8 bumped the evaluator to 2 for ownership_incomplete): a
+    // snapshot recorded by evaluator 1 is never reinterpreted by evaluator 2.
+    const oldId = randomUUID();
+    await c.sql(
+      `INSERT INTO tenant_eligibility_snapshots (tenant_id, id, requested_company_id, evaluated_company_id,
+         product_key, as_of, status, ownership, model_version, model_hash, evaluator_version, facts_hash,
+         result, purpose, correlation_id)
+       SELECT tenant_id, $2, requested_company_id, evaluated_company_id, product_key, as_of, status,
+              ownership, model_version, model_hash, 1, facts_hash, result, purpose, correlation_id
+         FROM tenant_eligibility_snapshots WHERE tenant_id = $1 AND id = $3`,
+      [t.tenantId, oldId, r.snapshotId],
+    );
+    await expect(eligibility.replay(t, oldId)).resolves.toMatchObject({
+      reproduced: false,
+      reason: 'evaluator_changed',
+      recorded: { status: 'eligible' },
+    });
     await expect(eligibility.replay(t, randomUUID())).rejects.toBeInstanceOf(SnapshotNotFoundError);
     await expect(eligibility.evaluate(t, randomUUID(), 'core')).rejects.toBeInstanceOf(
       UnknownCompanyError,
@@ -236,7 +255,7 @@ describe('eligibility: evaluate, whitespace, snapshots, replay', () => {
         ...Array.from({ length: 300 }, (_, i) => ({ key: `extra-${i}`, name: `Extra ${i}` })),
       ],
     });
-    await c.h.catalogue.publish(t, many, { actor: 'test' });
+    await c.h.catalogue.publish(t, many, { actor: 'test', basedOnVersion: 1 });
     await full(t, 'N1,hubspot:companies:931,core,active,,,,');
     const queries = c.app.get(SubscriptionQueries);
     const companies = c.app.get<CompanyRepository>(COMPANY_REPOSITORY);
@@ -266,13 +285,17 @@ describe('eligibility: evaluate, whitespace, snapshots, replay', () => {
         'C1,hubspot:companies:941,core,active,,,,',
         'C2,hubspot:companies:941,analytics,active,,,,',
       ),
-      c.h.catalogue.publish(t, genericModel(), { actor: 'test' }),
-      c.h.catalogue.publish(t, genericModel(), { actor: 'test' }),
+      // Two publishes from the same base: one wins, the other gets concurrent_publish.
+      c.h.catalogue.publish(t, genericModel(), { actor: 'test', basedOnVersion: 1 }),
+      c.h.catalogue.publish(t, genericModel(), { actor: 'test', basedOnVersion: 1 }),
     ];
     const settled = await Promise.allSettled([...evaluations, ...churn]);
     const failures = settled.filter((s) => s.status === 'rejected');
-    // A concurrent full import may refuse to start while another runs; nothing else may fail.
-    expect(failures.every((f) => /already running/.test(String(f.reason)))).toBe(true);
+    // A concurrent full import may refuse to start while another runs, and one of the two
+    // same-base publishes must lose with concurrent_publish; nothing else may fail.
+    expect(failures.every((f) => /already running|concurrent_publish/.test(String(f.reason)))).toBe(
+      true,
+    );
     const results = settled
       .slice(0, 12)
       .map((s) => (s as PromiseFulfilledResult<Awaited<(typeof evaluations)[number]>>).value);

@@ -142,3 +142,16 @@ Later milestones rely on the answer:
   `eligibility:replay --snapshot`, `products:report` (exit 3 when the
   merged-company invariant is violated). `--company` takes a platform id or
   `system:objectType:id`.
+
+## As built (M8)
+
+- **`ownership_incomplete`** (ADR 0020 §15). The unknown-coverage ownership
+  input carries an optional reason: absent = `ownership_not_loaded`
+  (tenant-level, unchanged), `ownership_incomplete` = this account holds a
+  line whose product cannot be known (an ownership gap of the connection
+  authoritative for `subscription_lines`). Every product of such an account is
+  `unknown` with that reason: no not-owned inference, no eligible whitespace.
+  The reason is part of the frozen facts and of `factsHash` (a gap and "not
+  loaded" never hash alike; existing `not_loaded` hashes are unchanged).
+- **`EVALUATOR_VERSION = 2`.** Snapshots recorded by evaluator 1 replay as
+  `evaluator_changed` and are never reinterpreted (integration-tested).

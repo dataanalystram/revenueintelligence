@@ -1,0 +1,135 @@
+{
+  "objects": [
+    {
+      "source": "Accounts",
+      "entity": "account",
+      "identity": {
+        "field": "id"
+      },
+      "relationships": [],
+      "fields": [
+        {
+          "kind": "ignored",
+          "source": "name",
+          "reason": "not_authoritative"
+        }
+      ]
+    },
+    {
+      "source": "RevenueLineItems",
+      "entity": "subscription",
+      "identity": {
+        "field": "id"
+      },
+      "holdingFilter": {
+        "field": "sales_stage",
+        "operator": "in",
+        "values": ["Closed Won"],
+        "confirmation": {
+          "by": "test-operator",
+          "note": "TEST ONLY: holding stage for fixtures"
+        }
+      },
+      "relationships": [
+        {
+          "target": "subscription.account",
+          "field": "account_id",
+          "object": "Accounts",
+          "fallbackVia": {
+            "field": "opportunity_id",
+            "object": "Opportunities",
+            "targetField": "account_id",
+            "confirmation": {
+              "by": "test-operator",
+              "note": "TEST ONLY: opportunity account as fallback"
+            }
+          }
+        },
+        {
+          "target": "subscription.product",
+          "field": "product_template_id",
+          "productReference": true
+        }
+      ],
+      "fields": [
+        {
+          "kind": "core",
+          "target": "subscription.state",
+          "explicit": "unknown",
+          "reason": "no_reliable_source_state"
+        },
+        {
+          "kind": "core",
+          "target": "subscription.startsAt",
+          "source": "service_start_date",
+          "transforms": {
+            "parse": {
+              "type": "date",
+              "format": "iso_date",
+              "timeZone": "UTC",
+              "inclusiveEnd": false
+            }
+          },
+          "confirmation": {
+            "by": "test-operator",
+            "note": "TEST ONLY: service term start"
+          }
+        },
+        {
+          "kind": "core",
+          "target": "subscription.endsAt",
+          "source": "service_end_date",
+          "transforms": {
+            "parse": {
+              "type": "date",
+              "format": "iso_date",
+              "timeZone": "UTC",
+              "inclusiveEnd": true
+            }
+          },
+          "confirmation": {
+            "by": "test-operator",
+            "note": "TEST ONLY: service term end, inclusive"
+          }
+        },
+        {
+          "kind": "core",
+          "target": "subscription.quantity",
+          "source": "quantity",
+          "transforms": {
+            "parse": {
+              "type": "integer"
+            }
+          }
+        },
+        {
+          "kind": "ignored",
+          "source": "renewal",
+          "reason": "semantics_unconfirmed"
+        },
+        {
+          "kind": "ignored",
+          "source": "renewal_rli_id",
+          "reason": "semantics_unconfirmed"
+        },
+        {
+          "kind": "ignored",
+          "source": "status",
+          "reason": "not_populated"
+        }
+      ]
+    }
+  ],
+  "productReferences": {
+    "object": "ProductTemplates",
+    "identity": {
+      "field": "id"
+    },
+    "ignored": [
+      {
+        "id": "FIX-PROD-900",
+        "reason": "test_not_offered"
+      }
+    ]
+  }
+}

@@ -1,7 +1,11 @@
 import { z } from 'zod';
+import { ReferenceKindSchema } from './connector-kinds';
 
-/** Systems of record the platform integrates with. */
-export const ExternalSystemSchema = z.enum(['hubspot', 'sugar', 'gainsight_cs', 'gainsight_px']);
+/**
+ * Systems of record whose records are canonical external references: the
+ * connector-kind catalogue minus `import` (ADR 0019). Values are unchanged.
+ */
+export const ExternalSystemSchema = ReferenceKindSchema;
 export type ExternalSystem = z.infer<typeof ExternalSystemSchema>;
 
 /**

@@ -26,7 +26,7 @@ import { fail } from './hubspot-context';
  *
  *   pnpm --filter @lip/api product:model       validate --tenant <slug> --file <model.json> [--effective-from ISO]
  *   pnpm --filter @lip/api product:model       publish  --tenant <slug> --file <model.json> [--effective-from ISO]
- *                                              [--based-on <version>] [--actor <id>] [--execute]
+ *                                              --based-on <version> [--actor <id>] [--execute]
  *   pnpm --filter @lip/api product:model       show     --tenant <slug> [--version N]
  *   pnpm --filter @lip/api product:model       diff     --tenant <slug> --from N --to M
  *   pnpm --filter @lip/api subscriptions:import         --tenant <slug> --file <lines.csv> --source <name>
@@ -149,13 +149,18 @@ async function main(): Promise<void> {
             if (!report.ok) exitCode = 2;
             if (sub === 'validate' || !execute || !report.ok)
               return { dryRun: sub === 'publish', ...report };
+            const basedOn = int(values['based-on'], 'based-on');
+            if (basedOn === undefined) {
+              throw new Error(
+                '--based-on <version> is required to publish (0 for the first version)',
+              );
+            }
             try {
-              const basedOn = int(values['based-on'], 'based-on');
               return {
                 published: await catalogue.publish(ctx, document, {
                   actor: values.actor ?? 'cli',
                   ...(effectiveFrom ? { effectiveFrom } : {}),
-                  ...(basedOn !== undefined ? { basedOnVersion: basedOn } : {}),
+                  basedOnVersion: basedOn,
                 }),
               };
             } catch (error) {
