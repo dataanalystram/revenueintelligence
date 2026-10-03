@@ -33,6 +33,13 @@ export class ConcurrentPublishError extends Error {
   }
 }
 
+export class BaseVersionRequiredError extends Error {
+  constructor() {
+    super('base_version_required: publish needs basedOnVersion (0 for the first version)');
+    this.name = 'BaseVersionRequiredError';
+  }
+}
+
 export class NoProductModelError extends Error {
   constructor(readonly asOf: Date) {
     super(`no product model is in force at ${asOf.toISOString()}`);
@@ -44,8 +51,12 @@ export interface PublishOptions {
   readonly effectiveFrom?: Date;
   /** Who publishes (operator id or tool name; codes only). */
   readonly actor: string;
-  /** Optimistic check: the latest version the document was prepared against. */
-  readonly basedOnVersion?: number;
+  /**
+   * Required optimistic check (M8, ADR 0016 note): the latest version the
+   * document was prepared against (`0` before the first version). A publish
+   * from a stale base is refused with `ConcurrentPublishError`.
+   */
+  readonly basedOnVersion: number;
   /** Clock reading (tests); defaults to now. */
   readonly now?: Date;
 }
@@ -85,7 +96,7 @@ export class ProductCatalogueService {
   async validate(
     ctx: TenantContext,
     document: unknown,
-    options: Omit<PublishOptions, 'actor'> = {},
+    options: Omit<PublishOptions, 'actor' | 'basedOnVersion'> = {},
   ): Promise<ValidationReport> {
     return this.db.transaction(ctx, async (tx) => {
       const now = options.now ?? new Date();
@@ -121,9 +132,11 @@ export class ProductCatalogueService {
       const effectiveFrom = options.effectiveFrom ?? now;
       const { previous, latest } = await this.previous(tx);
       const latestVersion = latest?.version ?? 0;
-      if (options.basedOnVersion !== undefined && options.basedOnVersion !== latestVersion) {
-        throw new ConcurrentPublishError(options.basedOnVersion, latestVersion);
+      const base = options.basedOnVersion as number | undefined;
+      if (base === undefined || !Number.isInteger(base) || base < 0) {
+        throw new BaseVersionRequiredError();
       }
+      if (base !== latestVersion) throw new ConcurrentPublishError(base, latestVersion);
       const v = validateProductModel(document, {
         previous: previous ?? null,
         publish: { effectiveFrom, now },

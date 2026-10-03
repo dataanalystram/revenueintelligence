@@ -12,6 +12,7 @@ export {
   type WhitespaceReport,
 } from './application/eligibility.service';
 export {
+  BaseVersionRequiredError,
   ConcurrentPublishError,
   NoProductModelError,
   ProductCatalogueService,

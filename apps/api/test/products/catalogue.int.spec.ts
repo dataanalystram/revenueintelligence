@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  BaseVersionRequiredError,
   ConcurrentPublishError,
   NoProductModelError,
   ProductModelInvalidError,
@@ -40,6 +41,7 @@ describe('product catalogue: versions, projection, publication', () => {
     await expect(h.catalogue.modelAt(t, new Date())).resolves.toBeUndefined();
     const v1 = await h.catalogue.publish(t, genericModel(), {
       actor: 'ops:test',
+      basedOnVersion: 0,
       now: new Date('2026-01-01T00:00:00Z'),
       effectiveFrom: new Date('2026-01-01T00:00:00Z'),
     });
@@ -61,7 +63,11 @@ describe('product catalogue: versions, projection, publication', () => {
       ),
     });
     const future = new Date(Date.now() + 86_400_000);
-    const v2 = await h.catalogue.publish(t, doc2, { actor: 'ops:test', effectiveFrom: future });
+    const v2 = await h.catalogue.publish(t, doc2, {
+      actor: 'ops:test',
+      effectiveFrom: future,
+      basedOnVersion: 1,
+    });
     expect(v2.version).toBe(2);
     expect((await h.catalogue.modelAt(t, new Date()))!.version).toBe(1);
     expect((await h.catalogue.modelAt(t, new Date(future.getTime() + 1)))!.version).toBe(2);
@@ -85,7 +91,7 @@ describe('product catalogue: versions, projection, publication', () => {
 
   it('stored versions are immutable and catalogue rows are never deleted, even with raw SQL', async () => {
     const t = await provisionTenant(h, 'imm');
-    await h.catalogue.publish(t, genericModel(), { actor: 'ops:test' });
+    await h.catalogue.publish(t, genericModel(), { actor: 'ops:test', basedOnVersion: 0 });
     const inT = <R>(work: (db: ReturnType<typeof tenantClient>) => Promise<R>) =>
       h.db.transaction(t, (tx) => work(tenantClient(tx)));
     await expect(
@@ -109,7 +115,7 @@ describe('product catalogue: versions, projection, publication', () => {
 
   it('a failed publish writes nothing; K1–K3 are enforced against the stored latest version', async () => {
     const t = await provisionTenant(h, 'kkk');
-    await h.catalogue.publish(t, genericModel(), { actor: 'ops:test' });
+    await h.catalogue.publish(t, genericModel(), { actor: 'ops:test', basedOnVersion: 0 });
     const before = await projection(t);
     const attempts: [unknown, string][] = [
       [
@@ -154,7 +160,9 @@ describe('product catalogue: versions, projection, publication', () => {
       ],
     ];
     for (const [doc, code] of attempts) {
-      const err = await h.catalogue.publish(t, doc, { actor: 'ops:test' }).catch((e: unknown) => e);
+      const err = await h.catalogue
+        .publish(t, doc, { actor: 'ops:test', basedOnVersion: 1 })
+        .catch((e: unknown) => e);
       expect(err, code).toBeInstanceOf(ProductModelInvalidError);
       expect(
         (err as ProductModelInvalidError).errors.map((e) => e.code),
@@ -174,7 +182,7 @@ describe('product catalogue: versions, projection, publication', () => {
       [t.tenantId],
     );
     const err = await h.catalogue
-      .publish(t, genericModel(), { actor: 'ops:test' })
+      .publish(t, genericModel(), { actor: 'ops:test', basedOnVersion: 0 })
       .catch((e: unknown) => e);
     expect((err as ProductModelInvalidError).errors.map((e) => e.code)).toContain(
       'product_key_removed',
@@ -184,40 +192,44 @@ describe('product catalogue: versions, projection, publication', () => {
       genericModel({
         products: [...genericModel().products, { key: 'old', name: 'Old', status: 'retired' }],
       }),
-      { actor: 'ops:test' },
+      { actor: 'ops:test', basedOnVersion: 0 },
     );
     expect(ok.version).toBe(1);
   });
 
-  it('concurrent publishes serialise: one version each, and an optimistic publish gets a clear conflict', async () => {
+  it('publication requires the base version; concurrent publishes from one base: exactly one wins', async () => {
     const t = await provisionTenant(h, 'conc');
-    await h.catalogue.publish(t, genericModel(), { actor: 'ops:test' });
-    const results = await Promise.allSettled(
-      Array.from({ length: 5 }, () =>
-        h.catalogue.publish(t, genericModel(), { actor: 'ops:test' }),
-      ),
-    );
-    expect(results.every((r) => r.status === 'fulfilled')).toBe(true);
-    const versions = results
-      .map((r) => (r as PromiseFulfilledResult<{ version: number }>).value.version)
-      .sort();
-    expect(versions).toEqual([2, 3, 4, 5, 6]);
+    // No base version → refused (service layer, not only the CLI).
+    await expect(
+      h.catalogue.publish(t, genericModel(), { actor: 'ops:test' } as never),
+    ).rejects.toBeInstanceOf(BaseVersionRequiredError);
+    await expect(
+      h.catalogue.publish(t, genericModel(), { actor: 'ops:test', basedOnVersion: -1 }),
+    ).rejects.toBeInstanceOf(BaseVersionRequiredError);
+    await h.catalogue.publish(t, genericModel(), { actor: 'ops:test', basedOnVersion: 0 });
 
-    const optimistic = await Promise.allSettled(
-      Array.from({ length: 4 }, () =>
-        h.catalogue.publish(t, genericModel(), { actor: 'ops:test', basedOnVersion: 6 }),
+    // Admin A and B both loaded v1; B publishes v2; A's publish from v1 is refused.
+    await h.catalogue.publish(t, genericModel(), { actor: 'ops:b', basedOnVersion: 1 });
+    await expect(
+      h.catalogue.publish(t, genericModel(), { actor: 'ops:a', basedOnVersion: 1 }),
+    ).rejects.toBeInstanceOf(ConcurrentPublishError);
+
+    // Truly concurrent publishes from the same base: one version, the rest conflict.
+    const racing = await Promise.allSettled(
+      Array.from({ length: 5 }, () =>
+        h.catalogue.publish(t, genericModel(), { actor: 'ops:test', basedOnVersion: 2 }),
       ),
     );
-    expect(optimistic.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
-    const rejected = optimistic.filter((r) => r.status === 'rejected');
-    expect(rejected).toHaveLength(3);
+    expect(racing.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const rejected = racing.filter((r) => r.status === 'rejected');
+    expect(rejected).toHaveLength(4);
     expect(rejected.every((r) => r.reason instanceof ConcurrentPublishError)).toBe(true);
-    await expect(h.catalogue.versions(t)).resolves.toHaveLength(7);
+    await expect(h.catalogue.versions(t)).resolves.toHaveLength(3);
   });
 
   it('a corrupt stored model fails loudly instead of being evaluated', async () => {
     const t = await provisionTenant(h, 'corrupt');
-    await h.catalogue.publish(t, genericModel(), { actor: 'ops:test' });
+    await h.catalogue.publish(t, genericModel(), { actor: 'ops:test', basedOnVersion: 0 });
     // Simulate corruption as the owner, bypassing the immutability trigger.
     await withAdmin(infra.adminUrl, async (db) => {
       await db.query('BEGIN');
@@ -237,12 +249,16 @@ describe('product catalogue: versions, projection, publication', () => {
   it("tenants never see each other's catalogue versions", async () => {
     const a = await provisionTenant(h, 'cata');
     const b = await provisionTenant(h, 'catb');
-    await h.catalogue.publish(b, genericModel(), { actor: 'ops:test' });
+    await h.catalogue.publish(b, genericModel(), { actor: 'ops:test', basedOnVersion: 0 });
     await expect(h.catalogue.modelAt(a, new Date())).resolves.toBeUndefined();
     await expect(h.catalogue.versions(a)).resolves.toEqual([]);
     // Publishing in A does not see B's version as "previous" (no cross-tenant K1).
     await expect(
-      h.catalogue.publish(a, { products: [{ key: 'x', name: 'X' }] }, { actor: 'ops:test' }),
+      h.catalogue.publish(
+        a,
+        { products: [{ key: 'x', name: 'X' }] },
+        { actor: 'ops:test', basedOnVersion: 0 },
+      ),
     ).resolves.toMatchObject({ version: 1 });
   });
 });

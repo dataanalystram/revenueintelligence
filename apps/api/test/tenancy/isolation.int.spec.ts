@@ -247,12 +247,12 @@ describe('tenant data isolation (real PostgreSQL, app role, RLS)', () => {
       await h.catalogue.publish(
         a,
         { products: [{ key: 'marketplace', name: 'Marketplace (A)' }] },
-        { actor: 'test' },
+        { actor: 'test', basedOnVersion: 0 },
       );
       await h.catalogue.publish(
         b,
         { products: [{ key: 'marketplace', name: 'Marketplace (B)' }] },
-        { actor: 'test' },
+        { actor: 'test', basedOnVersion: 0 },
       );
       // A new version updates the projection row in place, not a duplicate.
       await h.catalogue.publish(
@@ -266,7 +266,7 @@ describe('tenant data isolation (real PostgreSQL, app role, RLS)', () => {
             },
           ],
         },
-        { actor: 'test' },
+        { actor: 'test', basedOnVersion: 1 },
       );
 
       await expect(h.config.listProducts(a)).resolves.toEqual([

@@ -267,13 +267,17 @@ describe('tenant provisioning and configuration rules', () => {
             { key: 'legacy', name: 'Legacy', status: 'retired' },
           ],
         },
-        { actor: 'test' },
+        { actor: 'test', basedOnVersion: 0 },
       );
       await expect(h.config.listProducts(t, { activeOnly: true })).resolves.toEqual([
         { key: 'marketplace', name: 'Marketplace', description: 'Buying platform', active: true },
       ]);
       await expect(
-        h.catalogue.publish(t, { products: [{ key: 'Bad Key', name: 'x' }] }, { actor: 'test' }),
+        h.catalogue.publish(
+          t,
+          { products: [{ key: 'Bad Key', name: 'x' }] },
+          { actor: 'test', basedOnVersion: 1 },
+        ),
       ).rejects.toBeInstanceOf(ProductModelInvalidError);
     });
 

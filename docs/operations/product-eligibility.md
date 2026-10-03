@@ -30,8 +30,8 @@ The model is a JSON document: `products`, `relationships` (`requires` with
 ```bash
 pnpm product:model validate --tenant <slug> --file model.json            # report only
 pnpm product:model publish  --tenant <slug> --file model.json            # dry run
-pnpm product:model publish  --tenant <slug> --file model.json --execute \
-     [--effective-from 2026-11-01T00:00:00Z] [--based-on <version>] [--actor <operator-id>]
+pnpm product:model publish  --tenant <slug> --file model.json --based-on <version> --execute \
+     [--effective-from 2026-11-01T00:00:00Z] [--actor <operator-id>]
 pnpm product:model show     --tenant <slug> [--version N]
 pnpm product:model diff     --tenant <slug> --from 1 --to 2
 ```
@@ -47,8 +47,9 @@ pnpm product:model diff     --tenant <slug> --from 1 --to 2
   `"lifecycle": [{"key": "<key>", "action": "reactivate"}]`. Renaming an active
   product needs `"renamedFrom": "<previous name>"`. A new product needs a new
   key.
-- Use `--based-on <version>` when you prepared the document against a known
-  version: if someone else published meanwhile you get `concurrent_publish`
+- `--based-on <version>` is **required** to publish (M8): the latest version
+  the document was prepared against (`0` for the first; `product:model show`
+  prints it). If someone else published meanwhile you get `concurrent_publish`
   instead of overwriting their change. Re-validate against the new latest
   version and publish again.
 - `tenant_products` is a read-only projection of the latest version; rows are

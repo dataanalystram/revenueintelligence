@@ -174,3 +174,13 @@ engine.
   references per product (`model_too_large`).
 - **CLI.** `product:model validate | publish [--based-on N] --execute | show |
 diff`; publish is a dry run without `--execute`.
+
+## M8 note: publication requires the base version
+
+M8 (ADR 0020 §11, technical debt #26) makes optimistic concurrency mandatory:
+`ProductCatalogueService.publish` refuses a call without `basedOnVersion`
+(`BaseVersionRequiredError`; `0` before the first version) and refuses a stale
+base with `ConcurrentPublishError`. The CLI requires `--based-on` for
+`product:model publish --execute`. The publication lock and versioning are
+unchanged. Concurrent publishes from one base now yield exactly one new
+version; the others conflict.
