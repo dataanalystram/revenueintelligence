@@ -11,6 +11,17 @@
 > are modified and the non-blocking refinements are added. The changed
 > sections are listed in §24.
 >
+> **Revision 3 (2026-10-04)** resolves the three blocking findings of the
+> closure review (verdict **FAIL — M9 PLAN NEEDS FURTHER REVISION**; the
+> architecture was confirmed sound and is not redesigned):
+>
+> - the seen-but-rejected tombstone protection set (§8.4);
+> - reviewed value domains for `in` **and** `not_in` holding filters (§8.5);
+> - the structural coverage tier in the coverage and eligibility model
+>   (§10.6.1).
+>
+> Changes are listed in §24.
+>
 > Baseline: `main` @ `375fadb` (M8 merged). PR #13 (tech debt 43, test-only)
 > is open and does not affect this plan. **LIVE SUGAR VERIFICATION: PENDING**
 > (unchanged by M9).
@@ -564,27 +575,33 @@ Two families are kept apart:
 **Why some structural changes need new guards.** M8 handles a bad row row by
 row: a rejected row is counted and is not added to the run's holdings. The
 full-run tombstone pass would then remove the existing line of every such
-row. So a field that silently stops carrying identity or comparable values
-is **not** safe in M8 unless the schema itself changed. M9's B guards run
-**before any write** (a pre-write check on the first page of each mapped
-object) and again **before the tombstone pass and coverage** (the run's
-run-quality profile, §8.3). A run that trips them fails without tombstones
-and without establishing coverage. Writes already made are idempotent
-upserts of rows that passed.
+row. The closure review independently verified this.
+
+Two layers fix it:
+
+1. **Record level (always on, threshold-free):** the seen-but-rejected
+   protection set (§8.4). A single rejected record can never turn into a
+   deletion, whatever the aggregate statistics say.
+2. **Aggregate level:** the B guards below run **before any write** (a
+   pre-write check on the first page of each mapped object) and again
+   **before the tombstone pass and coverage** (the run's run-quality profile,
+   §8.3). A run that trips them fails without tombstones and without
+   establishing coverage. Writes already made are idempotent upserts of rows
+   that passed.
 
 #### Structural drift (identity and mapping semantics)
 
-| Code                                                                                                        | Trigger                                                                                                                                                                                                                          | Class | Mechanism                                                                                                                                                                                                                                                   |
-| ----------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `mapped_object_removed`, `mapped_field_removed`, `mapped_field_type_changed`, `relationship_target_changed` | Schema (metadata) change on the mapped surface                                                                                                                                                                                   | E     | M8 schema drift check at run start; nothing written (existing tests)                                                                                                                                                                                        |
-| `enum_option_removed` (used in a value map or holding filter)                                               | A mapped enum option disappears from the schema                                                                                                                                                                                  | E     | M8 schema drift (blocking when used)                                                                                                                                                                                                                        |
-| `identity_field_absent`                                                                                     | Data-level disappearance of an identity field: the record id field or a mapping identity/reference field (account, product, parent) is declared but empty or null in any record of the read                                      | **B** | New pre-write and pre-tombstone guard; fails closed. Identity disappearance must never reach the tombstone pass                                                                                                                                             |
-| `profile_drift_type_incompatible`                                                                           | The observed dominant type of a consequential mapped field changes to an incompatible one (date → non-date text; number → text with letters; scalar → array or object; boolean → free text) while the declared type is unchanged | **B** | New guard. M8 refuses only _declared_ type changes (`mapped_field_type_changed`, and `unsupported_source_type` at publish); observed changes under an unchanged declared type (CSV/JSON strings, free-text fields holding dates) are caught by nothing else |
-| `profile_drift_representation` (consequential field whose mapping depends on representation)                | A new representation ≥ 1% on a field with an explicit date format, a value map or list parsing (e.g. ISO dates become D/M/Y)                                                                                                     | **B** | New guard: the declared format would misread or reject the values                                                                                                                                                                                           |
-| `profile_drift_new_category` on a **holding-filter** field                                                  | A new value appears on the field a holding filter tests                                                                                                                                                                          | **B** | New guard. With an `in` filter a new value silently makes a real holding a non-holding, and the full run would tombstone it                                                                                                                                 |
-| `profile_drift_type_compatible`                                                                             | A compatible change (integer → decimal; ISO date → ISO timestamp)                                                                                                                                                                | A     | —                                                                                                                                                                                                                                                           |
-| `identifier_not_unique` on a line identity                                                                  | Duplicate source ids appear                                                                                                                                                                                                      | E     | M8 counts `duplicate_external_id` and the single writer keeps one row per source id (fixture 11). Blocking here would change M8 behaviour                                                                                                                   |
-| `undeclared_field_in_data`, `field_absent_in_data` (not identity)                                           | Files and JSON: a column appears or a declared field is never present                                                                                                                                                            | A     | Mapped-surface removals are covered by M8 schema drift (E row above); identity absence by `identity_field_absent`                                                                                                                                           |
+| Code                                                                                                        | Trigger                                                                                                                                                                                                                          | Class | Mechanism                                                                                                                                                                                                                                                                                                                         |
+| ----------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mapped_object_removed`, `mapped_field_removed`, `mapped_field_type_changed`, `relationship_target_changed` | Schema (metadata) change on the mapped surface                                                                                                                                                                                   | E     | M8 schema drift check at run start; nothing written (existing tests)                                                                                                                                                                                                                                                              |
+| `enum_option_removed` (used in a value map or holding filter)                                               | A mapped enum option disappears from the schema                                                                                                                                                                                  | E     | M8 schema drift (blocking when used)                                                                                                                                                                                                                                                                                              |
+| `identity_field_absent`                                                                                     | Data-level disappearance of an identity field: the record id field or a mapping identity/reference field (account, product, parent) is declared but empty or null in any record of the read                                      | **B** | New pre-write and pre-tombstone guard; fails closed. Identity disappearance must never reach the tombstone pass                                                                                                                                                                                                                   |
+| `profile_drift_type_incompatible`                                                                           | The observed dominant type of a consequential mapped field changes to an incompatible one (date → non-date text; number → text with letters; scalar → array or object; boolean → free text) while the declared type is unchanged | **B** | New guard. M8 refuses only _declared_ type changes (`mapped_field_type_changed`, and `unsupported_source_type` at publish); observed changes under an unchanged declared type (CSV/JSON strings, free-text fields holding dates) are caught by nothing else                                                                       |
+| `profile_drift_representation` (consequential field whose mapping depends on representation)                | A new representation ≥ 1% on a field with an explicit date format, a value map or list parsing (e.g. ISO dates become D/M/Y)                                                                                                     | **B** | New guard: the declared format would misread or reject the values                                                                                                                                                                                                                                                                 |
+| `holding_filter_value_unreviewed` (`in` **and** `not_in` filters)                                           | A value outside the mapping's reviewed domain appears on a holding-filter field                                                                                                                                                  | **B** | Record-level fail-closed guard (§8.5). With `in`, the value would silently make a real holding a non-holding (and the full run would tombstone it). With `not_in`, it would silently pass the exclusion and create a false holding. Neither happens: the record is protected (§8.4) and the account's ownership becomes `unknown` |
+| `profile_drift_type_compatible`                                                                             | A compatible change (integer → decimal; ISO date → ISO timestamp)                                                                                                                                                                | A     | —                                                                                                                                                                                                                                                                                                                                 |
+| `identifier_not_unique` on a line identity                                                                  | Duplicate source ids appear                                                                                                                                                                                                      | E     | M8 counts `duplicate_external_id` and the single writer keeps one row per source id (fixture 11). Blocking here would change M8 behaviour                                                                                                                                                                                         |
+| `undeclared_field_in_data`, `field_absent_in_data` (not identity)                                           | Files and JSON: a column appears or a declared field is never present                                                                                                                                                            | A     | Mapped-surface removals are covered by M8 schema drift (E row above); identity absence by `identity_field_absent`                                                                                                                                                                                                                 |
 
 #### Business-quality drift and findings
 
@@ -619,6 +636,167 @@ already reads. There are no extra reads. It is stored with
 `sampling.method = "sync"`, compared with the previous sync profile, and
 summarised in the run's `quality` alongside the M8 counters. This is how drift
 is caught in production without separate profiling jobs.
+
+### 8.4 Seen-but-rejected protection set (D4, record level)
+
+**Problem (verified in M8).** During a full read, a source record can be
+**seen**, with its identity resolved, and then **rejected**:
+
+- the writer refuses the observation (`invalid_observation`);
+- the mapping cannot interpret a value;
+- or a data-quality guard fires.
+
+Such a record never enters `holdingIds`. The tombstone pass then reads that
+absence as "not seen" and can delete an existing canonical line.
+
+**Rule.** Every full run keeps a per-run protection set
+**`seenButRejectedIds`** next to `holdingIds`, keyed the same way
+(`<source object>|<source record id>`).
+
+- **What enters it.** A record whose source key was resolved from the source
+  (the port's record id, which the adapter boundary always validates) but
+  whose observation was not accepted, for **any** mapping, writer or
+  data-quality reason:
+  - writer rejection (`invalid_observation`, counted `record_rejected`);
+  - an uninterpretable value on a consequential field;
+  - an orphaned account or product reference
+    (`orphan_account_reference`, `orphan_product_reference`) or a missing
+    product reference (`missing_product_reference`);
+  - an unreviewed holding-filter value (§8.5);
+  - a malformed file row whose id column is readable (§11.4);
+  - any future rejection code. The default for an unclassified rejection is
+    **protect**.
+- **What does not enter it.** Confident classifications are not rejections,
+  so tombstoning their lines stays correct (M8 behaviour unchanged):
+  - a holding filter evaluated on a **reviewed** value that excludes the
+    record;
+  - a product declared in `productReferences.ignored`
+    (`non_subscription_product`);
+  - a record whose state maps to a canonical state (including `unknown` by a
+    confirmed `unmapped: unknown` policy): it is ingested, not rejected.
+- **Tombstone condition.** The full-run tombstone pass tombstones a canonical
+  line **only if** its source key is in **neither** `holdingIds` **nor**
+  `seenButRejectedIds`.
+- **Properties.**
+  - Deterministic: same input, same set.
+  - Per record and independent of every aggregate or drift threshold: one
+    rejected record out of a million is protected.
+  - Built during the read, so complete before the tombstone pass.
+  - Applied in the run's completion transaction, so it is in force before
+    coverage can become known.
+- **Meaning.** Membership never claims that the record is a valid holding.
+  It means only: _this source key was seen, but its current value could not
+  be safely interpreted, so uncertainty is not converted into a deletion._
+  The existing canonical line is left exactly as it was: no update, no
+  tombstone, no restore.
+
+**Ownership and eligibility for seen-but-rejected records.** The safe default
+is `unknown` wherever the rejected record could affect ownership. M8's
+existing per-account ownership gap provides it: a gapped account is
+`ownership_incomplete`, and `deriveOwnership` then returns `unknown` for
+**every** product of that account, including products with active lines.
+There is no canonical change.
+
+1. **Account attributable** (the record's account reference resolves to a
+   canonical company, or an existing canonical line for this source key has
+   a company):
+   - an ownership gap is recorded for that company with a new reason,
+     **`observation_rejected`**, or `holding_filter_value_unreviewed` /
+     `account_reference_orphaned` where more specific;
+   - the account's ownership is `unknown` (`ownership_incomplete`);
+   - its products are never `owned` because of the stale line, never
+     `not_owned`, and never whitespace.
+
+   The gap follows M8 gap lifecycle: replaced on the next completed full run
+   (cleared once the record is accepted again), add-only on incremental runs
+   (tech debt 34).
+
+2. **Account not attributable** (no resolvable account reference and no
+   existing line for the key):
+   - the record could be a holding of an account the platform cannot name,
+     so the run **cannot establish coverage**;
+   - the run ends `failed` with `rejected_record_unattributable`: no gap
+     replacement, no tombstones, coverage and gaps unchanged (M8's "runs that
+     cannot prove completeness" behaviour);
+   - writes already made are idempotent upserts.
+
+   Exception: M8's orphan categories **with no existing line** keep their M8
+   handling (skipped, counted, coverage unaffected). The source itself states
+   that the referenced account or product does not exist, so there is no
+   canonical account to be uncertain about.
+
+**Effect on M8 behaviour.** The rule changes M8 outcomes only where M8 would
+have tombstoned a line whose record was seen but rejected. Sugar fixtures 09
+and 10 (orphans on a first run, no existing line) are unchanged. Any M8 test
+expectation that changes because of this rule is listed in the M9A record as
+an **intended safety change**, never silently updated. The Sugar regression
+assertion (§4) covers connector capabilities and read behaviour; this is a
+platform safety change on top of it.
+
+**Counters.** The run's quality records `seen_but_rejected` (count, and codes
+by reason) and `tombstones_suppressed` (count). No record values are stored.
+
+### 8.5 Holding-filter reviewed value domains (D4, `in` and `not_in`)
+
+A holding filter decides whether a line is an ownership fact, so a value the
+operator never reviewed must not be classified silently in **either**
+direction:
+
+- **`in` (allowlist):** a new value would make a real holding a non-holding;
+  the full run would then tombstone its line, a false absence;
+- **`not_in` (denylist):** a new value would pass the exclusion and create a
+  **false holding**.
+
+**Tracking the reviewed domain.**
+
+- Every published holding filter carries a **`reviewedDomain`**: the complete
+  set of values the operator classified at publish, each marked
+  `holding` or `non_holding`. For `in` this is the filter list plus the
+  reviewed excluded values; for `not_in` it is the denylist plus the reviewed
+  admitted values. It is stored in the immutable mapping version document,
+  so it is versioned and needs no new table.
+- **Publish rule:** `reviewedDomain` must include every option the schema
+  snapshot declares for the field and every value observed in the covering
+  profile (§9). Otherwise → `holding_filter_domain_incomplete` (publish
+  refused).
+- The filter field must be a declared enum, as in M8, or (files, warehouse)
+  a field whose covering profile has an **unsuppressed** safe categorical
+  domain (§6.3). A field whose domain is suppressed or high-cardinality
+  cannot carry a holding filter (`holding_filter_domain_unknown`).
+
+**Detecting a newly observed unreviewed value.**
+
+- At **runtime**, every record's filter value is checked against
+  `reviewedDomain` before the filter is applied.
+- A schema change that adds an enum option (M8 `enum_option_added`,
+  non-blocking) does not change the reviewed domain, so the new option is
+  unreviewed until a new mapping version classifies it.
+- Profiling and run-quality profiles report it as a finding.
+
+**Outcome: record-level fail closed.** The run continues for other records,
+and no ownership conclusion is allowed for the affected account:
+
+1. The record goes to `seenButRejectedIds` (§8.4). It is neither a holding
+   nor a non-holding, so its existing line is not tombstoned, and no new
+   line is created from it.
+2. Its account gets an ownership gap with reason
+   `holding_filter_value_unreviewed`, so ownership is `unknown`: never
+   owned from this value (no false positive) and never `not_owned` (no false
+   absence). An unattributable record follows §8.4 item 2.
+3. The run emits finding `holding_filter_value_unreviewed` (value shown only
+   if it passes the safe-category rule, otherwise as a count), with a
+   metric and report entry.
+4. Ownership conclusions resume only after an operator publishes a new
+   mapping version whose `reviewedDomain` classifies the value
+   (confirmation recorded as for any consequential entry). There is no
+   acknowledgement-only bypass, because an acknowledgement would not say
+   which way the value goes.
+
+**Why this prevents false ownership.** The filter is evaluated only on
+reviewed values. For `not_in`, "not on the denylist" is no longer enough to
+admit a line; the value must be explicitly reviewed as `holding`. For `in`,
+"not on the allowlist" is no longer enough to drop a line; the value must be
+explicitly reviewed as `non_holding`.
 
 ## 9. Integration with schema snapshots and versioned mapping
 
@@ -671,8 +849,10 @@ is caught in production without separate profiling jobs.
   3. **Value maps** (state, holding filter): observed categorical values that
      are neither mapped nor declared → `observed_value_unmapped` (warning).
      The M8 `unmapped: unknown` policy keeps runtime safety.
-  4. **Holding filter:** a filter value never observed → `filter_value_unobserved`
-     (warning); a filter field with `mixed_type` → `review_required`.
+  4. **Holding filter:** `reviewedDomain` must classify every declared and
+     observed value (`holding_filter_domain_incomplete`, refused; §8.5); a
+     filter value never observed → `filter_value_unobserved` (warning); a
+     filter field with `mixed_type` → `review_required`.
   5. **Dates:** a date entry whose field has `ambiguous_date` or
      `mixed_representation` cannot use an implicit format; the mapping must
      declare the format explicitly (new `parse_date.format` option, closed
@@ -879,8 +1059,10 @@ records and explains:
      **explicit operator acceptance** of the `stable_snapshot` tier for that
      connection, with a reason.
 
-  Otherwise the run may ingest, but coverage stays `unknown` and no
-  tombstones run.
+  Otherwise the run may ingest, but coverage stays `unknown` (tier `none`,
+  reason `proof_not_accepted`) and no tombstones run. Even when accepted,
+  `stable_snapshot` coverage never yields `not_owned` or whitespace
+  (§10.6.1).
 
 - **`none`:** never establishes coverage and never tombstones. The source
   cannot hold `subscription_lines`.
@@ -909,6 +1091,93 @@ records and explains:
 - If Chargebee proves neither `count` nor an accepted `stable_snapshot`, it
   **cannot** hold `subscription_lines`, and therefore not state or terms
   either. It can still be profiled and preview-mapped.
+
+### 10.6.1 Structural coverage tier and downstream handling
+
+The tier is part of the **data model**, not only report prose. Automated
+logic can never mistake `stable_snapshot` for `externally_grounded`.
+
+**Shape** (domain types, source-neutral; M9A):
+
+```ts
+type CoverageTier = 'externally_grounded' | 'stable_snapshot' | 'none';
+
+// Subscription coverage as read by products/eligibility (ADR 0017/0020).
+type SubscriptionCoverage =
+  | {
+      coverage: 'known';
+      coverageTier: 'externally_grounded' | 'stable_snapshot';
+      knownAsOf: Date;
+      proof: {
+        method: 'count' | 'manifest' | 'double_enumeration' | 'success_marker';
+        connectionId: string;
+        runId: string;
+      };
+    }
+  | {
+      coverage: 'unknown';
+      coverageTier: 'none';
+      reason: 'ownership_not_loaded' | 'ownership_incomplete' | 'proof_not_accepted';
+    };
+
+// Eligibility input (extends the existing OwnershipInput).
+type OwnershipInput =
+  | {
+      coverage: 'known';
+      coverageTier: 'externally_grounded' | 'stable_snapshot';
+      knownAsOf: Date;
+      subscriptions: readonly SubscriptionFact[];
+    }
+  | { coverage: 'unknown'; coverageTier: 'none'; reason?: 'ownership_incomplete' };
+```
+
+**Persistence:**
+
+- Every run records `proof {method, tier, outcome}` in its checkpoint
+  `quality` (§10.6).
+- The coverage read model derives `coverageTier` from the **run that
+  established the current coverage**. It is never derived from connection
+  configuration, the adapter's declaration or an acceptance flag.
+- `EligibilityResult` and eligibility snapshots carry `coverageTier`, and it
+  is part of `factsHash`.
+- `EVALUATOR_VERSION` becomes 3, so older snapshots replay as
+  `evaluator_changed`, as in M8.
+
+**No accidental promotion:**
+
+- Only a run whose proof method is `count` or `manifest` and whose outcome
+  passed yields `externally_grounded`.
+- An acceptance, a configuration change or a later `stable_snapshot` run can
+  never produce it.
+- If the newest coverage-establishing run has a lower tier, the tier drops to
+  it.
+- The union types have no default branch. Consumers must handle every tier
+  explicitly, which TypeScript exhaustiveness checks enforce.
+
+**Decision: `stable_snapshot` coverage does not produce whitespace.**
+Ownership **absence** stays non-actionable until externally grounded
+completeness exists. Downstream handling per tier:
+
+| Consumer                             | `externally_grounded`                                      | `stable_snapshot`                                                                                                                                                                            | `none`                                     |
+| ------------------------------------ | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| Ownership (`deriveOwnership`)        | M7/M8 rules: `owned`, `unknown`, `not_owned`               | `owned` and `unknown` as usual (positive evidence from lines is valid). **Every `not_owned` outcome becomes `unknown`** with reason `coverage_tier_insufficient`: absence is never concluded | all products `unknown` (as M8)             |
+| Eligibility                          | M7/M8 precedence (fail > unknown > eligible)               | Requirements met by **owned** products work. Exclusions and requirements that depend on absence evaluate to `unknown` (`coverage_tier_insufficient`)                                         | `unknown`                                  |
+| Whitespace                           | `eligible_whitespace` possible                             | **Never** `eligible_whitespace`; such products land in `unknown`                                                                                                                             | never                                      |
+| Future opportunity generation (M11+) | absence-based and presence-based opportunities allowed     | **Presence-based only** (e.g. expansion of an owned product); absence-based opportunities are refused by contract                                                                            | none from ownership                        |
+| Explanations                         | `ownership_coverage` check cites method `count`/`manifest` | `ownership_coverage` check outcome `unknown`, reason `coverage_tier_insufficient`, citing `double_enumeration`/`success_marker` and the acceptance                                           | `ownership_not_loaded` / `incomplete` (M8) |
+
+**Why this keeps `stable_snapshot` useful.** With the §10.6 conditions met, a
+`stable_snapshot` source still:
+
+- synchronises lines, terms and states through the single writers;
+- tombstones under the §8.4 protections;
+- maintains ownership gaps;
+- provides **positive** ownership evidence (owned products, presence-based
+  eligibility).
+
+It only cannot conclude that something is **not** owned. Moving to
+`externally_grounded` (for example, the source later offering a count) needs
+no data migration: the next passing count/manifest run raises the tier.
 
 ### 10.7 Cross-source matching decision
 
@@ -1077,11 +1346,13 @@ Either trigger starts its own design gate. M9 does not match.
   Planning values: `maxRatio` 0.1%, `minCount` 5, `maxCount` 1,000.
 
 - Below the threshold, malformed rows are skipped, counted and reported as
-  `record_rejected`. A skipped row's existing line is protected by the same
-  pre-tombstone rule as other rejected rows (§8.2): a snapshot with any
-  skipped rows does not tombstone the lines those rows would have carried.
-  If a row cannot be attributed to a line, the run does not tombstone that
-  object at all.
+  `record_rejected`.
+  - A malformed row whose id column is readable joins `seenButRejectedIds`
+    (§8.4): its line is not tombstoned, and its account (if attributable)
+    gets an `observation_rejected` gap.
+  - A malformed row whose id cannot be read is **unattributable**: the run
+    cannot establish coverage and does not tombstone
+    (`rejected_record_unattributable`, §8.4 item 2).
 - **Changing columns:** new header or keys versus the snapshot →
   `schema_drift` (M8 semantics: blocking if on the mapped surface,
   informational otherwise). Profiling flags `undeclared_field_in_data` and
@@ -1161,6 +1432,16 @@ boundary`.
   changes, and the Sugar regression assertion (§4) passes.
 - Every B guard in §8.2 has a test that fails closed (before writes, and
   before the tombstone pass and coverage).
+- The seen-but-rejected protection (§8.4) passes its tests, including the
+  isolated single-record rejection that triggers no aggregate drift.
+- Holding-filter reviewed domains (§8.5) pass both directions (`in` and
+  `not_in`).
+- The structural coverage tier (§10.6.1) passes its M9A tests:
+  - it is persisted and propagated through coverage and eligibility;
+  - exhaustive handling;
+  - `externally_grounded` for Sugar;
+  - stable-snapshot behaviour exercised with a test-only adapter declaring
+    `double_enumeration`.
 - The D2 bounds and the D5 exemptions and override behave as specified,
   including refusal and audit tests.
 - Adversarial RLS tests on the three new tables.
@@ -1175,6 +1456,9 @@ boundary`.
 - The double-enumeration proof works with a mutation proof, is recorded as
   tier `stable_snapshot`, and cannot establish coverage without the §10.6
   acceptance and live-gate evidence.
+- With accepted `stable_snapshot` coverage, Chargebee scenarios produce no
+  `not_owned` and no whitespace. Owned products still count (§10.6.1). The
+  tier is never promoted to `externally_grounded`.
 - Authority with Chargebee holding all three facts behaves as in §10.5, and
   a split assignment is refused.
 - Interim canonical check (§13.5 checklist) passes.
@@ -1205,15 +1489,15 @@ boundary`.
 An **independent** reviewer, not the implementer, answers each question with
 evidence:
 
-| Question                                                                         | Evidence required                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Did Account / Person / Product / Subscription / Eligibility stay source-neutral? | `git diff 375fadb..HEAD -- apps/api/src/modules/domain/{company,person,product,subscription,eligibility}.ts` and the canonical Prisma models: no source-specific fields or enum values.                                                                                                                                                                                                                                                                        |
-| Did source-specific behaviour stay at connector/mapping edges?                   | dependency-cruiser rules (extended per adapter) green; grep for `chargebee`, `s3`, `warehouse` outside adapter modules, catalogue entries and configuration finds nothing.                                                                                                                                                                                                                                                                                     |
-| Is the canonical vocabulary business-neutral? (**manual review**, not only grep) | The reviewer lists every canonical field, enum value and code added or changed since `375fadb` and checks each name is business-neutral: no vendor terms (`item_price`, `rli`, `sugar_*`, `chargebee_*`) and no billing-system states (`non_renewing`, `paused`, `in_trial`) in canonical enums. `SubscriptionState` is unchanged. Each item carries a written rationale.                                                                                      |
-| Were custom canonical columns avoided?                                           | Migrations since `375fadb` add no column to canonical tables (`companies`, `persons`, `tenant_subscriptions`, products), only source, profile and ledger tables.                                                                                                                                                                                                                                                                                               |
-| Did authority, coverage, provenance and unknown semantics stay safe?             | The authority fact set is unchanged; `cross_source_unsupported` is still enforced; each new full-read proof has a mutation test; **the proof method and guarantee tier used per connection kind are listed**, and no `stable_snapshot` or `none` tier established coverage without the §10.6 conditions; provenance rows from each new kind carry connection and mapping version; `unknown` scenarios (CB08, CB09, file `none` proof) never yield `not_owned`. |
-| Do all four sources go through the same single writers?                          | The behavioural single-writer test (M8 closure) runs per new kind.                                                                                                                                                                                                                                                                                                                                                                                             |
-| Is profiling advisory?                                                           | Tests prove no suggestion ever writes a mapping or authority version.                                                                                                                                                                                                                                                                                                                                                                                          |
+| Question                                                                         | Evidence required                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Did Account / Person / Product / Subscription / Eligibility stay source-neutral? | `git diff 375fadb..HEAD -- apps/api/src/modules/domain/{company,person,product,subscription,eligibility}.ts` and the canonical Prisma models: no source-specific fields or enum values.                                                                                                                                                                                                                                                                                                                                                                                     |
+| Did source-specific behaviour stay at connector/mapping edges?                   | dependency-cruiser rules (extended per adapter) green; grep for `chargebee`, `s3`, `warehouse` outside adapter modules, catalogue entries and configuration finds nothing.                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Is the canonical vocabulary business-neutral? (**manual review**, not only grep) | The reviewer lists every canonical field, enum value and code added or changed since `375fadb` and checks each name is business-neutral: no vendor terms (`item_price`, `rli`, `sugar_*`, `chargebee_*`) and no billing-system states (`non_renewing`, `paused`, `in_trial`) in canonical enums. `SubscriptionState` is unchanged. Each item carries a written rationale.                                                                                                                                                                                                   |
+| Were custom canonical columns avoided?                                           | Migrations since `375fadb` add no column to canonical tables (`companies`, `persons`, `tenant_subscriptions`, products), only source, profile and ledger tables.                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Did authority, coverage, provenance and unknown semantics stay safe?             | The authority fact set is unchanged; `cross_source_unsupported` is still enforced; each new full-read proof has a mutation test; **the proof method and guarantee tier used per connection kind are listed** (from the structural `coverageTier`, not prose); no `stable_snapshot` or `none` tier established coverage without the §10.6 conditions or produced whitespace; no tombstone hit a seen-but-rejected key; provenance rows from each new kind carry connection and mapping version; `unknown` scenarios (CB08, CB09, file `none` proof) never yield `not_owned`. |
+| Do all four sources go through the same single writers?                          | The behavioural single-writer test (M8 closure) runs per new kind.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Is profiling advisory?                                                           | Tests prove no suggestion ever writes a mapping or authority version.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
 The outcome is recorded in `M09E-…md`. A "fail" on any row returns the
 offending phase to design. M9 completes only when M9E passes.
@@ -1243,7 +1527,41 @@ offending phase to design. M9 completes only when M9E passes.
     representation, holding-filter category) before writes and before the
     tombstone pass;
   - D2 bounds; D5 exemptions, override audit and refusals; proof-tier
-    recording and coverage rules.
+    recording and coverage rules;
+  - **seen-but-rejected protection (§8.4)**:
+    - an isolated **single-record** rejection in an otherwise clean full
+      run, below every drift threshold, keeps its existing line (no
+      tombstone);
+    - the account gets an `observation_rejected` gap, and eligibility
+      returns `unknown` for its products (never owned from the stale line,
+      never whitespace);
+    - one test per rejection category;
+    - unattributable rejection → `rejected_record_unattributable`, coverage
+      and gaps unchanged;
+    - a confident non-holding (reviewed excluded value, ignored product)
+      is still tombstoned;
+  - **holding-filter reviewed domains (§8.5)**:
+    - publish refused when the domain is incomplete;
+    - runtime unreviewed value with `in` → not tombstoned, account
+      `unknown`;
+    - runtime unreviewed value with `not_in` → no line created, account
+      `unknown`;
+    - after a new mapping version classifies the value, normal behaviour
+      resumes;
+  - **structural coverage tier (§10.6.1)**:
+    - **persistence:** the run's `proof` and the coverage read model's
+      `coverageTier`;
+    - **propagation:** `EligibilityResult.coverageTier`, snapshot
+      `factsHash` and replay;
+    - **no promotion:** a `stable_snapshot` run after an
+      `externally_grounded` run drops the tier; acceptance or configuration
+      never yields `externally_grounded`;
+    - **downstream by tier:** identical lines produce `not_owned` and
+      possible whitespace under `externally_grounded`, but `unknown`
+      (`coverage_tier_insufficient`) and no whitespace under
+      `stable_snapshot`. Owned is identical in both. Everything is
+      `unknown` under `none`. These run in M9A (domain plus a test-only
+      adapter) and again in M9B with Chargebee scenarios.
 - **Contract tests per adapter:** the same port contract suite (schema
   normalisation, pagination, selection modes, read-only guard, error
   classification) runs against the Sugar, Chargebee, file and warehouse
@@ -1257,48 +1575,62 @@ offending phase to design. M9 completes only when M9E passes.
 
 ## 15. Mutation and failure tests (each must fail for the stated reason)
 
-| Mechanism broken                                                  | Expected failing test                              |
-| ----------------------------------------------------------------- | -------------------------------------------------- |
-| Safe-category rule bypassed (values stored for a sensitive field) | privacy scan of profile documents                  |
-| Sensitive detector disabled                                       | `sensitive_values_detected` test; privacy scan     |
-| Empty string counted as null                                      | `empty_string_vs_null` classifier test             |
-| JSON-encoded array classified as plain string                     | §7.3 examples                                      |
-| `1/0` treated as boolean without the two-value rule               | boolean suggestion boundary test                   |
-| Ambiguous dates reported as high-confidence `date`                | date suggestion test                               |
-| Profile requirement skipped at publish (if D5 approved)           | mapping publish integration test                   |
-| Acknowledgement not required for consequential findings           | publish integration test                           |
-| Profile documents mutable                                         | immutability test (refuse-change trigger)          |
-| RLS removed / permissive policy on profile tables                 | adversarial RLS spec                               |
-| `profile` purpose reads unselected fields                         | adapter contract test (requested fields only)      |
-| Chargebee guard allows POST, or a payment endpoint                | connector-level read-only proof                    |
-| Chargebee boundary keeps undeclared fields                        | boundary minimisation test                         |
-| Double enumeration ignores a mid-read insert                      | CB15                                               |
-| Split authority (Sugar lines, Chargebee state) accepted           | authority validation test                          |
-| Unmapped Chargebee status becomes `active`                        | CB09                                               |
-| File replay ingested twice                                        | ledger test                                        |
-| Tombstones in incremental or unproven file snapshots              | file tombstone test                                |
-| Malformed threshold ignored                                       | malformed rows test                                |
-| S3 client allows `PutObject`                                      | command allowlist proof                            |
-| Warehouse guard allows a non-builder statement / write            | query guard proof                                  |
-| Canonical column added for a source (M9E)                         | M9E evidence check (migration diff)                |
-| Safe-category gate off by one (51 distinct / 65 characters pass)  | safe-category boundary tests                       |
-| `identity_field_absent` guard removed                             | identity-absence test (no tombstones, no coverage) |
-| Incompatible observed type change not blocking                    | type-incompatibility guard test                    |
-| New holding-filter category not blocking                          | holding-filter drift test                          |
-| Profile row ceiling not enforced (or values silently clamped)     | D2 bounds test                                     |
-| Profile override accepted without authenticated actor or reason   | override refusal test                              |
-| Override used to skip finding acknowledgements or grant authority | override scope test                                |
-| Exempt entries (ignored/explicit) still demand a profile          | D5 exemption test                                  |
-| `stable_snapshot` establishes coverage without acceptance         | proof-tier coverage test                           |
-| Proof tier missing from coverage explanation                      | coverage explanation test                          |
-| Malformed `maxCount` ignored for large files                      | malformed threshold test                           |
-| Scale check bypassed for large `subscription_lines` sources       | authority scale-check test                         |
-| Sugar effective capabilities changed by the port additions        | Sugar regression assertion                         |
+| Mechanism broken                                                  | Expected failing test                                         |
+| ----------------------------------------------------------------- | ------------------------------------------------------------- |
+| Safe-category rule bypassed (values stored for a sensitive field) | privacy scan of profile documents                             |
+| Sensitive detector disabled                                       | `sensitive_values_detected` test; privacy scan                |
+| Empty string counted as null                                      | `empty_string_vs_null` classifier test                        |
+| JSON-encoded array classified as plain string                     | §7.3 examples                                                 |
+| `1/0` treated as boolean without the two-value rule               | boolean suggestion boundary test                              |
+| Ambiguous dates reported as high-confidence `date`                | date suggestion test                                          |
+| Profile requirement skipped at publish (if D5 approved)           | mapping publish integration test                              |
+| Acknowledgement not required for consequential findings           | publish integration test                                      |
+| Profile documents mutable                                         | immutability test (refuse-change trigger)                     |
+| RLS removed / permissive policy on profile tables                 | adversarial RLS spec                                          |
+| `profile` purpose reads unselected fields                         | adapter contract test (requested fields only)                 |
+| Chargebee guard allows POST, or a payment endpoint                | connector-level read-only proof                               |
+| Chargebee boundary keeps undeclared fields                        | boundary minimisation test                                    |
+| Double enumeration ignores a mid-read insert                      | CB15                                                          |
+| Split authority (Sugar lines, Chargebee state) accepted           | authority validation test                                     |
+| Unmapped Chargebee status becomes `active`                        | CB09                                                          |
+| File replay ingested twice                                        | ledger test                                                   |
+| Tombstones in incremental or unproven file snapshots              | file tombstone test                                           |
+| Malformed threshold ignored                                       | malformed rows test                                           |
+| S3 client allows `PutObject`                                      | command allowlist proof                                       |
+| Warehouse guard allows a non-builder statement / write            | query guard proof                                             |
+| Canonical column added for a source (M9E)                         | M9E evidence check (migration diff)                           |
+| Safe-category gate off by one (51 distinct / 65 characters pass)  | safe-category boundary tests                                  |
+| `identity_field_absent` guard removed                             | identity-absence test (no tombstones, no coverage)            |
+| Incompatible observed type change not blocking                    | type-incompatibility guard test                               |
+| New holding-filter category not blocking                          | holding-filter drift test                                     |
+| Profile row ceiling not enforced (or values silently clamped)     | D2 bounds test                                                |
+| Profile override accepted without authenticated actor or reason   | override refusal test                                         |
+| Override used to skip finding acknowledgements or grant authority | override scope test                                           |
+| Exempt entries (ignored/explicit) still demand a profile          | D5 exemption test                                             |
+| `stable_snapshot` establishes coverage without acceptance         | proof-tier coverage test                                      |
+| Proof tier missing from coverage explanation                      | coverage explanation test                                     |
+| Malformed `maxCount` ignored for large files                      | malformed threshold test                                      |
+| Scale check bypassed for large `subscription_lines` sources       | authority scale-check test                                    |
+| Sugar effective capabilities changed by the port additions        | Sugar regression assertion                                    |
+| `seenButRejectedIds` ignored by the tombstone pass                | single-record rejection test (line must survive)              |
+| A rejection category not added to the protection set              | per-category protection test                                  |
+| Protection gated on an aggregate threshold                        | isolated single-record rejection test (no drift)              |
+| Seen-but-rejected account left `owned` from the stale line        | eligibility `unknown` test (`observation_rejected` gap)       |
+| Unattributable rejection still establishes coverage               | `rejected_record_unattributable` test                         |
+| `in` filter: unreviewed value treated as non-holding              | `in` direction test (line not tombstoned, account `unknown`)  |
+| `not_in` filter: unreviewed value treated as holding              | `not_in` direction test (no false holding, account `unknown`) |
+| Holding filter published with an incomplete reviewed domain       | `holding_filter_domain_incomplete` publish test               |
+| `coverageTier` dropped or defaulted to `externally_grounded`      | tier persistence/propagation tests                            |
+| `stable_snapshot` absence becomes `not_owned` / whitespace        | downstream-by-tier test                                       |
+| Tier promoted by acceptance or configuration                      | no-promotion test                                             |
 
 ## 16. Migrations and ADRs (planned only; none created now)
 
 - **M9A migration:** `tenant_source_profile_runs`,
-  `tenant_source_profiles`, `tenant_source_profile_findings`. All with
+  `tenant_source_profiles`, `tenant_source_profile_findings`; the
+  `tenant_ownership_gaps.reason` CHECK extended with
+  `observation_rejected`, `holding_filter_value_unreviewed` and
+  `account_reference_orphaned` (§8.4, §8.5). All with
   `tenant_id`, forced RLS, composite tenant FKs to connections and snapshots,
   immutability triggers on profiles and findings, size and secret-like-key
   CHECKs. Down-script refuses when data exists.
@@ -1311,7 +1643,9 @@ offending phase to design. M9 completes only when M9E passes.
   - 0022 source data profiling (privacy, detection, findings, drift,
     advisory status);
   - 0023 full-read proof methods and guarantee tiers (`externally_grounded`,
-    `stable_snapshot`, `none`; coverage and tombstone rules; explainability);
+    `stable_snapshot`, `none`; coverage and tombstone rules; the structural
+    `coverageTier` and its downstream handling; the seen-but-rejected
+    protection set);
   - 0024 Chargebee reference adapter (incl. the authority answer and the
     matching deferral);
   - 0025 file/object-store source;
@@ -1431,25 +1765,25 @@ offending phase to design. M9 completes only when M9E passes.
 
 ## 22. Decisions (status after the independent architecture review)
 
-| #   | Decision                                                                              | Review outcome                    | Plan wording now                                                                                                                                                                                 |
-| --- | ------------------------------------------------------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| D1  | Redefine roadmap M9 as this plan; move the old M9 scope later                         | **APPROVE**                       | Roadmap and README updated when M9A starts                                                                                                                                                       |
-| D2  | Profile row limit                                                                     | **MODIFY**                        | Required per connection; platform minimum 1,000; hard ceiling 250,000 per object per run; planning value 50,000; out-of-range refused, never clamped (§5.3)                                      |
-| D3  | Profile retention (last N per object; purge path)                                     | **APPROVE**                       | N = 10; privileged audited purge                                                                                                                                                                 |
-| D4  | Drift and finding classification                                                      | **MODIFY**                        | Every code is A / E / B (§8.2); identity disappearance and incompatible observed type changes fail closed; business-quality drift advisory with opt-in promotion; no demotion of E/B             |
-| D5  | Covering profile before publish                                                       | **MODIFY**                        | Required for consequential value-dependent entries; ignored/explicit/value-independent entries exempt; audited, authenticated, non-silent emergency override for profiling outages only (§9)     |
-| D6  | Full-read proof without count                                                         | **MODIFY**                        | Guarantee tiers `externally_grounded` / `stable_snapshot` / `none`; `double_enumeration` = `stable_snapshot`, coverage only with evidence and explicit acceptance; tier always explained (§10.6) |
-| D7  | Chargebee product identity: item id versus item price id                              | **VERIFY LIVE FIRST**             | Item id stays the **proposal only**. Decided after test-site evidence on the item ↔ item-price structure (multiple prices per item, currencies, periods); nothing is locked in code before then  |
-| D8  | External reference system for file rows: `s3_files` versus a declared upstream system | **APPROVE**                       | `s3_files` by default                                                                                                                                                                            |
-| D9  | Malformed-row threshold for files                                                     | **APPROVE WITH MINOR REFINEMENT** | Ratio **and** absolute counts (`maxRatio`, `minCount`, `maxCount`), configured per object, no defaults; planning 0.1% / 5 / 1,000 (§11.4)                                                        |
-| D10 | Warehouse reference dialect: PostgreSQL                                               | **APPROVE**                       | First cloud dialect only after a customer confirms their stack                                                                                                                                   |
-| D11 | Chargebee test site and read-only key (owner-provided, via SecretProvider)            | **APPROVE**                       | Needed for the M9B live gate (and for D7)                                                                                                                                                        |
+| #   | Decision                                                                              | Review outcome                    | Plan wording now                                                                                                                                                                                                                                                                                                                           |
+| --- | ------------------------------------------------------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| D1  | Redefine roadmap M9 as this plan; move the old M9 scope later                         | **APPROVE**                       | Roadmap and README updated when M9A starts                                                                                                                                                                                                                                                                                                 |
+| D2  | Profile row limit                                                                     | **MODIFY**                        | Required per connection; platform minimum 1,000; hard ceiling 250,000 per object per run; planning value 50,000; out-of-range refused, never clamped (§5.3)                                                                                                                                                                                |
+| D3  | Profile retention (last N per object; purge path)                                     | **APPROVE**                       | N = 10; privileged audited purge                                                                                                                                                                                                                                                                                                           |
+| D4  | Drift and finding classification                                                      | **MODIFY**                        | Every code is A / E / B (§8.2); identity disappearance and incompatible observed type changes fail closed; record-level seen-but-rejected protection set (§8.4); reviewed holding-filter domains in both directions (§8.5); business-quality drift advisory with opt-in promotion; no demotion of E/B                                      |
+| D5  | Covering profile before publish                                                       | **MODIFY**                        | Required for consequential value-dependent entries; ignored/explicit/value-independent entries exempt; audited, authenticated, non-silent emergency override for profiling outages only (§9)                                                                                                                                               |
+| D6  | Full-read proof without count                                                         | **MODIFY**                        | Guarantee tiers `externally_grounded` / `stable_snapshot` / `none`, structural `coverageTier` in coverage and eligibility (§10.6.1); `double_enumeration` = `stable_snapshot`, coverage only with evidence and explicit acceptance, and **never whitespace** (absence non-actionable); no promotion except by a passing count/manifest run |
+| D7  | Chargebee product identity: item id versus item price id                              | **VERIFY LIVE FIRST**             | Item id stays the **proposal only**. Decided after test-site evidence on the item ↔ item-price structure (multiple prices per item, currencies, periods); nothing is locked in code before then                                                                                                                                            |
+| D8  | External reference system for file rows: `s3_files` versus a declared upstream system | **APPROVE**                       | `s3_files` by default                                                                                                                                                                                                                                                                                                                      |
+| D9  | Malformed-row threshold for files                                                     | **APPROVE WITH MINOR REFINEMENT** | Ratio **and** absolute counts (`maxRatio`, `minCount`, `maxCount`), configured per object, no defaults; planning 0.1% / 5 / 1,000 (§11.4)                                                                                                                                                                                                  |
+| D10 | Warehouse reference dialect: PostgreSQL                                               | **APPROVE**                       | First cloud dialect only after a customer confirms their stack                                                                                                                                                                                                                                                                             |
+| D11 | Chargebee test site and read-only key (owner-provided, via SecretProvider)            | **APPROVE**                       | Needed for the M9B live gate (and for D7)                                                                                                                                                                                                                                                                                                  |
 
 ## 23. Confirmation
 
 Planning only. No code, migrations, adapters or fixtures were created. **M9
 implementation has NOT started.** **LIVE SUGAR VERIFICATION: PENDING.** The
-next step is independent re-review of this revision, then approval of the
+next step is independent re-review of revision 3, then approval of the
 detailed M9A plan.
 
 ## 24. Revision 2 change log (independent architecture review)
@@ -1473,3 +1807,20 @@ detailed M9A plan.
 | §19      | Explicit tech debt 31 scale check before large `subscription_lines` authority                                                                |
 | §20, §21 | New risks; composite-key detection deferred; drift defaults clarified                                                                        |
 | §22      | Decision table with review outcomes                                                                                                          |
+
+### Revision 3 change log (closure review blocking findings)
+
+| Section       | Change                                                                                                                                                                    |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Header        | Revision 3 note                                                                                                                                                           |
+| §8.2          | Two-layer protection explained; holding-filter row now covers `in` and `not_in` (`holding_filter_value_unreviewed`, record-level B)                                       |
+| §8.4 (new)    | `seenButRejectedIds` protection set: membership, exclusions, tombstone condition, properties, ownership/eligibility handling, unattributable case, effect on M8, counters |
+| §8.5 (new)    | Reviewed value domains for holding filters, publish rule, runtime detection, record-level fail-closed outcome, false-ownership argument                                   |
+| §9            | Holding-filter publish rule references the reviewed domain                                                                                                                |
+| §10.6         | `stable_snapshot` without acceptance → tier `none`; accepted coverage never yields `not_owned`/whitespace                                                                 |
+| §10.6.1 (new) | Structural `coverageTier` shape, persistence, no-promotion rules, decision (no whitespace from `stable_snapshot`), downstream handling table                              |
+| §11.4         | Malformed rows tied to the protection set and the unattributable rule                                                                                                     |
+| §13           | M9A/M9B gates and M9E evidence for protection, filter domains and tiers                                                                                                   |
+| §14, §15      | Tests and mutation proofs for the three findings                                                                                                                          |
+| §16           | M9A migration extends gap reasons; ADR 0023 scope                                                                                                                         |
+| §22, §23      | D4/D6 wording; next step                                                                                                                                                  |
