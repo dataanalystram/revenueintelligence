@@ -36,15 +36,28 @@ describe('context bulk sync: backfill, reconciliation, historical receipts', () 
       ])
     )[0]!.n;
 
+  const createdProvenance = (tenant: TenantContext) =>
+    c.sql<{
+      entity_kind: string;
+      cause: string;
+      checkpoint_id: string | null;
+      correlation_id: string;
+    }>(
+      `SELECT entity_kind, cause, checkpoint_id::text, correlation_id::text
+         FROM tenant_context_changes WHERE tenant_id = $1 AND change_type = 'created'`,
+      [tenant.tenantId],
+    );
+
   it('reconciliation needs a baseline (a completed backfill) first', async () => {
     const run = await c.bulk.startReconcile(t, 'company', { correlationId: randomUUID() });
     expect(run).toEqual({ kind: 'company', resumed: false, skipped: 'needs_backfill' });
   });
 
   it('backfill pages companies and contacts into canonical context through the same writer', async () => {
+    const correlationId = randomUUID();
     const runs = await c.bulk.startBackfill(t, ['company', 'person'], {
       pageSize: 2,
-      correlationId: randomUUID(),
+      correlationId,
     });
     for (const r of runs) await waitDone(r.checkpointId!);
     const companies = await checkpoint(runs[0]!.checkpointId!);
@@ -64,13 +77,19 @@ describe('context bulk sync: backfill, reconciliation, historical receipts', () 
     });
     expect(await count('company_external_refs')).toBe(3);
     expect(await count('person_external_refs')).toBe(5);
-    const prov = await c.sql(
-      "SELECT DISTINCT cause, checkpoint_id FROM tenant_context_changes WHERE tenant_id = $1 AND change_type = 'created'",
-      [t.tenantId],
-    );
-    expect(prov.every((p) => p.cause === 'backfill' && typeof p.checkpoint_id === 'string')).toBe(
-      true,
-    );
+    // Provenance (ADR 0014 §6): a page write names its run's checkpoint. A
+    // company the person run references before the company run reaches it is
+    // created by an independent `subject.sync` follow-up, whose M6 job
+    // contract carries the run's cause and correlation id but no checkpoint
+    // (tech debt 43). Which path creates it is a race, so both are allowed
+    // for companies; the follow-up path itself is pinned by the last test.
+    const prov = await createdProvenance(t);
+    expect(prov).toHaveLength(8); // 3 companies + 5 persons, each created once
+    for (const p of prov) {
+      expect([p.cause, p.correlation_id]).toEqual(['backfill', correlationId]);
+      if (p.entity_kind === 'person') expect(p.checkpoint_id).toBe(runs[1]!.checkpointId);
+      else expect([runs[0]!.checkpointId, null]).toContain(p.checkpoint_id);
+    }
     // Every person with a primary company is linked (company created by the other run or a follow-up).
     await c.until(
       async () =>
@@ -424,5 +443,56 @@ describe('context bulk sync: backfill, reconciliation, historical receipts', () 
         ),
       ).toEqual([]);
     });
+  });
+
+  // Pins the follow-up path that the first test only reaches by chance: the
+  // person run completes before any company run, so every company is created
+  // by the independent `subject.sync` follow-up (tech debt 43).
+  it('a company first referenced by the person run is created by its follow-up: run cause and correlation, no checkpoint', async () => {
+    const u = await c.tenant('bulkorder', 1001);
+    const correlationId = randomUUID();
+    const [personRun] = await c.bulk.startBackfill(u, ['person'], { pageSize: 2, correlationId });
+    await waitDone(personRun!.checkpointId!);
+    const companies = async () =>
+      (await createdProvenance(u)).filter((p) => p.entity_kind === 'company');
+    await c.until(async () => (await companies()).length === 3);
+    expect(await companies()).toEqual(
+      Array.from({ length: 3 }, () => ({
+        entity_kind: 'company',
+        cause: 'backfill',
+        checkpoint_id: null,
+        correlation_id: correlationId,
+      })),
+    );
+    const persons = (await createdProvenance(u)).filter((p) => p.entity_kind === 'person');
+    expect(persons).toHaveLength(5);
+    expect(persons.every((p) => p.checkpoint_id === personRun!.checkpointId)).toBe(true);
+    // The company run then finds them: none is created a second time (the
+    // shared fake holds more companies by now; those are created normally).
+    const [companyRun] = await c.bulk.startBackfill(u, ['company'], {
+      pageSize: 2,
+      correlationId: randomUUID(),
+    });
+    await waitDone(companyRun!.checkpointId!);
+    expect(await checkpoint(companyRun!.checkpointId!)).toMatchObject({ status: 'completed' });
+    const twice = await c.sql(
+      `SELECT entity_id FROM tenant_context_changes
+        WHERE tenant_id = $1 AND change_type = 'created' GROUP BY entity_id HAVING count(*) > 1`,
+      [u.tenantId],
+    );
+    expect(twice).toEqual([]);
+    const later = (await companies()).filter((p) => p.checkpoint_id !== null);
+    expect(later.every((p) => p.checkpoint_id === companyRun!.checkpointId)).toBe(true);
+    expect((await companies()).filter((p) => p.checkpoint_id === null)).toHaveLength(3);
+    // Let this tenant's post-backfill reconciliations finish before teardown.
+    await c.until(
+      async () =>
+        (
+          await c.sql(
+            "SELECT 1 FROM tenant_sync_checkpoints WHERE tenant_id = $1 AND mode = 'reconcile' AND status <> 'running'",
+            [u.tenantId],
+          )
+        ).length === 2,
+    );
   });
 });
