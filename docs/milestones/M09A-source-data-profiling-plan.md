@@ -8,6 +8,11 @@
 >   M9A only. Where it refines the parent plan, the refinement is marked
 >   **[refines M9 §x]**, with a reason.
 > - **Baseline:** `main` @ `f0cee24`.
+> - **Revision 2 (2026-10-07):** after the independent review (**PASS WITH
+>   REQUIRED PLAN CHANGES**), A2 now classifies `operator_full_file` (M7 CSV
+>   `import_full`) as `stable_snapshot`, not `externally_grounded` (§11.1,
+>   §11.2, §11.3, §11.5, §12, §13, §17). Two non-blocking notes were added
+>   (§14.5, §19).
 > - **LIVE SUGAR VERIFICATION: PENDING** (unchanged).
 
 ## 0. Purpose and scope
@@ -892,7 +897,7 @@ export type CoverageTier = 'externally_grounded' | 'stable_snapshot' | 'none';
 
 export type ProofMethod =
   | 'count' // M8: source count before and after equals records read
-  | 'operator_full_file' // M7 CSV import declared full by the operator (decision A2)
+  | 'operator_full_file' // M7 CSV import declared full by the operator (decision A2: stable_snapshot)
   | 'manifest' // M9C
   | 'double_enumeration' // M9B
   | 'success_marker'; // M9C
@@ -905,12 +910,12 @@ export interface ProofMetadata {
   readonly runId: string; // the checkpoint that established coverage
   readonly completedAt: Date;
   readonly inferred: boolean; // true for pre-M9A runs (§11.3)
-  readonly acceptance?: { readonly authorityVersion: number }; // required for stable_snapshot
+  readonly acceptance?: { readonly authorityVersion: number }; // required for adapter-declared stable_snapshot methods (§11.2)
 }
 
 export const TIER_OF: Readonly<Record<ProofMethod, Exclude<CoverageTier, 'none'>>> = {
   count: 'externally_grounded',
-  operator_full_file: 'externally_grounded',
+  operator_full_file: 'stable_snapshot', // A2: a processed file is not proof of a complete upstream population
   manifest: 'externally_grounded',
   double_enumeration: 'stable_snapshot',
   success_marker: 'stable_snapshot',
@@ -959,10 +964,20 @@ outcome}`. The tier is computed from the method in code, never read from
 - `SubscriptionRunsStore.coverage()` (existing logic: authority, streak,
   latest mapping, latest completed full run) additionally reads the proof of
   **the run it selected** and returns `SubscriptionCoverage`.
-  - **stable_snapshot:** coverage is `known` only if the latest authority
+  - **stable_snapshot from an adapter-declared method** (`double_enumeration`,
+    `success_marker`): coverage is `known` only if the latest authority
     version contains an acceptance for that connection (§11.4). Otherwise
     `{coverage: 'unknown', coverageTier: 'none', reason:
 'proof_not_accepted'}`.
+  - **stable_snapshot from `operator_full_file`** (M7 CSV `import_full`):
+    coverage is `known` with tier `stable_snapshot`, and **no authority
+    acceptance is needed**.
+    - The operator's explicit choice of a _full_ import is already a
+      recorded human assertion on the run.
+    - Requiring a second acceptance would drop CSV tenants to tier `none`
+      and discard their positive owned evidence, which A2 keeps usable.
+    - The tier still forbids every absence conclusion (§11.5), so no
+      acceptance can make CSV absence actionable.
   - **A weaker newer run reduces the tier:** the selected run is always the
     newest qualifying run. If it is `stable_snapshot`, the tier is
     `stable_snapshot`, even if an older run was `externally_grounded`.
@@ -989,16 +1004,43 @@ asOf})` already serialises `ownership`, so `coverageTier` is included
   `import_full` runs are operator-declared full files.
 - The read model treats a selected completed run **without**
   `quality.proof` as follows:
-  - versioned connection → `{method: 'count', inferred: true}`;
-  - `import` connection → `{method: 'operator_full_file', inferred:
-true}`.
+  - versioned connection → `{method: 'count', inferred: true}`, tier
+    `externally_grounded`;
+  - `import` connection → `{method: 'operator_full_file', inferred: true}`,
+    tier **`stable_snapshot`**.
 
-  Both are `externally_grounded`. No row is rewritten.
+  No row is rewritten (no backfill).
 
-- **Decision A2 (recommended):** classify `import_full` as
-  `externally_grounded` via `operator_full_file`. Otherwise M9A would
-  remove M7's existing whitespace capability for CSV-imported tenants: a
-  regression the M9 plan did not intend.
+- **Decision A2 (final, after independent review): `operator_full_file` is
+  `stable_snapshot`.**
+  - A completed M7 `import_full` checkpoint proves that a file was processed
+    successfully. It does **not** independently prove that the uploaded file
+    contained the complete upstream population.
+  - The import's input hash provides deduplication and idempotency, not
+    completeness.
+  - So records present in an operator-provided full file are valid positive
+    evidence, but absence from the file is not grounded enough to imply
+    `not_owned`.
+- **CSV downstream behaviour** (`operator_full_file` / `stable_snapshot`):
+  - positive owned products remain usable;
+  - absence becomes `unknown` (`coverage_tier_insufficient`);
+  - no `eligible_whitespace`;
+  - no absence-based opportunity.
+- **Historical imports.** M7 CSV runs completed before M9A infer
+  `coverageTier = stable_snapshot` from M9A onwards. Historical rows are
+  **not** rewritten to preserve old whitespace behaviour.
+  - Absence-based conclusions that relied only on operator-declared CSV
+    completeness become **non-actionable** under the new tier:
+    re-evaluation yields `unknown`.
+  - Existing eligibility snapshots (evaluator version 2) keep what they
+    recorded and replay as `evaluator_changed` (M8 precedent). They are
+    historical records, not current conclusions.
+- **Future stronger import proof.** A future import that carries
+  independent **producer-side** completeness evidence (for example a
+  producer-declared row count, or a manifest verified against the parsed
+  file) may qualify for `externally_grounded`. That is a **separate proof
+  method** (e.g. `manifest`), designed and reviewed on its own. It is never
+  inferred from `import_full` alone.
 
 ### 11.4 Acceptance (stable_snapshot only)
 
@@ -1023,6 +1065,9 @@ tier: 'stable_snapshot', reason, actor, at}`. It is published through
 | `stable_snapshot`     | Lines give `owned`/`unknown` as usual; **every `not_owned` result becomes `unknown`** with reason `coverage_tier_insufficient` (new reason code) | Unchanged algorithm over that ownership map. `ownership_coverage` check `unknown` (`coverage_tier_insufficient`). Presence-based failures (e.g. already owned) still win (fail > unknown) | **never**                      | presence-based only (contract)      |
 | `none`                | all `unknown` (M8)                                                                                                                               | `unknown`                                                                                                                                                                                 | never                          | none                                |
 
+- `stable_snapshot` covers both adapter-declared methods (accepted) and
+  `operator_full_file` (CSV imports). Downstream semantics are identical:
+  presence usable, absence `unknown`, never whitespace.
 - The consuming code switches exhaustively on `coverageTier` (TypeScript
   `never` checks). There is no default branch.
 - **M9A builds no opportunity generator.** The contract is recorded in
@@ -1030,15 +1075,15 @@ tier: 'stable_snapshot', reason, actor, at}`. It is published through
 
 ## 12. Sugar regression plan (no Sugar-specific changes)
 
-| Check                                   | How                                                                                                                                                                                                                               |
-| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Connector behaviour unchanged           | Snapshot test: `SugarConnector.capabilities()` and the per-object capabilities from `describeSchema()` on the fake equal the M8 values (pagination, change field, delete visibility, count, page size, adapter version)           |
-| Field selection unchanged               | Fake Sugar request log: `sync` reads request exactly the mapped fields (as M8); `profile` reads request exactly the requested fields; no request contains an unrequested field                                                    |
-| Read-only proof unchanged               | M8 closure connector-level test passes unchanged                                                                                                                                                                                  |
-| Count proof stays `externally_grounded` | A full Sugar run records `quality.proof = {method: 'count', tier: 'externally_grounded', outcome: 'passed'}`; coverage returns `coverageTier: 'externally_grounded'`; pre-M9A runs infer the same (§11.3)                         |
-| M8 safe behaviour                       | The whole M8 suite (unit, integration, adversarial RLS, behavioural single writer, runtime 70, Docker) passes. Only the intended changes listed in §9.7 and §10.4 differ, each documented with old and new expectation and reason |
-| No Sugar code change                    | `git diff main -- apps/api/src/modules/sugar` is empty at the M9A gate (checked in the record)                                                                                                                                    |
-| Whitespace still possible               | With `externally_grounded` coverage, the existing M7/M8 whitespace tests still produce `eligible_whitespace`                                                                                                                      |
+| Check                                                | How                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Connector behaviour unchanged                        | Snapshot test: `SugarConnector.capabilities()` and the per-object capabilities from `describeSchema()` on the fake equal the M8 values (pagination, change field, delete visibility, count, page size, adapter version)                                                                                                                                                                                                                                                                                                                        |
+| Field selection unchanged                            | Fake Sugar request log: `sync` reads request exactly the mapped fields (as M8); `profile` reads request exactly the requested fields; no request contains an unrequested field                                                                                                                                                                                                                                                                                                                                                                 |
+| Read-only proof unchanged                            | M8 closure connector-level test passes unchanged                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Count proof stays `externally_grounded`              | A full Sugar run records `quality.proof = {method: 'count', tier: 'externally_grounded', outcome: 'passed'}`; coverage returns `coverageTier: 'externally_grounded'`; pre-M9A runs infer the same (§11.3)                                                                                                                                                                                                                                                                                                                                      |
+| M8 safe behaviour                                    | The whole M8 suite (unit, integration, adversarial RLS, behavioural single writer, runtime 70, Docker) passes. Only the intended changes listed in §9.7 and §10.4 differ, each documented with old and new expectation and reason                                                                                                                                                                                                                                                                                                              |
+| No Sugar code change                                 | `git diff main -- apps/api/src/modules/sugar` is empty at the M9A gate (checked in the record)                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Whitespace still possible (externally grounded only) | With `externally_grounded` coverage (Sugar fake, `count` proof), the M8 whitespace tests (`test/sources/source-sync.int.spec.ts`, runtime `70-source-connectors.sh`) still produce `eligible_whitespace`. M7 whitespace assertions that establish coverage **via CSV import** (`test/products/eligibility.int.spec.ts`, runtime `60-product-eligibility.sh`) change to `unknown` (`coverage_tier_insufficient`) under A2. They are listed as intended corrections, and an externally grounded fixture keeps a whitespace-positive case in each |
 
 ## 13. Testing plan
 
@@ -1151,7 +1196,19 @@ tombstones; coverage and gaps unchanged.
   `not_owned` and `eligible_whitespace` where otherwise eligible; under
   accepted `stable_snapshot` they give `unknown` (`coverage_tier_insufficient`)
   and no whitespace; owned is identical in both;
-- pre-M9A inferred proofs for versioned and import connections.
+- pre-M9A inferred proofs: versioned → `count` / `externally_grounded`;
+  import → `operator_full_file` / **`stable_snapshot`**;
+- **CSV import tier:**
+  - a completed `import_full` records `proof = {method:
+'operator_full_file', tier: 'stable_snapshot'}`;
+  - coverage is `known` / `stable_snapshot` without any authority
+    acceptance;
+  - imported active lines still make products `owned`;
+  - products absent from the file are `unknown`
+    (`coverage_tier_insufficient`), never `not_owned`;
+  - **no `eligible_whitespace`** from CSV coverage, even where every other
+    eligibility condition holds;
+  - a historical import without `proof` behaves identically (inferred).
 
 **Sugar regression:** every check in §12.
 
@@ -1198,43 +1255,45 @@ profile-run --help` and `profile-show` run inside the image; the
 
 ### 13.7 Mutation proofs (each must fail for the stated reason; harness as M8)
 
-| #   | Mechanism broken                                                | Expected failing test                 |
-| --- | --------------------------------------------------------------- | ------------------------------------- |
-| 1   | Empty string counted as null                                    | classifier null-vs-empty test         |
-| 2   | JSON-encoded array classified as string                         | JSON-encoded array test               |
-| 3   | Malformed JSON not counted                                      | malformed JSON test                   |
-| 4   | `1/0` alone suggests boolean                                    | boolean `{0,1}` rule test             |
-| 5   | Ambiguous date reported high confidence                         | date ambiguity test                   |
-| 6   | Safe-category cardinality `≤ 50` → `≤ 51`                       | boundary test distinct = 51           |
-| 7   | Length gate `≤ 64` → `≤ 65`                                     | boundary test length 65               |
-| 8   | One PII value suppresses only itself                            | sensitive-in-categorical test         |
-| 9   | Privacy pass skipped before persistence                         | integration privacy scan              |
-| 10  | `assertNoRawValues` disabled                                    | privacy violation test                |
-| 11  | Profile limit clamped instead of refused                        | limits test                           |
-| 12  | Hard ceiling read from configuration                            | ceiling test                          |
-| 13  | Covering-profile requirement skipped                            | publish test `profile_required`       |
-| 14  | Exempt entries demand a profile                                 | exemption test                        |
-| 15  | Override accepted without an authenticated operator             | override refusal test                 |
-| 16  | Override skips acknowledgements                                 | override scope test                   |
-| 17  | `identity_field_absent` guard removed                           | identity B-guard test                 |
-| 18  | Incompatible type guard removed                                 | type B-guard test                     |
-| 19  | Tombstone pass ignores `seenButRejected`                        | isolated single-record rejection test |
-| 20  | `protectionFor` default → delete                                | future-code protection test           |
-| 21  | Rejected record's gap not recorded                              | eligibility `unknown` test            |
-| 22  | Unattributable rejection completes the run                      | unattributable test                   |
-| 23  | `in` unreviewed treated as non-holding                          | `in` reviewed-domain test             |
-| 24  | `not_in` unreviewed treated as holding                          | `not_in` reviewed-domain test         |
-| 25  | Mandatory `null` entry not required                             | null-under-`not_in` publish test      |
-| 26  | `coverageTier` not persisted (proof omitted)                    | tier persistence test                 |
-| 27  | Tier dropped between coverage and eligibility                   | tier propagation test                 |
-| 28  | Older externally grounded run preferred over a newer stable run | no-promotion test                     |
-| 29  | Acceptance yields `externally_grounded`                         | no-promotion test                     |
-| 30  | `stable_snapshot` keeps `not_owned`                             | stable-snapshot-no-whitespace test    |
-| 31  | Tier rule applied to `externally_grounded`                      | externally-grounded-whitespace test   |
-| 32  | `profiling-is-advisory` dependency rule removed / violated      | `pnpm depcheck:boundaries`            |
-| 33  | RLS removed or permissive on each new table                     | adversarial RLS spec (per table)      |
-| 34  | Profile documents mutable                                       | immutability test                     |
-| 35  | Purge allowed for the app role                                  | purge privilege test                  |
+| #   | Mechanism broken                                                                      | Expected failing test                                                                                                                 |
+| --- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Empty string counted as null                                                          | classifier null-vs-empty test                                                                                                         |
+| 2   | JSON-encoded array classified as string                                               | JSON-encoded array test                                                                                                               |
+| 3   | Malformed JSON not counted                                                            | malformed JSON test                                                                                                                   |
+| 4   | `1/0` alone suggests boolean                                                          | boolean `{0,1}` rule test                                                                                                             |
+| 5   | Ambiguous date reported high confidence                                               | date ambiguity test                                                                                                                   |
+| 6   | Safe-category cardinality `≤ 50` → `≤ 51`                                             | boundary test distinct = 51                                                                                                           |
+| 7   | Length gate `≤ 64` → `≤ 65`                                                           | boundary test length 65                                                                                                               |
+| 8   | One PII value suppresses only itself                                                  | sensitive-in-categorical test                                                                                                         |
+| 9   | Privacy pass skipped before persistence                                               | integration privacy scan                                                                                                              |
+| 10  | `assertNoRawValues` disabled                                                          | privacy violation test                                                                                                                |
+| 11  | Profile limit clamped instead of refused                                              | limits test                                                                                                                           |
+| 12  | Hard ceiling read from configuration                                                  | ceiling test                                                                                                                          |
+| 13  | Covering-profile requirement skipped                                                  | publish test `profile_required`                                                                                                       |
+| 14  | Exempt entries demand a profile                                                       | exemption test                                                                                                                        |
+| 15  | Override accepted without an authenticated operator                                   | override refusal test                                                                                                                 |
+| 16  | Override skips acknowledgements                                                       | override scope test                                                                                                                   |
+| 17  | `identity_field_absent` guard removed                                                 | identity B-guard test                                                                                                                 |
+| 18  | Incompatible type guard removed                                                       | type B-guard test                                                                                                                     |
+| 19  | Tombstone pass ignores `seenButRejected`                                              | isolated single-record rejection test                                                                                                 |
+| 20  | `protectionFor` default → delete                                                      | future-code protection test                                                                                                           |
+| 21  | Rejected record's gap not recorded                                                    | eligibility `unknown` test                                                                                                            |
+| 22  | Unattributable rejection completes the run                                            | unattributable test                                                                                                                   |
+| 23  | `in` unreviewed treated as non-holding                                                | `in` reviewed-domain test                                                                                                             |
+| 24  | `not_in` unreviewed treated as holding                                                | `not_in` reviewed-domain test                                                                                                         |
+| 25  | Mandatory `null` entry not required                                                   | null-under-`not_in` publish test                                                                                                      |
+| 26  | `coverageTier` not persisted (proof omitted)                                          | tier persistence test                                                                                                                 |
+| 27  | Tier dropped between coverage and eligibility                                         | tier propagation test                                                                                                                 |
+| 28  | Older externally grounded run preferred over a newer stable run                       | no-promotion test                                                                                                                     |
+| 29  | Acceptance yields `externally_grounded`                                               | no-promotion test                                                                                                                     |
+| 30  | `stable_snapshot` keeps `not_owned`                                                   | stable-snapshot-no-whitespace test                                                                                                    |
+| 31  | Tier rule applied to `externally_grounded`                                            | externally-grounded-whitespace test                                                                                                   |
+| 32  | `profiling-is-advisory` dependency rule removed / violated                            | `pnpm depcheck:boundaries`                                                                                                            |
+| 33  | RLS removed or permissive on each new table                                           | adversarial RLS spec (per table)                                                                                                      |
+| 34  | Profile documents mutable                                                             | immutability test                                                                                                                     |
+| 35  | Purge allowed for the app role                                                        | purge privilege test                                                                                                                  |
+| 36  | `TIER_OF.operator_full_file` changed from `stable_snapshot` to `externally_grounded`  | `TIER_OF` unit test and the CSV-import tier tests (§13.3): absence must stay `unknown` and no `eligible_whitespace` from CSV coverage |
+| 37  | Authority acceptance demanded for `operator_full_file` (CSV coverage drops to `none`) | CSV-import tier test: imported lines must still yield `owned`                                                                         |
 
 ## 14. Performance and memory bounds
 
@@ -1280,8 +1339,11 @@ profile-run --help` and `profile-show` run inside the image; the
 
 ### 14.5 Seen-but-rejected
 
-- The set is in memory, like `holdingIds` (tech debt 31 applies: one key
-  per rejected record, bounded by the read).
+- The set is in memory, like `holdingIds`: one key per rejected record,
+  bounded by the read.
+- **Its memory joins tech debt #31.** When M9A lands, the register entry is
+  extended to cover `seenButRejectedIds` alongside the seen-line and
+  known-account sets, and the §19 scale gate counts it.
 
 ## 15. Migration plan (planning only; no migration created)
 
@@ -1348,8 +1410,9 @@ and output) in `docs/milestones/M09A-…md`:
 7. Adversarial RLS passes for the four new tables and the changed columns.
 8. Privacy scan passes: documents, findings, logs and CLI output contain no
    seeded sensitive values.
-9. Sugar regression (§12) passes. Intended M8 test changes are listed with
-   reasons. The Sugar module diff is empty.
+9. Sugar regression (§12) passes. Intended M7/M8 test changes are listed
+   with reasons, including the CSV-coverage whitespace assertions changed by
+   A2. The Sugar module diff is empty.
 10. Independent implementation review passes.
 11. Decisions A1–A3 approved (or changed) before implementation starts.
 12. ADRs 0022 (profiling) and 0023 (proof tiers, coverage tier,
@@ -1360,13 +1423,13 @@ LIVE SUGAR VERIFICATION stays PENDING. It is not part of M9A.
 
 ## 17. Decisions for approval before implementation
 
-| #   | Decision                                                                               | Recommendation                                                                                                                     |
-| --- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| A1  | D5 emergency override needs an authenticated operator, which does not exist (verified) | Ship it **disabled** (refused, tested); enable only with a future authenticated channel                                            |
-| A2  | Tier of M7 `import_full` coverage                                                      | `externally_grounded` via `operator_full_file` (preserves M7 whitespace; pre-M9A runs inferred)                                    |
-| A3  | Holding filters in mapping versions published before M9A                               | Runs refuse (`mapping_requires_republish`); republish with `reviewedDomain` (closes the verified `not_in`/null false-holding path) |
-| A4  | Fixed B-guard thresholds (50% systemic; first page ≥ 20 records)                       | Approve as code constants with ADR note                                                                                            |
-| A5  | Covering-profile freshness 30 days (bounded 1–90)                                      | Approve                                                                                                                            |
+| #   | Decision                                                                               | Recommendation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| --- | -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A1  | D5 emergency override needs an authenticated operator, which does not exist (verified) | Ship it **disabled** (refused, tested); enable only with a future authenticated channel                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| A2  | Tier of M7 `import_full` coverage                                                      | **Final (independent review): `stable_snapshot` via `operator_full_file`.** A processed file is not independent proof of the complete upstream population (the input hash is idempotency, not completeness). Positive owned evidence stays usable without an authority acceptance; absence becomes `unknown`; no whitespace and no absence-based opportunity from CSV coverage; historical imports are inferred as `stable_snapshot` with no backfill. A future producer-verified row count or manifest is a separate method that may reach `externally_grounded` |
+| A3  | Holding filters in mapping versions published before M9A                               | Runs refuse (`mapping_requires_republish`); republish with `reviewedDomain` (closes the verified `not_in`/null false-holding path)                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| A4  | Fixed B-guard thresholds (50% systemic; first page ≥ 20 records)                       | Approve as code constants with ADR note                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| A5  | Covering-profile freshness 30 days (bounded 1–90)                                      | Approve                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 ## 18. Risks
 
@@ -1394,6 +1457,12 @@ LIVE SUGAR VERIFICATION stays PENDING. It is not part of M9A.
 - Opportunity generation (M11+); only its tier contract is fixed here.
 - Automatic profile scheduling (operator-triggered in M9A; run-quality
   profiles come with every sync).
+- **Future consideration (not M9A scope):** invalidating a covering profile
+  automatically when drift of a given severity is observed, so a newer
+  profile is required before the next publish. Today a covering profile is
+  bounded only by the snapshot match and the freshness window (§7.1).
+- Producer-side completeness for CSV imports (verified row count or
+  manifest) as a separate `externally_grounded` method (§11.3).
 
 ## 20. Confirmation
 
