@@ -18,7 +18,12 @@ const AS_OF = new Date('2026-10-02T12:00:00Z');
 const model = indexed();
 
 function known(...lines: SubscriptionFact[]): OwnershipInput {
-  return { coverage: 'known', knownAsOf: new Date('2026-10-01T00:00:00Z'), subscriptions: lines };
+  return {
+    coverage: 'known',
+    coverageTier: 'externally_grounded',
+    knownAsOf: new Date('2026-10-01T00:00:00Z'),
+    subscriptions: lines,
+  };
 }
 
 function evaluate(
@@ -45,7 +50,7 @@ describe('ownership derivation (ADR 0017 §2)', () => {
 
   it('is unknown for every product until a full load completed (never "owns nothing")', () => {
     for (const key of model.products.keys())
-      expect(own({ coverage: 'unknown' }, key)).toBe('unknown');
+      expect(own({ coverage: 'unknown', coverageTier: 'none' }, key)).toBe('unknown');
   });
 
   it('counts active and trial lines by default; expired and cancelled do not count', () => {
@@ -149,7 +154,7 @@ describe('ownership derivation (ADR 0017 §2)', () => {
 
 describe('eligibility checks (ADR 0018)', () => {
   it('is unknown with ownership_not_loaded when coverage is not complete', () => {
-    const r = evaluate('analytics', { coverage: 'unknown' });
+    const r = evaluate('analytics', { coverage: 'unknown', coverageTier: 'none' });
     expect(r.status).toBe('unknown');
     expect(check(r, 'ownership_coverage')[0]).toMatchObject({
       outcome: 'unknown',
@@ -159,7 +164,11 @@ describe('eligibility checks (ADR 0018)', () => {
   });
 
   it('an account with an ownership gap is unknown with ownership_incomplete (M8), distinct from not loaded', () => {
-    const r = evaluate('analytics', { coverage: 'unknown', reason: 'ownership_incomplete' });
+    const r = evaluate('analytics', {
+      coverage: 'unknown',
+      coverageTier: 'none',
+      reason: 'ownership_incomplete',
+    });
     expect(r.status).toBe('unknown');
     expect(r.ownership).toBe('unknown');
     expect(check(r, 'ownership_coverage')[0]).toMatchObject({
@@ -169,13 +178,15 @@ describe('eligibility checks (ADR 0018)', () => {
     // Never a not-owned inference for any product of the account.
     for (const own of deriveOwnership(
       model,
-      { coverage: 'unknown', reason: 'ownership_incomplete' },
+      { coverage: 'unknown', coverageTier: 'none', reason: 'ownership_incomplete' },
       AS_OF,
     ).values()) {
       expect(own).toMatchObject({ status: 'unknown', reason: 'ownership_incomplete' });
     }
     // The reason is part of the frozen facts (a gap and "not loaded" never hash alike).
-    expect(r.factsHash).not.toBe(evaluate('analytics', { coverage: 'unknown' }).factsHash);
+    expect(r.factsHash).not.toBe(
+      evaluate('analytics', { coverage: 'unknown', coverageTier: 'none' }).factsHash,
+    );
   });
 
   it('is eligible when every check passes, and explains each one', () => {
@@ -194,7 +205,7 @@ describe('eligibility checks (ADR 0018)', () => {
       ruleId: 'analytics-needs-core',
       outcome: 'pass',
     });
-    expect(r).toMatchObject({ modelVersion: 1, evaluatorVersion: 2 });
+    expect(r).toMatchObject({ modelVersion: 1, evaluatorVersion: 3 });
     expect(r.modelHash).toMatch(/^[0-9a-f]{64}$/);
     expect(r.factsHash).toMatch(/^[0-9a-f]{64}$/);
   });
@@ -439,6 +450,90 @@ describe('eligibility checks (ADR 0018)', () => {
   });
 });
 
+describe('structural coverage tiers (M9A, ADR 0023)', () => {
+  const stable = (...lines: SubscriptionFact[]): OwnershipInput => ({
+    coverage: 'known',
+    coverageTier: 'stable_snapshot',
+    knownAsOf: new Date('2026-10-01T00:00:00Z'),
+    subscriptions: lines,
+  });
+  const ws = (ownership: OwnershipInput) =>
+    classifyWhitespace({
+      model,
+      account: { companyId: COMPANY, customerStatus: 'customer' },
+      ownership,
+      asOf: AS_OF,
+    });
+  const keys = (r: ReturnType<typeof ws>, c: keyof ReturnType<typeof ws>['categories']) =>
+    r.categories[c].map((x) => x.productKey);
+
+  it('externally grounded coverage still yields eligible whitespace when otherwise eligible', () => {
+    const r = ws(known(line('core')));
+    expect(keys(r, 'eligible_whitespace')).toEqual([
+      'analytics',
+      'analytics-plus',
+      'core-pro',
+      'reporting',
+      'suite',
+    ]);
+    expect(
+      r.categories.eligible_whitespace.every((x) => x.coverageTier === 'externally_grounded'),
+    ).toBe(true);
+  });
+
+  it('stable_snapshot keeps positive ownership but never concludes absence or whitespace', () => {
+    const r = ws(stable(line('core')));
+    expect(keys(r, 'owned')).toEqual(['core']);
+    expect(r.categories.eligible_whitespace).toEqual([]);
+    const notOwned = Object.values(r.categories)
+      .flat()
+      .filter((x) => x.ownership === 'not_owned');
+    expect(notOwned).toEqual([]);
+    const analytics = evaluate('analytics', stable(line('core')));
+    expect(analytics).toMatchObject({
+      status: 'unknown',
+      ownership: 'unknown',
+      coverageTier: 'stable_snapshot',
+    });
+    expect(check(analytics, 'ownership_coverage')[0]).toMatchObject({
+      outcome: 'unknown',
+      reason: 'coverage_tier_insufficient',
+    });
+    expect(check(analytics, 'not_already_owned')[0]).toMatchObject({
+      outcome: 'unknown',
+      reason: 'coverage_tier_insufficient',
+    });
+  });
+
+  it('a presence-based failure still wins under stable_snapshot (fail > unknown)', () => {
+    expect(evaluate('core', stable(line('core')))).toMatchObject({
+      status: 'ineligible',
+      ownership: 'owned',
+    });
+  });
+
+  it('deriveOwnership maps every not_owned to unknown (coverage_tier_insufficient) only for stable_snapshot', () => {
+    const grounded = deriveOwnership(model, known(), AS_OF);
+    const snapshot = deriveOwnership(model, stable(), AS_OF);
+    for (const key of model.products.keys()) {
+      expect(grounded.get(key)!.status).toBe('not_owned');
+      expect(snapshot.get(key)).toMatchObject({
+        status: 'unknown',
+        reason: 'coverage_tier_insufficient',
+      });
+    }
+  });
+
+  it('carries the tier on every result and in the facts hash', () => {
+    expect(evaluate('analytics', { coverage: 'unknown', coverageTier: 'none' }).coverageTier).toBe(
+      'none',
+    );
+    expect(evaluate('analytics', stable(line('core'))).factsHash).not.toBe(
+      evaluate('analytics', known(line('core'))).factsHash,
+    );
+  });
+});
+
 describe('whitespace (ADR 0018 §4)', () => {
   it('groups every catalogue product into owned / eligible / ineligible / unknown', () => {
     const ws = classifyWhitespace({
@@ -465,7 +560,7 @@ describe('whitespace (ADR 0018 §4)', () => {
     const ws = classifyWhitespace({
       model,
       account: { companyId: COMPANY, customerStatus: 'customer' },
-      ownership: { coverage: 'unknown', reason: 'ownership_incomplete' },
+      ownership: { coverage: 'unknown', coverageTier: 'none', reason: 'ownership_incomplete' },
       asOf: AS_OF,
     });
     expect(ws.categories.eligible_whitespace).toEqual([]);
@@ -476,7 +571,7 @@ describe('whitespace (ADR 0018 §4)', () => {
     const ws = classifyWhitespace({
       model,
       account: { companyId: COMPANY, customerStatus: 'customer' },
-      ownership: { coverage: 'unknown' },
+      ownership: { coverage: 'unknown', coverageTier: 'none' },
       asOf: AS_OF,
     });
     expect(ws.categories.eligible_whitespace).toEqual([]);

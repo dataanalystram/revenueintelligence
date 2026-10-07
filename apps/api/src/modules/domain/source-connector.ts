@@ -57,6 +57,8 @@ export const SourceFieldSchema = z
       .optional(),
     /** For `relate` fields: the object the value points at. */
     relatesTo: ApiName.optional(),
+    /** The value is natively structured (M9A): profiled as a structure, not a string. */
+    nested: z.enum(['array', 'object']).optional(),
   })
   .readonly();
 export type SourceField = z.infer<typeof SourceFieldSchema>;
@@ -80,6 +82,8 @@ export const SourceObjectSchema = z
     name: ApiName,
     label: Label.optional(),
     classification: SourceObjectClassSchema,
+    /** Payment-like objects (cards, transactions) are excluded from profiling (M9A). */
+    sensitivity: z.literal('payment').optional(),
     capabilities: ObjectCapabilitiesSchema,
     fields: z.array(SourceFieldSchema).min(1).max(2000),
   })
@@ -203,9 +207,19 @@ export type ReadSelection =
   | { readonly mode: 'since'; readonly since: Date; readonly boundary: Date }
   | { readonly mode: 'ids'; readonly ids: readonly string[] };
 
+/**
+ * Why a read happens (M9A). `sync` and `preview` read the published mapping's
+ * fields only; `profile` reads exactly the fields selected in a profile
+ * request. Adapters may log the purpose code, never values.
+ */
+export const ReadPurposeSchema = z.enum(['sync', 'preview', 'profile']);
+export type ReadPurpose = z.infer<typeof ReadPurposeSchema>;
+
 export interface ReadRequest {
   readonly object: string;
-  /** From the published mapping only; the adapter never reads other fields. */
+  /** Absent means `sync` (adapters written before M9A never set it). */
+  readonly purpose?: ReadPurpose;
+  /** Exactly the fields allowed for the purpose; the adapter never reads other fields. */
   readonly fields: readonly string[];
   readonly selection: ReadSelection;
   /** Opaque position from the previous page; undefined for the first page. */

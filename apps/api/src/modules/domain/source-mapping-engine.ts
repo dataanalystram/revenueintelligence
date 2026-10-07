@@ -42,6 +42,18 @@ export const QUALITY_CODES = [
 ] as const;
 export type QualityCode = (typeof QUALITY_CODES)[number];
 
+/** Every `skipped` outcome code of {@link mapSubscriptionRecord} (protection decisions cover each). */
+export const SKIP_CODES = [
+  'non_subscription_product',
+  'missing_product_reference',
+  'orphan_product_reference',
+  'missing_account_reference',
+  'orphan_account_reference',
+  'missing_identity',
+  'record_rejected',
+] as const;
+export type SkipCode = (typeof SKIP_CODES)[number];
+
 /** Literal set membership on the mapped object's own field. An empty value is
  * never a member of `values` (so `not_in` admits it, `in` does not). */
 export function holdingFilterMatches(filter: HoldingFilter, record: SourceRecord): boolean {
@@ -78,14 +90,7 @@ export type SubscriptionMappingResult =
   | { readonly outcome: 'filtered_out' }
   | {
       readonly outcome: 'skipped';
-      readonly code:
-        | 'non_subscription_product'
-        | 'missing_product_reference'
-        | 'orphan_product_reference'
-        | 'missing_account_reference'
-        | 'orphan_account_reference'
-        | 'missing_identity'
-        | 'record_rejected';
+      readonly code: SkipCode;
       /** The line's account when it resolved: an ownership gap for missing/orphan products. */
       readonly gapAccountId?: string;
     }

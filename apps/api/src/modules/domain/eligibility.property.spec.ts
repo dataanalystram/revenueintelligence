@@ -178,12 +178,19 @@ const scenarioArb = modelArb.chain((doc) =>
     doc: fc.constant(doc),
     lines: linesArb(doc.products.length),
     coverage: fc.constantFrom('known' as const, 'known' as const, 'unknown' as const),
+    tier: fc.constantFrom('externally_grounded' as const, 'stable_snapshot' as const),
     status: fc.constantFrom(...STATUSES),
   }),
 );
 
-const ownership = (coverage: 'known' | 'unknown', lines: SubscriptionFact[]): OwnershipInput =>
-  coverage === 'known' ? { coverage, knownAsOf: AS_OF, subscriptions: lines } : { coverage };
+const ownership = (
+  coverage: 'known' | 'unknown',
+  lines: SubscriptionFact[],
+  coverageTier: 'externally_grounded' | 'stable_snapshot' = 'externally_grounded',
+): OwnershipInput =>
+  coverage === 'known'
+    ? { coverage, coverageTier, knownAsOf: AS_OF, subscriptions: lines }
+    : { coverage, coverageTier: 'none' };
 
 describe('pure eligibility core: properties', () => {
   it('valid generated relationship models validate, and the evaluator always terminates', () => {
@@ -391,12 +398,12 @@ describe('pure eligibility core: properties', () => {
 
   it('serialising and replaying the frozen inputs reproduces the result exactly', () => {
     fc.assert(
-      fc.property(scenarioArb, ({ doc, lines, coverage, status }) => {
+      fc.property(scenarioArb, ({ doc, lines, coverage, tier, status }) => {
         const model = index(doc);
         const input = {
           model,
           account: { companyId: COMPANY_A, customerStatus: status },
-          ownership: ownership(coverage, lines),
+          ownership: ownership(coverage, lines, tier),
           asOf: AS_OF,
         };
         for (const key of model.products.keys()) {
@@ -410,8 +417,13 @@ describe('pure eligibility core: properties', () => {
             }),
           ) as {
             ownership:
-              | { coverage: 'known'; knownAsOf: string; subscriptions: unknown[] }
-              | { coverage: 'unknown' };
+              | {
+                  coverage: 'known';
+                  coverageTier: 'externally_grounded' | 'stable_snapshot';
+                  knownAsOf: string;
+                  subscriptions: unknown[];
+                }
+              | { coverage: 'unknown'; coverageTier: 'none' };
             asOf: string;
             account: typeof input.account;
           };
@@ -419,12 +431,13 @@ describe('pure eligibility core: properties', () => {
             frozen.ownership.coverage === 'known'
               ? {
                   coverage: 'known',
+                  coverageTier: frozen.ownership.coverageTier,
                   knownAsOf: new Date(frozen.ownership.knownAsOf),
                   subscriptions: frozen.ownership.subscriptions.map((s) =>
                     SubscriptionFactSchema.parse(s),
                   ),
                 }
-              : { coverage: 'unknown' };
+              : { coverage: 'unknown', coverageTier: 'none' };
           const replayed = evaluateEligibility({
             model,
             account: frozen.account,
@@ -434,6 +447,63 @@ describe('pure eligibility core: properties', () => {
           });
           expect(replayed).toEqual(original);
         }
+      }),
+    );
+  });
+
+  // M9A (ADR 0023): structural coverage tiers.
+  it('stable_snapshot coverage never concludes absence: no not_owned and no eligible whitespace', () => {
+    fc.assert(
+      fc.property(scenarioArb, ({ doc, lines, status }) => {
+        const ws = classifyWhitespace({
+          model: index(doc),
+          account: { companyId: COMPANY_A, customerStatus: status },
+          ownership: ownership('known', lines, 'stable_snapshot'),
+          asOf: AS_OF,
+        });
+        expect(ws.categories.eligible_whitespace).toEqual([]);
+        const all = Object.values(ws.categories).flat();
+        expect(all.some((r) => r.ownership === 'not_owned')).toBe(false);
+        expect(all.every((r) => r.coverageTier === 'stable_snapshot')).toBe(true);
+      }),
+    );
+  });
+
+  it('positive ownership evidence is identical under both known tiers', () => {
+    fc.assert(
+      fc.property(scenarioArb, ({ doc, lines, status }) => {
+        const model = index(doc);
+        const owned = (tier: 'externally_grounded' | 'stable_snapshot') =>
+          classifyWhitespace({
+            model,
+            account: { companyId: COMPANY_A, customerStatus: status },
+            ownership: ownership('known', lines, tier),
+            asOf: AS_OF,
+          })
+            .categories.owned.map((r) => r.productKey)
+            .sort();
+        expect(owned('stable_snapshot')).toEqual(owned('externally_grounded'));
+      }),
+    );
+  });
+
+  it('the tier is part of the facts hash', () => {
+    fc.assert(
+      fc.property(scenarioArb, ({ doc, lines, status }) => {
+        const base = {
+          model: index(doc),
+          account: { companyId: COMPANY_A, customerStatus: status },
+          asOf: AS_OF,
+        };
+        expect(
+          classifyWhitespace({ ...base, ownership: ownership('known', lines, 'stable_snapshot') })
+            .factsHash,
+        ).not.toBe(
+          classifyWhitespace({
+            ...base,
+            ownership: ownership('known', lines, 'externally_grounded'),
+          }).factsHash,
+        );
       }),
     );
   });

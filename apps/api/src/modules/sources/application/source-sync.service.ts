@@ -744,6 +744,7 @@ export class SourceSyncService {
     let position = from;
     for (let page = 0; page < MAX_PAGES; page += 1) {
       const result = await rc.connector.readRecords({
+        purpose: 'sync',
         object,
         fields,
         selection,

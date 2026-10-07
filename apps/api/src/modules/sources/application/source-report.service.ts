@@ -108,6 +108,7 @@ export class SourceReportService {
         let position: string | undefined;
         do {
           const page = await connector.readRecords({
+            purpose: 'sync',
             object: refs.object,
             fields: [refs.identity.field],
             selection: { mode: 'full', boundary: new Date() },
