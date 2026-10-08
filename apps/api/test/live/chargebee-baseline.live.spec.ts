@@ -458,7 +458,7 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
         ),
       };
       const original = globalThis.fetch;
-      globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
         const res = await original(input, init);
         const url = new URL(
           typeof input === 'string' ? input : input instanceof URL ? input.href : input.url,
@@ -482,7 +482,7 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
           status: 200,
           headers: { 'content-type': 'application/json' },
         });
-      });
+      };
       let before: Awaited<ReturnType<typeof runSync>>;
       try {
         before = await runSync(c, f, 'full');
