@@ -168,8 +168,11 @@ pr_sync() {
   [[ "$(pr_wait sync-status)" == "completed" ]] || return 1
   # Compared field by field (jsonb does not keep key order).
   [[ "$(pr_json '[o.runs[0].quality.proof.method, o.runs[0].quality.proof.tier, o.runs[0].quality.proof.outcome].join(":")' <"$PR_OUT/sync-status.json")" == "count:externally_grounded:passed" ]] || return 1
-  pr_cli products evaluate --tenant "$PR_TENANT" --company sugar:Accounts:FIX-ACC-001 --product fix-prod-001 >"$PR_OUT/eval-owned.json" || return 1
-  [[ "$(pr_json 'o.ownership + ":" + o.coverageTier' <"$PR_OUT/eval-owned.json")" == "owned:externally_grounded" ]]
+  pr_cli products evaluate --tenant "$PR_TENANT" --company sugar:Accounts:FIX-ACC-001 --product fix-prod-001 >"$PR_OUT/eval-present.json" || return 1
+  # The Sugar test mapping declares subscription.state explicitly unknown (M8,
+  # no_reliable_source_state), so a present line is unknown, never owned; the
+  # coverage check passes and the tier is carried into the result.
+  [[ "$(pr_json '[o.coverageTier, o.checks.find((c) => c.check === "ownership_coverage").outcome, o.checks.find((c) => c.check === "not_already_owned").reason].join(":")' <"$PR_OUT/eval-present.json")" == "externally_grounded:pass:subscription_state_unknown" ]]
 }
 check "full sync records a count proof (externally grounded); eligibility carries the tier" pr_sync
 
