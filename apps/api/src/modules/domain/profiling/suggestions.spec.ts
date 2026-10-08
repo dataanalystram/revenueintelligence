@@ -9,9 +9,7 @@ function suggest(values: readonly unknown[], field: Partial<SourceField> = {}) {
     name: 'Things',
     classification: 'record',
     capabilities: { pagination: 'offset', deleteVisibility: 'none', count: true, maxPageSize: 100 },
-    fields: [
-      { name: 'f', type: 'string', required: false, unique: false, ...field },
-    ],
+    fields: [{ name: 'f', type: 'string', required: false, unique: false, ...field }],
   };
   const acc = objectAccumulatorFor(obj, ['f']);
   for (const v of values) acc.addRecord({ f: v });

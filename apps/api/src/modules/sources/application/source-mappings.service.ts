@@ -1,9 +1,13 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { MetricsService } from '../../../platform/metrics';
 import {
   MappingDocumentSchema,
+  PROFILE_FRESHNESS,
+  SourceProfileSettingsSchema,
   SourceSchemaSchema,
   UNASSIGNED_AUTHORITY,
   validateMapping,
+  type Acknowledgement,
   type MappingDocument,
   type MappingIssue,
   type MappingValidation,
@@ -21,6 +25,7 @@ import {
   PublishBaseVersionRequiredError,
   SourcesError,
 } from '../errors';
+import { ProfilesRepository } from '../infrastructure/profiles.repository';
 import { SourcesRepository, type StoredMappingVersion } from '../infrastructure/sources.repository';
 
 export interface PublishMappingOptions {
@@ -29,6 +34,17 @@ export interface PublishMappingOptions {
   readonly actor: string;
   /** The snapshot the operator validated against; stale when not the latest. */
   readonly validatedAgainst?: string;
+  /** Acknowledged findings of the covering profiles (M9A §7.4). */
+  readonly acknowledgements?: readonly Acknowledgement[];
+  /** Emergency profile override (D5): disabled in M9A, always refused (decision A1). */
+  readonly profileOverride?: { readonly reason: string };
+}
+
+export interface ValidateMappingOptions {
+  readonly validatedAgainst?: string;
+  readonly acknowledgements?: readonly Acknowledgement[];
+  readonly profileOverride?: { readonly reason: string };
+  readonly actor?: string;
 }
 
 export interface MappingValidationReport {
@@ -38,6 +54,8 @@ export interface MappingValidationReport {
   readonly contentHash?: string;
   readonly errors: readonly MappingIssue[];
   readonly warnings: readonly MappingIssue[];
+  /** The profiles that cover the consequential entries (M9A). */
+  readonly coveringProfileIds: readonly string[];
 }
 
 export interface PublishedMapping {
@@ -46,6 +64,8 @@ export interface PublishedMapping {
   readonly snapshotHash: string;
   readonly authorityVersion: number;
   readonly warnings: readonly MappingIssue[];
+  readonly coveringProfileIds: readonly string[];
+  readonly acknowledgements: number;
 }
 
 const ACTOR = /^[A-Za-z0-9_.:@-]{1,128}$/;
@@ -53,9 +73,13 @@ const ACTOR = /^[A-Za-z0-9_.:@-]{1,128}$/;
 /** Versioned, immutable source mappings (ADR 0020 §1–5, §11). */
 @Injectable()
 export class SourceMappingsService {
+  private readonly logger = new Logger('SourceMappings');
+
   constructor(
     private readonly db: TenantDatabase,
     private readonly repo: SourcesRepository,
+    private readonly profiles: ProfilesRepository,
+    @Optional() @Inject(MetricsService) private readonly metrics?: MetricsService,
   ) {}
 
   /** Validates a candidate against the latest snapshot and the current authority. */
@@ -63,12 +87,14 @@ export class SourceMappingsService {
     ctx: TenantContext,
     connectionId: string,
     raw: unknown,
-    validatedAgainst?: string,
+    options: ValidateMappingOptions = {},
   ): Promise<MappingValidationReport> {
-    return this.db.transaction(ctx, async (tx) => {
-      const { report } = await this.check(tx, connectionId, raw, validatedAgainst);
+    const report = await this.db.transaction(ctx, async (tx) => {
+      const { report } = await this.check(tx, connectionId, raw, options);
       return report;
     });
+    this.auditOverride(ctx, connectionId, options, options.actor ?? 'cli');
+    return report;
   }
 
   /**
@@ -87,6 +113,8 @@ export class SourceMappingsService {
       throw new PublishBaseVersionRequiredError('a mapping');
     }
     if (!ACTOR.test(options.actor)) throw new SourcesError('invalid_actor', 'Invalid actor');
+    // An override attempt is audited as refused before anything else happens.
+    this.auditOverride(ctx, connectionId, options, options.actor);
     return this.db.transaction(ctx, async (tx) => {
       // One publication per connection at a time.
       await tenantAdvisoryLock(tx, 'source-mapping', connectionId);
@@ -95,12 +123,7 @@ export class SourceMappingsService {
       if (base !== latestVersion) {
         throw new ConcurrentSourcePublishError('The mapping', base, latestVersion);
       }
-      const { report, validation } = await this.check(
-        tx,
-        connectionId,
-        raw,
-        options.validatedAgainst,
-      );
+      const { report, validation } = await this.check(tx, connectionId, raw, options);
       if (!validation.ok) throw new MappingInvalidError(validation.errors);
       if (report.authorityVersion === 0) {
         throw new SourcesError('authority_missing', 'The tenant has no authority version');
@@ -115,6 +138,15 @@ export class SourceMappingsService {
         authorityVersion: report.authorityVersion,
         validation: {
           warnings: Object.fromEntries(countBy(validation.warnings.map((w) => w.code))),
+          // M9A (§7.1, §7.4): the evidence the publication relied on.
+          coveringProfileIds: validation.coveringProfileIds,
+          acknowledgements: validation.acknowledgements.map((a) => ({
+            findingId: a.findingId,
+            code: a.code,
+            reasonCode: a.reasonCode,
+            actor: options.actor,
+            at: new Date().toISOString(),
+          })),
         },
         publishedBy: options.actor,
       });
@@ -124,8 +156,30 @@ export class SourceMappingsService {
         snapshotHash: stored.schemaSnapshotHash,
         authorityVersion: stored.authorityVersion,
         warnings: validation.warnings,
+        coveringProfileIds: validation.coveringProfileIds,
+        acknowledgements: validation.acknowledgements.length,
       };
     });
+  }
+
+  /** D5 safeguards: an override attempt is always logged and counted (refused in M9A). */
+  private auditOverride(
+    ctx: TenantContext,
+    connectionId: string,
+    options: { profileOverride?: { reason: string } },
+    actor: string,
+  ): void {
+    if (!options.profileOverride) return;
+    this.metrics?.increment('lip_profile_override_total', { kind: 'refused' });
+    this.logger.warn(
+      {
+        tenant: ctx.tenantSlug,
+        connectionId,
+        actor,
+        code: 'override_requires_authenticated_operator',
+      },
+      'Profile override attempt refused',
+    );
   }
 
   async show(
@@ -145,7 +199,7 @@ export class SourceMappingsService {
     tx: TenantTransaction,
     connectionId: string,
     raw: unknown,
-    validatedAgainst: string | undefined,
+    options: ValidateMappingOptions,
   ): Promise<{ report: MappingValidationReport; validation: MappingValidation }> {
     const connection = await this.repo.connection(tx, connectionId);
     if (!connection) throw new ConnectionNotFoundError(connectionId);
@@ -157,13 +211,26 @@ export class SourceMappingsService {
       throw new SourcesError('no_schema_snapshot', 'Capture a schema snapshot before mapping');
     }
     const authority = await this.repo.latestAuthority(tx);
+    const schemaHash = options.validatedAgainst ?? snapshot.hash;
+    const settings = SourceProfileSettingsSchema.safeParse(connection.config.profile);
     const validation = validateMapping(raw, {
       connectionId,
       kind: connection.kind,
       schema: SourceSchemaSchema.parse(snapshot.document),
-      schemaHash: validatedAgainst ?? snapshot.hash,
+      schemaHash,
       latestSchemaHash: snapshot.hash,
       authority: authority?.document ?? UNASSIGNED_AUTHORITY,
+      profiling: {
+        profiles: await this.profiles.candidateProfiles(tx, connectionId, schemaHash),
+        now: new Date(),
+        freshnessDays: settings.success
+          ? (settings.data.freshnessDays ?? PROFILE_FRESHNESS.defaultDays)
+          : PROFILE_FRESHNESS.defaultDays,
+        acknowledgements: options.acknowledgements ?? [],
+        ...(options.profileOverride ? { override: options.profileOverride } : {}),
+        // No authenticated operator channel exists (A1): the CLI actor is unauthenticated.
+        operator: { authenticated: false, actor: options.actor ?? 'cli' },
+      },
     });
     return {
       validation,
@@ -174,6 +241,7 @@ export class SourceMappingsService {
         ...(validation.ok ? { contentHash: validation.contentHash } : {}),
         errors: validation.ok ? [] : validation.errors,
         warnings: validation.warnings,
+        coveringProfileIds: validation.ok ? validation.coveringProfileIds : [],
       },
     };
   }

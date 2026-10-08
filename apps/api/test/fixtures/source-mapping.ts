@@ -7,12 +7,20 @@
  * the service_* date pair, UTC, inclusive end dates, state = explicit
  * unknown) are TEST CONFIGURATION ONLY: none is a confirmed Juniper decision.
  */
-import type {
-  AuthorityDocument,
-  MappingDocument,
-  SourceField,
-  SourceObject,
-  SourceSchema,
+import { randomUUID } from 'node:crypto';
+import {
+  buildProfileDocument,
+  documentFindings,
+  objectAccumulatorFor,
+  sourceSchemaHash,
+  type AuthorityDocument,
+  type CandidateProfile,
+  type MappingDocument,
+  type ProfilingValidationInput,
+  type ReviewedDomain,
+  type SourceField,
+  type SourceObject,
+  type SourceSchema,
 } from '../../src/modules/domain';
 
 export const TEST_CONNECTION_ID = '0c0c0c0c-0c0c-40c0-80c0-0c0c0c0c0c0c';
@@ -136,8 +144,33 @@ export function testSourceSchema(): SourceSchema {
 
 const confirmed = (note: string) => ({ by: 'test-operator', note });
 
+/**
+ * TEST-ONLY reviewed domain for the fixture stages: `Closed Won` is a holding,
+ * every other synthetic stage and the empty value are not (test configuration,
+ * not a Juniper decision).
+ */
+export function testReviewedDomain(
+  snapshotHash: string = sourceSchemaHash(testSourceSchema()),
+  holding: readonly string[] = ['Closed Won'],
+  profileIds: readonly string[] = [],
+): ReviewedDomain {
+  return {
+    entries: [
+      ...FIXTURE_SALES_STAGES.map((value) => ({
+        value,
+        classification: holding.includes(value) ? ('holding' as const) : ('non_holding' as const),
+      })),
+      { value: null, classification: 'non_holding' as const },
+    ],
+    snapshotHash,
+    profileIds: [...profileIds],
+  };
+}
+
 /** The default TEST mapping (see the module comment: test configuration only). */
-export function testMapping(): MappingDocument {
+export function testMapping(
+  snapshotHash: string = sourceSchemaHash(testSourceSchema()),
+): MappingDocument {
   return {
     objects: [
       {
@@ -156,6 +189,7 @@ export function testMapping(): MappingDocument {
           operator: 'in',
           values: ['Closed Won'],
           confirmation: confirmed('TEST ONLY: holding stage for fixtures'),
+          reviewedDomain: testReviewedDomain(snapshotHash),
         },
         relationships: [
           {
@@ -228,5 +262,112 @@ export function testAuthority(
       subscription_terms: TEST_CONNECTION_ID,
       ...overrides,
     },
+  };
+}
+
+/** A synthetic, type-appropriate value for row `i` of a declared field (test data only). */
+export function testSyntheticValue(
+  field: SourceField,
+  i: number,
+): string | number | boolean | null {
+  switch (field.type) {
+    case 'id':
+      return `R${i}`;
+    case 'enum': {
+      const options = field.enumOptions ?? [];
+      return options.length > 0 ? options[i % options.length]!.value : null;
+    }
+    case 'date':
+      return `2025-0${(i % 9) + 1}-1${i % 9}`;
+    case 'datetime':
+      return `2025-0${(i % 9) + 1}-1${i % 9}T10:00:00Z`;
+    case 'number':
+    case 'integer':
+      return (i % 5) + 1;
+    case 'boolean':
+      return i % 2 === 0;
+    case 'relate':
+      return `X${i % 10}`;
+    default:
+      return `v${i % 3}`;
+  }
+}
+
+/**
+ * Covering profiles built by the real profiling engine from synthetic values:
+ * one completed, full, unbounded profile per schema object, with its findings.
+ */
+export function testProfiles(
+  schema: SourceSchema = testSourceSchema(),
+  options: {
+    snapshotHash?: string;
+    finishedAt?: Date;
+    rows?: number;
+    values?: (object: string, field: SourceField, i: number) => string | number | boolean | null;
+    method?: 'full' | 'systematic' | 'recent' | 'head';
+  } = {},
+): CandidateProfile[] {
+  const snapshotHash = options.snapshotHash ?? sourceSchemaHash(schema);
+  const rows = options.rows ?? 100;
+  return schema.objects.map((object) => {
+    const names = object.fields.map((f) => f.name);
+    const acc = objectAccumulatorFor(object, names);
+    for (let i = 0; i < rows; i++) {
+      const record: Record<string, unknown> = {};
+      for (const f of object.fields) {
+        record[f.name] = options.values
+          ? options.values(object.name, f, i)
+          : testSyntheticValue(f, i);
+      }
+      acc.addRecord(record);
+    }
+    const method = options.method ?? 'full';
+    const document = buildProfileDocument({
+      object,
+      connectionKind: 'test',
+      schemaSnapshotHash: snapshotHash,
+      accumulator: acc,
+      sampling: {
+        method,
+        populationEstimate: method === 'full' ? rows : rows * 10,
+        bounded: method !== 'full',
+        stride: null,
+        orderedBy: null,
+        evidence: [],
+      },
+      maxRows: 1000,
+      distinctCap: 10_000,
+      optedIn: new Set(),
+    });
+    return {
+      id: randomUUID(),
+      family: 'profile' as const,
+      runStatus: 'completed',
+      finishedAt: options.finishedAt ?? new Date(Date.now() - 24 * 60 * 60 * 1000),
+      schemaSnapshotHash: snapshotHash,
+      document,
+      optedIn: [],
+      findings: documentFindings(document, { identityFields: new Set(['id']) }).map((f) => ({
+        id: randomUUID(),
+        code: f.code,
+        class: f.class,
+        severity: f.severity,
+        field: f.field,
+      })),
+    };
+  });
+}
+
+/** A profiling validation input with fresh covering profiles for the test schema. */
+export function testProfilingInput(
+  overrides: Partial<ProfilingValidationInput> = {},
+  schema: SourceSchema = testSourceSchema(),
+): ProfilingValidationInput {
+  return {
+    profiles: testProfiles(schema),
+    now: new Date(),
+    freshnessDays: 30,
+    acknowledgements: [],
+    ...overrides,
   };
 }

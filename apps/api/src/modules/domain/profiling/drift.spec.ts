@@ -25,9 +25,7 @@ function doc(
     name: 'Things',
     classification: 'record',
     capabilities: { pagination: 'offset', deleteVisibility: 'none', count: true, maxPageSize: 100 },
-    fields: FIELDS.map(
-      (f) => ({ type: 'string', required: false, unique: false, ...f }),
-    ),
+    fields: FIELDS.map((f) => ({ type: 'string', required: false, unique: false, ...f })),
   };
   const acc = objectAccumulatorFor(
     obj,

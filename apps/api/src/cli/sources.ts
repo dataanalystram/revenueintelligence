@@ -124,12 +124,28 @@ async function main(): Promise<void> {
       drift: { type: 'boolean', default: false },
       products: { type: 'boolean', default: false },
       execute: { type: 'boolean', default: false },
+      ack: { type: 'string', multiple: true },
+      'profile-override': { type: 'string' },
     },
   });
   if (!values.tenant) throw new Error('--tenant <slug> is required');
   const tenant = values.tenant;
   const execute = values.execute;
   const actor = values.actor ?? 'cli';
+  // `--ack <findingId>:<reasonCode>` (M9A §7.4); validated by the mapping service.
+  const acknowledgements = (values.ack ?? []).map((a) => {
+    const [findingId = '', reasonCode = ''] = a.split(':');
+    return { findingId, reasonCode } as { findingId: string; reasonCode: never };
+  });
+  const mappingOptions = {
+    ...(values['validated-against'] ? { validatedAgainst: values['validated-against'] } : {}),
+    ...(acknowledgements.length > 0 ? { acknowledgements } : {}),
+    // Accepted as input only to be refused and audited (decision A1).
+    ...(values['profile-override'] !== undefined
+      ? { profileOverride: { reason: values['profile-override'] } }
+      : {}),
+    actor,
+  };
 
   const result = await withSources(async (app) => {
     const ctx = await app.get(TenantContextService).forSlug(tenant);
@@ -199,7 +215,7 @@ async function main(): Promise<void> {
           const conn = await connection(ctx);
           const report = await app
             .get(SourceMappingsService)
-            .validate(ctx, conn.id, readJson(values.file), values['validated-against']);
+            .validate(ctx, conn.id, readJson(values.file), mappingOptions);
           if (!report.ok) exitCode = 2;
           return report;
         }
@@ -216,12 +232,7 @@ async function main(): Promise<void> {
           const conn = await connection(ctx);
           const mappings = app.get(SourceMappingsService);
           const document = readJson(values.file);
-          const report = await mappings.validate(
-            ctx,
-            conn.id,
-            document,
-            values['validated-against'],
-          );
+          const report = await mappings.validate(ctx, conn.id, document, mappingOptions);
           if (!report.ok) exitCode = 2;
           if (!execute || !report.ok) return { dryRun: true, ...report };
           const basedOn = int(values['based-on'], 'based-on');
@@ -232,11 +243,8 @@ async function main(): Promise<void> {
           }
           return {
             published: await mappings.publish(ctx, conn.id, document, {
+              ...mappingOptions,
               expectedBaseVersion: basedOn,
-              actor,
-              ...(values['validated-against']
-                ? { validatedAgainst: values['validated-against'] }
-                : {}),
             }),
           };
         }

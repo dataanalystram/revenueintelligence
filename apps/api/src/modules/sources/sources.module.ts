@@ -7,9 +7,11 @@ import { SchemaSnapshotsService } from './application/schema-snapshots.service';
 import { SourceAuthorityService } from './application/source-authority.service';
 import { SourceConnectionsService } from './application/source-connections.service';
 import { SourceMappingsService } from './application/source-mappings.service';
+import { SourceProfilingService } from './application/source-profiling.service';
 import { SourceReportService } from './application/source-report.service';
 import { SourceSyncProcessor } from './application/source-sync.processor';
 import { SourceSyncService } from './application/source-sync.service';
+import { ProfilesRepository } from './infrastructure/profiles.repository';
 import { SourcesRepository } from './infrastructure/sources.repository';
 import { SOURCE_ADAPTERS, SourceAdapterRegistry } from './source-adapters';
 
@@ -21,7 +23,7 @@ export interface SourcesModuleOptions {
   readonly context: DynamicModule;
   /** Adapter factories (composition root; e.g. `sugarAdapterFactory()`). */
   readonly adapters: readonly SourceAdapterFactory[];
-  /** Register the `source.sync` processor (worker only). */
+  /** Register the `lip-sources` processor (`source.sync`, `source.profile`; worker only). */
   readonly processors: boolean;
 }
 
@@ -41,6 +43,7 @@ export class SourcesModule {
       MappingPreviewService,
       SourceSyncService,
       SourceReportService,
+      SourceProfilingService,
     ];
     return {
       module: SourcesModule,
@@ -49,6 +52,7 @@ export class SourcesModule {
         { provide: SOURCE_ADAPTERS, useValue: options.adapters },
         SourceAdapterRegistry,
         SourcesRepository,
+        ProfilesRepository,
         ...services,
         ...(options.processors ? [SourceSyncProcessor] : []),
       ],

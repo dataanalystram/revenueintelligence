@@ -35,6 +35,7 @@ export * from './coverage';
 export * from './eligibility';
 export * from './holding-domain';
 export * from './source-protection';
+export * from './source-run-guards';
 export * from './product-model';
 export * from './shared/canonical-json';
 export * from './subscription';

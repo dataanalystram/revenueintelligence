@@ -5,8 +5,13 @@ import {
   OTHER_CONNECTION_ID,
   TEST_CONNECTION_ID,
   testAuthority,
+  FIXTURE_SALES_STAGES,
   testMapping,
+  testProfiles,
+  testProfilingInput,
+  testReviewedDomain,
   testSourceSchema,
+  testSyntheticValue as defaultValue,
 } from '../../../test/fixtures/source-mapping';
 import { sourceSchemaHash } from './source-connector';
 import {
@@ -20,6 +25,8 @@ import type { AuthorityDocument } from './source-authority';
 
 const schema = testSourceSchema();
 const hash = sourceSchemaHash(schema);
+/** Fresh covering profiles for every object (M9A): built once, shared by the M8 cases. */
+const PROFILING = testProfilingInput();
 
 function ctx(overrides: Partial<MappingValidationContext> = {}): MappingValidationContext {
   return {
@@ -29,6 +36,7 @@ function ctx(overrides: Partial<MappingValidationContext> = {}): MappingValidati
     schemaHash: hash,
     latestSchemaHash: hash,
     authority: testAuthority(),
+    profiling: PROFILING,
     ...overrides,
   };
 }
@@ -159,8 +167,29 @@ describe('mapping validation (ADR 0020)', () => {
         mapping((d) => {
           d.objects[0]!.identity = { field: 'website', ...(confirmation ? { confirmation } : {}) };
         });
-      expect(codes(raw())).toEqual(['identity_unsuitable']);
-      expect(codes(raw({ by: 'ops', note: 'website is unique for this tenant' }))).toEqual([]);
+      // Profiles where the website values are unique (M9A: the profile is checked too).
+      const unique = ctx({
+        profiling: testProfilingInput({
+          profiles: testProfiles(schema, {
+            values: (object, field, i) =>
+              object === 'Accounts' && field.name === 'website'
+                ? `site${i}`
+                : defaultValue(field, i),
+          }),
+        }),
+      });
+      expect(codes(raw(), unique)).toEqual(['identity_unsuitable']);
+      expect(codes(raw({ by: 'ops', note: 'website is unique for this tenant' }), unique)).toEqual(
+        [],
+      );
+    });
+
+    it('M9A: a confirmed identity is still refused when the profile shows duplicate values', () => {
+      const raw = mapping((d) => {
+        d.objects[0]!.identity = { field: 'website', confirmation: { by: 'ops', note: 'unique' } };
+      });
+      // The default synthetic profile repeats website values (v0, v1, v2).
+      expect(codes(raw)).toEqual(['identity_unsuitable']);
     });
   });
 
@@ -171,6 +200,13 @@ describe('mapping validation (ADR 0020)', () => {
           codes(
             mapping((d) => {
               lines(d).holdingFilter!.operator = operator;
+              // M9A: the reviewed domain must agree with the operator (not_in lists non-holdings).
+              if (operator === 'not_in') {
+                lines(d).holdingFilter!.reviewedDomain = testReviewedDomain(
+                  hash,
+                  FIXTURE_SALES_STAGES.filter((v) => v !== 'Closed Won'),
+                );
+              }
             }),
           ),
         ).toEqual([]);
@@ -184,7 +220,8 @@ describe('mapping validation (ADR 0020)', () => {
             lines(d).holdingFilter!.values = ['Closed Won', 'Closed-Won'];
           }),
         ),
-      ).toEqual(['holding_filter_unconfirmed']);
+        // M9A: the extra value is also missing from the reviewed domain.
+      ).toEqual(['holding_filter_unconfirmed', 'holding_filter_domain_incomplete']);
     });
 
     it('refuses a filter without a recorded business confirmation', () => {

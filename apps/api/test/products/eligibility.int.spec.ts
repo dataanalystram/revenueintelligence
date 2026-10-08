@@ -87,9 +87,18 @@ describe('eligibility: evaluate, whitespace, snapshots, replay', () => {
       status: 'ineligible',
       ownership: 'owned',
     });
-    await expect(eligibility.evaluate(t, company['901']!, 'analytics')).resolves.toMatchObject({
-      status: 'eligible',
-      ownership: 'not_owned',
+    // INTENDED CHANGE (M9A, A2): CSV coverage is `stable_snapshot`. Absence from an
+    // operator-declared file is not proof of non-ownership. M7/M8 expected
+    // `eligible` / `not_owned` here; it is now `unknown` (`coverage_tier_insufficient`).
+    const analytics = await eligibility.evaluate(t, company['901']!, 'analytics');
+    expect(analytics).toMatchObject({
+      status: 'unknown',
+      ownership: 'unknown',
+      coverageTier: 'stable_snapshot',
+    });
+    expect(analytics.checks.find((ch) => ch.check === 'ownership_coverage')).toMatchObject({
+      outcome: 'unknown',
+      reason: 'coverage_tier_insufficient',
     });
     const onprem = await eligibility.evaluate(t, company['901']!, 'onprem');
     expect(onprem.status).toBe('ineligible');
@@ -106,13 +115,16 @@ describe('eligibility: evaluate, whitespace, snapshots, replay', () => {
     const ws = await eligibility.whitespace(t, company['901']!);
     const keys = (cat: keyof typeof ws.categories) => ws.categories[cat].map((r) => r.productKey);
     expect(keys('owned')).toEqual(['core']);
-    expect(keys('eligible_whitespace')).toEqual(
+    // INTENDED CHANGE (A2): no eligible whitespace from CSV coverage. M7/M8 listed
+    // analytics, core-pro, reporting and suite here; they are now unknown.
+    expect(keys('eligible_whitespace')).toEqual([]);
+    expect(keys('unknown')).toEqual(
       expect.arrayContaining(['analytics', 'core-pro', 'reporting', 'suite']),
     );
+    // A presence-based fail (owned exclusion, retired product) still decides.
     expect(keys('ineligible_whitespace')).toEqual(
       expect.arrayContaining(['legacy-reports', 'onprem']),
     );
-    expect(keys('unknown')).toEqual([]);
     expect(ws).toMatchObject({
       requestedCompanyId: company['901'],
       evaluatedCompanyId: company['901'],
@@ -125,8 +137,9 @@ describe('eligibility: evaluate, whitespace, snapshots, replay', () => {
       'E1,hubspot:companies:901,core,active,2026-01-01T00:00:00Z,,,',
       'E2,hubspot:companies:901,reporting,active,2030-01-01T00:00:00Z,,,',
     );
+    // INTENDED CHANGE (A2): not yet started is `unknown` under CSV coverage (was `not_owned`).
     await expect(eligibility.evaluate(t, company['901']!, 'reporting')).resolves.toMatchObject({
-      ownership: 'not_owned',
+      ownership: 'unknown',
     });
     await expect(
       eligibility.evaluate(t, company['901']!, 'reporting', {
@@ -138,7 +151,7 @@ describe('eligibility: evaluate, whitespace, snapshots, replay', () => {
       eligibility.evaluate(t, company['901']!, 'reporting', {
         asOf: new Date('2029-12-31T23:59:59.999Z'),
       }),
-    ).resolves.toMatchObject({ ownership: 'not_owned' });
+    ).resolves.toMatchObject({ ownership: 'unknown' });
   });
 
   it('records frozen snapshots that replay exactly, even after the facts change', async () => {
@@ -151,11 +164,12 @@ describe('eligibility: evaluate, whitespace, snapshots, replay', () => {
       requestedCompanyId: company['911'],
       evaluatedCompanyId: company['911'],
       productKey: 'analytics',
-      status: 'eligible',
-      ownership: 'not_owned',
+      // INTENDED CHANGE (A2, evaluator 3): was eligible / not_owned / evaluator 2.
+      status: 'unknown',
+      ownership: 'unknown',
       modelVersion: 1,
       modelHash: r.modelHash,
-      evaluatorVersion: 2,
+      evaluatorVersion: 3,
       factsHash: r.factsHash,
       purpose: 'test_evidence',
     });
@@ -178,7 +192,7 @@ describe('eligibility: evaluate, whitespace, snapshots, replay', () => {
     });
     await expect(eligibility.replay(t, r.snapshotId!)).resolves.toMatchObject({
       reproduced: true,
-      recorded: { status: 'eligible' },
+      recorded: { status: 'unknown' },
     });
 
     // A new model version does not change what the snapshot was evaluated against.
@@ -201,8 +215,8 @@ describe('eligibility: evaluate, whitespace, snapshots, replay', () => {
         (tx) => tenantClient(tx).$executeRaw`UPDATE tenant_eligibility_snapshots SET purpose = 'x'`,
       ),
     ).rejects.toThrow(/UPDATE on tenant_eligibility_snapshots is not allowed/);
-    // Replay safety (M8 bumped the evaluator to 2 for ownership_incomplete): a
-    // snapshot recorded by evaluator 1 is never reinterpreted by evaluator 2.
+    // Replay safety (M8 bumped the evaluator to 2, M9A to 3): a snapshot recorded
+    // by an older evaluator is never reinterpreted by the current one.
     const oldId = randomUUID();
     await c.sql(
       `INSERT INTO tenant_eligibility_snapshots (tenant_id, id, requested_company_id, evaluated_company_id,
@@ -216,7 +230,7 @@ describe('eligibility: evaluate, whitespace, snapshots, replay', () => {
     await expect(eligibility.replay(t, oldId)).resolves.toMatchObject({
       reproduced: false,
       reason: 'evaluator_changed',
-      recorded: { status: 'eligible' },
+      recorded: { status: 'unknown' },
     });
     await expect(eligibility.replay(t, randomUUID())).rejects.toBeInstanceOf(SnapshotNotFoundError);
     await expect(eligibility.evaluate(t, randomUUID(), 'core')).rejects.toBeInstanceOf(

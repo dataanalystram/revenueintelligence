@@ -91,8 +91,8 @@ export function failsRunWhenUnattributable(decision: ProtectionDecision): boolea
 /** The full-run tombstone condition (M9A plan §9.3). */
 export function mayTombstone(
   key: string,
-  holdingIds: ReadonlySet<string>,
-  seenButRejectedIds: ReadonlySet<string>,
+  holdingIds: { has(key: string): boolean },
+  seenButRejectedIds: { has(key: string): boolean },
 ): boolean {
   return !holdingIds.has(key) && !seenButRejectedIds.has(key);
 }

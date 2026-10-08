@@ -23,6 +23,11 @@ export {
   type PublishMappingOptions,
   type PublishedMapping,
 } from './application/source-mappings.service';
+export {
+  SourceProfilingService,
+  type ProfileRequestResult,
+  type ProfileRunResult,
+} from './application/source-profiling.service';
 export { SourceReportService, type SourceReport } from './application/source-report.service';
 export {
   SourceSyncService,
@@ -32,6 +37,11 @@ export {
 } from './application/source-sync.service';
 export * from './errors';
 export type { SourceConnection, SourceRun } from './infrastructure/sources.repository';
-export { SOURCE_SYNC_JOB, SOURCES_QUEUE } from './jobs';
+export type {
+  ProfileRun,
+  StoredFinding,
+  StoredProfile,
+} from './infrastructure/profiles.repository';
+export { SOURCE_PROFILE_JOB, SOURCE_SYNC_JOB, SOURCES_QUEUE } from './jobs';
 export { SOURCE_ADAPTERS, SourceAdapterRegistry } from './source-adapters';
 export { SourcesModule, type SourcesModuleOptions } from './sources.module';

@@ -9,11 +9,16 @@ import { tenantClient, type TenantContext } from '../../src/modules/tenancy';
 import { startContextHarness, type ContextHarness } from '../support/context';
 import { FakeSugar } from '../support/fake-sugar';
 import {
+  acknowledgementsFor,
+  mappingObjects,
+  publishWithAcks,
+  runProfile,
   runSync,
   sourcesServices,
   sugarTenant,
   sugarTestMapping,
   withoutTerms,
+  withSnapshot,
   type SourcesFixture,
 } from '../support/sources';
 
@@ -338,11 +343,17 @@ describe('source synchronisation (Sugar adapter, fake Sugar)', () => {
           config: { ...conn.config, countSupported: false },
           credentialName: 'sugar_api',
         });
-        await s.snapshots.capture(f.ctx, f.connectionId, 'test');
-        await s.mappings.publish(f.ctx, f.connectionId, withoutTerms(sugarTestMapping()), {
-          expectedBaseVersion: 0,
-          actor: 'test',
-        });
+        const captured = await s.snapshots.capture(f.ctx, f.connectionId, 'test');
+        // M9A: profiling needs no count (population unknown, full and unbounded).
+        expect((await runProfile(c, f, mappingObjects(sugarTestMapping()))).status).toBe(
+          'completed',
+        );
+        await publishWithAcks(
+          c,
+          f,
+          withoutTerms(withSnapshot(sugarTestMapping(), captured.hash)),
+          0,
+        );
         await s.authority.publish(
           f.ctx,
           {
@@ -382,12 +393,9 @@ describe('source synchronisation (Sugar adapter, fake Sugar)', () => {
         const s = sourcesServices(c);
         const before = await s.snapshots.latest(f.ctx, f.connectionId);
         await s.snapshots.capture(f.ctx, f.connectionId, 'test');
-        const report = await s.mappings.validate(
-          f.ctx,
-          f.connectionId,
-          sugarTestMapping(),
-          before!.hash,
-        );
+        const report = await s.mappings.validate(f.ctx, f.connectionId, sugarTestMapping(), {
+          validatedAgainst: before!.hash,
+        });
         expect(report.errors.map((e) => e.code)).toContain('schema_snapshot_stale');
       } finally {
         await local.stop();
@@ -481,26 +489,36 @@ describe('source synchronisation (Sugar adapter, fake Sugar)', () => {
     it('mapping and authority publication require the base version and refuse a stale one', async () => {
       const s = sourcesServices(c);
       const f = await sugarTenant(c, fake, { prefix: 'srcconc' });
+      // M9A: the document carries its reviewed domain for this snapshot, plus the
+      // acknowledgements its covering profiles require.
+      const snapshot = await s.snapshots.latest(f.ctx, f.connectionId);
+      const doc = withSnapshot(sugarTestMapping(), snapshot!.hash);
+      const acknowledgements = acknowledgementsFor(
+        await s.mappings.validate(f.ctx, f.connectionId, doc),
+      );
       await expect(
-        s.mappings.publish(f.ctx, f.connectionId, sugarTestMapping(), { actor: 'test' } as never),
+        s.mappings.publish(f.ctx, f.connectionId, doc, { actor: 'test' } as never),
       ).rejects.toMatchObject({ code: 'base_version_required' });
       // A loads v2, B publishes v3, A's publish from v2 is refused.
-      await s.mappings.publish(f.ctx, f.connectionId, sugarTestMapping(), {
+      await s.mappings.publish(f.ctx, f.connectionId, doc, {
         expectedBaseVersion: 2,
         actor: 'b',
+        acknowledgements,
       });
       await expect(
-        s.mappings.publish(f.ctx, f.connectionId, sugarTestMapping(), {
+        s.mappings.publish(f.ctx, f.connectionId, doc, {
           expectedBaseVersion: 2,
           actor: 'a',
+          acknowledgements,
         }),
       ).rejects.toMatchObject({ code: 'concurrent_publish' });
       // Racing publishers from the same base: exactly one wins.
       const racers = await Promise.allSettled(
         [1, 2, 3, 4].map((i) =>
-          s.mappings.publish(f.ctx, f.connectionId, sugarTestMapping(), {
+          s.mappings.publish(f.ctx, f.connectionId, doc, {
             expectedBaseVersion: 3,
             actor: `r${i}`,
+            acknowledgements,
           }),
         ),
       );

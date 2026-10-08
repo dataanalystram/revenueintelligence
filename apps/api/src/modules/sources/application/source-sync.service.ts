@@ -2,8 +2,22 @@ import { randomUUID } from 'node:crypto';
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ContextIngestionService, type IngestMeta } from '../../context';
 import {
+  assertNoRawValues,
+  buildProfileDocument,
+  capFindings,
+  DISTINCT_EXACT_CAP,
   detectSchemaDrift,
+  documentFindings,
+  driftFindings,
+  failsRunWhenUnattributable,
   holdingsConfirmed,
+  mayTombstone,
+  objectAccumulatorFor,
+  profileContentHash,
+  protectionFor,
+  requiresRepublish,
+  RunGuards,
+  runProof,
   isAuthoritative,
   isConnectorError,
   mapContextRecord,
@@ -13,6 +27,7 @@ import {
   SourceSchemaSchema,
   type AuthorityDocument,
   type ExternalSystem,
+  type ObjectAccumulator,
   type FallbackAccount,
   type MappingDocument,
   type ObjectMapping,
@@ -33,6 +48,7 @@ import { TenantDatabase, type TenantContext } from '../../tenancy';
 import { MetricsService } from '../../../platform/metrics';
 import { QueueService } from '../../../platform/queue';
 import { ConnectionNotFoundError, SourcesError, SyncRefusedError } from '../errors';
+import { ProfilesRepository, type NewProfile } from '../infrastructure/profiles.repository';
 import {
   SourcesRepository,
   type SourceConnection,
@@ -71,6 +87,8 @@ interface RunContext {
   readonly mapping: MappingDocument;
   readonly mappingVersion: number;
   readonly snapshot: SourceSchema;
+  /** The snapshot the mapping version was validated against (run-quality profiles). */
+  readonly snapshotHash: string;
   readonly authority: AuthorityDocument;
   readonly connector: SourceConnector;
   readonly boundary: Date;
@@ -90,8 +108,20 @@ class RunState {
   readonly gaps = new Map<string, OwnershipGap>();
   readonly seenLineIds = new Set<string>();
   readonly holdingIds = new Set<string>();
+  /**
+   * M9A §9: keys seen in this run whose observation was not accepted. A key is
+   * in at most one of `holdingIds` and `seenButRejected`; the tombstone pass
+   * deletes only keys in neither. Rebuilt from scratch on every attempt.
+   */
+  readonly seenButRejected = new Map<string, { readonly code: string }>();
+  /** Value rejections with no attributable account (the run fails before tombstones). */
+  unattributable = 0;
   readonly knownAccounts = new Set<string>();
   readonly orphanAccounts = new Set<string>();
+  /** Structural B guards and run-quality accumulators per mapped object (counts only). */
+  readonly guards = new Map<string, RunGuards>();
+  readonly accumulators = new Map<string, ObjectAccumulator>();
+  readonly populations = new Map<string, number>();
 
   count(code: string, by = 1): void {
     this.quality[code] = (this.quality[code] ?? 0) + by;
@@ -102,6 +132,7 @@ class RunState {
     return {
       ...this.quality,
       ...(gapAccounts > 0 ? { ownership_gap: gapAccounts } : {}),
+      ...(this.seenButRejected.size > 0 ? { seen_but_rejected: this.seenButRejected.size } : {}),
       ...this.detail,
     };
   }
@@ -127,6 +158,7 @@ export class SourceSyncService {
     private readonly subscriptions: SubscriptionIngestionService,
     private readonly catalogue: ProductCatalogueService,
     private readonly gaps: OwnershipGapService,
+    private readonly profiles: ProfilesRepository,
     @Optional() @Inject(QueueService) private readonly queues?: QueueService,
     @Optional() @Inject(MetricsService) private readonly metrics?: MetricsService,
   ) {}
@@ -241,6 +273,7 @@ export class SourceSyncService {
         mapping,
         mappingVersion: loaded.mapping.version,
         snapshot: SourceSchemaSchema.parse(loaded.snapshot.document),
+        snapshotHash: loaded.mapping.schemaSnapshotHash,
         authority: loaded.authority!.document,
         connector: this.connections.connector(ctx, loaded.connection),
         boundary: run.startedAt,
@@ -320,6 +353,13 @@ export class SourceSyncService {
     }
     if (!mapping) throw new SyncRefusedError('mapping_not_published', 'No published mapping');
     if (!authority) throw new SyncRefusedError('authority_missing', 'No authority version');
+    // M9A §10.4: a holding filter published before M9A has no reviewed domain.
+    if (requiresRepublish(mapping)) {
+      throw new SyncRefusedError(
+        'mapping_requires_republish',
+        'A holding filter has no reviewed domain: republish the mapping with one',
+      );
+    }
     const lineObjects = mapping.objects.filter((o) => o.entity === 'subscription');
     if (lineObjects.length > 0) {
       if (!isAuthoritative(authority, 'subscription_lines', connection.id)) {
@@ -354,6 +394,7 @@ export class SourceSyncService {
     // 1. Accounts and people: references (and profiles with authority).
     for (const obj of rc.mapping.objects.filter((o) => o.entity !== 'subscription')) {
       await this.readAll(rc, obj.source, mappedFields(obj), selection, async (records) => {
+        this.observe(rc, state, obj, records);
         await this.ingestContext(rc, state, obj, records);
       });
     }
@@ -364,9 +405,12 @@ export class SourceSyncService {
       // 3. Lines, bounded and ordered, with start/end count reconciliation.
       for (const obj of lineObjects) {
         const before = await this.countOrRefuse(rc, obj.source, selection);
+        state.populations.set(obj.source, before);
         let read = 0;
         await this.readAll(rc, obj.source, mappedFields(obj), selection, async (records, next) => {
           read += records.length;
+          // B guards before writes (M9A §8): structural failure stops the run here.
+          this.observe(rc, state, obj, records);
           await this.processLines(rc, state, obj, records, (id) => productStatus(id));
           await this.saveProgress(rc, state, next);
         });
@@ -376,11 +420,21 @@ export class SourceSyncService {
           throw new SyncRefusedError('unstable_read', 'The source changed during the read');
         }
       }
-      // 4. Tombstones: this connection's lines not seen as holdings (proof passed).
+    }
+    // 4a. M9A: pre-tombstone B guards over the whole run, then unattributable rejections.
+    this.guardAll(rc, state, 'pre_tombstone');
+    this.refuseUnattributable(state);
+    if (lineObjects.length > 0) {
+      // 4b. Tombstones: lines in neither the run's holdings nor its protection set (§9.3).
+      let suppressed = 0;
       for (const obj of lineObjects) {
         const active = await this.subscriptions.activeSourceRecordIds(rc.ctx, rc.kind, obj.source);
         for (const recordId of active) {
-          if (state.holdingIds.has(`${obj.source}|${recordId}`)) continue;
+          const key = `${obj.source}|${recordId}`;
+          if (!mayTombstone(key, state.holdingIds, state.seenButRejected)) {
+            if (state.seenButRejected.has(key)) suppressed += 1;
+            continue;
+          }
           const out = await this.subscriptions.ingest(
             rc.ctx,
             {
@@ -396,12 +450,17 @@ export class SourceSyncService {
           }
         }
       }
+      if (suppressed > 0) state.count('tombstones_suppressed', suppressed);
     }
-    // 5. Complete: gaps replaced and the run completed in one transaction.
+    // The full-read proof this run passed (count reconciliation, ADR 0023).
+    state.detail.proof = runProof('count');
+    const runQuality = await this.runQualityProfiles(rc, state);
+    // 5. Complete: gaps replaced, run-quality profiles stored and the run completed in one transaction.
     await this.db.transaction(rc.ctx, async (tx) => {
       if (lineObjects.length > 0) {
         await this.gaps.replaceWithin(tx, rc.connection.id, [...state.gaps.values()], rc.run.id);
       }
+      await this.storeRunQuality(tx, rc, runQuality);
       await this.repo.finishRun(tx, rc.run.id, {
         status: 'completed',
         highWatermark: rc.boundary,
@@ -483,6 +542,7 @@ export class SourceSyncService {
     };
     for (const obj of rc.mapping.objects.filter((o) => o.entity !== 'subscription')) {
       await this.readAll(rc, obj.source, mappedFields(obj), selection, async (records) => {
+        this.observe(rc, state, obj, records);
         await this.ingestContext(rc, state, obj, records);
       });
     }
@@ -521,6 +581,7 @@ export class SourceSyncService {
             )) {
               known.set(String(found.values[refs.identity.field] ?? found.id), 'unmodelled');
             }
+            this.observe(rc, state, obj, records);
             await this.processLines(rc, state, obj, records, productStatus!);
             await this.saveProgress(rc, state, next);
           },
@@ -529,7 +590,11 @@ export class SourceSyncService {
       }
     }
     // Incremental runs never tombstone and never replace gaps: they only add.
+    this.guardAll(rc, state, 'pre_tombstone');
+    this.refuseUnattributable(state);
+    const runQuality = await this.runQualityProfiles(rc, state);
     await this.db.transaction(rc.ctx, async (tx) => {
+      await this.storeRunQuality(tx, rc, runQuality);
       if (lineObjects.length > 0) {
         await this.gaps.addWithin(tx, rc.connection.id, [...state.gaps.values()], rc.run.id);
       }
@@ -648,29 +713,22 @@ export class SourceSyncService {
       });
       switch (result.outcome) {
         case 'filtered_out':
+          // A reviewed non-holding value: a confident exclusion (tombstonable).
           state.skipped += 1;
           state.count('filtered_out');
           break;
         case 'skipped': {
           state.skipped += 1;
           state.count(result.code);
-          if (result.gapAccountId) {
-            const companyId = await this.db.transaction(rc.ctx, (tx) =>
-              this.repo.companyForRef(tx, rc.kind, accountObject, result.gapAccountId!),
-            );
-            if (!companyId) {
-              throw new SyncRefusedError(
-                'unresolved_account_reference',
-                'A known account has no canonical record',
-              );
-            }
-            state.gaps.set(key, {
-              companyId,
-              sourceObjectType: obj.source,
-              sourceRecordId: record.id,
-              reason: result.code as OwnershipGap['reason'],
-            });
-          }
+          await this.protect(
+            rc,
+            state,
+            obj,
+            accountObject,
+            record.id,
+            result.code,
+            result.gapAccountId,
+          );
           break;
         }
         case 'rejected':
@@ -688,6 +746,16 @@ export class SourceSyncService {
             if (out.reason === 'invalid_observation') {
               state.failed += 1;
               state.count('record_rejected');
+              // M9A §9.2: the writer rejected the observation; its line is protected.
+              await this.protect(
+                rc,
+                state,
+                obj,
+                accountObject,
+                record.id,
+                'invalid_observation',
+                result.accountId,
+              );
               break;
             }
             throw new SyncRefusedError(
@@ -699,8 +767,14 @@ export class SourceSyncService {
           }
           if (['created', 'updated', 'restored', 'deleted'].includes(out.outcome))
             state.changed += 1;
-          if (result.observation.presence === 'present') state.holdingIds.add(key);
-          else state.holdingIds.delete(key);
+          if (result.observation.presence === 'present') {
+            // A later accepted occurrence moves the key to the holdings (§9.3).
+            state.seenButRejected.delete(key);
+            state.holdingIds.add(key);
+          } else {
+            state.holdingIds.delete(key);
+            state.seenButRejected.delete(key);
+          }
           break;
         }
       }
@@ -709,6 +783,182 @@ export class SourceSyncService {
       kind: rc.kind,
       object: obj.source.toLowerCase(),
     });
+  }
+
+  /**
+   * Seen-but-rejected protection (M9A §9.2-§9.5): a protected record's key
+   * enters the protection set and its account gets an ownership gap
+   * (attributed by its account reference, else by its existing line). A value
+   * rejection that cannot be attributed is counted; the run then fails
+   * before any tombstone. Confident exclusions are not protected.
+   */
+  private async protect(
+    rc: RunContext,
+    state: RunState,
+    obj: ObjectMapping,
+    accountObject: string,
+    recordId: string,
+    code: string,
+    accountId: string | undefined,
+  ): Promise<void> {
+    const decision = protectionFor(code);
+    if (!decision.protect) return;
+    const key = `${obj.source}|${recordId}`;
+    state.holdingIds.delete(key);
+    state.seenButRejected.set(key, { code });
+    let companyId = accountId
+      ? await this.db.transaction(rc.ctx, (tx) =>
+          this.repo.companyForRef(tx, rc.kind, accountObject, accountId),
+        )
+      : undefined;
+    // M8: a known account of a product-reference gap always has a canonical record.
+    if (
+      !companyId &&
+      accountId &&
+      (code === 'missing_product_reference' || code === 'orphan_product_reference')
+    ) {
+      throw new SyncRefusedError(
+        'unresolved_account_reference',
+        'A known account has no canonical record',
+      );
+    }
+    companyId ??= await this.subscriptions.lineCompanyFor(rc.ctx, rc.kind, obj.source, recordId);
+    if (companyId) {
+      state.gaps.set(key, {
+        companyId,
+        sourceObjectType: obj.source,
+        sourceRecordId: recordId,
+        reason: decision.gapReason,
+      });
+    } else if (failsRunWhenUnattributable(decision)) {
+      state.unattributable += 1;
+      state.count('rejected_record_unattributable');
+    }
+  }
+
+  /** Feeds a page into the run-quality accumulators and B guards; refuses before writes on a structural failure. */
+  private observe(
+    rc: RunContext,
+    state: RunState,
+    obj: ObjectMapping,
+    records: readonly SourceRecord[],
+  ): void {
+    let guards = state.guards.get(obj.source);
+    if (!guards) {
+      guards = new RunGuards(obj);
+      state.guards.set(obj.source, guards);
+    }
+    let acc = state.accumulators.get(obj.source);
+    const object = rc.snapshot.objects.find((o) => o.name === obj.source);
+    if (!acc && object) {
+      acc = objectAccumulatorFor(object, mappedFields(obj));
+      state.accumulators.set(obj.source, acc);
+    }
+    for (const record of records) {
+      guards.observe(record);
+      if (!record.deleted) acc?.addRecord(record.values);
+    }
+    this.trip(state, guards.check('pre_write'));
+  }
+
+  private guardAll(rc: RunContext, state: RunState, stage: 'pre_tombstone'): void {
+    for (const obj of rc.mapping.objects)
+      this.trip(state, state.guards.get(obj.source)?.check(stage));
+  }
+
+  private trip(state: RunState, trip: ReturnType<RunGuards['check']>): void {
+    if (!trip) return;
+    state.count(trip.code);
+    state.detail.guard = {
+      code: trip.code,
+      field: trip.field,
+      seen: trip.seen,
+      failing: trip.failing,
+    };
+    throw new SyncRefusedError(trip.code, `Structural guard ${trip.code} tripped on ${trip.field}`);
+  }
+
+  private refuseUnattributable(state: RunState): void {
+    if (state.unattributable > 0) {
+      throw new SyncRefusedError(
+        'rejected_record_unattributable',
+        `${state.unattributable} rejected record(s) cannot be attributed to an account`,
+      );
+    }
+  }
+
+  /**
+   * Run-quality profiles (family `sync`, M9A §1.5): aggregates over the mapped
+   * fields of every object read, with findings and drift against the previous
+   * run-quality profile. A document that fails validation or the raw-value
+   * scan is not stored (counted); it never fails the synchronisation.
+   */
+  private async runQualityProfiles(rc: RunContext, state: RunState): Promise<NewProfile[]> {
+    const out: NewProfile[] = [];
+    for (const obj of rc.mapping.objects) {
+      const acc = state.accumulators.get(obj.source);
+      const object = rc.snapshot.objects.find((o) => o.name === obj.source);
+      if (!acc || !object) continue;
+      try {
+        const document = buildProfileDocument({
+          object,
+          connectionKind: rc.kind,
+          schemaSnapshotHash: rc.snapshotHash,
+          accumulator: acc,
+          sampling: {
+            method: 'sync',
+            populationEstimate: state.populations.get(obj.source) ?? null,
+            bounded: false,
+            stride: null,
+            orderedBy: null,
+            evidence: [rc.run.mode === 'backfill' ? 'sync_full' : 'sync_incremental'],
+          },
+          maxRows: acc.rows,
+          distinctCap: DISTINCT_EXACT_CAP,
+          optedIn: new Set(),
+        });
+        const baseline = await this.db.transaction(rc.ctx, (tx) =>
+          this.profiles.latestProfile(tx, rc.connection.id, obj.source, 'sync'),
+        );
+        const identity = new Set([obj.identity.field, ...obj.relationships.map((r) => r.field)]);
+        const findings = capFindings([
+          ...documentFindings(document, { identityFields: identity }),
+          ...(baseline
+            ? driftFindings(document, baseline.document, { identityFields: identity })
+            : []),
+        ]);
+        for (const f of findings) assertNoRawValues(f.evidence);
+        out.push({
+          object: obj.source,
+          document,
+          contentHash: profileContentHash(document),
+          ...(baseline ? { previousProfileId: baseline.id } : {}),
+          findings,
+        });
+      } catch (err) {
+        this.logger.warn(
+          { runId: rc.run.id, object: obj.source, code: errorCode(err) },
+          'Run-quality profile not stored',
+        );
+        state.count('run_quality_profile_invalid');
+      }
+    }
+    return out;
+  }
+
+  private async storeRunQuality(
+    tx: Parameters<Parameters<TenantDatabase['transaction']>[1]>[0],
+    rc: RunContext,
+    profiles: readonly NewProfile[],
+  ): Promise<void> {
+    for (const profile of profiles) {
+      await this.profiles.insertSyncProfile(tx, {
+        syncRunId: rc.run.id,
+        connectionId: rc.connection.id,
+        schemaSnapshotHash: rc.snapshotHash,
+        profile,
+      });
+    }
   }
 
   private async saveProgress(

@@ -1,11 +1,15 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { testMapping } from '../../../test/fixtures/source-mapping';
+import {
+  FIXTURE_SALES_STAGES,
+  testMapping,
+  testReviewedDomain,
+} from '../../../test/fixtures/source-mapping';
 import { discoveryFixture, toSourceRecord } from '../../../test/fixtures/sugar-records';
 import type { SourceRecord } from './source-connector';
-import type { MappingDocument, ObjectMapping } from './source-mapping';
+import type { HoldingFilter, MappingDocument, ObjectMapping } from './source-mapping';
 import {
-  holdingFilterMatches,
+  holdingClassOf,
   mapContextRecord,
   mapSubscriptionRecord,
   type FallbackAccount,
@@ -126,20 +130,60 @@ describe('mapping engine on the sanitized discovery fixtures (test mapping only)
     expect(map(one('06'))).toEqual({ outcome: 'filtered_out' });
   });
 
-  it('07 blank sales_stage: `in` filters it out; `not_in` admits it with state unknown', () => {
+  it('07 blank sales_stage — INTENDED SAFETY CORRECTION (M9A): never admitted silently under not_in', () => {
+    // M8 expectation was: `not_in` admits the blank stage as a holding (state unknown).
+    // M9A: the empty value has an explicit, reviewed classification.
     expect(map(one('07'))).toEqual({ outcome: 'filtered_out' });
-    const notIn = {
-      ...lines(),
-      holdingFilter: {
-        ...lines().holdingFilter!,
-        operator: 'not_in' as const,
-        values: ['Closed Lost'],
-      },
+    const notIn = (
+      entries: (
+        d: ReturnType<typeof testReviewedDomain>,
+      ) => ReturnType<typeof testReviewedDomain>['entries'],
+    ) => {
+      const domain = testReviewedDomain(
+        'a'.repeat(64),
+        FIXTURE_SALES_STAGES.filter((v) => v !== 'Closed Lost'),
+      );
+      return {
+        ...lines(),
+        holdingFilter: {
+          ...lines().holdingFilter!,
+          operator: 'not_in' as const,
+          values: ['Closed Lost'],
+          reviewedDomain: { ...domain, entries: entries(domain) },
+        },
+      };
     };
-    expect(map(one('07'), env(), notIn)).toMatchObject({
-      outcome: 'ingest',
-      observation: { state: 'unknown' },
+    // Empty reviewed as non-holding: filtered out (confident).
+    expect(
+      map(
+        one('07'),
+        env(),
+        notIn((d) => d.entries),
+      ),
+    ).toEqual({ outcome: 'filtered_out' });
+    // Empty not classified: unreviewed, protected, never a holding.
+    expect(
+      map(
+        one('07'),
+        env(),
+        notIn((d) => d.entries.filter((e) => e.value !== null)),
+      ),
+    ).toMatchObject({
+      outcome: 'skipped',
+      code: 'unreviewed_holding_value',
     });
+    // Only an explicit operator classification of the empty value as a holding admits it.
+    expect(
+      map(
+        one('07'),
+        env(),
+        notIn((d) =>
+          d.entries.map((e) =>
+            e.value === null ? { ...e, classification: 'holding' as const } : e,
+          ),
+        ),
+      ),
+    ).toMatchObject({ outcome: 'ingest', observation: { state: 'unknown' } });
   });
 
   it('07 variant: a mapped status with an unrecognised value stays unknown and is counted', () => {
@@ -358,22 +402,79 @@ describe('mapping engine on the sanitized discovery fixtures (test mapping only)
     ).toEqual({
       outcome: 'skipped',
       code: 'record_rejected',
+      // M9A: the rejected record's account, for its ownership gap (§9.4).
+      gapAccountId: 'FIX-ACC-001',
     });
   });
 });
 
-describe('holding filter semantics', () => {
-  const filter = (operator: 'in' | 'not_in') => ({
-    field: 'sales_stage',
-    operator,
-    values: ['Closed Won'],
+describe('holding filter semantics (M9A: reviewed domain, ADR 0023)', () => {
+  const filter = (operator: 'in' | 'not_in', withEmpty = true): HoldingFilter => {
+    const domain = testReviewedDomain(
+      'a'.repeat(64),
+      operator === 'in' ? ['Closed Won'] : FIXTURE_SALES_STAGES.filter((v) => v !== 'Closed Won'),
+    );
+    return {
+      field: 'sales_stage',
+      operator,
+      values: ['Closed Won'],
+      reviewedDomain: withEmpty
+        ? domain
+        : { ...domain, entries: domain.entries.filter((e) => e.value !== null) },
+    };
+  };
+
+  it('reviewed values classify exactly after trimming', () => {
+    expect(holdingClassOf(filter('in'), rli({ sales_stage: ' Closed Won ' }))).toBe('holding');
+    expect(holdingClassOf(filter('in'), rli({ sales_stage: 'Closed Lost' }))).toBe('non_holding');
+    expect(holdingClassOf(filter('not_in'), rli({ sales_stage: 'Closed Won' }))).toBe(
+      'non_holding',
+    );
+    expect(holdingClassOf(filter('not_in'), rli({ sales_stage: 'Prospecting' }))).toBe('holding');
   });
-  it('literal membership after trimming; an empty value is never a member', () => {
-    expect(holdingFilterMatches(filter('in'), rli({ sales_stage: ' Closed Won ' }))).toBe(true);
-    expect(holdingFilterMatches(filter('in'), rli({ sales_stage: 'closed won' }))).toBe(false);
-    expect(holdingFilterMatches(filter('in'), rli({ sales_stage: '' }))).toBe(false);
-    expect(holdingFilterMatches(filter('not_in'), rli({ sales_stage: '' }))).toBe(true);
-    expect(holdingFilterMatches(filter('not_in'), rli({ sales_stage: 'Closed Won' }))).toBe(false);
+
+  it('a value outside the domain is unreviewed under in and not_in alike', () => {
+    expect(holdingClassOf(filter('in'), rli({ sales_stage: 'closed won' }))).toBe('unreviewed');
+    expect(holdingClassOf(filter('not_in'), rli({ sales_stage: 'Renewal Pending' }))).toBe(
+      'unreviewed',
+    );
+  });
+
+  it('INTENDED CHANGE: an empty value uses the explicit empty entry (M8 admitted it under not_in)', () => {
+    expect(holdingClassOf(filter('not_in'), rli({ sales_stage: '' }))).toBe('non_holding');
+    expect(holdingClassOf(filter('in'), rli({ sales_stage: '' }))).toBe('non_holding');
+    // Without a classified empty entry, an empty value is unreviewed, never a holding.
+    expect(holdingClassOf(filter('not_in', false), rli({ sales_stage: '' }))).toBe('unreviewed');
+  });
+
+  it('a filter without a reviewed domain (pre-M9A) classifies nothing', () => {
+    const { reviewedDomain: _drop, ...m8 } = filter('in');
+    expect(holdingClassOf(m8, rli({ sales_stage: 'Closed Won' }))).toBe('unreviewed');
+  });
+
+  it('an unreviewed value is a protected skip that reports the readable account', () => {
+    expect(map(rli({ sales_stage: 'Renewal Pending' }))).toEqual({
+      outcome: 'skipped',
+      code: 'unreviewed_holding_value',
+      gapAccountId: 'FIX-ACC-001',
+    });
+    // No primary account: the confirmed hop is used for attribution.
+    expect(
+      map(rli({ sales_stage: 'Renewal Pending', account_id: '', opportunity_id: 'FIX-OPP-019' })),
+    ).toEqual({
+      outcome: 'skipped',
+      code: 'unreviewed_holding_value',
+      gapAccountId: 'FIX-ACC-016',
+    });
+    // Nothing readable: no attribution (the run decides; value rejections then fail it).
+    expect(
+      map(rli({ sales_stage: 'Renewal Pending', account_id: '', opportunity_id: '' })),
+    ).toEqual({
+      outcome: 'skipped',
+      code: 'unreviewed_holding_value',
+    });
+    // A reviewed non-holding value stays a confident exclusion.
+    expect(map(rli({ sales_stage: 'Closed Lost' }))).toEqual({ outcome: 'filtered_out' });
   });
 });
 

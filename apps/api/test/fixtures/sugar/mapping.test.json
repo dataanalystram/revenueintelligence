@@ -28,6 +28,44 @@
         "confirmation": {
           "by": "test-operator",
           "note": "TEST ONLY: holding stage for fixtures"
+        },
+        "reviewedDomain": {
+          "entries": [
+            {
+              "value": "Prospecting",
+              "classification": "non_holding"
+            },
+            {
+              "value": "Qualification",
+              "classification": "non_holding"
+            },
+            {
+              "value": "Proposal",
+              "classification": "non_holding"
+            },
+            {
+              "value": "Negotiation",
+              "classification": "non_holding"
+            },
+            {
+              "value": "Closed Won",
+              "classification": "holding"
+            },
+            {
+              "value": "Closed Lost",
+              "classification": "non_holding"
+            },
+            {
+              "value": "Pending Cancellation",
+              "classification": "non_holding"
+            },
+            {
+              "value": null,
+              "classification": "non_holding"
+            }
+          ],
+          "snapshotHash": "9127d8c13fa57c511232daf77c92a3ed7c3fb38999c457fa813ac72a4692e58d",
+          "profileIds": []
         }
       },
       "relationships": [
