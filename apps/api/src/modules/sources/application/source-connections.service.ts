@@ -25,6 +25,12 @@ import { SourcesRepository, type SourceConnection } from '../infrastructure/sour
  */
 export const SourceSyncSettingsSchema = z.strictObject({
   overlapMinutes: z.number().int().min(1).max(1440),
+  /**
+   * M9B: minutes the run boundary trails the run start, so reads of an
+   * eventually consistent list API stay behind writes it may not show yet.
+   * Absent: 0 (the M8 behaviour).
+   */
+  settleMinutes: z.number().int().min(0).max(60).optional(),
 });
 export type SourceSyncSettings = z.infer<typeof SourceSyncSettingsSchema>;
 
@@ -101,7 +107,10 @@ export class SourceConnectionsService {
     }
     const { sync, profile, ...adapterConfig } = input.config;
     if (sync !== undefined && !SourceSyncSettingsSchema.safeParse(sync).success) {
-      throw new SourcesError('invalid_sync_settings', 'sync.overlapMinutes must be 1–1440');
+      throw new SourcesError(
+        'invalid_sync_settings',
+        'sync.overlapMinutes must be 1–1440 (and sync.settleMinutes 0–60)',
+      );
     }
     // M9A (D2): the per-connection profile limit is refused out of range, never clamped.
     if (profile !== undefined && !SourceProfileSettingsSchema.safeParse(profile).success) {

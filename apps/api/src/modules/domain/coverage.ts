@@ -45,6 +45,24 @@ export const TIER_OF: Readonly<Record<ProofMethod, KnownCoverageTier>> = Object.
   success_marker: 'stable_snapshot',
 });
 
+/**
+ * Whether an authority version's proof acceptances accept the
+ * `stable_snapshot` tier for a connection. An acceptance never promotes a
+ * tier; it only allows a `stable_snapshot` proof to count (ADR 0023).
+ */
+export function acceptsStableSnapshot(acceptances: unknown, connectionId: string): boolean {
+  return (
+    Array.isArray(acceptances) &&
+    acceptances.some(
+      (a) =>
+        a !== null &&
+        typeof a === 'object' &&
+        (a as Record<string, unknown>).connectionId === connectionId &&
+        (a as Record<string, unknown>).tier === 'stable_snapshot',
+    )
+  );
+}
+
 /** Adapter-declared stable methods need an operator acceptance on the authority version. */
 export function requiresAcceptance(method: ProofMethod): boolean {
   return TIER_OF[method] === 'stable_snapshot' && method !== 'operator_full_file';

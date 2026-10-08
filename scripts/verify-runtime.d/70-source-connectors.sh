@@ -201,7 +201,8 @@ check "read-only transport: only GET + OAuth token POST reached Sugar" sc_read_o
 
 sc_rls() {
   [[ "$(compose exec -T -e PGPASSWORD=lip_api postgres psql -h 127.0.0.1 -U lip_api -d lip -Atc 'SELECT (SELECT count(*) FROM tenant_source_connections) + (SELECT count(*) FROM tenant_source_schema_snapshots) + (SELECT count(*) FROM tenant_source_mapping_versions) + (SELECT count(*) FROM tenant_source_authority_versions) + (SELECT count(*) FROM tenant_ownership_gaps)')" == "0" ]] &&
-    [[ "$(compose exec -T -e PGPASSWORD=lip_api postgres psql -h 127.0.0.1 -U lip_api -d lip -Atc 'SELECT count(*) FROM connector_kinds')" == "5" ]]
+    # Six kinds since M9B (chargebee added by migration 20261115120000).
+    [[ "$(compose exec -T -e PGPASSWORD=lip_api postgres psql -h 127.0.0.1 -U lip_api -d lip -Atc 'SELECT count(*) FROM connector_kinds')" == "6" ]]
 }
 check "app role with no tenant sees no source rows (RLS); catalogue readable" sc_rls
 

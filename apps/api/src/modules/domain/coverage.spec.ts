@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { ProofMethodSchema, TIER_OF, proofOfRun, requiresAcceptance, runProof } from './coverage';
+import {
+  acceptsStableSnapshot,
+  ProofMethodSchema,
+  TIER_OF,
+  proofOfRun,
+  requiresAcceptance,
+  runProof,
+} from './coverage';
 
 describe('coverage tiers and proof methods (M9A, ADR 0023)', () => {
   it('maps every proof method to a tier in code', () => {
@@ -29,6 +36,31 @@ describe('coverage tiers and proof methods (M9A, ADR 0023)', () => {
     expect(requiresAcceptance('operator_full_file')).toBe(false);
     expect(requiresAcceptance('double_enumeration')).toBe(true);
     expect(requiresAcceptance('success_marker')).toBe(true);
+  });
+
+  it('M9B: double enumeration is stable_snapshot, never externally grounded (C6)', () => {
+    expect(runProof('double_enumeration')).toEqual({
+      method: 'double_enumeration',
+      tier: 'stable_snapshot',
+      outcome: 'passed',
+    });
+    expect(TIER_OF.double_enumeration).not.toBe('externally_grounded');
+  });
+
+  it('M9B: an acceptance names one connection and the stable_snapshot tier, and never promotes', () => {
+    const ok = [{ connectionId: 'c1', tier: 'stable_snapshot', by: 'op' }];
+    expect(acceptsStableSnapshot(ok, 'c1')).toBe(true);
+    expect(acceptsStableSnapshot(ok, 'c2')).toBe(false);
+    expect(acceptsStableSnapshot([{ connectionId: 'c1', tier: 'externally_grounded' }], 'c1')).toBe(
+      false,
+    );
+    for (const junk of [undefined, null, {}, 'c1', [null], [{}]]) {
+      expect(acceptsStableSnapshot(junk, 'c1')).toBe(false);
+    }
+    // Accepted or not, the tier of the proof is the method's tier.
+    expect(proofOfRun({ proof: runProof('double_enumeration') }, 'count').tier).toBe(
+      'stable_snapshot',
+    );
   });
 
   it('reads a recorded proof, re-deriving the tier from the method (a stored tier never promotes)', () => {

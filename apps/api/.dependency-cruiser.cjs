@@ -104,17 +104,19 @@ module.exports = {
       severity: 'error',
       comment:
         'Business code reaches a source system only through the generic SourceConnector port ' +
-        '(ADR 0019). Only the Sugar adapter itself, the composition roots and the CLI may import it.',
+        '(ADR 0019). Only the adapter itself (Sugar, Chargebee), the composition roots and the CLI ' +
+        'may import it.',
       from: {
         path: '^src/',
         pathNot: [
           '^src/modules/sugar/',
+          '^src/modules/chargebee/',
           '^src/cli/',
           '^src/app\\.module\\.ts$',
           '^src/worker\\.module\\.ts$',
         ],
       },
-      to: { path: '^src/modules/sugar/' },
+      to: { path: '^src/modules/(sugar|chargebee)/' },
     },
     {
       name: 'core-never-depends-on-sources',
@@ -125,7 +127,7 @@ module.exports = {
         'adapters (which implement the domain SourceConnector port) never import it. ' +
         'Only the composition roots and the CLI wire it in.',
       from: {
-        path: '^src/modules/(domain|products|context|identity|tenancy|crm|sugar|hubspot)/',
+        path: '^src/modules/(domain|products|context|identity|tenancy|crm|sugar|chargebee|hubspot)/',
       },
       to: { path: '^src/modules/sources/' },
     },
@@ -137,7 +139,7 @@ module.exports = {
         'the adapter registry; concrete adapters are registered by the composition roots ' +
         '(ADR 0019), never imported by the sources module.',
       from: { path: '^src/modules/sources/' },
-      to: { path: '^src/modules/(sugar|hubspot)/' },
+      to: { path: '^src/modules/(sugar|chargebee|hubspot)/' },
     },
     {
       name: 'gainsight-access-only-in-gainsight-connector',

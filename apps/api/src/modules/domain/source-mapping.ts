@@ -628,11 +628,15 @@ export function validateMapping(raw: unknown, ctx: MappingValidationContext): Ma
     }
     switch (spec.valueType) {
       case 'instant':
-        if (t.parse?.type !== 'date' && t.parse?.type !== 'datetime') {
+        if (
+          t.parse?.type !== 'date' &&
+          t.parse?.type !== 'datetime' &&
+          t.parse?.type !== 'timestamp'
+        ) {
           err(
             'unsupported_source_type',
             `${path}.transforms.parse`,
-            'dates need a date or datetime parse with a declared time zone',
+            'dates need a date or datetime parse with a declared time zone, or a Unix-seconds timestamp',
           );
         }
         if (t.valueMap)

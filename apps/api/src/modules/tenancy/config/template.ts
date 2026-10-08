@@ -23,6 +23,7 @@ export const TenantTemplateSchema = z.strictObject({
       gainsight_cs: IntegrationSettingsSchemas.gainsight_cs.optional(),
       gainsight_px: IntegrationSettingsSchemas.gainsight_px.optional(),
       jev: IntegrationSettingsSchemas.jev.optional(),
+      chargebee: IntegrationSettingsSchemas.chargebee.optional(),
     })
     .default({}),
   qualification: QualificationConfigInputSchema.optional(),

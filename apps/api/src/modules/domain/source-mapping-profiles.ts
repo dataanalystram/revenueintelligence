@@ -375,6 +375,28 @@ export function validateMappingProfiles(
       const cover = coverFor.get(`terms|${obj.source}.${entry.source}`);
       const f = cover ? fieldOf(cover.document, schema, obj.source, entry.source) : undefined;
       if (!f) return;
+      if (entry.transforms?.parse?.type === 'timestamp') {
+        // M9B: Unix seconds read only integer seconds; any other class or representation
+        // (strings, ISO dates, milliseconds) is unreadable.
+        const otherTypes = Object.entries(f.observedTypes).filter(
+          ([type, c]) =>
+            type !== 'integer' && type !== 'timestamp' && type !== 'null' && (c ?? 0) > 0,
+        );
+        const otherReps = Object.entries(f.representations).filter(
+          ([rep, c]) =>
+            (rep.startsWith('date.') || rep.startsWith('timestamp.')) &&
+            rep !== 'timestamp.unix_s' &&
+            (c ?? 0) > 0,
+        );
+        if (otherTypes.length > 0 || otherReps.length > 0) {
+          err(
+            'date_format_required',
+            `${at}.fields.${j}.transforms.parse`,
+            `${displayName(entry.source)} holds values a Unix-seconds timestamp cannot read`,
+          );
+        }
+        return;
+      }
       const reps = Object.entries(f.representations).filter(
         ([rep, c]) => (rep.startsWith('date.') || rep.startsWith('timestamp.')) && (c ?? 0) > 0,
       );

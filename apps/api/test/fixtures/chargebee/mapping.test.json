@@ -1,0 +1,206 @@
+{
+  "objects": [
+    {
+      "source": "Customers",
+      "entity": "account",
+      "identity": {
+        "field": "id"
+      },
+      "relationships": [],
+      "fields": [
+        {
+          "kind": "ignored",
+          "source": "company",
+          "reason": "not_authoritative"
+        }
+      ]
+    },
+    {
+      "source": "SubscriptionItems",
+      "entity": "subscription",
+      "identity": {
+        "field": "line_key_item_price"
+      },
+      "holdingFilter": {
+        "field": "item_type",
+        "operator": "in",
+        "values": ["plan", "addon"],
+        "confirmation": {
+          "by": "test-operator",
+          "note": "TEST ONLY: plan and add-on items are holdings; one-off charges are not"
+        },
+        "reviewedDomain": {
+          "entries": [
+            {
+              "value": "plan",
+              "classification": "holding"
+            },
+            {
+              "value": "addon",
+              "classification": "holding"
+            },
+            {
+              "value": "charge",
+              "classification": "non_holding"
+            },
+            {
+              "value": null,
+              "classification": "non_holding"
+            }
+          ],
+          "snapshotHash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "profileIds": []
+        }
+      },
+      "relationships": [
+        {
+          "target": "subscription.account",
+          "field": "customer_id",
+          "object": "Customers"
+        },
+        {
+          "target": "subscription.product",
+          "field": "item_id",
+          "productReference": true
+        }
+      ],
+      "fields": [
+        {
+          "kind": "core",
+          "target": "subscription.state",
+          "source": "status",
+          "transforms": {
+            "valueMap": {
+              "map": {
+                "active": "active",
+                "in_trial": "trial",
+                "non_renewing": "active",
+                "cancelled": "cancelled",
+                "future": "unknown",
+                "paused": "unknown",
+                "transferred": "unknown"
+              },
+              "unmapped": "unknown"
+            }
+          },
+          "confirmation": {
+            "by": "test-operator",
+            "note": "TEST ONLY: M9B plan status table (B3); unlisted values unknown"
+          }
+        },
+        {
+          "kind": "core",
+          "target": "subscription.startsAt",
+          "source": "current_term_start",
+          "transforms": {
+            "parse": {
+              "type": "timestamp",
+              "format": "unix_seconds"
+            }
+          },
+          "confirmation": {
+            "by": "test-operator",
+            "note": "TEST ONLY: current term start, UTC Unix seconds (F18)"
+          }
+        },
+        {
+          "kind": "core",
+          "target": "subscription.endsAt",
+          "source": "current_term_end",
+          "transforms": {
+            "parse": {
+              "type": "timestamp",
+              "format": "unix_seconds"
+            }
+          },
+          "confirmation": {
+            "by": "test-operator",
+            "note": "TEST ONLY: current term end, UTC Unix seconds (F18)"
+          }
+        },
+        {
+          "kind": "core",
+          "target": "subscription.quantity",
+          "source": "quantity",
+          "transforms": {
+            "parse": {
+              "type": "integer"
+            }
+          }
+        },
+        {
+          "kind": "ignored",
+          "source": "line_key_item",
+          "reason": "identity_candidate_pending_v3"
+        },
+        {
+          "kind": "ignored",
+          "source": "subscription_id",
+          "reason": "parent_key"
+        },
+        {
+          "kind": "ignored",
+          "source": "item_price_id",
+          "reason": "price_point_not_product"
+        },
+        {
+          "kind": "ignored",
+          "source": "quantity_in_decimal",
+          "reason": "semantics_unconfirmed"
+        },
+        {
+          "kind": "ignored",
+          "source": "item_current_term_start",
+          "reason": "semantics_unconfirmed"
+        },
+        {
+          "kind": "ignored",
+          "source": "item_current_term_end",
+          "reason": "semantics_unconfirmed"
+        },
+        {
+          "kind": "ignored",
+          "source": "started_at",
+          "reason": "not_a_term"
+        },
+        {
+          "kind": "ignored",
+          "source": "cancelled_at",
+          "reason": "state_from_status_only"
+        },
+        {
+          "kind": "ignored",
+          "source": "trial_end",
+          "reason": "state_from_status_only"
+        },
+        {
+          "kind": "ignored",
+          "source": "next_billing_at",
+          "reason": "not_a_renewal_date"
+        },
+        {
+          "kind": "ignored",
+          "source": "updated_at",
+          "reason": "change_field_only"
+        },
+        {
+          "kind": "ignored",
+          "source": "deleted",
+          "reason": "deletion_flag_handled_by_platform"
+        }
+      ]
+    }
+  ],
+  "productReferences": {
+    "object": "Items",
+    "identity": {
+      "field": "id"
+    },
+    "ignored": [
+      {
+        "id": "addon-legacy",
+        "reason": "test_not_offered"
+      }
+    ]
+  }
+}

@@ -316,6 +316,8 @@ export class SourceProfilingService {
     const pageSize = Math.max(1, Math.min(DEFAULT_PAGE_SIZE, object.capabilities.maxPageSize));
     let position: string | undefined;
     let bounded = false;
+    // M9B: opaque positions; a repeated one is non-progress (never a loop).
+    const used = new Set<string>();
     for (let page = 0; page < MAX_PAGES; page += 1) {
       if (now().getTime() - startedAt > PROFILE_LIMITS.maxRunMinutes * 60_000) {
         throw new ProfileRunError('profile_limit_reached');
@@ -331,7 +333,8 @@ export class SourceProfilingService {
       // Systematic: every k-th page is folded; the others are discarded unread by the accumulators.
       if (stride === null || page % stride === 0) {
         for (const record of result.records) {
-          if (record.deleted) continue;
+          // Deleted and structurally rejected records are not profiled (M9B rejection rows).
+          if (record.deleted || record.rejection) continue;
           if (acc.rows >= maxRows) {
             bounded = true;
             break;
@@ -347,6 +350,10 @@ export class SourceProfilingService {
         bounded = true;
         break;
       }
+      if (used.has(result.next) || result.next === position) {
+        throw new ProfileRunError('pagination_stalled');
+      }
+      used.add(result.next);
       position = result.next;
       if (page === MAX_PAGES - 1) throw new ProfileRunError('page_limit_exceeded');
     }

@@ -4,6 +4,7 @@ import { HubSpotModule } from './modules/hubspot';
 import { IdentityModule } from './modules/identity';
 import { SubscriptionMergeModule, SubscriptionMergeParticipant } from './modules/products';
 import { SourcesModule } from './modules/sources';
+import { chargebeeAdapterFactory } from './modules/chargebee';
 import { sugarAdapterFactory } from './modules/sugar';
 import { TenancyModule } from './modules/tenancy';
 import type { AppConfig } from './platform/config';
@@ -35,7 +36,11 @@ export class WorkerModule {
         ContextIntakeModule,
         context,
         // M8: generic source connectors; adapters are registered here only.
-        SourcesModule.register({ context, adapters: [sugarAdapterFactory()], processors: true }),
+        SourcesModule.register({
+          context,
+          adapters: [sugarAdapterFactory(), chargebeeAdapterFactory()],
+          processors: true,
+        }),
       ],
     };
   }
