@@ -335,6 +335,18 @@ withdrawn. This also removes the dependence on an undocumented retention window 
 needs approval): keep `include_deleted` but make deletion evidence conditional on no live record with the same id in
 the same complete read and on the deleted record being newer than the stored line.
 
+### Rerun after the owner recreated Key B (2026-10-08T19:48Z)
+
+- Key B (`…_NOCATALOG`, as seen by this session): `/customers` 200, `/subscriptions` 200, **`/items` 200,
+  `/item_prices` 200, `/item_families` 200** — still not refused. Two explanations, not distinguishable from here
+  without exposing key material: (a) the session still holds the previous value (environment secrets are loaded
+  when a session starts); (b) the disabled permission ("plans/addons") is the Product Catalog **1.0** resource
+  and does not govern PC 2.0 Item Families / Items / Item Prices. V8 remains open; the negative-permission run was
+  not repeated because the precondition (catalogue denied) does not hold.
+- V5: the deleted S02 copy is still listed with `include_deleted=true` **40 minutes** after its deletion (3 deleted
+  records, 23 records / 22 unique ids). The documented "permanently deleted after a few minutes" does not describe
+  list visibility; the retention window remains unknown.
+
 ### Key B (V8)
 
 Key B was expected to lack catalogue scope but read Items, ItemPrices and Item Families (200). The negative-
