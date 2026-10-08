@@ -492,6 +492,34 @@ instant; item unchanged (Basic monthly USD, qty 1); no unrelated record modified
 API-driven **status** change moves the parent's `updated_at` and `resource_version`. Incremental decision unchanged
 (disabled).
 
+## Live mutation M06 — S15 reactivation (2026-10-08)
+
+**Source side (owner's setup agent):** `POST /subscriptions/{id}/reactivate` HTTP 200; status `cancelled → active`; same
+subscription id, no new subscription; `cancelled_at` cleared; a new current term (start and end) created; item list
+unchanged (Basic monthly USD, qty 1); no unrelated record changed. **Live environment dependency (not a connector
+defect):** the first M06 attempt returned 404 because the site-level **Allow Reactivation** setting was disabled; with it
+enabled the documented endpoint worked.
+
+**Connector verification** (generic replay check, Key A, sanitized): run 1 replays S15's pre-M06 cancelled state
+(`cancelled`, `cancelled_at` and term end at the cancellation instant); run 2 reads the live site.
+
+| Check                            | Observed                                                                                                                                                                               |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Live S15 (raw read)              | `active`, `cancelled_at` absent, new term start/end, 1 item (Basic monthly USD, qty 1); exactly **one** S15 record even with `include_deleted=true`; 20 live subscriptions (unchanged) |
+| Run 2 (live)                     | completed; proof `double_enumeration / stable_snapshot / passed`; no `child_retired`, no tombstone, no rejection                                                                       |
+| Line                             | same key (fingerprint unchanged), `record_state` active, state `cancelled` → **`active`**, qty 1, product unchanged (Basic)                                                            |
+| Terms                            | equal the raw new term start/end                                                                                                                                                       |
+| Isolated ownership of S15's line | `owned` / `ok` (was `unknown` / `coverage_tier_insufficient` when cancelled)                                                                                                           |
+| Unrelated lines                  | changed keys: only the S15 line's state; active 23 → 23; by state active 16 / unknown 3 / trial 2 / cancelled 2                                                                        |
+| Gaps / coverage / whitespace     | no gap; `stable_snapshot` from run 2; eligible whitespace 0 (S15 account and S01 account)                                                                                              |
+| Page size 10 / Key B             | proof passed / `forbidden`, `source_forbidden`, no change                                                                                                                              |
+| Incremental window probe         | since just before M06: exactly S15 returned                                                                                                                                            |
+
+**Parent timestamps:** `updated_at` `1791496087` → `1791497253`; `resource_version` `1791496087034` →
+`1791497253412`. Both "before" values were read by this connector in the M05 verification; both "after" values read
+now (identical to the owner's). Further live evidence that API-driven status transitions move the parent's
+`updated_at` and `resource_version`. Incremental sync remains disabled.
+
 ## V12 final decision and incremental-sync assessment
 
 **V12: LIVE CONFIRMED for API-driven subscription-item changes** — quantity change (M01), item removal (M02), price
