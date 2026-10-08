@@ -481,7 +481,11 @@ if (process.argv[1]?.endsWith('fake-sugar.ts')) {
     const base = lines.find((r) => r.id === 'FIX-RLI-001');
     if (base) {
       fake.upsert('RevenueLineItems', { ...base, sales_stage: 'Renewal Pending' });
-      fake.upsert('RevenueLineItems', { ...base, id: 'FIX-RLI-NEWSTAGE', sales_stage: 'Renewal Pending' });
+      fake.upsert('RevenueLineItems', {
+        ...base,
+        id: 'FIX-RLI-NEWSTAGE',
+        sales_stage: 'Renewal Pending',
+      });
     }
   }
   // Methods and paths only: proves read-only behaviour in runtime checks.
