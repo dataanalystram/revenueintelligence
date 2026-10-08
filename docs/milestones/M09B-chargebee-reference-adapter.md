@@ -466,6 +466,32 @@ monthly USD, qty 1 — key fingerprint identical to the post-M03 evidence), run 
 `1791495617` read here; `resource_version` `1791486576495` → `1791495611107` → `1791495617217` (again one further update
 ~6 s after the call). **V12 PLAN REPLACEMENT LIVE CONFIRMED.**
 
+## Live mutation M05 — S15 immediate cancellation (2026-10-08)
+
+**Source side (owner's setup agent):** HTTP 200 via `cancel_for_items` with `end_of_term=false`; status
+`active → cancelled`; `cancelled_at` set; `current_term_start` unchanged; `current_term_end` moved to the cancellation
+instant; item unchanged (Basic monthly USD, qty 1); no unrelated record modified.
+
+**Connector verification** (generic replay check, Key A, sanitized): run 1 replays S15's pre-M05 parent fields
+(`status: active`, no `cancelled_at`, the original term end); run 2 reads the live site.
+
+| Check                        | Observed                                                                                                                                                                                                                                                                                                                                                           |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Live S15 (raw read)          | `cancelled`, `deleted: false`, 1 item; `current_term_end` = `cancelled_at`; `current_term_start` unchanged                                                                                                                                                                                                                                                         |
+| Run 2 (live)                 | completed; proof `double_enumeration / stable_snapshot / passed`; **no** `child_retired`, no tombstone, no rejection                                                                                                                                                                                                                                               |
+| Line                         | same key `<subscription_id>:<Basic monthly price>` (fingerprint unchanged), `record_state` **active** (not deleted), state `active` → **`cancelled`**, qty 1, product unchanged (Basic)                                                                                                                                                                            |
+| Terms                        | start unchanged; end = the cancellation instant (equal to the raw values)                                                                                                                                                                                                                                                                                          |
+| State conflict               | S15's line evaluated **alone** with the platform's ownership rule: `unknown` / `coverage_tier_insufficient` (the stable-snapshot rule: absence of ownership is never concluded) — **not** `subscription_state_conflict`, because the term is no longer running. The account-level evaluation of Basic stays `owned` through the account's other subscription (S01) |
+| Unrelated lines              | changed keys: only the S15 line's state; active 23 → 23; by state active 15 / unknown 3 / trial 2 / cancelled 3                                                                                                                                                                                                                                                    |
+| Gaps / coverage / whitespace | no gap; `stable_snapshot` from run 2; eligible whitespace 0 (S15 account and S01 account)                                                                                                                                                                                                                                                                          |
+| Page size 10 / Key B         | proof passed / `forbidden`, `source_forbidden`, no change                                                                                                                                                                                                                                                                                                          |
+| Incremental window probe     | since just before M05: exactly S15 returned                                                                                                                                                                                                                                                                                                                        |
+
+**Parent timestamps:** `updated_at` `1791486578` (owner) → `1791496087` (owner; read here identically);
+`resource_version` `1791486578529` → `1791496087034` (read here identically). Additional live evidence that an
+API-driven **status** change moves the parent's `updated_at` and `resource_version`. Incremental decision unchanged
+(disabled).
+
 ## V12 final decision and incremental-sync assessment
 
 **V12: LIVE CONFIRMED for API-driven subscription-item changes** — quantity change (M01), item removal (M02), price

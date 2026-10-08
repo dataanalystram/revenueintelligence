@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { deriveOwnership, indexProductModel } from '../../src/modules/domain';
 import { EligibilityService } from '../../src/modules/products';
 import { SubscriptionRunsStore } from '../../src/modules/products/infrastructure/subscription-runs.store';
 import type { TenantContext } from '../../src/modules/tenancy';
@@ -567,6 +568,8 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
     async () => {
       const suffix = process.env.CHARGEBEE_REPLAY_SUB!;
       const preItems = JSON.parse(process.env.CHARGEBEE_REPLAY_ITEMS!) as E[];
+      const parentOverrides = JSON.parse(process.env.CHARGEBEE_REPLAY_PARENT ?? '{}') as E;
+      const evalProduct = process.env.CHARGEBEE_REPLAY_PRODUCT;
       const f = await tenant('cblivemut', KEY_A, {});
       await publish(f, true, 'mut');
       const target = (await raw('/subscriptions'))
@@ -587,7 +590,14 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
         if (!url.pathname.endsWith('/api/v2/subscriptions') || !res.ok) return res;
         const body = (await res.json()) as E;
         for (const e of body.list as E[]) {
-          if (e.subscription?.id === target.id) e.subscription.subscription_items = preItems;
+          if (e.subscription?.id === target.id) {
+            e.subscription.subscription_items = preItems;
+            // Optional pre-mutation parent fields (null removes the attribute).
+            for (const [k, v] of Object.entries(parentOverrides)) {
+              if (v === null) delete e.subscription[k];
+              else e.subscription[k] = v;
+            }
+          }
         }
         return new Response(JSON.stringify(body), {
           status: 200,
@@ -642,6 +652,19 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
         };
       };
       const ownedBefore = await owned();
+      const evaluate = async () => {
+        if (!evalProduct) return null;
+        const r = await c.app
+          .get(EligibilityService)
+          .evaluate(f.ctx, await companyOfTarget(), `cb-${fp(evalProduct)}`);
+        return {
+          ownership: r.ownership,
+          status: r.status,
+          coverageTier: r.coverageTier,
+          checks: r.checks.map((ch) => `${ch.check}:${ch.outcome}:${ch.reason ?? ''}`),
+        };
+      };
+      const evalBefore = await evaluate();
       const out: E = {
         run1: { status: run1.status, quality: run1.quality },
         targetBefore: await targetLines(),
@@ -688,6 +711,72 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
         eligibleWhitespace: ws.categories.eligible_whitespace.length,
       };
       out.ownershipTransition = { before: ownedBefore, after: await owned() };
+      // The target subscription's own lines, alone (another subscription of the same account
+      // could otherwise decide ownership): pure platform ownership rule at "now".
+      const modelRow = (
+        await c.sql<{
+          version: number;
+          document: unknown;
+          content_hash: string;
+          effective_from: Date;
+        }>(
+          `SELECT version, document, content_hash, effective_from FROM tenant_product_models WHERE tenant_id = $1 ORDER BY version DESC LIMIT 1`,
+          [f.ctx.tenantId],
+        )
+      )[0]!;
+      const model = indexProductModel({
+        version: modelRow.version,
+        effectiveFrom: modelRow.effective_from,
+        document: modelRow.document,
+        contentHash: modelRow.content_hash,
+      });
+      const targetFacts = (
+        await c.sql<{
+          id: string;
+          product_key: string;
+          state: string;
+          starts_at: Date | null;
+          ends_at: Date | null;
+          quantity: number | null;
+          record_state: string;
+          source_record_id: string;
+        }>(
+          `SELECT id, product_key, state, starts_at, ends_at, quantity, record_state, source_record_id FROM tenant_subscriptions WHERE tenant_id = $1 AND source_record_id LIKE $2`,
+          [f.ctx.tenantId, `${String(target.id)}:%`],
+        )
+      ).filter((l) => l.record_state === 'active');
+      const isolated = deriveOwnership(
+        model,
+        {
+          coverage: 'known',
+          coverageTier: 'stable_snapshot',
+          knownAsOf: new Date(),
+          subscriptions: targetFacts.map((l) => ({
+            id: l.id,
+            productKey: l.product_key,
+            state: l.state,
+            ...(l.starts_at ? { startsAt: l.starts_at } : {}),
+            ...(l.ends_at ? { endsAt: l.ends_at } : {}),
+            ...(l.quantity ? { quantity: l.quantity } : {}),
+          })) as never,
+        },
+        new Date(),
+      );
+      out.isolatedTargetOwnership = targetFacts.map((l) => {
+        const o = isolated.get(l.product_key as never);
+        return { keyFp: fp(l.source_record_id), status: o?.status, reason: o?.reason };
+      });
+      out.evaluation = {
+        product: evalProduct ? 'given' : null,
+        before: evalBefore,
+        after: await evaluate(),
+      };
+      out.targetCustomerSubscriptions = (await raw('/subscriptions'))
+        .map((e) => e.subscription as E)
+        .filter((x) => x.customer_id === target.customer_id)
+        .map((x) =>
+          /_s\d\d$/.test(String(x.id)) ? String(x.id).slice(-3).toUpperCase() : 'other',
+        );
       // Read-only probe of the exact incremental window query the adapter would send.
       const since = Number(process.env.CHARGEBEE_REPLAY_SINCE ?? target.updated_at - 3600);
       const window = (
