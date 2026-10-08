@@ -172,3 +172,24 @@ source object can mix holdings with lost or open deals.
 - **Wire precision**: the Sugar adapter sends second-precision timestamps
   (LIVE); the incremental window start is floored, so reads only start
   earlier.
+
+## As built (M9A amendment, ADR 0022 / ADR 0023)
+
+- **Holding filters** carry a `reviewedDomain` (every value `holding` or
+  `non_holding`, explicit empty entry). The M8 rule "an empty value is never
+  a member" no longer applies: under `not_in` an empty or unknown value is
+  never admitted. Versions published before M9A are refused at run start
+  (`mapping_requires_republish`).
+- **Publication** additionally requires a covering profile of the same
+  snapshot, acknowledgements of review-required findings on consequential
+  fields, and a reviewed domain; the validation document records
+  `coveringProfileIds` and `acknowledgements`.
+- **Tombstones** delete a line only when its key is neither a holding of the
+  run nor in its seen-but-rejected protection set; protected records give
+  their account an ownership gap (new reasons `observation_rejected`,
+  `holding_filter_value_unreviewed`, `account_reference_orphaned`).
+- **Coverage** has a structural tier from the proof of the establishing run;
+  authority versions gain `proof_acceptances` (stable-snapshot acceptances
+  only; the content hash is unchanged while empty).
+- **B guards** (fixed thresholds) refuse structurally broken runs before
+  writes and before tombstones.

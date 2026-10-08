@@ -11,7 +11,10 @@
 # counts, per-account ownership gaps and provenance linkage; coverage known;
 # a gapped account is ownership_incomplete; drift refuses a run; read-only
 # transport (only GET + token POST reached the source); RLS; no record values
-# or credentials in any output or log.
+# or credentials in any output or log. M9A: mappings publish only with a
+# completed covering profile (run on the worker), a reviewed holding domain
+# stamped with the captured snapshot, and the acknowledgement of the duplicate
+# identity finding (fixture 11).
 
 SC_TENANT="rtsources"
 SC_OUT="$WORK/sources"
@@ -55,7 +58,7 @@ sc_setup() {
   node -e '
     process.stdout.write(JSON.stringify({ instanceUrl: process.argv[1], apiVersion: "v11_20",
       modules: ["Accounts","Opportunities","RevenueLineItems","ProductTemplates","Users"],
-      referenceModules: ["ProductTemplates"], maxRetries: 2, sync: { overlapMinutes: 10 } }));' "$SC_FAKE_URL" >"$SC_OUT/connection.json"
+      referenceModules: ["ProductTemplates"], maxRetries: 2, sync: { overlapMinutes: 10 }, profile: { maxRows: 1000 } }));' "$SC_FAKE_URL" >"$SC_OUT/connection.json"
   sc_cli sources configure --tenant "$SC_TENANT" --kind sugar --label 'Sugar (fake)' --file "$SC_OUT/connection.json" \
     --credential sugar_api --status enabled --execute >"$SC_OUT/configure.json" || return 1
   [[ "$(sc_json 'o.connection.status + ":" + o.connection.credentialName' <"$SC_OUT/configure.json")" == "enabled:sugar_api" ]] &&
@@ -79,23 +82,47 @@ sc_schema() {
 }
 check "schema capture dry run writes nothing; snapshot is metadata only" sc_schema
 
+sc_profile() {
+  # M9A: a completed profile of the mapped objects covers the publication (run on the worker).
+  sc_cli sources profile-run --tenant "$SC_TENANT" --connection sugar --objects Accounts,ProductTemplates,RevenueLineItems \
+    --sampling full --actor runtime --execute >"$SC_OUT/profile-run.json" || return 1
+  local status=""
+  for _ in $(seq 1 120); do
+    sc_cli sources profile-status --tenant "$SC_TENANT" --connection sugar >"$SC_OUT/profile-status.json" 2>/dev/null || true
+    status="$(sc_json 'o.runs[0] ? o.runs[0].status : ""' <"$SC_OUT/profile-status.json" 2>/dev/null || true)"
+    [[ "$status" == "completed" || "$status" == "failed" ]] && break
+    sleep 0.5
+  done
+  [[ "$status" == "completed" ]]
+}
+check "profile run on the worker completes (covering profile for the mapping)" sc_profile
+
 sc_mapping() {
-  # v1: terms stated as null (the connection does not hold subscription_terms yet).
+  # The TEST mapping's reviewed domain is stamped with the captured snapshot (the
+  # operator reviews against it); v1 states the terms as null (no terms authority yet).
+  local hash; hash="$(sc_json 'o.captured.hash' <"$SC_OUT/capture.json")"
   node -e '
     const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    for (const o of m.objects) if (o.holdingFilter && o.holdingFilter.reviewedDomain) o.holdingFilter.reviewedDomain.snapshotHash = process.argv[2];
+    require("fs").writeFileSync(process.argv[3], JSON.stringify(m));
     for (const o of m.objects) o.fields = o.fields.map((f) => f.target === "subscription.startsAt" || f.target === "subscription.endsAt"
       ? { kind: "core", target: f.target, explicit: "null", reason: "pending_authority" } : f);
-    process.stdout.write(JSON.stringify(m));' "$SC_FIXTURES/mapping.test.json" >"$SC_OUT/mapping-v1.json"
-  sc_cli sources mappings-publish --tenant "$SC_TENANT" --connection sugar --file "$SC_OUT/mapping-v1.json" >"$SC_OUT/map-dry.json" || return 1
+    process.stdout.write(JSON.stringify(m));' "$SC_FIXTURES/mapping.test.json" "$hash" "$SC_OUT/mapping-full.json" >"$SC_OUT/mapping-v1.json"
+  local code=0
+  sc_cli sources mappings-publish --tenant "$SC_TENANT" --connection sugar --file "$SC_OUT/mapping-v1.json" >"$SC_OUT/map-noack.json" || code=$?
+  # The duplicate fixture line (11) is an E finding on the identity: it needs an acknowledgement.
+  [[ $code -eq 2 ]] && [[ "$(sc_json 'o.errors.map((e) => e.code).join()' <"$SC_OUT/map-noack.json")" == "finding_unacknowledged" ]] || return 1
+  SC_ACK="$(sc_json 'o.errors[0].path.split(".").pop() + ":accepted_known_issue"' <"$SC_OUT/map-noack.json")"
+  sc_cli sources mappings-publish --tenant "$SC_TENANT" --connection sugar --file "$SC_OUT/mapping-v1.json" --ack "$SC_ACK" >"$SC_OUT/map-dry.json" || return 1
   [[ "$(sc_json 'o.dryRun + ":" + o.ok' <"$SC_OUT/map-dry.json")" == "true:true" ]] || return 1
   [[ "$(sc_sql "SELECT count(*) FROM tenant_source_mapping_versions m JOIN tenants t ON t.id = m.tenant_id WHERE t.slug = '$SC_TENANT'")" == "0" ]] || return 1
-  local code=0
-  sc_cli sources mappings-publish --tenant "$SC_TENANT" --connection sugar --file "$SC_FIXTURES/mapping.test.json" --based-on 0 --execute >"$SC_OUT/map-conflict.json" || code=$?
+  code=0
+  sc_cli sources mappings-publish --tenant "$SC_TENANT" --connection sugar --file "$SC_OUT/mapping-full.json" --ack "$SC_ACK" --based-on 0 --execute >"$SC_OUT/map-conflict.json" || code=$?
   [[ $code -eq 2 ]] && grep -q '"authority_conflict"' "$SC_OUT/map-conflict.json" || return 1
-  sc_cli sources mappings-publish --tenant "$SC_TENANT" --connection sugar --file "$SC_OUT/mapping-v1.json" --based-on 0 --actor runtime --execute >"$SC_OUT/map-v1.json" || return 1
+  sc_cli sources mappings-publish --tenant "$SC_TENANT" --connection sugar --file "$SC_OUT/mapping-v1.json" --ack "$SC_ACK" --based-on 0 --actor runtime --execute >"$SC_OUT/map-v1.json" || return 1
   [[ "$(sc_json 'o.published.version' <"$SC_OUT/map-v1.json")" == "1" ]]
 }
-check "mapping: dry run writes nothing; terms refused without authority; v1 published" sc_mapping
+check "mapping: unacknowledged finding refused; dry run writes nothing; terms refused without authority; v1 published" sc_mapping
 
 sc_authority() {
   local conn
@@ -107,9 +134,9 @@ sc_authority() {
   sc_cli sources authority-publish --tenant "$SC_TENANT" --file "$SC_OUT/authority.json" --based-on 1 --actor runtime --execute >"$SC_OUT/auth.json" || return 1
   [[ "$(sc_json 'o.published.version' <"$SC_OUT/auth.json")" == "2" ]] || return 1
   code=0
-  sc_cli sources mappings-publish --tenant "$SC_TENANT" --connection sugar --file "$SC_FIXTURES/mapping.test.json" --based-on 0 --execute >"$SC_OUT/map-stale.json" || code=$?
+  sc_cli sources mappings-publish --tenant "$SC_TENANT" --connection sugar --file "$SC_OUT/mapping-full.json" --ack "$SC_ACK" --based-on 0 --execute >"$SC_OUT/map-stale.json" || code=$?
   [[ $code -eq 2 ]] && grep -q '"concurrent_publish"' "$SC_OUT/map-stale.json" || return 1
-  sc_cli sources mappings-publish --tenant "$SC_TENANT" --connection sugar --file "$SC_FIXTURES/mapping.test.json" --based-on 1 --actor runtime --execute >"$SC_OUT/map-v2.json" || return 1
+  sc_cli sources mappings-publish --tenant "$SC_TENANT" --connection sugar --file "$SC_OUT/mapping-full.json" --ack "$SC_ACK" --based-on 1 --actor runtime --execute >"$SC_OUT/map-v2.json" || return 1
   [[ "$(sc_json 'o.published.version' <"$SC_OUT/map-v2.json")" == "2" ]]
 }
 check "authority (stale base refused) then mapping v2 (stale base refused)" sc_authority

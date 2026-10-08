@@ -74,6 +74,8 @@ export const PII_DETECTORS = ['email', 'phone', 'card', 'iban'] as const;
 export type PiiDetector = (typeof PII_DETECTORS)[number];
 
 const EMAIL = /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{2,}$/;
+/** An address inside longer text (free-text values): counted as an email hit too. */
+const EMBEDDED_EMAIL = /[^\s@]+@[^\s@]+\.[^\s@]{2,}/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 /** Calendar-looking strings (ISO date/timestamp, d/m/y): never phone numbers. */
 const DATE_SHAPED =
@@ -81,6 +83,11 @@ const DATE_SHAPED =
 
 export function isEmail(text: string): boolean {
   return EMAIL.test(text);
+}
+
+/** Whole-value email, or an address embedded in longer text (conservative: only suppresses). */
+export function containsEmail(text: string): boolean {
+  return EMAIL.test(text) || EMBEDDED_EMAIL.test(text);
 }
 
 /**
@@ -151,7 +158,7 @@ export function piiHits(text: string): PiiDetector[] {
   const t = text.trim();
   if (t === '') return [];
   const hits: PiiDetector[] = [];
-  if (isEmail(t)) hits.push('email');
+  if (containsEmail(t)) hits.push('email');
   if (isPhone(t)) hits.push('phone');
   if (isCard(t)) hits.push('card');
   if (isIban(t)) hits.push('iban');

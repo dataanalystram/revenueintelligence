@@ -124,6 +124,7 @@ REDIS="redis://127.0.0.1:$LIP_REDIS_PORT"
 
 out="$(run_once migrate --network host -e MIGRATION_DATABASE_URL="$OWNER" "$TAG-migrate" 2>&1 || true)"
 grep -q 'successfully applied' <<<"$out" && pass "migrate job applies migrations (owner credentials only)" || fail "migrate job"
+grep -q '20261101120000_m9a_source_profiling' <<<"$out" && pass "migrate job applies the M9A profiling migration" || fail "migrate job M9A migration"
 
 docker run -d --name "$PROJECT-api" --label "$RUN_LABEL" --network host -e PORT="$API_PORT" -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" "$TAG-runtime" >/dev/null
 docker run -d --name "$PROJECT-worker" --label "$RUN_LABEL" --network host -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" "$TAG-runtime" node dist/worker.js >/dev/null
@@ -171,6 +172,21 @@ out="$(run_once srcauth --network host -e DATABASE_URL="$APP" -e REDIS_URL="$RED
   node dist/cli/sources.js authority-show --tenant dockerco 2>&1 || true)"
 grep -q '"version": 1' <<<"$out" && grep -q '"subscription_lines"' <<<"$out" \
   && pass "sources CLI shows authority version 1 inside the image (M8)" || fail "sources CLI authority-show in image"
+
+# M9A: the profiling commands run inside the image (one processor registration
+# serves source.sync and source.profile, so the processor check is unchanged).
+out="$(run_once prfstatus --network host -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" "$TAG-runtime" \
+  node dist/cli/sources.js profile-status --tenant dockerco --connection import 2>&1 || true)"
+grep -q '"runs": \[\]' <<<"$out" \
+  && pass "sources profile-status runs inside the image (M9A)" || fail "sources profile-status in image"
+out="$(run_once prfrun --network host -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" "$TAG-runtime" \
+  node dist/cli/sources.js profile-run --tenant dockerco --connection import --objects Lines --sampling full 2>&1 || true)"
+grep -q '"code": "mapping_not_versioned"' <<<"$out" \
+  && pass "sources profile-run refuses a code-mapped connection inside the image (M9A)" || fail "sources profile-run in image"
+out="$(run_once prfshow --network host -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" "$TAG-runtime" \
+  node dist/cli/sources.js profile-show --tenant dockerco --connection import --object Lines 2>&1 || true)"
+grep -q '"found": false' <<<"$out" \
+  && pass "sources profile-show runs inside the image (M9A)" || fail "sources profile-show in image"
 
 echo "== Cleanup self-test"
 # The leftover detector must see every kind of resource this run creates, or

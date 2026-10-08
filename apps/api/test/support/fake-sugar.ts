@@ -474,6 +474,16 @@ if (process.argv[1]?.endsWith('fake-sugar.ts')) {
     ...(arg('generated') ? { generatedLines: Number(arg('generated')) } : {}),
     ...(process.argv.includes('--unmodelled') ? { includeUnmodelledProduct: true } : {}),
   });
+  // M9A runtime variant (75-profiling.sh): one existing holding line carries a pipeline
+  // value outside the reviewed domain, and one new line does too (synthetic values).
+  if (arg('variant') === 'unreviewed-stage') {
+    const lines = fake.data.get('RevenueLineItems') ?? [];
+    const base = lines.find((r) => r.id === 'FIX-RLI-001');
+    if (base) {
+      fake.upsert('RevenueLineItems', { ...base, sales_stage: 'Renewal Pending' });
+      fake.upsert('RevenueLineItems', { ...base, id: 'FIX-RLI-NEWSTAGE', sales_stage: 'Renewal Pending' });
+    }
+  }
   // Methods and paths only: proves read-only behaviour in runtime checks.
   fake.onRequest = (method, path) => process.stdout.write(`request ${method} ${path}\n`);
   void fake.start(Number(arg('port') ?? 0)).then(() => {

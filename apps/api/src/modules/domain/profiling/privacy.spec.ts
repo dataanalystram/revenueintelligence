@@ -109,6 +109,11 @@ describe('value detectors (M9A §5.3)', () => {
     expect(isIdentifierLike('S01')).toBe(false);
   });
 
+  it('an address embedded in free text counts as an email hit (conservative)', () => {
+    expect(piiHits('call ada@example.com tomorrow')).toEqual(['email']);
+    expect(piiHits('no address here')).toEqual([]);
+  });
+
   it('piiHits names detectors, never values', () => {
     expect(piiHits('ada@example.com')).toEqual(['email']);
     expect(piiHits('')).toEqual([]);

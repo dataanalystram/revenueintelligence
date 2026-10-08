@@ -1,0 +1,205 @@
+# Milestone 9A — Source data profiling foundation (implementation record)
+
+- Status: **M9A IMPLEMENTATION COMPLETE — pending independent implementation review.** Not closed, not merged.
+- **LIVE SUGAR VERIFICATION: PENDING** (profiling and every M9A check ran against the deterministic fake Sugar only).
+- **M9B has NOT started.** No Chargebee, S3/file, warehouse, signal, opportunity or M9B work.
+- Plans: [M9 master plan](M09-multi-source-data-quality-plan.md) and [M9A detailed plan](M09A-source-data-profiling-plan.md)
+  (final verdict `PASS — M9A PLAN APPROVED FOR IMPLEMENTATION`), merged once into this branch as `73bc0c6`
+  (planning branch `planning/m9-multi-source-data-quality` @ `9af61bb`).
+- Branch: `claude/blissful-mendel-urbh4r` (based on `main` @ `f0cee24`).
+- Implementation SHA: see [Evidence](#evidence) (the fresh clone ran at that exact SHA).
+- ADRs: [0022 source data profiling](../adr/0022-source-data-profiling.md),
+  [0023 record-level safety and coverage tiers](../adr/0023-record-level-safety-and-coverage-tiers.md),
+  [ADR 0020 as-built amendment](../adr/0020-versioned-source-mapping-and-authority.md#as-built-m9a-amendment-adr-0022--adr-0023).
+- Roadmap: decision D1 applied ([README](README.md), [roadmap](../product/roadmap.md)).
+
+## Scope delivered (by plan section)
+
+| Plan §                | As built                                                                                                                                                                                                                                                                                                                                                                            |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 Architecture        | Pure engine `src/modules/domain/profiling/` (classifiers, accumulators, privacy, suggestions, findings, drift, document, limits); `profiling-is-advisory` boundary rule; `ReadRequest.purpose` (`sync`/`preview`/`profile`, optional, absent = `sync`, so the Sugar module is unchanged); `source.profile` on `lip-sources` dispatched by the existing processor (one registration) |
+| 2 Persistence         | Migration `20261101120000_m9a_source_profiling`: four tables, three gap reasons, `proof_acceptances`; down-script with refusals                                                                                                                                                                                                                                                     |
+| 3 Document v1         | Zod schema; field profiles as an **array** (`fields[].name`), so field names are values, never JSON keys                                                                                                                                                                                                                                                                            |
+| 4 Detectors           | §4.1 rules 1–15 in order; §4.2 mixed types/representations; §4.3 suggestions (n < 20 → low)                                                                                                                                                                                                                                                                                         |
+| 5 Privacy             | Exclusion and sensitive-name lists; email/phone/Luhn/IBAN/identifier detectors; safe-category gate (all values suppressed on any failure); independent `assertNoRawValues` over documents **and finding evidence**                                                                                                                                                                  |
+| 6 Sampling and limits | `full`/`systematic`/`recent`/`head` by capability (never substituted); D2 limits refused, never clamped (connection `profile.maxRows` required, 1,000–250,000 code ceiling, ≤ 500 fields, 60 min, 128 MiB estimate)                                                                                                                                                                 |
+| 7 Publication         | Covering profile (same snapshot, completed, fresh 30 days within 1–90, non-`head`, coverage ≥ 0.5 or full+unbounded) for consequential entries; exemptions; acknowledgements (closed reason codes) recorded in `validation`; `date_format_required`; `holding_filter_domain_unknown`; override **disabled** (A1)                                                                    |
+| 8 Drift and findings  | 33 finding codes (SQL CHECK parity test); classes A/E/B; drift A rules; fixed B guards in sync (`identity_field_absent`, `type_incompatible`, `representation_incompatible`; 50%, pre-write after 20 records and pre-tombstone)                                                                                                                                                     |
+| 9 Seen-but-rejected   | `RunState.seenButRejected`; `protectionFor` (default protect); tombstone only when in neither set; gap attribution (account reference, then existing line); `rejected_record_unattributable`                                                                                                                                                                                        |
+| 10 Reviewed domain    | `holdingFilter.reviewedDomain`; publish validation; runtime `holding`/`non_holding`/`unreviewed`; `mapping_requires_republish` for pre-M9A versions                                                                                                                                                                                                                                 |
+| 11 Coverage tier      | `TIER_OF`; `proofOfRun`; tier from the newest qualifying run only; `proof_acceptances` (stable only); `EVALUATOR_VERSION = 3`; tier in `OwnershipInput`, `EligibilityResult`, facts hash and frozen snapshots                                                                                                                                                                       |
+| 12 Sugar regression   | Sugar module diff empty; every M8 Sugar test passes (with the intended changes below)                                                                                                                                                                                                                                                                                               |
+| 13 Tests              | Unit, property, integration, adversarial RLS, runtime `75-profiling.sh`, Docker image checks, 40 mutation proofs                                                                                                                                                                                                                                                                    |
+
+## Migrations and schema changes
+
+One migration, `apps/api/prisma/migrations/20261101120000_m9a_source_profiling/migration.sql`
+(down-script `apps/api/prisma/rollback/20261101120000_m9a_source_profiling.down.sql`):
+
+| Object                                     | Change                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tenant_source_profile_runs` (new)         | PK `(tenant_id, id)`; FKs to connection and `(tenant, connection, snapshot hash)`; status CHECK; request ≤ 64 KiB, no secret-like keys; `active_key` unique per tenant (one active run per connection; Prisma-expressible instead of a partial index); trigger `app_profile_run_transition` (forward-only, terminal frozen, identity immutable, never deleted); tenant immutability; app role: SELECT, INSERT, UPDATE |
+| `tenant_source_profiles` (new)             | FKs to run, sync run (checkpoint), connection, snapshot, previous profile (self); exactly one origin; family `profile`⇔run; document ≤ 1 MiB, no secret-like keys, `document_version = 1`, SHA-256 `content_hash`; unique `(tenant, run, object)` and `(tenant, sync_run, object)`; immutable (`app_profile_refuse_change`); app role: SELECT, INSERT                                                                 |
+| `tenant_source_profile_findings` (new)     | FK to profile; code CHECK (33 codes, parity-tested against `FINDING_CODES`); class/severity CHECKs; names format; evidence ≤ 4 KiB, no secret-like keys; immutable; app role: SELECT, INSERT                                                                                                                                                                                                                          |
+| `tenant_source_profile_purges` (new)       | FK to connection; counts ≥ 0; actor format; append-only (`app_refuse_change`); app role: **SELECT only** (written by the privileged purge)                                                                                                                                                                                                                                                                            |
+| All four                                   | `ENABLE` + `FORCE ROW LEVEL SECURITY`, policy `tenant_isolation`, `app_prevent_tenant_change`                                                                                                                                                                                                                                                                                                                         |
+| `app_session_in_app_role()` (new function) | Real (transitive) membership of `lip_app` for the session user; unlike `pg_has_role`, a superuser is **not** a member. Used by the purge-mode exception of the refuse-change trigger and by the purge store                                                                                                                                                                                                           |
+| `tenant_ownership_gaps`                    | Reason CHECK + `observation_rejected`, `holding_filter_value_unreviewed`, `account_reference_orphaned`                                                                                                                                                                                                                                                                                                                |
+| `tenant_source_authority_versions`         | `proof_acceptances jsonb NOT NULL DEFAULT '[]'` (array ≤ 16, ≤ 16 KiB, no secret-like keys); insert trigger: each element `{tier: stable_snapshot, connectionId, reason, actor}` naming a connection of the same tenant (`foreign_key_violation` otherwise); migration-time parity block: every existing version still hashes with the M8 rule and has empty acceptances                                              |
+
+Prisma: four new models (`TenantSourceProfileRun`, `TenantSourceProfile`, `TenantSourceProfileFinding`,
+`TenantSourceProfilePurge`) with `map:` names matching the SQL, back-relations, and
+`TenantSourceAuthorityVersion.proofAcceptances`. The drift test (`prisma migrate diff --exit-code`) reports
+no difference. The down-script refuses (and changes nothing) when profile rows, M9A gap reasons, non-empty
+acceptances, mapping versions with a reviewed domain or evaluator-v3 snapshots exist; otherwise it restores the
+exact M8 schema, and M9A re-applies (tested).
+
+## Exact implementations
+
+### Coverage tier (`domain/coverage.ts`, `subscription-runs.store.ts`, `eligibility.ts`, `eligibility.service.ts`)
+
+- `TIER_OF` (frozen): `count`, `manifest` → `externally_grounded`; `operator_full_file`, `double_enumeration`,
+  `success_marker` → `stable_snapshot`. `requiresAcceptance(m)` = stable and not `operator_full_file`.
+- `proofOfRun(quality, fallback)` reads `quality.proof.method` and **re-derives** the tier from it (a stored tier
+  is ignored); no proof → the fallback method, `inferred: true` (versioned → `count`, import → `operator_full_file`).
+- `coverage()` picks the newest qualifying run (`completedAt desc`), so a weaker newer run lowers the tier;
+  a stable adapter method without an acceptance on the latest authority version → `proof_not_accepted`
+  (coverage unknown). It returns `{known, coverageTier, proof: {method, tier, connectionId, runId, completedAt,
+inferred, acceptedInAuthorityVersion?}}`.
+- Full Sugar runs record `quality.proof = {method: 'count', tier: 'externally_grounded', outcome: 'passed'}`;
+  completed `import_full` runs record `{method: 'operator_full_file', tier: 'stable_snapshot', ...}`.
+- `deriveOwnership`: for `stable_snapshot`, every `not_owned` becomes `unknown` (`coverage_tier_insufficient`);
+  `coverageCheck` switches exhaustively (`assertNeverTier`). `EligibilityResult.coverageTier`, the facts hash and
+  the frozen input (strict schema) carry the tier; `EVALUATOR_VERSION = 3`.
+
+### Seen-but-rejected protection (`domain/source-protection.ts`, `source-sync.service.ts`)
+
+- `protectionFor(code)`: `filtered_out`, `non_subscription_product` → not protected; reference-integrity codes →
+  protected (`observation_rejected`, `account_reference_orphaned`, M8 product reasons); value rejections
+  (`invalid_observation`, `record_rejected`, `missing_identity`, `malformed_row`, `unreviewed_holding_value`) and
+  **any unknown code** → protected (`observation_rejected` / `holding_filter_value_unreviewed`).
+- Sync `protect()`: removes the key from `holdingIds`, adds it to `seenButRejected`; attribution by
+  `companyForRef(accountId)`, else `lineCompanyFor(object, recordId)`; attributable → gap (written by the existing
+  `replaceWithin`/`addWithin`); unattributable value rejection → counted, run fails
+  `rejected_record_unattributable` after the reads and before tombstones. A later accepted occurrence moves the key
+  back to `holdingIds`. Tombstones require `mayTombstone(key, holdingIds, seenButRejected)`;
+  `tombstones_suppressed` and `seen_but_rejected` are in the run quality.
+- Engine: `record_rejected` carries its account; `unreviewed_holding_value` carries the best-effort account
+  (primary reference, else the confirmed hop) for attribution.
+
+### Reviewed holding-filter domain (`domain/holding-domain.ts`, `source-mapping-document.ts`, `source-mapping-engine.ts`)
+
+- `reviewedDomain = {entries: [{value: string|null, classification: holding|non_holding}], snapshotHash, profileIds}`
+  inside `holdingFilter` (immutable mapping document). `domainKey`: absent/null/empty/whitespace → `null`, else the
+  trimmed string (as M8 compared); a structured value never maps to the empty entry.
+- Publish (`validateReviewedDomain`): domain present, no duplicate, `null` entry present, every declared option and
+  every observed (safe-category) value classified, consistent with the list (`in`: holding ⇔ listed; `not_in`:
+  non-holding ⇔ listed), every listed value present, snapshot hash equal, cited profiles covering.
+- Runtime `holdingClassOf`: `non_holding` → `filtered_out` (confident, tombstonable); `unreviewed` (either operator,
+  including an unclassified empty value) → protected skip + gap; no domain (pre-M9A) → every value unreviewed; runs
+  refuse such versions first (`mapping_requires_republish`).
+
+### Privacy (`domain/profiling/privacy.ts`, `document.ts`, `accumulators.ts`)
+
+- Accumulators keep ≤ 51 raw candidates (≤ 64 chars; + declared option count for enum fields) and 52-bit hashes
+  (exact to 10,000, then HLL p14); hashes and sketches are never persisted.
+- Gate order: excluded → sensitive name → sensitive value (`pii_value`) → `too_few_values` (n < 20) →
+  `cardinality` (> 50, undeclared) → `cardinality_ratio` (> 0.05) → `value_length` → `pii_value` →
+  `identifier_like`; any failure suppresses every value.
+- `assertNoRawValues` re-runs all detectors over every string of the document except names and the snapshot hash,
+  and over every finding's evidence; a hit fails the run (`profile_privacy_violation`).
+
+### Profile CLI and jobs
+
+- `sources profile-run | profile-status | profile-show | profile-findings | profile-drift | profile-purge` and
+  `mappings-draft --from-profile`; `mappings-validate/publish --ack <findingId>:<reasonCode>` and
+  `--profile-override` (always refused); `authority-publish --accept-proof <connectionId>:<reason>`. The CLI only
+  parses arguments and calls services (no Prisma, no business logic); output carries ids, codes, counts and
+  safe-category values only.
+- Job `source.profile` `{v: 1, tenantId, runId, correlationId}` on `lip-sources`; the existing processor dispatches
+  by job name; exhausted retries mark the run failed and dead-letter through the M6 recorder.
+
+## Intended M7/M8 test changes (safety corrections, not silent updates)
+
+| Test                                                                                 | M7/M8 expectation                                     | M9A expectation                                                                                                                                                                    | Reason                                                    |
+| ------------------------------------------------------------------------------------ | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| `test/products/eligibility.int.spec.ts` › unknown before coverage… (`analytics`)     | `eligible` / `not_owned`; whitespace lists 4 products | `unknown` / `unknown` (`coverage_tier_insufficient`); no eligible whitespace (4 → `unknown`)                                                                                       | A2: CSV coverage is `stable_snapshot`                     |
+| same, future-dated `reporting` before its start                                      | `not_owned`                                           | `unknown`                                                                                                                                                                          | A2                                                        |
+| `test/products/eligibility.int.spec.ts` › frozen snapshots (`analytics`)             | `eligible` / `not_owned`, `evaluatorVersion: 2`       | `unknown` / `unknown`, `evaluatorVersion: 3`; replays still reproduce                                                                                                              | A2 + evaluator v3                                         |
+| `scripts/verify-runtime.d/60-product-eligibility.sh` evaluate/whitespace and replay  | `eligible:not_owned`; replay recorded `eligible`      | `unknown:unknown:stable_snapshot:…:coverage_tier_insufficient`; 0 eligible whitespace; replay recorded `unknown`                                                                   | A2                                                        |
+| `src/modules/domain/eligibility.spec.ts` evaluator version                           | 2                                                     | 3                                                                                                                                                                                  | evaluator v3                                              |
+| `src/modules/domain/source-mapping-engine.spec.ts` › fixture 07 blank stage          | `not_in` admits the blank stage as a holding          | filtered out when the empty value is reviewed `non_holding`; unreviewed (protected) when unclassified; admitted only if explicitly classified `holding`                            | §10: closes the verified `not_in`/null false-holding path |
+| same › holding filter semantics (`holdingFilterMatches`)                             | literal membership; empty never a member              | `holdingClassOf` through the reviewed domain                                                                                                                                       | §10                                                       |
+| same › value-map rejection                                                           | `{skipped, record_rejected}`                          | plus `gapAccountId` (the record's account)                                                                                                                                         | §9.4 attribution                                          |
+| `src/modules/domain/source-mapping.spec.ts` (identity, holding filter, runtime file) | M8 validator without profiles                         | every case runs with real covering profiles; a confirmed but duplicated undeclared identity is refused; `not_in` needs a consistent domain; an unlisted value is also unclassified | §7, §10                                                   |
+| `test/sources/source-sync.int.spec.ts` (no-count, base-version tests)                | publish the raw test mapping                          | profile first, stamp the reviewed domain, acknowledge the identity finding                                                                                                         | §7, §10                                                   |
+| `test/support/sources.ts` › `sugarTenant`                                            | snapshot → publish                                    | snapshot → profile run → publish with acknowledgements                                                                                                                             | §7                                                        |
+| `scripts/verify-runtime.d/70-source-connectors.sh`                                   | publish the test file                                 | profile on the worker, stamp the domain, acknowledge the finding                                                                                                                   | §7, §10                                                   |
+| `test/fixtures/sugar/mapping.test.json`, `test/fixtures/source-mapping.ts`           | holding filter without a domain                       | TEST-ONLY reviewed domain (Closed Won holding; other synthetic stages and empty non-holding)                                                                                       | A3                                                        |
+
+No M8 ownership-gap assertion changed: in the M8 suites the protected fixture records (09, 10, 12) have no
+existing line, so they keep M8 handling; the new gaps appear only in the new M9A scenarios.
+
+## Deviations and interpretations (for the reviewer)
+
+1. **Duplicates of a declared identity (open question; tech debt 46).** Literal §7.3 refuses publication whenever
+   the covering profile shows duplicate identity values. Sanitized fixture 11 contains a duplicated line id, so no
+   Sugar mapping could ever publish. As built: for a field the snapshot declares `id`/unique, the E-class
+   `identifier_not_unique` finding requires an acknowledgement on the consequential field (M8's
+   `duplicate_external_id` keeps one row per source id); an undeclared, confirmed identity with duplicates is still
+   refused (`identity_unsuitable`). Reverting to the literal rule is one condition.
+2. **Profile retention (tech debt 45).** "Never delete a profile referenced by a kept profile" is transitive over
+   baseline chains and would block D3 retention entirely. As built: keep the N newest per family, their direct
+   baselines and every covering profile of a published mapping; a kept profile whose baseline is purged loses that
+   link (`previous_profile_id → NULL`), the only change the refuse-change trigger permits, in purge mode, for a
+   session that is not `lip_app` or a member of it.
+3. **Superuser membership (found and fixed).** `pg_has_role(su, 'lip_app', 'MEMBER')` is true for superusers, which
+   would have refused the owner purge. Replaced by `app_session_in_app_role()` (real membership) in the trigger and
+   the purge store.
+4. **`date_format_required` (tech debt 47).** M8 date transforms always declare a format, so the check refuses date
+   entries whose covering profile shows ambiguous dates or mixed date/timestamp representations.
+5. **`systematic` sampling (tech debt 44).** Port positions are opaque; the run reads pages sequentially and folds
+   every k-th page (k = ⌈population / maxRows⌉), discarding the others immediately.
+6. **Field profiles as an array.** Plan §3 shows `fields: {name: …}`; field names are stored as values
+   (`fields[].name`) so a source field named like a secret neither trips the database secret-key CHECK nor leaks
+   through a key.
+7. **Detector refinements (tech debt 53).** The phone rule ignores date-shaped strings; embedded email addresses
+   count as email hits. Both only increase suppression.
+8. **Candidate cap for declared enums.** The 51-candidate cap would suppress the plan's own boundary case (declared
+   enum with 300 observed options → stored); enum fields keep up to 51 + option-count candidates (bounded by the
+   snapshot's 2,000-option limit; included in the memory estimate).
+9. **Gate order.** `too_few_values` is checked before cardinality so that the plan's boundary row (n = 19 →
+   `too_few_values`) holds; every other boundary row is unchanged.
+10. **Advisory thresholds** (high null ratio 0.5, mixed 1% and 5 values, low coverage 0.5) are planning values (A
+    class only); B thresholds are fixed constants (A4).
+11. **Finding promotion (tech debt 48).** The policy guard exists and refuses any demotion/disabling or E/B code;
+    no configuration surface for promoting A codes in M9A.
+12. **Purge audit grant.** The plan revokes UPDATE/DELETE on the purge audit; INSERT is revoked from the app role
+    too, so only the privileged purge writes it.
+13. **`proof_acceptances` publish option and `--accept-proof`.** Added to the existing authority publish (no new
+    command); acceptances can only name `stable_snapshot`, and the content hash is unchanged while empty.
+
+## New technical debt
+
+Items 44–54 in the [register](../tech-debt.md) (item 31 extended to `seenButRejectedIds`):
+44 systematic sampling cost; 45 retention interpretation; 46 declared-identity duplicates (open question);
+47 `date_format_required` interpretation; 48 no promotion surface; 49 sensitive-name substring over-match;
+50 purge owner URL from `MIGRATION_DATABASE_URL`; 51 refused override audited by log + metric only;
+52 run-quality profile not stored on a privacy/validation failure (counted); 53 detector refinements;
+54 runtime stamping of the TEST mapping's snapshot hash.
+
+## Open questions
+
+1. Tech debt 46: confirm the declared-identity duplicate rule (acknowledged E finding) or require the literal
+   §7.3 refusal.
+2. Tech debt 45: confirm the retention interpretation (direct baselines kept; older links cleared by the purge).
+3. Production values for `profile.maxRows` per connection (suggested 50,000) and the freshness window (30 days).
+4. The holding stages and their reviewed domain for Juniper remain a **business** decision (TEST configuration
+   only here); LIVE SUGAR VERIFICATION remains PENDING.
+
+## Confirmation
+
+M9A only. No Chargebee, S3/file, warehouse, signal, opportunity or M9B implementation. No production writes to
+any customer system (adapters stay read-only; profiling reads with `purpose: 'profile'`). No credentials
+requested, committed or logged. **M9A is not claimed closed**: it awaits independent implementation review.
+**M9B has NOT started. LIVE SUGAR VERIFICATION remains PENDING.**

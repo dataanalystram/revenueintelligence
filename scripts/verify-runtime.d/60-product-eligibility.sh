@@ -91,12 +91,15 @@ check "full import completes and makes coverage known" pe_import
 
 pe_evaluate() {
   pe_cli evaluate --tenant "$PE_TENANT" --company hubspot:companies:ex-1001 --product insights >"$PE_OUT/eval.json" || return 1
-  [[ "$(pe_json 'o.status + ":" + o.ownership + ":" + o.evaluatedCompanyId' <"$PE_OUT/eval.json")" == "eligible:not_owned:$PE_C1" ]] || return 1
+  # M9A (A2, intended): CSV coverage is stable_snapshot, so absence from the file is unknown
+  # (coverage_tier_insufficient), never not_owned; M7/M8 expected eligible:not_owned here.
+  [[ "$(pe_json 'o.status + ":" + o.ownership + ":" + o.coverageTier + ":" + o.evaluatedCompanyId + ":" + o.checks.find((c) => c.check === "ownership_coverage").reason' <"$PE_OUT/eval.json")" == "unknown:unknown:stable_snapshot:$PE_C1:coverage_tier_insufficient" ]] || return 1
   pe_cli whitespace --tenant "$PE_TENANT" --company hubspot:companies:ex-1001 >"$PE_OUT/ws.json" || return 1
   [[ "$(pe_json 'o.summary.owned.join(",")' <"$PE_OUT/ws.json")" == "core,reports" ]] &&
+    [[ "$(pe_json 'o.summary.eligible_whitespace.length' <"$PE_OUT/ws.json")" == "0" ]] &&
     [[ "$(pe_json 'o.summary.ineligible_whitespace.includes("self-hosted")' <"$PE_OUT/ws.json")" == "true" ]]
 }
-check "evaluate and whitespace answer from the facts (owned core+reports; self-hosted excluded)" pe_evaluate
+check "evaluate and whitespace from CSV coverage (owned core+reports; self-hosted excluded; no eligible whitespace, M9A A2)" pe_evaluate
 
 pe_snapshot() {
   pe_cli evaluate --tenant "$PE_TENANT" --company hubspot:companies:ex-1001 --product insights --record --purpose runtime_check >"$PE_OUT/rec-dry.json" || return 1
@@ -118,7 +121,7 @@ pe_tombstone() {
   pe_cli evaluate --tenant "$PE_TENANT" --company hubspot:companies:ex-1001 --product insights >"$PE_OUT/eval2.json" || return 1
   [[ "$(pe_json 'o.ownership' <"$PE_OUT/eval2.json")" == "owned" ]] || return 1
   pe_cli replay --tenant "$PE_TENANT" --snapshot "$PE_SNAPSHOT" >"$PE_OUT/replay2.json" &&
-    [[ "$(pe_json 'o.reason + ":" + o.recorded.status' <"$PE_OUT/replay2.json")" == "reproduced:eligible" ]]
+    [[ "$(pe_json 'o.reason + ":" + o.recorded.status' <"$PE_OUT/replay2.json")" == "reproduced:unknown" ]]
 }
 check "full import without lines tombstones them; live answer changes, snapshot still replays" pe_tombstone
 
