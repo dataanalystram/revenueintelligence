@@ -426,4 +426,132 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
     const again = await runSync(c, f, 'full');
     report.page10Repeat = { status: again.status, proof: again.quality.proof ?? null };
   }, 900_000);
+
+  /**
+   * M02 child reconciliation (G4) with a before -> after on the platform: run 1 replays S02's
+   * pre-M02 child set (the live data plus the removed Support line, proven identical to the
+   * post-M01 evidence by its key fingerprint); run 2 reads the live site unchanged.
+   */
+  const m02 = process.env.CHARGEBEE_M02_SUPPORT_FP ? it : it.skip;
+  m02(
+    'M02: G4 retires the removed Support line (replayed pre-M02 child set, then the live read)',
+    async () => {
+      const f = await tenant('cblivem02', KEY_A, {});
+      await publish(f, true, 'm02');
+      const subs = (await raw('/subscriptions')).map((e) => e.subscription as E);
+      const s02 = subs.find((x) => /_s02$/.test(String(x.id)))!;
+      const items = (await raw('/items')).map((e) => e.item as E);
+      const support = items.find((i) => /support/i.test(String(i.name)) && i.type === 'addon')!;
+      const prices = (await raw('/item_prices')).map((e) => e.item_price as E);
+      const supportPrice = prices.find(
+        (p) =>
+          p.item_id === support.id &&
+          p.currency_code === s02.currency_code &&
+          p.period_unit === s02.billing_period_unit,
+      )!;
+      const supportKey = `${String(s02.id)}:${String(supportPrice.id)}`;
+      const report02: E = {
+        replayedSupportKeyMatchesPostM01: fp(supportKey) === process.env.CHARGEBEE_M02_SUPPORT_FP,
+        liveS02Items: (s02.subscription_items as E[]).length,
+        liveHasSupport: (s02.subscription_items as E[]).some(
+          (i) => i.item_price_id === supportPrice.id,
+        ),
+      };
+      const original = globalThis.fetch;
+      globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+        const res = await original(input, init);
+        const url = new URL(
+          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url,
+        );
+        if (!url.pathname.endsWith('/api/v2/subscriptions') || !res.ok) return res;
+        const body = (await res.json()) as E;
+        for (const e of body.list as E[]) {
+          if (e.subscription?.id === s02.id) {
+            e.subscription.subscription_items = [
+              ...(e.subscription.subscription_items as E[]),
+              {
+                item_price_id: supportPrice.id,
+                item_type: 'addon',
+                quantity: 1,
+                object: 'subscription_item',
+              },
+            ];
+          }
+        }
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      });
+      let before: Awaited<ReturnType<typeof runSync>>;
+      try {
+        before = await runSync(c, f, 'full');
+      } finally {
+        globalThis.fetch = original;
+      }
+      const s02Lines = async () =>
+        (await linesOf(f.ctx))
+          .filter((l) => l.source_record_id.startsWith(`${String(s02.id)}:`))
+          .map((l) => ({
+            keyFp: fp(l.source_record_id),
+            support: l.source_record_id === supportKey,
+            quantity: l.quantity,
+            state: l.state,
+            recordState: l.record_state,
+            productKey: l.product_key,
+            termsMatchRaw:
+              (l.starts_at?.getTime() ?? null) === s02.current_term_start * 1000 &&
+              (l.ends_at?.getTime() ?? null) === s02.current_term_end * 1000,
+          }))
+          .sort((a, b) => a.keyFp.localeCompare(b.keyFp));
+      const allActive = async () =>
+        (await linesOf(f.ctx))
+          .filter((l) => l.record_state === 'active')
+          .map((l) => fp(l.source_record_id))
+          .sort();
+      report02.run1 = { status: before.status, quality: before.quality };
+      report02.s02Before = await s02Lines();
+      const activeBefore = await allActive();
+      const after = await runSync(c, f, 'full');
+      report02.run2 = { status: after.status, quality: after.quality };
+      report02.s02After = await s02Lines();
+      const activeAfter = await allActive();
+      report02.activeBeforeAfter = [activeBefore.length, activeAfter.length];
+      report02.retiredKeys = activeBefore.filter((k) => !activeAfter.includes(k));
+      report02.retiredOnlySupport =
+        report02.retiredKeys.length === 1 && report02.retiredKeys[0] === fp(supportKey);
+      const gaps = await c.sql<{ reason: string; n: number }>(
+        `SELECT reason, count(*)::int AS n FROM tenant_ownership_gaps WHERE tenant_id = $1 GROUP BY reason`,
+        [f.ctx.tenantId],
+      );
+      report02.gaps = Object.fromEntries(gaps.map((g) => [g.reason, g.n]));
+      const runs = c.app.get(SubscriptionRunsStore);
+      const cov = await c.h.db.transaction(f.ctx, (tx) => runs.coverage(tx));
+      report02.coverage = cov.known
+        ? {
+            tier: cov.coverageTier,
+            method: cov.proof.method,
+            runIsLatest: cov.proof.runId === after.runId,
+          }
+        : cov;
+      const company = (
+        await c.sql<{ company_id: string }>(
+          `SELECT company_id FROM company_external_refs WHERE tenant_id = $1 AND system = 'chargebee' AND object_type = 'Customers' AND external_id = $2`,
+          [f.ctx.tenantId, s02.customer_id],
+        )
+      )[0]!.company_id;
+      const ws = await c.app.get(EligibilityService).whitespace(f.ctx, company);
+      report02.whitespaceS02 = {
+        owned: ws.categories.owned.length,
+        eligibleWhitespace: ws.categories.eligible_whitespace.length,
+      };
+      report02.parent = {
+        updatedAt: s02.updated_at,
+        resourceVersion: s02.resource_version,
+        status: s02.status,
+      };
+      report.m02 = report02;
+    },
+    900_000,
+  );
 });

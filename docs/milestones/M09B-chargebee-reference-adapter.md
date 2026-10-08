@@ -377,6 +377,38 @@ or a plan **change** (M04). Incremental line sync stays **disabled**: the plan (
 (`incrementalLines: verified`) only once V12 is proven; recommendation: decide after M02–M04 confirm the same
 behaviour for removals and replacements, which are what G4 relies on in incremental runs.
 
+## Live mutation M02 — S02 Support add-on removed (2026-10-08)
+
+**Source side (owner's setup agent):** HTTP 200; S02 before: Pro plan 1, Seats 5, Support 1 → after: Pro plan 1,
+Seats 5. **Live Chargebee mutation behaviour (setup API, not connector reads):** `update_for_items` merges item
+lists by default — omitting Support did not remove it; `quantity=0` was rejected; `remove_items` did not remove it in
+this test; the removal succeeded only with `replace_items_list=true` and the reduced item list.
+
+**Connector verification** (`test/live/chargebee-baseline.live.spec.ts`, test "M02", Key A, sanitized). To prove G4
+needs a canonical Support line to exist first, run 1 **replays S02's pre-M02 child set** (the live data plus the
+removed Support line, its key fingerprint proven identical to the post-M01 evidence); run 2 reads the live site
+unchanged:
+
+| Check                    | Observed                                                                                                                                                                                                                                                                                      |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Live S02                 | 2 subscription items; Support absent                                                                                                                                                                                                                                                          |
+| Run 1 (replayed pre-M02) | completed, proof passed; S02 3 active lines (Pro 1, Seats 5, Support 1)                                                                                                                                                                                                                       |
+| Run 2 (live)             | completed; proof `double_enumeration / stable_snapshot / passed`; quality `child_retired: 1`, no `tombstoned`, no `child_reconciliation_skipped`, no rejection                                                                                                                                |
+| G4 evidence              | S02 was observed with a complete, accepted child set (2 accepted rows on one page, no rejected/protected/duplicate child, not split) and its active Support line was absent from it → retired by `reconcileChildren` (`child_retired`), before and independent of the full-run tombstone pass |
+| S02 after                | **2 active lines**: Pro (qty 1) and Seats (qty **5**); Support `record_state = deleted` (state left `active`, not rewritten)                                                                                                                                                                  |
+| Identities / products    | Pro and Seats keys and resolved products identical to the post-M01 evidence                                                                                                                                                                                                                   |
+| Unrelated lines          | active 24 → 23; the only retired key is Support; diff against the post-M01 fingerprints: 1 removed (Support), 0 added, 0 changed                                                                                                                                                              |
+| Status / terms           | `active`; terms equal the raw `current_term_*`                                                                                                                                                                                                                                                |
+| Gaps / protection        | no ownership gap; no seen-but-rejected; reviewed-domain filter unchanged (`non_subscription_product` 1 = the ignored Legacy item)                                                                                                                                                             |
+| Coverage / whitespace    | `stable_snapshot` from run 2; S02 account eligible whitespace 0; S01 account 0                                                                                                                                                                                                                |
+| Page size 10             | completed, proof passed, S02 2 lines                                                                                                                                                                                                                                                          |
+| Key B                    | `forbidden` / `source_forbidden`, no change                                                                                                                                                                                                                                                   |
+
+**V12 removal (parent S02):** `updated_at` `1791494007` → `1791494493`; `resource_version` `1791494007579` →
+`1791494493303`. Both "before" values were read by this connector in the M01 verification; both "after" values read
+now (identical to the setup agent's). **V12 REMOVAL LIVE CONFIRMED.** Incremental line sync stays disabled until
+M03 (price replacement) and M04 (plan replacement) are verified.
+
 ## V2–V12 (live gate)
 
 | #   | Status                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
@@ -392,7 +424,7 @@ behaviour for removals and replacements, which are what G4 relies on in incremen
 | V9  | PENDING (needs a mutation)                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | V10 | PENDING — `decommissioned` is `false` on all 23 subscription records; no decommissioned record to observe                                                                                                                                                                                                                                                                                                                                                                                           |
 | V11 | Live site is PC 2.0 (`/items` 200). PC 1.0 detection cannot be observed on this site: remains fake-only                                                                                                                                                                                                                                                                                                                                                                                             |
-| V12 | **LIVE CONFIRMED for an item quantity change (M01)**: parent `updated_at` and `resource_version` moved. Removal/price/plan changes pending (M02–M04); incremental line sync stays **disabled** until decided                                                                                                                                                                                                                                                                                        |
+| V12 | **LIVE CONFIRMED for a quantity change (M01) and an item removal (M02)**: parent `updated_at` and `resource_version` moved. Price/plan replacement pending (M03–M04); incremental line sync stays **disabled** until decided                                                                                                                                                                                                                                                                        |
 
 ## Live baseline (TEST site)
 
