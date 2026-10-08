@@ -294,12 +294,12 @@ timestamps could contain it); it now matches the card markers only (`masked_numb
 
 ### Verification of the correction
 
-| Gate                             | Result                                                            |
-| -------------------------------- | ----------------------------------------------------------------- |
-| Chargebee unit suite             | 35/35                                                             |
-| Chargebee integration            | 36/36 (CB01–CB36 + id reuse + profiling + publication)            |
-| Mutations (all, rerun)           | 25/25 killed for the stated reason, every restore green (C20 N/A) |
-| `pnpm verify` / runtime / Docker | see below (filled after the run)                                  |
+| Gate                             | Result                                                                                                                                                                                   |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Chargebee unit suite             | 35/35                                                                                                                                                                                    |
+| Chargebee integration            | 36/36 (CB01–CB36 + id reuse + profiling + publication)                                                                                                                                   |
+| Mutations (all, rerun)           | 25/25 killed for the stated reason, every restore green (C20 N/A)                                                                                                                        |
+| `pnpm verify` / runtime / Docker | verify exit 0 (unit 61 files / 879 tests; integration 25 files / 451 tests; depcheck 0 violations); runtime **163 passed, 0 failed**; Docker **27 passed, 0 failed** (code of `015910a`) |
 
 ### Live rerun (fresh environment, 2026-10-08 ~20:40Z)
 
