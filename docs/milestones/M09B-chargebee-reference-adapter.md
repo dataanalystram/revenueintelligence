@@ -301,6 +301,20 @@ timestamps could contain it); it now matches the card markers only (`masked_numb
 | Mutations (all, rerun)           | 25/25 killed for the stated reason, every restore green (C20 N/A)                                                                                                                        |
 | `pnpm verify` / runtime / Docker | verify exit 0 (unit 61 files / 879 tests; integration 25 files / 451 tests; depcheck 0 violations); runtime **163 passed, 0 failed**; Docker **27 passed, 0 failed** (code of `015910a`) |
 
+### Fresh clone of the correction (`015910a`)
+
+| Run | verify                   | runtime                                                                    | Docker | Resources after         |
+| --- | ------------------------ | -------------------------------------------------------------------------- | ------ | ----------------------- |
+| 1   | exit 0 (879 + 451 tests) | **162 passed, 1 failed** — M6 `context worker stops gracefully on SIGTERM` | 27/0   | all zero; clone removed |
+| 2   | exit 0 (879 + 451 tests) | **163 passed, 0 failed**                                                   | 27/0   | all zero; clone removed |
+
+Run 1's failure is in the M6 context-worker shutdown check (exit within 15 s **and** `Application shut down
+cleanly` in the worker log), which no M9B change touches. It is **not explained**: the runtime script deletes its
+work directory, so the worker log was lost. It did not reproduce in two working-tree runtime reruns (163/0 each) nor
+in fresh-clone run 2. It has never failed in any earlier recorded runtime run. Tracked as tech debt #62 (keep the
+logs of a failed runtime check; investigate the shutdown timing). Not used to claim green on its own: run 2 is the
+green fresh-clone evidence and run 1 is disclosed here.
+
 ### Live rerun (fresh environment, 2026-10-08 ~20:40Z)
 
 | Check                     | Observed                                                                                                                                                 |
