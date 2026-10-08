@@ -154,4 +154,228 @@ Register items #55–#61 ([tech-debt.md](../tech-debt.md)).
 
 ## Evidence
 
-_Filled in below after the gates ran._
+Sanitized: counts and codes only. All data is synthetic (fake Chargebee); no customer names, emails,
+Chargebee ids of a real site, API keys or subscription values are recorded.
+
+- **Implementation SHA:** `07b52f5579fc71be3e963b06ed2bdb3da145c128` (43 files, +4,832 / −77 against the
+  approved plan `ba72e91`). This record's evidence is added in a docs-only follow-up commit.
+- **Migration:** `20261115120000_m9b_chargebee_connector_kind` (+ down-script).
+
+### Gates (working tree, before commit; code identical to `07b52f5`)
+
+| Gate                        | Command                                                                                                        | Result                                                                                                                                                  |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Static + all tests          | `pnpm verify`                                                                                                  | exit 0 — format, lint, typecheck, depcheck (330 modules, 1,400 deps, 0 violations); unit **61 files / 878 tests**; integration **25 files / 449 tests** |
+| Runtime                     | `pnpm verify:runtime`                                                                                          | **163 passed, 0 failed** (incl. 13 checks of `80-chargebee.sh`)                                                                                         |
+| Docker                      | `LIP_DOCKERFILE=… LIP_DOCKER_BUILD_ARGS="--network host --build-context ca=…" pnpm verify:docker` (sandbox CA) | **27 passed, 0 failed** (incl. 4 M9B checks)                                                                                                            |
+| Sugar module unchanged      | `git diff ba72e91 -- apps/api/src/modules/sugar`                                                               | 0 lines                                                                                                                                                 |
+| No Chargebee import in core | `grep -rl chargebee src/modules/{domain,sources,products}`                                                     | only `domain/connector-kinds.ts` (catalogue data); dependency rules enforce the rest                                                                    |
+
+The first runtime run reported **162 passed, 1 failed**: the M8 check in `70-source-connectors.sh` hard-coded
+5 connector kinds. M9B intentionally adds the sixth; the expected count was updated to 6 (the RLS half of the
+check is unchanged) and the rerun was green. No retry hid a flake.
+
+New/changed suites: adapter unit `chargebee-connector.spec.ts` **34 tests**; `chargebee-sync.int.spec.ts`
+**34 tests** (CB01–CB36 + profiling + publication); `migrations.int.spec.ts` **57 tests** (M9B describe plus
+newest-first down-script order in two M8/M9A tests); domain unit additions (timestamp transform, coverage
+acceptance, Unix-seconds profile rule).
+
+### Regression
+
+- Sugar: module diff empty; every M8/M9A Sugar integration test passes; `count → externally_grounded` asserted
+  in `protection.int.spec.ts` (unchanged) and runtime 75 (`count:externally_grounded:passed`).
+- CSV: `operator_full_file → stable_snapshot` asserted in `protection.int.spec.ts` and runtime 60 (unchanged).
+- Chargebee: `double_enumeration → stable_snapshot` (CB29, runtime 80); never `externally_grounded` (C6).
+- M9A profiling/privacy: all M9A tests pass; Chargebee profiles hold no key, customer value or payment data
+  (integration + runtime 80).
+- Product Model: no auto-created products (CB17/C18). Authority: Chargebee holds lines, state and terms
+  together; acceptance required for tombstones (CB29/CB30).
+
+### Fake CB01–CB36
+
+All applicable scenarios pass on the fake (`test/chargebee/chargebee-sync.int.spec.ts`, plus the adapter unit
+suite for CB02/CB13/CB21/CB23/CB24/CB26/CB31/CB32/CB34 at transport level):
+
+| #         | Result on the fake                                                                                                                                              |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CB01–CB09 | PASS (one line; plan + 2 add-ons; no collapse; trial/unknown/active/cancelled/unknown/unknown; unlisted status → unknown + unmapped)                            |
+| CB10–CB11 | PASS (renewal and quantity update the same line)                                                                                                                |
+| CB12      | PASS (fallback identity: old price line retired by G4, new line created)                                                                                        |
+| CB13      | PASS (USD/EUR → one product, two lines)                                                                                                                         |
+| CB14–CB15 | PASS (upgrade: A retired by G4; add-on removed: retired by G4 on an incremental run, V12 assumed)                                                               |
+| CB16–CB18 | PASS (charge filtered out; unmodelled item fails before writes; ignored item: no line, no gap)                                                                  |
+| CB19      | PASS (see deviation 5)                                                                                                                                          |
+| CB20      | PASS with deviation 3 (reference retired; lines kept on the canonical company)                                                                                  |
+| CB21–CB23 | PASS (deletion only for the deleted subscription; cancelled → active same line; unknown price protected with a gap, nothing retired)                            |
+| CB24      | PASS with deviation 4 (boundary rejection, protected)                                                                                                           |
+| CB25      | PASS (repeated key fails closed under both identities)                                                                                                          |
+| CB26      | PASS (240 extra subscriptions, ≥ 3 pages per pass, a transient 503 retried)                                                                                     |
+| CB27      | PASS (only changes, overlap ≥ 10 min, no absence tombstone; V12 assumed)                                                                                        |
+| CB28–CB30 | PASS (between-pass insert → `unstable_read`; accepted: tombstones allowed, absence unknown, no whitespace; not accepted: `proof_not_accepted`, zero tombstones) |
+| CB31–CB34 | PASS (429 storm honoured; PC 1.0 → `catalog_version_unsupported`; drift findings; 403 → `forbidden`, no partial run)                                            |
+| CB35      | PASS (full and incremental; unattributable parent fails the run before tombstones)                                                                              |
+| CB36      | PASS (sync and profiling: `pagination_stalled` after 2 list requests; no proof, coverage and tombstones unchanged)                                              |
+
+### Mutation proofs (C1–C22)
+
+Harness: break one mechanism, run the named test (must fail for the stated reason), restore, rerun green.
+Every mutation below **failed as expected** and every restore was green (`Tests 1 passed`, exit 0).
+
+| #    | Mutation                                               | Killing test                                                                           | Failure observed                                          |
+| ---- | ------------------------------------------------------ | -------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| C1   | Transport allows POST                                  | unit `lets only GET to the four allowlisted list endpoints through`                    | expected the guard to throw                               |
+| C2   | Allowlist admits `/invoices`                           | unit `refuses every path outside the allowlist…`                                       | expected the guard to throw                               |
+| C3   | `card` kept in records                                 | unit `C3: the synthetic card … is discarded unread`                                    | records matched `/card/masked/…/`                         |
+| C4   | Pass 2 skipped                                         | int `CB28/C4/C5/C8 … unstable_read`                                                    | run not `failed/unstable_read`                            |
+| C5   | Set comparison ignores an inserted record              | int `CB28/C4/C5/C8`                                                                    | run not `failed/unstable_read`                            |
+| C6   | Proof recorded as `count`                              | int `CB29: a stable full run …`                                                        | proof `{method: count}` ≠ `double_enumeration`            |
+| C7   | Tombstones without acceptance                          | int `CB30/C7`                                                                          | `tombstones_not_accepted` missing (tombstoned)            |
+| C8   | Enumeration mismatch tolerated                         | int `CB28/C4/C5/C8`                                                                    | run not `failed/unstable_read`                            |
+| C9   | G4 ignores a protected sibling                         | int `CB23: an unknown item price …`                                                    | `child_reconciliation_skipped` missing (old line retired) |
+| C9b  | Uncertain set does not shield the full-run tombstone   | int `CB23: an unknown item price …`                                                    | old add-on line no longer active                          |
+| C10  | G4 runs on a rejected parent                           | int `full run: a rejected parent never reconciles …`                                   | `child_retired` = 3                                       |
+| C11  | Item line id built from the item price id              | unit `CB02: one row per subscription item …`                                           | `line_key_item` = price ids                               |
+| C12  | Duplicate key not detected                             | int `CB25/C12`                                                                         | `duplicate_external_id` 1 ≠ 2                             |
+| C13  | Unknown status → `active`                              | int `CB09/C13`                                                                         | state `active` ≠ `unknown`                                |
+| C14  | Unix seconds accept milliseconds                       | unit `M9B: Unix seconds (UTC) parse … milliseconds are invalid_date`                   | ms parsed `ok: true`                                      |
+| C15  | `item_id` falls back to the price id                   | unit `CB23: an unknown item price resolves to a null item`                             | `ghost-price-USD` ≠ null                                  |
+| C16  | Incremental window without overlap                     | int `CB27/C16`                                                                         | `updated_at[after]` above watermark − 10 min              |
+| C17  | `deleted: true` treated as cancelled                   | int `CB21/C17`                                                                         | lines not `deleted` (state rewritten)                     |
+| C18  | Unmodelled item accepted (refusal removed)             | int `CB17/C18`                                                                         | run not `failed/unmodelled_product_reference`             |
+| C19  | Settle window removed                                  | int `C19: the settle window …`                                                         | just-created subscription written                         |
+| C20  | Read-only key check bypassed                           | **N/A** — not implementable without a write attempt; conditional on V8 (tech debt #61) | —                                                         |
+| C21  | G4 retires a protected child of a rejected parent      | int `full run: a rejected parent never reconciles …`                                   | `child_retired` = 3                                       |
+| C22  | Non-progress detection removed (sync)                  | int `CB36/C22`                                                                         | run not `failed/pagination_stalled`                       |
+| C22b | Non-progress detection removed (profiling)             | int `a repeated next_offset fails a profile run …`                                     | profile run not `failed/pagination_stalled`               |
+| X1   | Migration lets a Chargebee integration be `read_write` | int `the M9B down-script refuses …`                                                    | UPDATE to `read_write` resolved instead of rejecting      |
+
+**Runtime proof:** with the adapter temporarily also reading `GET /invoices` (allowlist widened), runtime
+reported **162 passed, 1 failed** — exactly `only GETs to the four allowlisted list endpoints reached the fake`;
+restored, then green.
+
+### Fresh clone
+
+Fresh `git clone` of `claude/blissful-mendel-urbh4r`, HEAD `07b52f5579fc71be3e963b06ed2bdb3da145c128` (matches
+the implementation SHA), `pnpm install --frozen-lockfile` exit 0, then:
+
+| Step                  | Result                                                                        |
+| --------------------- | ----------------------------------------------------------------------------- |
+| `pnpm verify`         | exit 0 — unit 61 files / 878 tests; integration 25 files / 449 tests          |
+| `pnpm verify:runtime` | **163 passed, 0 failed**                                                      |
+| `pnpm verify:docker`  | **27 passed, 0 failed** (first attempt)                                       |
+| Resources after       | 0 app processes, 0 containers, 0 volumes, 0 networks, 0 images; clone removed |
+
+## V2–V12 (live gate) — all PENDING
+
+| #   | Status                                                                                                                        |
+| --- | ----------------------------------------------------------------------------------------------------------------------------- |
+| V1  | Resolved by documentation (F18): UTC Unix seconds                                                                             |
+| V2  | PENDING — `next_offset` stability; the fake is positional                                                                     |
+| V3  | PENDING — item / item-price repetition; TEST mapping uses the fallback identity until proven                                  |
+| V4  | PENDING — `current_term_end` of cancelled / non-renewing                                                                      |
+| V5  | PENDING — `include_deleted` retention                                                                                         |
+| V6  | PENDING — deleted items / item prices in list responses                                                                       |
+| V7  | PENDING — id immutability, length, `:` separator                                                                              |
+| V8  | PENDING — Restricted read-only key behaviour and 403 shape (C20 depends on it)                                                |
+| V9  | PENDING — eventual-consistency lag (settle window value)                                                                      |
+| V10 | PENDING — `decommissioned` flag                                                                                               |
+| V11 | PENDING — Product Catalog 1.0 detection on a real site (`configuration_incompatible` assumed)                                 |
+| V12 | PENDING — item change moves the parent's `updated_at`; incremental line sync stays **disabled** (full runs only) until proven |
+
+## External setup still required (owner)
+
+See the [owner sandbox checklist](#owner-sandbox-checklist) below; nothing in it is needed by the fake tests.
+
+## Owner sandbox checklist
+
+Minimal setup that lets the live gate (plan §22) prove V2–V12 and run the live-runnable scenarios. Synthetic
+data only: no real people, companies, emails or cards. **Never paste an API key into chat.**
+
+### 1. Site
+
+- A Chargebee **test site** (not live), **Product Catalog 2.0** (default for new sites).
+- **Multi-currency** enabled with **USD** (base) and **EUR** (CB13).
+- No Multiple Business Entities needed (CB09 `transferred` stays fake-only unless the site already has MBE).
+- Tell us the **site subdomain** only (the `<site>` in `https://<site>.chargebee.com`) — not a secret.
+
+### 2. Product catalogue (one item family, e.g. `M9B Test Family`)
+
+| Item (type)            | Item prices to create                                                                 | Purpose                |
+| ---------------------- | ------------------------------------------------------------------------------------- | ---------------------- |
+| `M9B Basic` (plan)     | monthly USD; yearly USD; monthly EUR                                                  | CB01, CB03, CB12, CB13 |
+| `M9B Pro` (plan)       | monthly USD (with a trial period allowed)                                             | CB02, CB04, CB14       |
+| `M9B Seats` (add-on)   | monthly USD, **per-unit** (quantity); a second price point monthly USD `M9B Seats v2` | CB02, CB11, V3         |
+| `M9B Support` (add-on) | monthly USD, flat fee                                                                 | CB02, CB15             |
+| `M9B Setup` (charge)   | one-time USD                                                                          | CB16                   |
+| `M9B Legacy` (add-on)  | monthly USD — **archive the item after** S18 below is created                         | CB18, V6               |
+| `M9B Temp` (add-on)    | monthly USD — never used; **delete** it after our first full run (we will say when)   | V6                     |
+
+### 3. Customers and subscriptions (Chargebee-generated ids are fine)
+
+Twelve customers named `M9B Test Customer 01`…`12`, company `M9B Test Co NN`, email omitted or
+`noreply+NN@example.com`, **no payment method** (test sites allow subscriptions without cards; use "offline"
+/ invoice collection where asked).
+
+| Sub | Customer | Items (quantity)                                     | Status to reach                               | Proves                |
+| --- | -------- | ---------------------------------------------------- | --------------------------------------------- | --------------------- |
+| S01 | 01       | Basic monthly USD (1)                                | active                                        | CB01                  |
+| S02 | 02       | Pro monthly (1) + Seats (3) + Support (1)            | active                                        | CB02, CB11, CB15, V12 |
+| S03 | 03       | Basic monthly (1)                                    | active                                        | CB03                  |
+| S04 | 03       | Basic monthly (1)                                    | active (second sub, same customer, same item) | CB03                  |
+| S05 | 04       | Pro monthly (1) with a trial                         | in_trial                                      | CB04                  |
+| S06 | 05       | Basic monthly (1), start date ~2 weeks ahead         | future                                        | CB05                  |
+| S07 | 06       | Basic monthly (1), cancel **at end of term**         | non_renewing                                  | CB06, V4              |
+| S08 | 07       | Basic monthly (1), cancel **immediately**            | cancelled                                     | CB07, V4              |
+| S09 | 08       | Basic monthly (1), **pause** now                     | paused                                        | CB08                  |
+| S10 | 09       | Basic monthly (1)                                    | active                                        | CB10, CB12            |
+| S11 | 10       | Basic monthly **EUR** (1)                            | active                                        | CB13                  |
+| S12 | 11       | Basic monthly (1)                                    | active                                        | CB14                  |
+| S13 | 12       | Basic monthly (1) + Setup charge (1)                 | active                                        | CB16                  |
+| S14 | 12       | Basic monthly (1) + Legacy (1) — then archive Legacy | active                                        | CB18                  |
+| S15 | 01       | Basic monthly (1)                                    | active (will be cancelled, then reactivated)  | CB22                  |
+
+**V3 attempt (record the outcome, screenshots not needed):** on S02, try to add `M9B Seats` a second time with
+the same price point, and separately with `M9B Seats v2`. Tell us which, if any, Chargebee accepts.
+
+### 4. Changes after our first full run (we will ask for each step, one at a time)
+
+1. S02: Seats quantity 3 → 5 (CB11, V12); remove Support (CB15, V12).
+2. S10: change price point Basic monthly → Basic yearly (CB12); advance/renew its term if the test site's
+   time-machine allows (CB10, V4).
+3. S12: change plan Basic → Pro (CB14).
+4. S15: cancel immediately, then (after our next run) reactivate (CB22).
+5. Delete **subscription S04** (CB21, V5); delete **customer 08** together with its subscription S09 (CB20,
+   V5).
+6. Delete the unused item price/item `M9B Temp` (V6).
+7. Optional (CB28): create one more subscription while we run a full sync, when we say "now".
+
+CB19 (subscription of a missing customer), CB23 (unknown item price), CB24, CB32, CB35, CB36 and CB09 (without
+MBE) cannot be produced on a real site and stay fake-only. CB26 needs no extra data: the live connection uses
+`pageSize: 10` (≥ 3 pages). CB31 (429) is observed only; we will not deliberately exceed the site limit.
+
+### 5. API keys (read-only, Restricted)
+
+Settings → Configure Chargebee → API Keys → Add API Key → **Read-Only Key → Restricted**:
+
+- **Key A** (main): read access to **Customers**, **Subscriptions**, **Item Families**, **Items**, **Item Prices**
+  — nothing else (no invoices, transactions, payment sources, events, exports).
+- **Key B** (CB34, V8): read access to **Customers** and **Subscriptions** only (no product catalogue).
+
+### 6. Where the keys go (never in chat)
+
+Add them in this cloud environment's settings (environment menu in the session title bar → Edit) as
+**environment secrets / variables**, for the live tenant slug `cblive`:
+
+| Variable                                      | Value |
+| --------------------------------------------- | ----- |
+| `TENANT_CBLIVE_CHARGEBEE_CHARGEBEE_API`       | Key A |
+| `TENANT_CBLIVE_CHARGEBEE_CHARGEBEE_NOCATALOG` | Key B |
+
+They resolve through the `EnvSecretProvider` as `tenant.cblive.chargebee.chargebee_api` and
+`tenant.cblive.chargebee.chargebee_nocatalog`.
+
+### 7. Network
+
+Allow `<site>.chargebee.com` under the environment's **Network access → Allowed domains** (keep "Allow package
+managers" ticked); see https://code.claude.com/docs/en/cloud-environments#network-access. A new session picks
+up secret and network changes.
