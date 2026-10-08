@@ -95,6 +95,15 @@ export class SourceProfilingService {
       if (connection.mappingMode !== 'versioned') {
         throw new SourcesError('mapping_not_versioned', `${connection.kind} is mapped in code`);
       }
+      if (connection.status !== 'enabled') {
+        throw new SourcesError('connection_disabled', 'The connection is disabled');
+      }
+      if (!this.connections.hasAdapter(connection.kind)) {
+        throw new SourcesError(
+          'adapter_not_registered',
+          `No source adapter is registered for ${connection.kind} in this process`,
+        );
+      }
       const snapshot = await this.repo.latestSnapshot(tx, connectionId);
       if (!snapshot)
         throw new SourcesError('no_schema_snapshot', 'Capture a schema snapshot first');

@@ -199,6 +199,36 @@ describe('source profiling (fake Sugar, app role, forced RLS)', () => {
         evidence: ['systematic_page_clusters'],
       });
     });
+
+    it('refuses a disabled connection and a kind with no adapter in this process (no run created)', async () => {
+      const s = sourcesServices(c);
+      const f = await sugarTenant(c, fake, { prefix: 'prfgate', stopAfter: 'snapshot' });
+      const input = {
+        objects: [{ object: 'RevenueLineItems' }],
+        sampling: 'full' as const,
+        includeExcluded: [],
+      };
+      const opts = { actor: 'test', execute: true, enqueue: false };
+      await s.connections.setStatus(f.ctx, f.connectionId, 'disabled');
+      await expect(
+        s.profiling.request(f.ctx, f.connectionId, input, { ...opts, execute: false }),
+      ).rejects.toMatchObject({ code: 'connection_disabled' });
+      await s.connections.setStatus(f.ctx, f.connectionId, 'enabled');
+      // A connection of a kind without an adapter (created outside the service).
+      const [{ id }] = (await c.sql<{ id: string }>(
+        `INSERT INTO tenant_source_connections (tenant_id, id, kind, label, status, mapping_mode)
+         VALUES ($1, gen_random_uuid(), 'gainsight_cs', 'GS', 'enabled', 'versioned') RETURNING id::text`,
+        [f.ctx.tenantId],
+      )) as [{ id: string }];
+      await expect(s.profiling.request(f.ctx, id, input, opts)).rejects.toMatchObject({
+        code: 'adapter_not_registered',
+      });
+      expect(
+        await c.sql('SELECT 1 FROM tenant_source_profile_runs WHERE tenant_id = $1', [
+          f.ctx.tenantId,
+        ]),
+      ).toEqual([]);
+    });
   });
 
   describe('run state machine and concurrency', () => {
