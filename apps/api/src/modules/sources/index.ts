@@ -7,6 +7,7 @@ export {
   PREVIEW_LIMIT,
   type PreviewReport,
 } from './application/mapping-preview.service';
+export { ProfilePurgeService } from './application/profile-purge.service';
 export {
   SchemaSnapshotsService,
   type CapturedSnapshot,

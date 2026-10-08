@@ -3,6 +3,7 @@ import type { SourceAdapterFactory } from '../domain';
 import { ProductsModule } from '../products';
 import { TenancyModule } from '../tenancy';
 import { MappingPreviewService } from './application/mapping-preview.service';
+import { ProfilePurgeService } from './application/profile-purge.service';
 import { SchemaSnapshotsService } from './application/schema-snapshots.service';
 import { SourceAuthorityService } from './application/source-authority.service';
 import { SourceConnectionsService } from './application/source-connections.service';
@@ -11,6 +12,7 @@ import { SourceProfilingService } from './application/source-profiling.service';
 import { SourceReportService } from './application/source-report.service';
 import { SourceSyncProcessor } from './application/source-sync.processor';
 import { SourceSyncService } from './application/source-sync.service';
+import { ProfilePurgeStore } from './infrastructure/profile-purge.store';
 import { ProfilesRepository } from './infrastructure/profiles.repository';
 import { SourcesRepository } from './infrastructure/sources.repository';
 import { SOURCE_ADAPTERS, SourceAdapterRegistry } from './source-adapters';
@@ -44,6 +46,7 @@ export class SourcesModule {
       SourceSyncService,
       SourceReportService,
       SourceProfilingService,
+      ProfilePurgeService,
     ];
     return {
       module: SourcesModule,
@@ -53,6 +56,7 @@ export class SourcesModule {
         SourceAdapterRegistry,
         SourcesRepository,
         ProfilesRepository,
+        ProfilePurgeStore,
         ...services,
         ...(options.processors ? [SourceSyncProcessor] : []),
       ],

@@ -4,7 +4,9 @@ import type { Prisma } from '../../../generated/prisma/client';
 import {
   AuthorityDocumentSchema,
   ConnectorKindSchema,
+  ProofAcceptanceSchema,
   type AuthorityDocument,
+  type ProofAcceptance,
   type ConnectorKind,
 } from '../../domain';
 import { tenantClient, translateDatabaseError, type TenantTransaction } from '../../tenancy';
@@ -49,6 +51,8 @@ export interface StoredAuthorityVersion {
   readonly version: number;
   readonly baseVersion: number;
   readonly document: AuthorityDocument;
+  /** M9A: stable-snapshot proof acceptances (never a higher tier). */
+  readonly proofAcceptances: readonly ProofAcceptance[];
   readonly contentHash: string;
   readonly publishedBy: string;
   readonly publishedAt: Date;
@@ -332,6 +336,7 @@ export class SourcesRepository {
       document: AuthorityDocument;
       contentHash: string;
       publishedBy: string;
+      proofAcceptances?: readonly ProofAcceptance[];
     },
   ): Promise<StoredAuthorityVersion> {
     const facts = input.document.facts;
@@ -348,6 +353,7 @@ export class SourcesRepository {
           subscriptionTermsConnectionId: facts.subscription_terms,
           contentHash: input.contentHash,
           publishedBy: input.publishedBy,
+          proofAcceptances: input.proofAcceptances ?? [],
         },
       }),
     );
@@ -618,6 +624,7 @@ function toAuthority(row: {
   contentHash: string;
   publishedBy: string;
   publishedAt: Date;
+  proofAcceptances?: unknown;
 }): StoredAuthorityVersion {
   const facts = Object.fromEntries(
     Object.entries(FACT_COLUMNS).map(([fact, column]) => [fact, row[column]]),
@@ -626,6 +633,7 @@ function toAuthority(row: {
     version: row.version,
     baseVersion: row.baseVersion,
     document: AuthorityDocumentSchema.parse({ facts }),
+    proofAcceptances: ProofAcceptanceSchema.array().parse(row.proofAcceptances ?? []),
     contentHash: row.contentHash,
     publishedBy: row.publishedBy,
     publishedAt: row.publishedAt,

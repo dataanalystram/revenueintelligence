@@ -53,6 +53,10 @@ export interface ContextHarness {
     timeoutMs?: number,
   ): Promise<Record<string, unknown>>;
   sql<T extends Record<string, unknown>>(text: string, params?: unknown[]): Promise<T[]>;
+  /** The container's privileged URL (schema owner; M9A purge tests). */
+  readonly adminUrl: string;
+  /** The application role's URL (non-privileged). */
+  readonly appUrl: string;
   until(check: () => Promise<boolean> | boolean, timeoutMs?: number, label?: string): Promise<void>;
   close(): Promise<void>;
 }
@@ -176,6 +180,8 @@ export async function startContextHarness(
       return row!;
     },
     sql,
+    adminUrl: infra.adminUrl,
+    appUrl: infra.config.databaseUrl,
     until,
     async close() {
       await h.close();

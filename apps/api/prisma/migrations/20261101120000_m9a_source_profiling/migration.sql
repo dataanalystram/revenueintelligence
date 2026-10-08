@@ -128,14 +128,32 @@ CREATE INDEX "tenant_source_profiles_baseline_idx" ON "tenant_source_profiles"("
 CREATE UNIQUE INDEX "tenant_source_profiles_tenant_id_run_id_object_key" ON "tenant_source_profiles"("tenant_id", "run_id", "object");
 CREATE UNIQUE INDEX "tenant_source_profiles_tenant_id_sync_run_id_object_key" ON "tenant_source_profiles"("tenant_id", "sync_run_id", "object");
 
--- Immutable, except DELETE inside the privileged purge: the transaction sets
--- lip.profile_purge = 'on' and the session is not a member of lip_app.
+-- Whether the session user is lip_app or (transitively) granted it. Real role
+-- membership only: unlike pg_has_role, a superuser is not treated as a member.
+CREATE FUNCTION "app_session_in_app_role"() RETURNS boolean LANGUAGE sql STABLE AS $$
+  WITH RECURSIVE m(oid) AS (
+    SELECT r.oid FROM pg_roles r WHERE r.rolname = session_user
+    UNION
+    SELECT a.roleid FROM pg_auth_members a JOIN m ON a.member = m.oid
+  )
+  SELECT EXISTS (SELECT 1 FROM m JOIN pg_roles r ON r.oid = m.oid WHERE r.rolname = 'lip_app');
+$$;
+
+-- Immutable, except inside the privileged purge (the transaction sets
+-- lip.profile_purge = 'on' and the session is neither lip_app nor a member of
+-- it): DELETE, and clearing a kept profile's baseline link to a purged one
+-- (previous_profile_id → NULL, nothing else).
 CREATE FUNCTION "app_profile_refuse_change"() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-  IF TG_OP = 'DELETE'
-     AND current_setting('lip.profile_purge', true) = 'on'
-     AND NOT pg_has_role(session_user, 'lip_app', 'MEMBER') THEN
-    RETURN OLD;
+  IF current_setting('lip.profile_purge', true) = 'on' AND NOT app_session_in_app_role() THEN
+    IF TG_OP = 'DELETE' THEN
+      RETURN OLD;
+    END IF;
+    IF TG_OP = 'UPDATE' AND TG_TABLE_NAME = 'tenant_source_profiles'
+       AND OLD."previous_profile_id" IS NOT NULL AND NEW."previous_profile_id" IS NULL
+       AND (to_jsonb(NEW) - 'previous_profile_id') = (to_jsonb(OLD) - 'previous_profile_id') THEN
+      RETURN NEW;
+    END IF;
   END IF;
   RAISE EXCEPTION '% on % is not allowed (%)', TG_OP, TG_TABLE_NAME, TG_ARGV[0]
     USING ERRCODE = 'check_violation';
@@ -242,7 +260,8 @@ CREATE TRIGGER "tenant_source_profile_purges_tenant_immutable" BEFORE UPDATE ON 
 -- Immutable tables: no UPDATE or DELETE for the app (the purge uses the owner).
 REVOKE UPDATE, DELETE, TRUNCATE ON TABLE "tenant_source_profiles" FROM lip_app;
 REVOKE UPDATE, DELETE, TRUNCATE ON TABLE "tenant_source_profile_findings" FROM lip_app;
-REVOKE UPDATE, DELETE, TRUNCATE ON TABLE "tenant_source_profile_purges" FROM lip_app;
+-- The purge audit is written only by the privileged purge (owner credentials).
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE "tenant_source_profile_purges" FROM lip_app;
 REVOKE DELETE, TRUNCATE ON TABLE "tenant_source_profile_runs" FROM lip_app;
 
 -- ---------------------------------------------------------------------------

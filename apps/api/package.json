@@ -54,6 +54,13 @@
     "sync:incremental": "node dist/cli/sources.js sync-incremental",
     "sync:status": "node dist/cli/sources.js sync-status",
     "source:report": "node dist/cli/sources.js report",
+    "profile:run": "node dist/cli/sources.js profile-run",
+    "profile:status": "node dist/cli/sources.js profile-status",
+    "profile:show": "node dist/cli/sources.js profile-show",
+    "profile:findings": "node dist/cli/sources.js profile-findings",
+    "profile:drift": "node dist/cli/sources.js profile-drift",
+    "profile:purge": "node dist/cli/sources.js profile-purge",
+    "mappings:draft": "node dist/cli/sources.js mappings-draft",
     "test:live": "vitest run --config vitest.live.config.mts"
   },
   "dependencies": {

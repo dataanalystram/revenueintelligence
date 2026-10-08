@@ -60,6 +60,7 @@ DROP TABLE "tenant_source_profile_findings";
 DROP TABLE "tenant_source_profiles";
 DROP TABLE "tenant_source_profile_runs";
 DROP FUNCTION "app_profile_refuse_change"();
+DROP FUNCTION "app_session_in_app_role"();
 DROP FUNCTION "app_profile_run_transition"();
 
 DELETE FROM "_prisma_migrations" WHERE "migration_name" = '20261101120000_m9a_source_profiling';

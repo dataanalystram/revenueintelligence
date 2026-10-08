@@ -303,7 +303,7 @@ describe('holding filters need a known, reviewed domain (M9A §10.2)', () => {
   it('refuses a filter whose field domain is unknown (no enum, safe categories suppressed)', () => {
     const s2 = structuredClone(schema);
     const rli = s2.objects.find((o) => o.name === 'RevenueLineItems')!;
-    (rli.fields).push({
+    rli.fields.push({
       name: 'stage_code',
       type: 'string',
       required: false,
