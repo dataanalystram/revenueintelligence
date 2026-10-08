@@ -210,6 +210,110 @@ Items 44–54 in the [register](../tech-debt.md) (item 31 extended to `seenButRe
 4. The holding stages and their reviewed domain for Juniper remain a **business** decision (TEST configuration
    only here); LIVE SUGAR VERIFICATION remains PENDING.
 
+## Closure fix: field-name privacy
+
+Independent implementation review of `0c5037a`: `PASS WITH REQUIRED FIXES — DO NOT MERGE`, one blocking finding.
+Fix commit: **`c8560da`** (branch `claude/blissful-mendel-urbh4r`). M9B has NOT started; LIVE SUGAR VERIFICATION
+remains PENDING.
+
+**Root cause.** Source schema names are source-controlled content, but M9A treated them as metadata:
+`assertNoRawValues` exempted `fields[].name` and `undeclaredFields[]` (and `object`, `sampling.orderedBy`) by
+path, and no detector ever ran on a name before the document was built. A field called `acct_4111111111111111` is
+a valid API name and is `sensitivity: normal` (no sensitive word), so it was persisted verbatim in documents,
+findings (`field`), the run's stored request, `profile-run`/`profile-show` output and drafts. The unit test
+`skips names and the snapshot hash, which are not source values` encoded the exemption; it is replaced
+(intended correction) by `exempts only the platform-computed snapshot hash; names are scanned`.
+
+**Fix.**
+
+- `schemaNameHits(name)` (`privacy.ts`): a generic, deliberately broad schema-name detector set: the value
+  detectors (email incl. embedded, phone, Luhn card, IBAN mod-97) over the whole name; any `@`; digit runs whose
+  groups are joined only by separators (`4111_1111_1111_1111`, `44_20_7946_0958`) → card (13-19, Luhn), else ≥ 7
+  digits → phone (≤ 15) or identifier; IBAN over one token or consecutive tokens; UUIDs with `-` or `_`; any single
+  token of 16-64 characters mixing letters and digits; anything that is not an API name. An over-match only
+  replaces a readable name by a token. Every field name of the Sugar fixture schema stays readable (tested).
+- `profileNames(declared)`: a field name that may not be stored becomes **`redacted_field_<n>`**, n from 1 by sorted
+  source name over the snapshot object's declared names (deterministic per snapshot; the token carries nothing of
+  the name: no hash of a low-entropy value such as a card number). A source name already of the reserved form is
+  itself replaced (no collision). The field profile carries `nameRedacted: true`.
+- Applied everywhere M9A stores, prints or logs a name: documents (`fields[].name`, `sampling.orderedBy`), findings
+  (`field`; identity sets are mapped to profile names), the run's stored request and opt-ins and
+  `excludedLeftOut` (what `profile-run` prints), refusal messages (`(name withheld)`), drafts (redacted fields
+  left out and counted in `redactedFields`; a sensitive declared id becomes `tbc`). The worker resolves tokens to
+  source names through the snapshot before reading; the mapping validator resolves a mapping's source names to
+  profile names the same way, so a mapping over such a field can still be covered (tested). `--fields` and
+  `--include-excluded` accept a token or the source name. Logs and metrics carry ids and codes only (unchanged);
+  the privacy error carries the detector and path, never the name.
+- Undeclared names that may not be stored are counted (`undeclaredFieldsRedacted`, one `undeclared_field_in_data`
+  finding with `{count, nameRedacted: true}` and no field), never listed. Keys that are not API names (e.g. with
+  `@`) were previously dropped silently; they are now counted the same way.
+- An object whose name may not be stored is refused (`source_object_name_sensitive`, never echoed): the object
+  name keys every profile and finding.
+- Defence in depth: `assertNoRawValues` has no blanket name exemption. Name paths get the schema-name detectors,
+  JSON key names get both detector sets, and the single exemption is `schemaSnapshotHash` **only** when it is a
+  64-character lower-case hex string (computed by the platform with SHA-256, never source-provided; such a string
+  cannot hold an email, phone, card or IBAN). `assertNoRawFinding` scans a finding's `field` and evidence.
+- Out of scope, by design (M8 stores): the schema snapshot and operator-authored mapping documents keep source
+  names verbatim, because reading a field requires its name (ADR 0022 §4 note).
+
+**Non-blocking items.**
+
+1. `proof_acceptances` **cannot be updated after insert**: M8's `tenant_source_authority_versions_immutable`
+   trigger refuses every UPDATE and DELETE unconditionally (all roles, owner included), so the INSERT-time
+   membership check is sufficient; no change was needed. Now tested explicitly (`proof acceptances cannot be
+changed after insert …`: refused for the app role and the owner, value unchanged) and proven able to fail (N12).
+2. The approved two-tier duplicate-identity rule is documented (deviation 1, ADR 0022 §8, tech debt 46).
+
+**New tests.** `schema-names.spec.ts` (45: every name class as a declared name, an undeclared name, in documents,
+findings, drift, the stored request and refusal messages; the scan catches a builder that forgets the redaction
+at every name path; no Sugar fixture name redacted); `source-mapping-profiles.spec.ts` (coverage through the
+token); `privacy.spec.ts` (replaced exemption test); `profiling.int.spec.ts` (fake Sugar declaring a test card,
+phone, IBAN, UUID and an excluded card field: no core in the run request, documents, findings, show, findings,
+drift or draft; the M8 snapshot proves the names arrived); `profile-isolation.int.spec.ts` (`proof_acceptances`
+immutability); runtime `75-profiling.sh` (second fake `--variant sensitive-names`: no core in `profile-run`,
+`profile-status`, `profile-show`, `profile-findings`, `mappings-draft` output, the worker log or the M9A tables).
+
+**Mutation proofs** (`mutate-names.py`, session scratchpad; each restored and re-run green):
+
+| #   | Mutation                                                                                               | Failing test                                                                                                               | Failure                                                                                                                                                                    |
+| --- | ------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| N1  | Old field-name exemption restored in assertNoRawValues                                                 | a document builder that forgets the redaction is caught by the independent scan                                            | AssertionError: expected function to throw an error, but it didn't                                                                                                         |
+| N2  | Builder redaction removed (names stored verbatim; scan intact)                                         | declared field acct_4111111111111111 (card)                                                                                | ProfilePrivacyViolationError: profile document failed the raw-value scan (card at fields[0].name)                                                                          |
+| N3  | Pre-fix behaviour fully restored (every name-handling change undone): end to end                       | source field NAMES carrying sensitive content never reach the run, documents, findings, CLI output or drafts (closure fix) | AssertionError: 4111111111111111: expected '{"request":{"dryrun":false,"runid":"f…' not to contain '4111111111111111'                                                      |
+| N4  | Pre-fix behaviour fully restored: acct_4111111111111111 unit proof                                     | acct_4111111111111111 cannot appear in a persisted document, a drift finding or a finding field                            | AssertionError: expected '{"before":{"v":1,"object":"Things","c…' not to contain '4111111111111111'                                                                        |
+| N5  | Undeclared sensitive names listed verbatim                                                             | undeclared field acct_4111111111111111 (card) is counted, never listed                                                     | ProfilePrivacyViolationError: profile document failed the raw-value scan (card at undeclaredFields[0])                                                                     |
+| N6  | Stored request holds source names                                                                      | the validated request (stored on the run, printed by profile-run) holds tokens only                                        | AssertionError: expected [ 'acct_4111111111111111', 'status' ] to deeply equal [ 'redacted_field_1', 'status' ]                                                            |
+| N7  | Finding field name not scanned                                                                         | a finding naming a sensitive field is caught before persistence                                                            | AssertionError: expected [Function] to throw an error                                                                                                                      |
+| N8  | Snapshot-hash exemption broadened to any string                                                        | a document builder that forgets the redaction is caught by the independent scan                                            | AssertionError: expected [Function] to throw an error                                                                                                                      |
+| N9  | Mapping validation looks profiles up by source name (no token resolution)                              | a consequential entry over a source name that cannot be stored is covered through its token (closure fix)                  | AssertionError: expected [ { code: 'profile_required', …(2) } ] to deeply equal []                                                                                         |
+| N10 | Draft keeps redacted fields                                                                            | source field NAMES carrying sensitive content never reach the run, documents, findings, CLI output or drafts (closure fix) | AssertionError: expected { draft: true, …(5) } to match object { redactedFields: { …(1) } }                                                                                |
+| N11 | Schema-name detectors miss digit runs (card/phone in names)                                            | acct_4111111111111111 → card                                                                                               | AssertionError: expected [] to include 'card'                                                                                                                              |
+| N12 | Authority versions made updatable (immutability trigger removed): proof_acceptances could be rewritten | proof acceptances cannot be changed after insert: authority versions are immutable for the app role and the owner          | AssertionError: expected { ok: 1 } to match object { message: StringMatching{…} }                                                                                          |
+| R1  | Pre-fix behaviour fully restored (as N3), whole `pnpm verify:runtime`                                  | `sensitive source field NAMES never reach …`                                                                               | `== Summary: 149 passed, 1 failed` (only this check); the kept output shows `acct_4111111111111111` verbatim in `names-run.json`, `names-show.json` and `names-draft.json` |
+
+N3/N4 restore every name-handling change at once (builder redaction, undeclared listing, stored request, finding
+field check, worker token resolution, blanket scan exemption). A first N3/N4 attempt restored only part of it and
+failed for a different reason (the new finding-field check, or the token-shape assertion before the leak check);
+the integration test now asserts the leak before the token shape and the mutation was made faithful.
+
+**Verification at `c8560da`.**
+
+| Command                                                                                                                                  | Result                                                                                                                                                                                                                                                                                |
+| ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| targeted: `vitest run schema-names.spec.ts`, `source-mapping-profiles.spec.ts`; `profiling.int.spec.ts`, `profile-isolation.int.spec.ts` | 45 + 25 unit; 17 + 26 integration passed                                                                                                                                                                                                                                              |
+| `pnpm verify`                                                                                                                            | unit **840 passed (60 files)**; integration **414 passed (24 files)**; `no dependency violations found (322 modules, 1372 dependencies cruised)`. Run 1 stopped at `prettier --check` (`docs/tech-debt.md` table not reformatted after the edit); formatted; run 2 green. Not a flake |
+| `pnpm verify:runtime`                                                                                                                    | `== Summary: 150 passed, 0 failed` (first attempt)                                                                                                                                                                                                                                    |
+| `pnpm verify:docker` (Linux sandbox, `LIP_DOCKERFILE=Dockerfile.sandbox`, `--network host --build-context ca=…`)                         | `== Summary: 23 passed, 0 failed`; cleanup verified (first attempt)                                                                                                                                                                                                                   |
+| fresh clone at `c8560da`                                                                                                                 | in progress (result recorded in the next commit)                                                                                                                                                                                                                                      |
+
+**Docker environment.** All Docker results in this record come from a Linux sandbox using the scratchpad
+`Dockerfile.sandbox` (the repository Dockerfile plus the sandbox proxy CA) and `--network host`. The independent
+reviewer reproduced **22 passed / 1 failed on macOS**: with `--network host`, Docker Desktop does not expose the
+Linux VM's container port to the Mac host. That result is recorded, not hidden; Docker verification was not
+redesigned in this fix. Linux CI (`.github/workflows/ci.yml`, job `docker`, `ubuntu-latest`) runs only on pull
+requests and pushes to `main`; there is no open PR for this branch (none was requested), so no Linux CI
+confirmation of `23/0` is available yet.
+
 ## Evidence
 
 Implementation SHA: **`0c5037a15677c10c7ff3a1c261b24693e12ba0a2`** (branch `claude/blissful-mendel-urbh4r`, pushed).
