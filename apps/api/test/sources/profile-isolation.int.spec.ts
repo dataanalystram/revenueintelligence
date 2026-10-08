@@ -386,6 +386,39 @@ describe('M9A profile tables: cross-tenant isolation (raw SQL, app role, forced 
         ),
       });
     });
+
+    it('proof acceptances cannot be changed after insert: authority versions are immutable for the app role and the owner', async () => {
+      // The membership check runs on INSERT only; that is sufficient because no UPDATE
+      // can ever reach the column (M8 trigger tenant_source_authority_versions_immutable).
+      const [latest] = await c.sql<{ version: number }>(
+        'SELECT max(version) AS version FROM tenant_source_authority_versions WHERE tenant_id = $1',
+        [a.ctx.tenantId],
+      );
+      const planted = `jsonb_build_array(jsonb_build_object('tier', 'stable_snapshot', 'connectionId', $3::text, 'reason', 'x', 'actor', 'attacker'))`;
+      expect(
+        await attempt(
+          `UPDATE tenant_source_authority_versions SET proof_acceptances = ${planted}
+            WHERE tenant_id = $1::uuid AND version = $2`,
+          a.ctx.tenantId,
+          latest!.version,
+          b.connectionId,
+        ),
+      ).toMatchObject({
+        message: expect.stringMatching(/published authority versions are immutable/),
+      });
+      await expect(
+        c.sql(
+          `UPDATE tenant_source_authority_versions SET proof_acceptances = ${planted}
+            WHERE tenant_id = $1::uuid AND version = $2`,
+          [a.ctx.tenantId, latest!.version, b.connectionId],
+        ),
+      ).rejects.toThrow(/published authority versions are immutable/);
+      const [after] = await c.sql<{ proof_acceptances: unknown }>(
+        'SELECT proof_acceptances FROM tenant_source_authority_versions WHERE tenant_id = $1 AND version = $2',
+        [a.ctx.tenantId, latest!.version],
+      );
+      expect(after!.proof_acceptances).toEqual([]);
+    });
   });
 
   describe("UPDATE and DELETE of B's rows", () => {

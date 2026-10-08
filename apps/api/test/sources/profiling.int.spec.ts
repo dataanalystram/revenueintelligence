@@ -6,7 +6,7 @@ import { ProfileDocumentSchema, profileContentHash } from '../../src/modules/dom
 import { ProfilePurgeService } from '../../src/modules/sources';
 import { tenantClient, type TenantContext } from '../../src/modules/tenancy';
 import { startContextHarness, type ContextHarness } from '../support/context';
-import { FakeSugar } from '../support/fake-sugar';
+import { FakeSugar, SENSITIVE_FIELD_NAMES, SENSITIVE_NAME_CORES } from '../support/fake-sugar';
 import {
   mappingObjects,
   runProfile,
@@ -504,6 +504,68 @@ describe('source profiling (fake Sugar, app role, forced RLS)', () => {
           card: 10,
           iban: 10,
         });
+      } finally {
+        await local.stop();
+      }
+    });
+
+    it('source field NAMES carrying sensitive content never reach the run, documents, findings, CLI output or drafts (closure fix)', async () => {
+      const local = await new FakeSugar().start();
+      try {
+        for (const name of SENSITIVE_FIELD_NAMES)
+          local.addField('RevenueLineItems', name, 'varchar', 'x');
+        const f = await sugarTenant(c, local, { prefix: 'prfnames', stopAfter: 'snapshot' });
+        // The adversarial names really arrived: the (M8) schema snapshot declares them.
+        const snapshot = JSON.stringify(
+          await c.sql('SELECT document FROM tenant_source_schema_snapshots WHERE tenant_id = $1', [
+            f.ctx.tenantId,
+          ]),
+        );
+        for (const name of SENSITIVE_FIELD_NAMES) expect(snapshot).toContain(name);
+
+        const s = sourcesServices(c);
+        const requested = await s.profiling.request(
+          f.ctx,
+          f.connectionId,
+          { objects: [{ object: 'RevenueLineItems' }], sampling: 'full', includeExcluded: [] },
+          { actor: 'test', execute: true, enqueue: false },
+        );
+        const result = await s.profiling.execute(f.ctx, requested.runId!);
+        expect(result).toMatchObject({ status: 'completed' });
+        const surfaces = {
+          request: requested,
+          show: await s.profiling.show(f.ctx, f.connectionId, 'RevenueLineItems'),
+          findings: await s.profiling.findings(f.ctx, f.connectionId, {
+            object: 'RevenueLineItems',
+          }),
+          drift: await s.profiling.drift(f.ctx, f.connectionId, 'RevenueLineItems'),
+          draft: await s.profiling.draftMapping(f.ctx, f.connectionId),
+          stored: await c.sql(
+            `SELECT r.request, r.sampling, p.document, p.object, fi.field, fi.object AS fobject, fi.evidence
+               FROM tenant_source_profile_runs r
+               LEFT JOIN tenant_source_profiles p ON p.tenant_id = r.tenant_id AND p.run_id = r.id
+               LEFT JOIN tenant_source_profile_findings fi ON fi.tenant_id = p.tenant_id AND fi.profile_id = p.id
+              WHERE r.tenant_id = $1`,
+            [f.ctx.tenantId],
+          ),
+        };
+        // The guarantee first: no sensitive core anywhere (checked before the token shape).
+        const out = JSON.stringify(surfaces).toLowerCase();
+        for (const core of SENSITIVE_NAME_CORES)
+          expect(out, core).not.toContain(core.toLowerCase());
+        // What profile-run prints: tokens only (sorted source names → redacted_field_1..5);
+        // the excluded-by-name card and IBAN fields are reported by their tokens.
+        expect(requested.request.excludedLeftOut).toEqual([
+          'RevenueLineItems.redacted_field_2',
+          'RevenueLineItems.redacted_field_3',
+        ]);
+        const doc = ProfileDocumentSchema.parse(surfaces.show!.document);
+        expect(doc.fields.filter((x) => x.nameRedacted).map((x) => x.name)).toEqual([
+          'redacted_field_1',
+          'redacted_field_4',
+          'redacted_field_5',
+        ]);
+        expect(surfaces.draft).toMatchObject({ redactedFields: { RevenueLineItems: 3 } });
       } finally {
         await local.stop();
       }

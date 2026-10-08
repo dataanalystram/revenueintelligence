@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { SourceObject } from '../source-connector';
 import { FIELD_MEMORY_BOUND_BYTES } from './accumulators';
-import { isExcludedName } from './privacy';
+import { displayName, isExcludedName, isRedactedName, profileNames } from './privacy';
 
 /**
  * Profile request limits (approved D2, M9A plan §6.2): refuse, never clamp.
@@ -42,6 +42,7 @@ export type ProfileRequestErrorCode =
   | 'profile_field_excluded'
   | 'unknown_source_object'
   | 'unknown_source_field'
+  | 'source_object_name_sensitive'
   | 'profile_request_invalid';
 
 export interface ProfileRequestIssue {
@@ -59,6 +60,10 @@ export interface ProfileRequestInput {
 }
 
 export interface ValidatedProfileRequest {
+  /**
+   * Field names are profile names (`profileNames`): a source name that cannot
+   * be stored is `redacted_field_<n>`; the worker resolves it from the snapshot.
+   */
   readonly objects: ReadonlyArray<{ readonly object: string; readonly fields: readonly string[] }>;
   readonly sampling: ProfilingSampling;
   readonly maxRows: number;
@@ -157,46 +162,71 @@ export function validateProfileRequest(
   const optIns: Array<{ object: string; field: string }> = [];
   const excludedLeftOut: string[] = [];
   const optInSet = new Set(input.includeExcluded);
+  // Opt-ins name `Object.field` by source or profile name; matched by source name.
+  const optInMatched = new Set<string>();
   const out: Array<{ object: string; fields: string[] }> = [];
   let memoryEstimate = 0;
   const seen = new Set<string>();
   input.objects.forEach((req, i) => {
     const path = `objects.${i}`;
     if (seen.has(req.object))
-      issue('profile_request_invalid', path, `${req.object} is listed twice`);
+      issue('profile_request_invalid', path, `${displayName(req.object)} is listed twice`);
     seen.add(req.object);
     const object = objects.find((o) => o.name === req.object);
     if (!object) {
-      issue('unknown_source_object', path, `${req.object} is not in the snapshot`);
+      issue('unknown_source_object', path, `${displayName(req.object)} is not in the snapshot`);
       return;
     }
+    // An object name keys every stored profile and finding: one that cannot be
+    // stored (schema-name detectors) is refused, and never echoed.
+    if (isRedactedName(object.name)) {
+      issue(
+        'source_object_name_sensitive',
+        path,
+        `${path} names an object whose name cannot be stored; it cannot be profiled`,
+      );
+      return;
+    }
+    // Stored and printed names are profile names (sensitive names → redacted_field_<n>).
+    const names = profileNames(object.fields.map((f) => f.name));
+    const resolve = (name: string): string | undefined =>
+      object.fields.some((f) => f.name === name) ? name : names.toSource(name);
     const payment = object.sensitivity === 'payment';
     const requested = req.fields ?? object.fields.map((f) => f.name);
     const fields: string[] = [];
-    for (const name of requested) {
-      if (!object.fields.some((f) => f.name === name)) {
+    const optInFor = (name: string): string | undefined =>
+      [...optInSet].find((o) => {
+        const dot = o.indexOf('.');
+        return o.slice(0, dot) === object.name && resolve(o.slice(dot + 1)) === name;
+      });
+    for (const requestedName of requested) {
+      const name = resolve(requestedName);
+      if (name === undefined) {
         issue(
           'unknown_source_field',
           `${path}.fields`,
-          `${object.name}.${name} is not in the snapshot`,
+          `${object.name}.${displayName(requestedName)} is not in the snapshot`,
         );
         continue;
       }
+      const shown = `${object.name}.${names.toProfile(name)}`;
       const excluded = payment || isExcludedName(name);
       if (excluded) {
-        if (optInSet.has(`${object.name}.${name}`)) {
-          optIns.push({ object: object.name, field: name });
+        const optIn = optInFor(name);
+        if (optIn !== undefined) {
+          optInMatched.add(optIn);
+          optIns.push({ object: object.name, field: names.toProfile(name) });
         } else if (req.fields) {
           // Explicitly requested without opt-in: refused.
           issue(
             'profile_field_excluded',
             `${path}.fields`,
-            `${object.name}.${name} is excluded; use --include-excluded ${object.name}.${name}`,
+            `${shown} is excluded; use --include-excluded ${shown}`,
           );
           continue;
         } else {
           // Not requested explicitly: left out and reported back (never profiled silently).
-          excludedLeftOut.push(`${object.name}.${name}`);
+          excludedLeftOut.push(shown);
           continue;
         }
       }
@@ -225,14 +255,14 @@ export function validateProfileRequest(
       0,
     );
     memoryEstimate = Math.max(memoryEstimate, fields.length * FIELD_MEMORY_BOUND_BYTES + enumExtra);
-    out.push({ object: object.name, fields: fields.sort() });
+    out.push({ object: object.name, fields: fields.map((f) => names.toProfile(f)).sort() });
   });
   for (const optIn of optInSet) {
-    if (!optIns.some((o) => `${o.object}.${o.field}` === optIn)) {
+    if (!optInMatched.has(optIn)) {
       issue(
         'profile_request_invalid',
         'includeExcluded',
-        `${optIn} is not an excluded field of a requested object`,
+        `${optIn.split('.').some(isRedactedName) ? '(name withheld)' : optIn} is not an excluded field of a requested object`,
       );
     }
   }

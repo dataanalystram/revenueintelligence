@@ -26,6 +26,8 @@ PR_ENV=(
   QUEUE_PREFIX=rtprf
   WORKER_SHUTDOWN_TIMEOUT_MS=8000
   TENANT_RTPROFILE_SUGAR_SUGAR_API="$PR_SECRET"
+  # Second tenant of the field-name privacy check (same synthetic fixture credential).
+  TENANT_RTPROFNAMES_SUGAR_SUGAR_API="$PR_SECRET"
 )
 pr_cli() { (cd "$API_DIR" && env "${PR_ENV[@]}" node "dist/cli/$1.js" "${@:2}"); }
 pr_sql() { compose exec -T -e PGPASSWORD=lip postgres psql -h 127.0.0.1 -U lip -d lip -v ON_ERROR_STOP=1 -Atc "$1"; }
@@ -220,6 +222,51 @@ pr_rls() {
   [[ "$(compose exec -T -e PGPASSWORD=lip_api postgres psql -h 127.0.0.1 -U lip_api -d lip -Atc 'SELECT (SELECT count(*) FROM tenant_source_profile_runs) + (SELECT count(*) FROM tenant_source_profiles) + (SELECT count(*) FROM tenant_source_profile_findings) + (SELECT count(*) FROM tenant_source_profile_purges)')" == "0" ]]
 }
 check "app role with no tenant sees no profile rows (RLS)" pr_rls
+
+# M9A closure fix: source field NAMES carrying sensitive content (a Luhn-valid
+# test card, a phone number, a test IBAN, a UUID, an excluded card field) never
+# reach CLI output, the worker log or the M9A tables. A second fake Sugar
+# declares them; the M8 schema snapshot holding them proves they really arrived.
+PN_TENANT="rtprofnames"
+PN_FAKE_PORT="$(free_port)"
+PN_FAKE_LOG="$WORK/fake-sugar-names.log"
+PN_CORES='4111111111111111\|447700900123\|GB82WEST12345698765432\|gb82west12345698765432\|123e4567\|5555555555554444'
+pr_names() {
+  (cd "$API_DIR" && exec node --no-warnings test/support/fake-sugar.ts --port "$PN_FAKE_PORT" --variant sensitive-names >>"$PN_FAKE_LOG" 2>&1) &
+  PN_FAKE_PID=$!
+  local up=""
+  for _ in $(seq 1 40); do grep -q 'listening' "$PN_FAKE_LOG" 2>/dev/null && up=1 && break; sleep 0.25; done
+  [[ -n "$up" ]] || return 1
+  (cd "$API_DIR" && DATABASE_URL="$APP_DB_URL" node dist/cli/provision-tenant.js --slug "$PN_TENANT" --name 'Runtime Profile Names' >/dev/null) || return 1
+  node -e 'process.stdout.write(JSON.stringify({ instanceUrl: process.argv[1], apiVersion: "v11_20", modules: ["RevenueLineItems"], maxRetries: 2, sync: { overlapMinutes: 10 }, profile: { maxRows: 1000 } }));' \
+    "http://127.0.0.1:$PN_FAKE_PORT" >"$PR_OUT/names-connection.json"
+  local pn=(--tenant "$PN_TENANT" --connection sugar)
+  pr_cli sources configure --tenant "$PN_TENANT" --kind sugar --label 'Sugar names (fake)' --file "$PR_OUT/names-connection.json" \
+    --credential sugar_api --status enabled --execute >/dev/null || return 1
+  pr_cli sources schema "${pn[@]}" --capture --execute >/dev/null || return 1
+  local tid; tid="$(pr_sql "SELECT id FROM tenants WHERE slug = '$PN_TENANT'")"
+  # The adversarial names arrived (M8 snapshot stores declared names by design).
+  [[ "$(pr_sql "SELECT count(*) FROM tenant_source_schema_snapshots WHERE tenant_id = '$tid' AND document::text LIKE '%acct_4111111111111111%'")" == "1" ]] || return 1
+  pr_cli sources profile-run "${pn[@]}" --objects RevenueLineItems --sampling full --execute >"$PR_OUT/names-run.json" || return 1
+  local status=""
+  for _ in $(seq 1 120); do
+    pr_cli sources profile-status "${pn[@]}" >"$PR_OUT/names-status.json" 2>/dev/null || true
+    status="$(pr_json 'o.runs[0] ? o.runs[0].status : ""' <"$PR_OUT/names-status.json" 2>/dev/null || true)"
+    [[ "$status" == "completed" || "$status" == "failed" ]] && break
+    sleep 0.5
+  done
+  [[ "$status" == "completed" ]] || return 1
+  pr_cli sources profile-show "${pn[@]}" --object RevenueLineItems >"$PR_OUT/names-show.json" || return 1
+  pr_cli sources profile-findings "${pn[@]}" --object RevenueLineItems >"$PR_OUT/names-findings.json" || return 1
+  pr_cli sources mappings-draft "${pn[@]}" --from-profile --out "$PR_OUT/names-draft.json" >"$PR_OUT/names-draft-cli.json" || return 1
+  # Tokens are what the operator sees.
+  [[ "$(pr_json 'o.document.fields.filter((f) => f.nameRedacted).length' <"$PR_OUT/names-show.json")" == "3" ]] || return 1
+  ! grep -q "$PN_CORES" "$PR_OUT"/names-*.json &&
+    ! grep -q "$PN_CORES" "$PR_WORKER_LOG" &&
+    [[ "$(pr_sql "SELECT count(*) FROM tenant_source_profile_runs r LEFT JOIN tenant_source_profiles p ON p.tenant_id = r.tenant_id AND p.run_id = r.id LEFT JOIN tenant_source_profile_findings f ON f.tenant_id = p.tenant_id AND f.profile_id = p.id WHERE r.tenant_id = '$tid' AND lower(concat(r.request::text, r.sampling::text, p.document::text, f.field, f.evidence::text)) ~ '4111111111111111|447700900123|gb82west12345698765432|123e4567|5555555555554444'")" == "0" ]]
+}
+check "sensitive source field NAMES never reach profile CLI output, the worker log or the M9A tables (tokens shown)" pr_names
+kill -TERM "${PN_FAKE_PID:-0}" 2>/dev/null || true
 
 pr_no_values() {
   local tid; tid="$(pr_tid)"

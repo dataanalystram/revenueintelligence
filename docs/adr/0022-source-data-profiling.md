@@ -45,6 +45,27 @@ copying source records into the platform and without letting a statistical
    **independent** scan (`assertNoRawValues`) re-runs every detector over
    every string of the document (and of every finding's evidence); a hit
    fails the run with `profile_privacy_violation` and nothing is persisted.
+   **Schema names are source content (closure fix).** Object, field,
+   undeclared and JSON key names are chosen by the source, so a field may be
+   called `acct_4111111111111111`. A generic schema-name detector set
+   (`schemaNameHits`: the value detectors plus digit runs joined by separators
+   → card/phone/identifier, IBAN over one or consecutive tokens, UUIDs, long
+   mixed tokens, anything that is not an API name) decides whether a name may
+   be stored. A field name that may not is replaced everywhere M9A stores,
+   prints or logs it (documents, findings, the run's stored request and
+   opt-ins, CLI output, drafts, refusal messages) by `redacted_field_<n>`: n by
+   sorted source name over the snapshot's declared names, so it is
+   deterministic per snapshot and carries nothing of the name (no hash of a
+   low-entropy value); the field profile is marked `nameRedacted` and the worker
+   and the mapping validator resolve the token through the snapshot, so a
+   mapping can still be covered. Undeclared names that may not be stored are
+   counted (`undeclaredFieldsRedacted`), never listed. An object whose name may
+   not be stored is refused (`source_object_name_sensitive`): the object name
+   keys every profile. `assertNoRawValues` no longer exempts names: name paths
+   get the schema-name detectors; the single exemption is the platform-computed
+   snapshot hash, and only in its SHA-256 hex form. Out of scope (M8 stores, by
+   design): the schema snapshot and operator-authored mapping documents keep
+   source names verbatim, because reading a field requires its name.
 5. **Limits (approved D2): refuse, never clamp.** A per-connection
    `profile.maxRows` is required (no default; 1,000–250,000; suggested
    50,000); the 250,000 ceiling is a code constant. ≤ 500 fields per object,
@@ -72,6 +93,18 @@ copying source records into the platform and without letting a statistical
    ambiguous or mixed representations are refused (`date_format_required`);
    holding filters need a known domain. Ignored/explicit entries and
    value-independent declarations are exempt.
+   **Identity duplicates — approved two-tier rule** (independent implementation
+   review): (a) an identity field the snapshot does **not** declare id/unique
+   (an undeclared or unconfirmed identity) whose covering profile shows
+   duplicate values is a **hard block** (`identity_unsuitable`; no
+   acknowledgement path); (b) a field the snapshot **declares** id/unique whose
+   profile still shows duplicates may publish only through the acknowledgement
+   path (the E-class `identifier_not_unique` finding on the consequential
+   field, closed reason code, recorded with the version) **and** keeps an
+   unconditional quality signal: the finding is always emitted and persisted
+   with every profile (an acknowledgement never removes it), and M8's
+   per-record `duplicate_external_id` keeps counting every duplicate in each
+   sync's run quality.
 9. **Override (D5, decision A1): ships disabled.** There is no authenticated
    operator channel (the CLI actor is free text). Any `--profile-override` is
    refused with `override_requires_authenticated_operator`, counted

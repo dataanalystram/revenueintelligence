@@ -1,6 +1,8 @@
 # Milestone 9A — Source data profiling foundation (implementation record)
 
-- Status: **M9A IMPLEMENTATION COMPLETE — pending independent implementation review.** Not closed, not merged.
+- Status: **M9A IMPLEMENTATION COMPLETE — closure fix applied, pending re-review.** Not closed, not merged.
+  Independent implementation review of `0c5037a`: `PASS WITH REQUIRED FIXES — DO NOT MERGE` (one blocking
+  finding: field-name privacy). The fix is recorded in [Closure fix](#closure-fix-field-name-privacy).
 - **LIVE SUGAR VERIFICATION: PENDING** (profiling and every M9A check ran against the deterministic fake Sugar only).
 - **M9B has NOT started.** No Chargebee, S3/file, warehouse, signal, opportunity or M9B work.
 - Plans: [M9 master plan](M09-multi-source-data-quality-plan.md) and [M9A detailed plan](M09A-source-data-profiling-plan.md)
@@ -106,8 +108,13 @@ inferred, acceptedInAuthorityVersion?}}`.
 - Gate order: excluded → sensitive name → sensitive value (`pii_value`) → `too_few_values` (n < 20) →
   `cardinality` (> 50, undeclared) → `cardinality_ratio` (> 0.05) → `value_length` → `pii_value` →
   `identifier_like`; any failure suppresses every value.
-- `assertNoRawValues` re-runs all detectors over every string of the document except names and the snapshot hash,
-  and over every finding's evidence; a hit fails the run (`profile_privacy_violation`).
+- `assertNoRawValues` re-runs all detectors over every string of the document and over every finding's evidence;
+  a hit fails the run (`profile_privacy_violation`). Name paths (object, `fields[].name`, `undeclaredFields[]`,
+  `sampling.orderedBy`) get the schema-name detectors; JSON key names get both; the single exemption is the
+  platform-computed snapshot hash in its SHA-256 hex form (closure fix; before it, names were exempt).
+- Schema names are source content (closure fix): field names that may not be stored become `redacted_field_<n>`
+  everywhere M9A stores, prints or logs them; undeclared ones are counted only; an object whose name may not be
+  stored is refused. See [Closure fix](#closure-fix-field-name-privacy).
 
 ### Profile CLI and jobs
 
@@ -144,12 +151,17 @@ existing line, so they keep M8 handling; the new gaps appear only in the new M9A
 
 ## Deviations and interpretations (for the reviewer)
 
-1. **Duplicates of a declared identity (open question; tech debt 46).** Literal §7.3 refuses publication whenever
-   the covering profile shows duplicate identity values. Sanitized fixture 11 contains a duplicated line id, so no
-   Sugar mapping could ever publish. As built: for a field the snapshot declares `id`/unique, the E-class
-   `identifier_not_unique` finding requires an acknowledgement on the consequential field (M8's
-   `duplicate_external_id` keeps one row per source id); an undeclared, confirmed identity with duplicates is still
-   refused (`identity_unsuitable`). Reverting to the literal rule is one condition.
+1. **Duplicates of an identity — approved two-tier rule (tech debt 46, approved by the independent implementation
+   review; recorded in ADR 0022 §8).** Literal §7.3 refuses publication whenever the covering profile shows
+   duplicate identity values; sanitized fixture 11 contains a duplicated line id, so no Sugar mapping could ever
+   publish. The approved behaviour:
+   - **undeclared / unconfirmed identity with duplicates → hard block**: a field the snapshot does not declare
+     `id`/unique is refused (`identity_unsuitable`); there is no acknowledgement path;
+   - **declared-unique identity with observed duplicates → acknowledgement path + unconditional quality signal**:
+     publication needs an acknowledgement of the E-class `identifier_not_unique` finding on the consequential
+     field (closed reason code, recorded with the version); the finding is always emitted and persisted with every
+     profile (an acknowledgement never removes it), and M8's per-record `duplicate_external_id` keeps counting
+     every duplicate in each sync's run quality (one row per source id).
 2. **Profile retention (tech debt 45).** "Never delete a profile referenced by a kept profile" is transitive over
    baseline chains and would block D3 retention entirely. As built: keep the N newest per family, their direct
    baselines and every covering profile of a published mapping; a kept profile whose baseline is purged loses that
@@ -192,8 +204,7 @@ Items 44–54 in the [register](../tech-debt.md) (item 31 extended to `seenButRe
 
 ## Open questions
 
-1. Tech debt 46: confirm the declared-identity duplicate rule (acknowledged E finding) or require the literal
-   §7.3 refusal.
+1. ~~Tech debt 46~~: resolved: the two-tier duplicate-identity rule is approved (deviation 1).
 2. Tech debt 45: confirm the retention interpretation (direct baselines kept; older links cleared by the purge).
 3. Production values for `profile.maxRows` per connection (suggested 50,000) and the freshness window (30 days).
 4. The holding stages and their reviewed domain for Juniper remain a **business** decision (TEST configuration

@@ -52,6 +52,28 @@ const without = (profiles: CandidateProfile[], object: string, field: string): C
   );
 
 describe('covering profiles (M9A §7.1)', () => {
+  it('a consequential entry over a source name that cannot be stored is covered through its token (closure fix)', () => {
+    // The same fixture with one consequential date field renamed to embed a test card number.
+    const rename = <T>(v: T): T =>
+      JSON.parse(
+        JSON.stringify(v).replaceAll('"service_start_date"', '"svc_4111111111111111"'),
+      ) as T;
+    const renamed = rename(testSourceSchema());
+    const renamedHash = sourceSchemaHash(renamed);
+    const profiles = testProfiles(renamed);
+    expect(JSON.stringify(profiles)).not.toContain('4111111111111111');
+    const r = validateMapping(rename(testMapping(renamedHash)), {
+      connectionId: TEST_CONNECTION_ID,
+      kind: 'sugar',
+      schema: renamed,
+      schemaHash: renamedHash,
+      latestSchemaHash: renamedHash,
+      authority: rename(testAuthority()),
+      profiling: testProfilingInput({ profiles }, renamed),
+    });
+    expect(r.ok ? [] : r.errors).toEqual([]);
+  });
+
   it('a complete, fresh, full profile set covers the default mapping and is recorded', () => {
     const profiling = testProfilingInput();
     const r = validate(testMapping(), profiling);

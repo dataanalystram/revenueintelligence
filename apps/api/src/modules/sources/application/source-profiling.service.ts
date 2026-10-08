@@ -1,16 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import {
-  assertNoRawValues,
+  assertNoRawFinding,
   buildProfileDocument,
   capFindings,
   DISTINCT_EXACT_CAP,
   documentFindings,
   driftFindings,
   isConnectorError,
+  isRedactedName,
   objectAccumulatorFor,
   PROFILE_LIMITS,
   profileContentHash,
+  profileNames,
   SourceSchemaSchema,
   validateProfileRequest,
   type FindingSeverity,
@@ -257,13 +259,21 @@ export class SourceProfilingService {
     ctx: TenantContext,
     connector: SourceConnector,
     object: SourceObject,
-    fields: readonly string[],
+    requestedFields: readonly string[],
     run: ProfileRun,
     startedAt: number,
     now: () => Date,
   ): Promise<NewProfile> {
     const maxRows = run.request.maxRows;
     const method = run.request.sampling;
+    // The stored request holds profile names; the source is read by source name.
+    const names = profileNames(object.fields.map((f) => f.name));
+    const toSource = (name: string): string => {
+      const source = names.toSource(name);
+      if (source === undefined) throw new ProfileRunError('profile_field_missing');
+      return source;
+    };
+    const fields = requestedFields.map(toSource);
     const acc = objectAccumulatorFor(object, fields);
     const boundary = new Date(startedAt);
     const full: ReadSelection = { mode: 'full', boundary };
@@ -350,21 +360,21 @@ export class SourceProfilingService {
       maxRows,
       distinctCap: DISTINCT_EXACT_CAP,
       optedIn: new Set(
-        run.request.optIns.filter((o) => o.object === object.name).map((o) => o.field),
+        run.request.optIns.filter((o) => o.object === object.name).map((o) => toSource(o.field)),
       ),
     });
     const baseline = await this.db.transaction(ctx, (tx) =>
       this.profiles.latestProfile(tx, run.connectionId, object.name, 'profile'),
     );
     const identity = new Set(
-      object.fields.filter((f) => f.type === 'id' || f.unique).map((f) => f.name),
+      object.fields.filter((f) => f.type === 'id' || f.unique).map((f) => names.toProfile(f.name)),
     );
     const findings = capFindings([
       ...documentFindings(document, { identityFields: identity }),
       ...(baseline ? driftFindings(document, baseline.document, { identityFields: identity }) : []),
     ]);
-    // Findings evidence passes the same independent raw-value scan as documents.
-    for (const f of findings) assertNoRawValues(f.evidence);
+    // Findings (field name and evidence) pass the same independent scan as documents.
+    for (const f of findings) assertNoRawFinding(f);
     return {
       object: object.name,
       document,
@@ -464,28 +474,41 @@ export class SourceProfilingService {
       const objects: Array<Record<string, unknown>> = [];
       const suggestions: Record<string, Record<string, unknown>> = {};
       const profileIds: string[] = [];
+      // Names that cannot be stored never reach a draft: a redacted field is not a
+      // source name a mapping could read, so it is left out and counted.
+      const redactedFields: Record<string, number> = {};
       for (const object of schema.objects) {
+        if (isRedactedName(object.name)) continue; // never profiled (refused at request)
         const p = await this.profiles.latestProfile(tx, connectionId, object.name, 'profile');
         if (!p || p.schemaSnapshotHash !== snapshot.hash) continue;
         profileIds.push(p.id);
+        const plain = p.document.fields.filter((f) => !f.nameRedacted);
+        if (plain.length < p.document.fields.length)
+          redactedFields[object.name] = p.document.fields.length - plain.length;
+        const declaredId = object.fields.find((f) => f.type === 'id')?.name;
         const idField =
-          object.fields.find((f) => f.type === 'id')?.name ??
-          p.document.fields.find((f) =>
-            f.suggestions.some((s) => s.interpretation === 'identifier' && s.confidence === 'high'),
-          )?.name;
+          declaredId !== undefined
+            ? isRedactedName(declaredId)
+              ? undefined
+              : declaredId
+            : plain.find((f) =>
+                f.suggestions.some(
+                  (s) => s.interpretation === 'identifier' && s.confidence === 'high',
+                ),
+              )?.name;
         objects.push({
           source: object.name,
           entity: 'tbc',
           identity: { field: idField ?? 'tbc' },
           relationships: [],
-          fields: p.document.fields.map((f) => ({
+          fields: plain.map((f) => ({
             kind: 'ignored',
             source: f.name,
             reason: 'not_reviewed',
           })),
         });
         suggestions[object.name] = Object.fromEntries(
-          p.document.fields.map((f) => [
+          plain.map((f) => [
             f.name,
             f.suggestions.map((s) => `${s.interpretation}:${s.confidence}`),
           ]),
@@ -498,6 +521,13 @@ export class SourceProfilingService {
         basedOnProfiles: profileIds,
         document: { objects },
         fieldSuggestions: suggestions,
+        ...(Object.keys(redactedFields).length > 0
+          ? {
+              redactedFields,
+              redactedNote:
+                'Fields whose source names cannot be stored are left out; map them by their source name from the schema snapshot.',
+            }
+          : {}),
       };
     });
   }

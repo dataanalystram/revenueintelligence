@@ -13,8 +13,10 @@ import {
 import {
   assertNoRawValues,
   isExcludedName,
+  isRedactedName,
   isSafeKeyName,
   PII_DETECTORS,
+  profileNames,
   safeCategoryVerdict,
   sensitivityOf,
   SUPPRESSION_REASONS,
@@ -51,8 +53,13 @@ const BucketsSchema = z
   .max(200);
 
 const FieldProfileSchema = z.strictObject({
-  /** The field name is a value, not a key: field names may contain secret-like words. */
+  /**
+   * The field's profile name, a value, not a key: field names may contain
+   * secret-like words. A source name that cannot be stored (schema-name
+   * detectors) is replaced by `redacted_field_<n>` and `nameRedacted` is set.
+   */
   name: ApiName,
+  nameRedacted: z.literal(true).optional(),
   declared: z.strictObject({
     type: z.string().max(32),
     sourceType: z.string().max(100).optional(),
@@ -151,8 +158,10 @@ export const ProfileDocumentSchema = z.strictObject({
   limits: z.strictObject({ maxRows: Count, fieldsProfiled: Count, distinctCap: Count }),
   /** Sorted by name. */
   fields: z.array(FieldProfileSchema).max(500),
-  /** Field names seen in data but not declared by the snapshot (names only). */
+  /** Field names seen in data but not declared by the snapshot (names only, storable names only). */
   undeclaredFields: z.array(ApiName).max(200),
+  /** Undeclared names that cannot be stored (schema-name detectors): counted, never listed. */
+  undeclaredFieldsRedacted: Count.optional(),
 });
 export type ProfileDocument = z.infer<typeof ProfileDocumentSchema>;
 
@@ -423,12 +432,22 @@ function jsonSummary(
 export function buildProfileDocument(input: BuildProfileInput): ProfileDocument {
   const acc = input.accumulator;
   const rows = acc.rows;
+  // Source names are source-controlled content: every stored name is a profile name.
+  const names = profileNames(input.object.fields.map((f) => f.name));
   const fields: FieldProfile[] = [];
-  for (const name of [...acc.fields.keys()].sort()) {
+  for (const name of acc.fields.keys()) {
     const field = input.object.fields.find((f) => f.name === name);
-    if (!field) throw new ProfileDocumentInvalidError([`field ${name} is not declared`]);
-    fields.push(fieldProfile(field, acc.fields.get(name)!, input.optedIn.has(name), rows));
+    if (!field) throw new ProfileDocumentInvalidError(['a profiled field is not declared']);
+    const profile = fieldProfile(field, acc.fields.get(name)!, input.optedIn.has(name), rows);
+    const profileName = names.toProfile(name);
+    fields.push(
+      profileName === name ? profile : { ...profile, name: profileName, nameRedacted: true },
+    );
   }
+  fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const undeclared = acc.undeclared.counts ? [...acc.undeclared.counts.keys()] : [];
+  const undeclaredSafe = undeclared.filter((n) => !isRedactedName(n)).sort();
+  const undeclaredRedacted = undeclared.length - undeclaredSafe.length;
   const population = input.sampling.populationEstimate;
   const coverage =
     population === null ? null : population === 0 ? 1 : Math.min(1, rows / population);
@@ -444,7 +463,8 @@ export function buildProfileDocument(input: BuildProfileInput): ProfileDocument 
       coverage,
       bounded: input.sampling.bounded,
       stride: input.sampling.stride,
-      orderedBy: input.sampling.orderedBy,
+      orderedBy:
+        input.sampling.orderedBy === null ? null : names.toProfile(input.sampling.orderedBy),
       evidence: [...input.sampling.evidence].sort(),
     },
     limits: {
@@ -453,7 +473,8 @@ export function buildProfileDocument(input: BuildProfileInput): ProfileDocument 
       distinctCap: input.distinctCap,
     },
     fields,
-    undeclaredFields: acc.undeclared.counts ? [...acc.undeclared.counts.keys()].sort() : [],
+    undeclaredFields: undeclaredSafe,
+    ...(undeclaredRedacted > 0 ? { undeclaredFieldsRedacted: undeclaredRedacted } : {}),
   };
   const parsed = ProfileDocumentSchema.safeParse(document);
   if (!parsed.success) {

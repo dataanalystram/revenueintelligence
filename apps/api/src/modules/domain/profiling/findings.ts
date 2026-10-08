@@ -1,5 +1,6 @@
 import { logicalClassOf, type ObservedType, type Representation } from './classifiers';
 import type { FieldProfile, ProfileDocument } from './document';
+import { assertNoRawValues, ProfilePrivacyViolationError, schemaNameHits } from './privacy';
 
 /**
  * Profile findings (M9A plan §8). The code list mirrors the
@@ -253,6 +254,7 @@ function fieldFindings(name: string, f: FieldProfile, identity: boolean, rows: n
 
 export interface FindingContext {
   /** Identity fields (uniqueness checked; no null-ratio advisory). */
+  /** Profile names (`ProfileNames.toProfile`) of the identity fields. */
   readonly identityFields?: ReadonlySet<string>;
 }
 
@@ -278,6 +280,15 @@ export function documentFindings(doc: ProfileDocument, ctx: FindingContext = {})
     );
   }
   for (const name of doc.undeclaredFields) out.push(finding('undeclared_field_in_data', name, {}));
+  if (doc.undeclaredFieldsRedacted) {
+    // Names that cannot be stored: one finding with the count, no name.
+    out.push(
+      finding('undeclared_field_in_data', null, {
+        count: doc.undeclaredFieldsRedacted,
+        nameRedacted: true,
+      }),
+    );
+  }
   for (const f of doc.fields) {
     out.push(...fieldFindings(f.name, f, ctx.identityFields?.has(f.name) ?? false, rows));
   }
@@ -318,4 +329,16 @@ export function validateFindingPolicy(policy: {
     promote.push(code as FindingCode);
   }
   return { promote };
+}
+
+/**
+ * The independent scan for a finding before persistence: its field (a profile
+ * name) passes the schema-name detectors, its evidence the raw-value scan.
+ */
+export function assertNoRawFinding(f: Finding): void {
+  if (f.field !== null) {
+    const hit = schemaNameHits(f.field)[0];
+    if (hit) throw new ProfilePrivacyViolationError(hit, 'finding.field');
+  }
+  assertNoRawValues(f.evidence);
 }

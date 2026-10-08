@@ -307,14 +307,20 @@ describe('assertNoRawValues: independent scan (M9A §5.5)', () => {
     );
   });
 
-  it('skips names and the snapshot hash, which are not source values', () => {
+  it('exempts only the platform-computed snapshot hash; names are scanned (M9A closure fix)', () => {
     expect(() =>
       assertNoRawValues({
         schemaSnapshotHash: 'a1'.repeat(32),
-        fields: [{ name: 'ab12cd34ef56gh78ij' }],
-        undeclaredFields: ['x1y2z3w4v5u6t7s8'],
+        fields: [{ name: 'address_line_2__c' }],
+        undeclaredFields: ['extra_col'],
       }),
     ).not.toThrow();
+    expect(() => assertNoRawValues({ fields: [{ name: 'ab12cd34ef56gh78ij' }] })).toThrow(
+      /identifier_like at fields\[0\]\.name/,
+    );
+    expect(() => assertNoRawValues({ undeclaredFields: ['x1y2z3w4v5u6t7s8'] })).toThrow(
+      /identifier_like at undeclaredFields\[0\]/,
+    );
   });
 
   it('the builder runs it: a bypassed gate is caught before persistence', () => {

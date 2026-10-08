@@ -197,6 +197,27 @@ function readdirFixture(no: string): string {
 
 type FieldsDoc = Record<string, { fields: Record<string, Record<string, unknown>> }>;
 
+/**
+ * Field names embedding sensitive content (M9A closure fix): a Luhn-valid test
+ * card number, a phone number, a mod-97-valid test IBAN, a UUID, and an
+ * excluded-by-name card field. Synthetic, publicly documented test numbers.
+ */
+export const SENSITIVE_FIELD_NAMES = [
+  'acct_4111111111111111',
+  'tel_447700900123',
+  'iban_GB82WEST12345698765432',
+  'ref_123e4567_e89b_12d3_a456_426614174000',
+  'card_5555555555554444',
+] as const;
+/** The sensitive cores that must never appear in profile output. */
+export const SENSITIVE_NAME_CORES = [
+  '4111111111111111',
+  '447700900123',
+  'GB82WEST12345698765432',
+  '123e4567',
+  '5555555555554444',
+] as const;
+
 export class FakeSugar {
   readonly version: string;
   readonly data: Map<string, FakeSugarRecord[]>;
@@ -268,6 +289,12 @@ export class FakeSugar {
 
   setFieldType(module: string, field: string, type: string): void {
     this.fields[module]!.fields[field]!.type = type;
+  }
+
+  /** Declares a field (and gives every record of the module a value for it). */
+  addField(module: string, field: string, type: string, value: FakeValue): void {
+    this.fields[module]!.fields[field] = { name: field, type, label: 'Synthetic' };
+    for (const row of this.data.get(module) ?? []) row[field] = value;
   }
 
   addEnumOption(module: string, field: string, value: string): void {
@@ -487,6 +514,12 @@ if (process.argv[1]?.endsWith('fake-sugar.ts')) {
         sales_stage: 'Renewal Pending',
       });
     }
+  }
+  // M9A closure fix (75-profiling.sh): source field NAMES carrying sensitive
+  // content (synthetic test numbers; the values themselves are harmless).
+  if (arg('variant') === 'sensitive-names') {
+    for (const name of SENSITIVE_FIELD_NAMES)
+      fake.addField('RevenueLineItems', name, 'varchar', 'x');
   }
   // Methods and paths only: proves read-only behaviour in runtime checks.
   fake.onRequest = (method, path) => process.stdout.write(`request ${method} ${path}\n`);

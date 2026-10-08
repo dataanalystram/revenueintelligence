@@ -242,13 +242,108 @@ export function safeCategoryVerdict(g: GateInput): CategorySuppressionReason | n
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Schema-name privacy (M9A closure fix): names are source-controlled content
+// ---------------------------------------------------------------------------
+
+/**
+ * Why a source-provided name (object, field, undeclared key, JSON key) cannot
+ * be stored verbatim. Names are source-controlled: a field may be called
+ * `acct_4111111111111111`. Deliberately broader than the value detectors
+ * (an over-match only replaces a readable name by a token).
+ */
+export type SchemaNameHit = PiiDetector | 'identifier_like' | 'invalid_name';
+
+const API_NAME = /^[A-Za-z][A-Za-z0-9_]{0,99}$/;
+const NAME_UUID = /[0-9a-f]{8}[-_][0-9a-f]{4}[-_][0-9a-f]{4}[-_][0-9a-f]{4}[-_][0-9a-f]{12}/i;
+/** A run of digits whose groups are joined only by separators (`4111_1111_1111_1111`, `44_20_7946_0958`). */
+const NAME_DIGIT_RUN = /\d(?:[\s_\-.()+/]?\d)*/g;
+
+/** The schema-name detectors a name triggers (never the name itself). */
+export function schemaNameHits(name: string): SchemaNameHit[] {
+  const hits = new Set<SchemaNameHit>();
+  if (!API_NAME.test(name)) hits.add('invalid_name');
+  for (const h of piiHits(name)) hits.add(h);
+  if (name.includes('@')) hits.add('email');
+  for (const run of name.match(NAME_DIGIT_RUN) ?? []) {
+    const digits = run.replace(/\D/g, '');
+    if (digits.length >= 13 && digits.length <= 19 && luhnValid(digits)) hits.add('card');
+    else if (digits.length >= 7) hits.add(digits.length <= 15 ? 'phone' : 'identifier_like');
+  }
+  // IBAN as one token or grouped over consecutive tokens (`GB82_WEST_1234_…`).
+  const tokens = name.split(/[^A-Za-z0-9]+/).filter((t) => t !== '');
+  for (let i = 0; i < tokens.length && !hits.has('iban'); i++) {
+    let joined = '';
+    for (let j = i; j < tokens.length && joined.length < 34; j++) {
+      joined += tokens[j];
+      if (joined.length >= 15 && isIban(joined)) {
+        hits.add('iban');
+        break;
+      }
+    }
+  }
+  if (NAME_UUID.test(name)) hits.add('identifier_like');
+  // One token of 16-64 characters mixing letters and digits (per token, so `address_line_2__c` stays readable).
+  if (tokens.some((t) => t.length >= 16 && /[A-Za-z]/.test(t) && /\d/.test(t)))
+    hits.add('identifier_like');
+  return [...hits];
+}
+
+/** Tokens replacing names that cannot be stored; a source name of this form is itself replaced (no collision). */
+export const REDACTED_NAME_PREFIX = 'redacted_field_';
+const REDACTED_NAME = /^redacted_field_\d+$/;
+
+/** Whether a source-provided name must be replaced before it is stored, logged or printed. */
+export function isRedactedName(name: string): boolean {
+  return REDACTED_NAME.test(name) || schemaNameHits(name).length > 0;
+}
+
+/**
+ * The profile names of an object's declared fields: `redacted_field_<n>` (n
+ * from 1, by sorted source name) for every name that cannot be stored, the
+ * name itself otherwise. A pure function of the snapshot's declared names, so
+ * every profile of the same snapshot, the worker and the mapping validator
+ * agree; the token carries nothing of the name (no hash of a low-entropy value).
+ */
+export interface ProfileNames {
+  /** Source name → profile name. */
+  toProfile(name: string): string;
+  /** Profile name (token or plain) → source name, if declared. */
+  toSource(name: string): string | undefined;
+  isRedacted(name: string): boolean;
+}
+
+export function profileNames(declared: readonly string[]): ProfileNames {
+  const sorted = [...new Set(declared)].sort();
+  const forward = new Map<string, string>();
+  const back = new Map<string, string>();
+  let n = 0;
+  for (const name of sorted) {
+    const out = isRedactedName(name) ? `${REDACTED_NAME_PREFIX}${++n}` : name;
+    forward.set(name, out);
+    back.set(out, name);
+  }
+  return {
+    // An undeclared name that cannot be stored gets the reserved token 0.
+    toProfile: (name) =>
+      forward.get(name) ?? (isRedactedName(name) ? `${REDACTED_NAME_PREFIX}0` : name),
+    toSource: (name) => back.get(name),
+    isRedacted: (name) => (forward.get(name) ?? name) !== name || isRedactedName(name),
+  };
+}
+
+/** A name for an operator message: withheld when it cannot be stored. */
+export function displayName(name: string): string {
+  return isRedactedName(name) ? '(name withheld)' : name;
+}
+
 /** A JSON key name may be shown only if it is not secret-like and triggers no detector. */
 export function isSafeKeyName(key: string): boolean {
   const n = normaliseName(key);
   if (n === '' || key.length > SAFE_CATEGORY.maxValueLength) return false;
   if (EXCLUDED_NAME_TOKENS.some((t) => n.includes(t))) return false;
   if (/(credential|auth|session|cookie|privatekey|bearer)/.test(n)) return false;
-  return piiHits(key).length === 0 && !isIdentifierLike(key);
+  return piiHits(key).length === 0 && !isIdentifierLike(key) && !isRedactedName(key);
 }
 
 // ---------------------------------------------------------------------------
@@ -267,26 +362,41 @@ export class ProfilePrivacyViolationError extends Error {
 }
 
 /** Metadata paths that are hashes or names, not source values. */
-const METADATA_PATHS = new Set([
-  'schemaSnapshotHash',
-  'object',
-  'connectionKind',
-  'sampling.orderedBy',
-]);
-/** Field names (declared or seen in data): names, not values. */
-const NAME_PATH = /^fields\[\d+\]\.name$|^undeclaredFields\[\d+\]$/;
+/**
+ * Paths holding source-provided names (object, field, undeclared and JSON key
+ * names): scanned with the schema-name detectors. Nothing is exempt because
+ * it is "a name" — a name is source-controlled content.
+ */
+const NAME_PATHS = /^(object|sampling\.orderedBy|fields\[\d+\]\.name|undeclaredFields\[\d+\])$/;
+/** JSON key names get both the value and the schema-name detectors. */
+const KEY_PATH = /^fields\[\d+\]\.json\.topLevelKeys\[\d+\]$/;
+/**
+ * The single exemption: the snapshot hash is computed by the platform
+ * (SHA-256 hex), never source-provided. A 64-character lower-case hex string
+ * cannot hold an email, phone, card or IBAN; it is identifier-like by design.
+ * Anything else at this path is scanned.
+ */
+const HASH_PATH = 'schemaSnapshotHash';
+const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 /**
  * Re-runs every detector over every string value of the document (object keys
- * are field names and codes; they are not scanned). Throws on the first hit.
- * Independent of the gate: it does not trust the builder.
+ * are schema codes; they are not scanned). Throws on the first hit.
+ * Independent of the gate and of the name redaction: it does not trust the builder.
  */
 export function assertNoRawValues(document: unknown): void {
   const visit = (value: unknown, path: string): void => {
     if (typeof value === 'string') {
-      if (METADATA_PATHS.has(path) || NAME_PATH.test(path)) return;
+      if (path === HASH_PATH && SHA256_HEX.test(value)) return;
+      if (NAME_PATHS.test(path)) {
+        const hit = schemaNameHits(value)[0];
+        if (hit) throw new ProfilePrivacyViolationError(hit, path);
+        return;
+      }
       const hit =
-        piiHits(value)[0] ?? (isIdentifierLike(value.trim()) ? 'identifier_like' : undefined);
+        piiHits(value)[0] ??
+        (isIdentifierLike(value.trim()) ? 'identifier_like' : undefined) ??
+        (KEY_PATH.test(path) ? schemaNameHits(value)[0] : undefined);
       if (hit) throw new ProfilePrivacyViolationError(hit, path);
       return;
     }

@@ -450,8 +450,9 @@ export class ObjectAccumulator {
     }
     if (declared) {
       for (const k of Object.keys(values)) {
-        if (!this.fields.has(k) && !declared.has(k) && /^[A-Za-z][A-Za-z0-9_]{0,99}$/.test(k))
-          this.undeclared.add(k);
+        // Every undeclared key is tracked (bounded); names that cannot be stored are
+        // counted, never listed, by the document builder (schema-name privacy).
+        if (!this.fields.has(k) && !declared.has(k)) this.undeclared.add(k);
       }
     }
   }

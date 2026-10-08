@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { validateReviewedDomain } from './holding-domain';
 import type { FieldProfile, ProfileDocument } from './profiling/document';
 import type { FindingClass, FindingSeverity } from './profiling/findings';
-import { isExcludedName } from './profiling/privacy';
+import { displayName, isExcludedName, profileNames, type ProfileNames } from './profiling/privacy';
 import { findSourceField, type SourceSchema } from './source-connector';
 import type { MappingDocument, ObjectMapping } from './source-mapping-document';
 
@@ -49,6 +49,7 @@ export interface CandidateProfile {
   readonly schemaSnapshotHash: string;
   readonly document: ProfileDocument;
   /** Excluded fields the run opted in to (names). */
+  /** Opted-in excluded fields, as profile names. */
   readonly optedIn: readonly string[];
   readonly findings: readonly CandidateFinding[];
 }
@@ -163,8 +164,33 @@ export function consequentialEntries(doc: MappingDocument): ConsequentialEntry[]
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-function fieldOf(doc: ProfileDocument, field: string): FieldProfile | undefined {
-  return doc.fields.find((f) => f.name === field);
+const namesCache = new WeakMap<SourceSchema, Map<string, ProfileNames>>();
+
+/**
+ * The profile entry of a source field. Profiles store profile names (a source
+ * name that cannot be stored is `redacted_field_<n>`), derived from the
+ * snapshot's declared names exactly as the profile builder did.
+ */
+function profileNameOf(schema: SourceSchema, object: string, field: string): string {
+  let byObject = namesCache.get(schema);
+  if (!byObject) namesCache.set(schema, (byObject = new Map<string, ProfileNames>()));
+  let names = byObject.get(object);
+  if (!names) {
+    const declared = schema.objects.find((o) => o.name === object)?.fields ?? [];
+    names = profileNames(declared.map((f) => f.name));
+    byObject.set(object, names);
+  }
+  return names.toProfile(field);
+}
+
+function fieldOf(
+  doc: ProfileDocument,
+  schema: SourceSchema,
+  object: string,
+  field: string,
+): FieldProfile | undefined {
+  const name = profileNameOf(schema, object, field);
+  return doc.fields.find((f) => f.name === name);
 }
 
 function substantive(f: FieldProfile): number {
@@ -221,12 +247,18 @@ export function validateMappingProfiles(
     const forObject = usable
       .filter((p) => p.document.object === entry.object)
       .sort((a, b) => b.finishedAt!.getTime() - a.finishedAt!.getTime());
-    const withField = forObject.filter((p) => fieldOf(p.document, entry.field));
+    const withField = forObject.filter((p) =>
+      fieldOf(p.document, schema, entry.object, entry.field),
+    );
     const notHead = withField.filter((p) => p.document.sampling.method !== 'head');
     const best = notHead.find(fresh);
-    const label = `${entry.object}.${entry.field}`;
+    const key = `${entry.object}.${entry.field}`;
+    const label = `${displayName(entry.object)}.${displayName(entry.field)}`;
     if (!best) {
-      if (isExcludedName(entry.field) && !forObject.some((p) => p.optedIn.includes(entry.field))) {
+      if (
+        isExcludedName(entry.field) &&
+        !forObject.some((p) => p.optedIn.includes(profileNameOf(schema, entry.object, entry.field)))
+      ) {
         err(
           'profile_field_excluded',
           entry.path,
@@ -252,7 +284,7 @@ export function validateMappingProfiles(
       continue;
     }
     covering.set(best.id, best);
-    coverFor.set(`${entry.kind}|${label}`, best);
+    coverFor.set(`${entry.kind}|${key}`, best);
   }
 
   // Acknowledgements: each names a finding of a covering profile.
@@ -318,7 +350,9 @@ export function validateMappingProfiles(
     // handled per record by M8 (`duplicate_external_id`, one row per source id);
     // the E-class `identifier_not_unique` finding then needs an acknowledgement.
     const idCover = coverFor.get(`identity|${obj.source}.${obj.identity.field}`);
-    const idField = idCover ? fieldOf(idCover.document, obj.identity.field) : undefined;
+    const idField = idCover
+      ? fieldOf(idCover.document, schema, obj.source, obj.identity.field)
+      : undefined;
     const declaredId = findSourceField(schema, obj.source, obj.identity.field);
     if (
       idField &&
@@ -339,7 +373,7 @@ export function validateMappingProfiles(
       if (entry.target !== 'subscription.startsAt' && entry.target !== 'subscription.endsAt')
         return;
       const cover = coverFor.get(`terms|${obj.source}.${entry.source}`);
-      const f = cover ? fieldOf(cover.document, entry.source) : undefined;
+      const f = cover ? fieldOf(cover.document, schema, obj.source, entry.source) : undefined;
       if (!f) return;
       const reps = Object.entries(f.representations).filter(
         ([rep, c]) => (rep.startsWith('date.') || rep.startsWith('timestamp.')) && (c ?? 0) > 0,
@@ -348,7 +382,7 @@ export function validateMappingProfiles(
         err(
           'date_format_required',
           `${at}.fields.${j}.transforms.parse`,
-          `${entry.source} holds ambiguous or mixed date representations the declared format cannot read`,
+          `${displayName(entry.source)} holds ambiguous or mixed date representations the declared format cannot read`,
         );
       }
     });
@@ -357,7 +391,7 @@ export function validateMappingProfiles(
       if (entry.kind !== 'core' || !('source' in entry) || entry.target !== 'subscription.state')
         return;
       const cover = coverFor.get(`state|${obj.source}.${entry.source}`);
-      const f = cover ? fieldOf(cover.document, entry.source) : undefined;
+      const f = cover ? fieldOf(cover.document, schema, obj.source, entry.source) : undefined;
       const map = entry.transforms?.valueMap?.map ?? {};
       const unmapped =
         f && !f.categorical.suppressed
@@ -377,7 +411,7 @@ export function validateMappingProfiles(
     const path = `${at}.holdingFilter`;
     const declared = findSourceField(schema, obj.source, filter.field);
     const cover = coverFor.get(`holding_filter|${obj.source}.${filter.field}`);
-    const f = cover ? fieldOf(cover.document, filter.field) : undefined;
+    const f = cover ? fieldOf(cover.document, schema, obj.source, filter.field) : undefined;
     const declaredOptions =
       declared?.type === 'enum' ? (declared.enumOptions ?? []).map((o) => o.value) : [];
     const observedKnown = f !== undefined && !f.categorical.suppressed;
@@ -387,7 +421,7 @@ export function validateMappingProfiles(
       err(
         'holding_filter_domain_unknown',
         `${path}.field`,
-        `${filter.field} has neither a declared enum nor an unsuppressed safe-category domain in the profile`,
+        `${displayName(filter.field)} has neither a declared enum nor an unsuppressed safe-category domain in the profile`,
       );
     }
     for (const issue of validateReviewedDomain({

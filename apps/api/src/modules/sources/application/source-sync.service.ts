@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ContextIngestionService, type IngestMeta } from '../../context';
 import {
-  assertNoRawValues,
+  assertNoRawFinding,
   buildProfileDocument,
   capFindings,
   DISTINCT_EXACT_CAP,
@@ -14,6 +14,7 @@ import {
   mayTombstone,
   objectAccumulatorFor,
   profileContentHash,
+  profileNames,
   protectionFor,
   requiresRepublish,
   RunGuards,
@@ -920,14 +921,19 @@ export class SourceSyncService {
         const baseline = await this.db.transaction(rc.ctx, (tx) =>
           this.profiles.latestProfile(tx, rc.connection.id, obj.source, 'sync'),
         );
-        const identity = new Set([obj.identity.field, ...obj.relationships.map((r) => r.field)]);
+        const names = profileNames(object.fields.map((f) => f.name));
+        const identity = new Set(
+          [obj.identity.field, ...obj.relationships.map((r) => r.field)].map((f) =>
+            names.toProfile(f),
+          ),
+        );
         const findings = capFindings([
           ...documentFindings(document, { identityFields: identity }),
           ...(baseline
             ? driftFindings(document, baseline.document, { identityFields: identity })
             : []),
         ]);
-        for (const f of findings) assertNoRawValues(f.evidence);
+        for (const f of findings) assertNoRawFinding(f);
         out.push({
           object: obj.source,
           document,
