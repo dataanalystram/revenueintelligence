@@ -3,6 +3,8 @@ import { z } from 'zod';
 import {
   ConnectorKindSchema,
   connectorKindEntry,
+  PROFILE_LIMITS,
+  SourceProfileSettingsSchema,
   type ConnectionTestResult,
   type SourceConnector,
 } from '../../domain';
@@ -29,7 +31,7 @@ export type SourceSyncSettings = z.infer<typeof SourceSyncSettingsSchema>;
 export interface ConfigureConnectionInput {
   readonly kind: string;
   readonly label: string;
-  /** Adapter configuration plus an optional `sync` block (non-secret only). */
+  /** Adapter configuration plus optional `sync` and `profile` blocks (non-secret only). */
   readonly config: Record<string, unknown>;
   /** A credential name registered for this tenant and kind (values: SecretProvider). */
   readonly credentialName?: string;
@@ -63,6 +65,11 @@ export class SourceConnectionsService {
     return found;
   }
 
+  /** The connection's raw profile settings (validated per request: refuse, never clamp). */
+  profileSettings(connection: SourceConnection): unknown {
+    return connection.config.profile;
+  }
+
   /** The connection's sync settings, if configured. */
   syncSettings(connection: SourceConnection): SourceSyncSettings | undefined {
     const parsed = SourceSyncSettingsSchema.safeParse(connection.config.sync);
@@ -92,9 +99,16 @@ export class SourceConnectionsService {
     ) {
       throw new SourcesError('invalid_credential_name', 'Invalid credential name');
     }
-    const { sync, ...adapterConfig } = input.config;
+    const { sync, profile, ...adapterConfig } = input.config;
     if (sync !== undefined && !SourceSyncSettingsSchema.safeParse(sync).success) {
       throw new SourcesError('invalid_sync_settings', 'sync.overlapMinutes must be 1–1440');
+    }
+    // M9A (D2): the per-connection profile limit is refused out of range, never clamped.
+    if (profile !== undefined && !SourceProfileSettingsSchema.safeParse(profile).success) {
+      throw new SourcesError(
+        'profile_limit_out_of_range',
+        `profile.maxRows must be ${PROFILE_LIMITS.minRows}–${PROFILE_LIMITS.maxRows} (suggested ${PROFILE_LIMITS.suggestedRows}); profile.freshnessDays 1–90`,
+      );
     }
     const factory = this.registry.get(kind.data);
     const verdict = factory.validateConfig(adapterConfig);
@@ -156,7 +170,7 @@ export class SourceConnectionsService {
   /** An adapter instance for this connection; credentials resolve through the SecretProvider. */
   connector(ctx: TenantContext, connection: SourceConnection): SourceConnector {
     const factory = this.registry.get(connection.kind);
-    const { sync: _sync, ...config } = connection.config;
+    const { sync: _sync, profile: _profile, ...config } = connection.config;
     return factory.create(
       {
         tenantId: ctx.tenantId,

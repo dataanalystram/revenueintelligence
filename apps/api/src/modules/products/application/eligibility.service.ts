@@ -71,11 +71,13 @@ const FrozenInputSchema = z.strictObject({
   ownership: z.discriminatedUnion('coverage', [
     z.strictObject({
       coverage: z.literal('known'),
+      coverageTier: z.enum(['externally_grounded', 'stable_snapshot']),
       knownAsOf: InstantSchema,
       subscriptions: z.array(SubscriptionFactSchema),
     }),
     z.strictObject({
       coverage: z.literal('unknown'),
+      coverageTier: z.literal('none'),
       reason: z.literal('ownership_incomplete').optional(),
     }),
   ]),
@@ -253,16 +255,18 @@ export class EligibilityService {
     const model = await this.catalogue.modelAtTx(tx, asOf);
     if (!model) throw new NoProductModelError(asOf);
     const coverage = await this.runs.coverage(tx);
-    let ownership: OwnershipInput = { coverage: 'unknown' };
+    let ownership: OwnershipInput = { coverage: 'unknown', coverageTier: 'none' };
     if (coverage.known) {
       // An account holding a line whose product cannot be known is never
       // "covered": no not-owned inference, no eligible whitespace (ADR 0020 §15).
       const gaps = await this.queries.ownershipGapCount(tx, coverage.connectionId, evaluatedId);
       ownership =
         gaps > 0
-          ? { coverage: 'unknown', reason: 'ownership_incomplete' }
+          ? { coverage: 'unknown', coverageTier: 'none', reason: 'ownership_incomplete' }
           : {
               coverage: 'known',
+              // The tier of the run that established coverage (ADR 0023).
+              coverageTier: coverage.coverageTier,
               knownAsOf: coverage.knownAsOf,
               subscriptions: await this.queries.factsForCompany(
                 tx,

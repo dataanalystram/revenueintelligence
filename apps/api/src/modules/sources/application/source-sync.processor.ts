@@ -14,13 +14,20 @@ import {
   RedisPolicyError,
   type QueueJob,
 } from '../../../platform/queue';
-import { SOURCES_QUEUE, SourceSyncJobSchema } from '../jobs';
+import {
+  SOURCE_PROFILE_JOB,
+  SourceProfileJobSchema,
+  SOURCES_QUEUE,
+  SourceSyncJobSchema,
+} from '../jobs';
+import { SourceProfilingService } from './source-profiling.service';
 import { SourceSyncService } from './source-sync.service';
 
 const REGISTER_RETRY_MS = 5_000;
 
 /**
- * Worker-side `source.sync` processing (M8). Reuses the M6 queue platform:
+ * Worker-side `lip-sources` processing: `source.sync` (M8) and, dispatched by
+ * job name on the same registration, `source.profile` (M9A). Reuses the M6 queue platform:
  * retries with backoff (honouring Retry-After hints), stalled-job recovery,
  * dead letters. A run's own outcome (completed or failed with a code) is
  * recorded on its checkpoint; only exhausted transient failures dead-letter.
@@ -34,6 +41,7 @@ export class SourceSyncProcessor implements OnApplicationBootstrap, OnModuleDest
   constructor(
     private readonly queues: QueueService,
     private readonly sync: SourceSyncService,
+    private readonly profiling: SourceProfilingService,
     private readonly tenants: TenantContextService,
     private readonly processing: ContextProcessingService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
@@ -79,6 +87,18 @@ export class SourceSyncProcessor implements OnApplicationBootstrap, OnModuleDest
   }
 
   async process(job: QueueJob<unknown>): Promise<void> {
+    if (job.name === SOURCE_PROFILE_JOB) {
+      const profile = SourceProfileJobSchema.safeParse(job.data);
+      if (!profile.success)
+        throw new PermanentJobError('invalid_payload', 'source.profile failed validation');
+      const ctx = await this.tenants.forTenantId(profile.data.tenantId);
+      const result = await this.profiling.execute(ctx, profile.data.runId);
+      this.logger.log(
+        { runId: result.runId, status: result.status, code: result.errorCode },
+        'Profile run finished',
+      );
+      return;
+    }
     const parsed = SourceSyncJobSchema.safeParse(job.data);
     if (!parsed.success)
       throw new PermanentJobError('invalid_payload', 'source.sync failed validation');
@@ -91,8 +111,19 @@ export class SourceSyncProcessor implements OnApplicationBootstrap, OnModuleDest
   }
 
   private async onFinalFailure(job: QueueJob<unknown>, error: Error): Promise<void> {
-    const parsed = SourceSyncJobSchema.safeParse(job.data);
-    if (parsed.success) {
+    const profile =
+      job.name === SOURCE_PROFILE_JOB ? SourceProfileJobSchema.safeParse(job.data) : undefined;
+    if (profile?.success) {
+      try {
+        const ctx = await this.tenants.forTenantId(profile.data.tenantId);
+        await this.profiling.abandon(ctx, profile.data.runId, 'retries_exhausted');
+      } catch (err) {
+        this.logger.error({ err, jobId: job.id }, 'Could not mark the profile run failed');
+      }
+    }
+    const parsed =
+      job.name === SOURCE_PROFILE_JOB ? undefined : SourceSyncJobSchema.safeParse(job.data);
+    if (parsed?.success) {
       try {
         const ctx = await this.tenants.forTenantId(parsed.data.tenantId);
         await this.sync.abandon(ctx, parsed.data.checkpointId, 'retries_exhausted');

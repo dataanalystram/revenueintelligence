@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
-import type { SubscriptionObservation, SubscriptionSource } from '../../domain';
+import { runProof, type SubscriptionObservation, type SubscriptionSource } from '../../domain';
 import { TenantDatabase, type TenantContext } from '../../tenancy';
 import { SubscriptionRunsStore, type ImportMode } from '../infrastructure/subscription-runs.store';
 import { SubscriptionQueries } from '../infrastructure/subscription.queries';
@@ -228,6 +228,10 @@ export class SubscriptionImportService {
             (outcomes['unchanged'] ?? 0) + (outcomes['stale'] ?? 0) + (outcomes['not_found'] ?? 0),
           failed: rejected.length,
           ...(status === 'failed' ? { errorCode: 'rows_rejected' } : {}),
+          // A2: an operator-declared full file is stable_snapshot evidence.
+          ...(status === 'completed' && request.mode === 'full'
+            ? { proof: runProof('operator_full_file') }
+            : {}),
         }),
       );
       return {

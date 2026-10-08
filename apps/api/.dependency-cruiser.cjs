@@ -60,6 +60,22 @@ module.exports = {
       },
     },
     {
+      name: 'profiling-is-advisory',
+      severity: 'error',
+      comment:
+        'Source profiling only describes data (ADR 0022): its suggestions can never reach ' +
+        'authority, ingestion or eligibility code directly, so profiling cannot decide.',
+      from: { path: '^src/modules/domain/profiling/' },
+      to: {
+        path: [
+          '^src/modules/domain/source-authority\\.ts$',
+          '^src/modules/domain/source-mapping-engine\\.ts$',
+          '^src/modules/domain/eligibility\\.ts$',
+          '^src/modules/domain/index\\.ts$',
+        ],
+      },
+    },
+    {
       name: 'hubspot-sdk-only-in-hubspot-connector',
       severity: 'error',
       comment: 'External systems are accessed only through connector modules.',

@@ -635,13 +635,14 @@ model TenantSyncCheckpoint {
   sourceConnectionId String?   @map("source_connection_id") @db.Uuid
   /// M8: the mapping version the run applied (versioned connections only)
   mappingVersion     Int?      @map("mapping_version")
-  /// M8: run quality counters and codes (counts and codes only, never values)
+  /// M8: run quality counters and codes (counts and codes only, never values); M9A adds `proof`
   quality            Json?
 
   tenant     Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   connector  ConnectorKind               @relation(fields: [system], references: [kind], onDelete: Restrict, onUpdate: Restrict)
   connection TenantSourceConnection?     @relation(fields: [tenantId, sourceConnectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
   mapping    TenantSourceMappingVersion? @relation(fields: [tenantId, sourceConnectionId, mappingVersion], references: [tenantId, connectionId, version], onDelete: Restrict, onUpdate: Restrict)
+  profiles   TenantSourceProfile[]
 
   @@id([tenantId, id])
   @@unique([tenantId, activeKey])
@@ -719,6 +720,9 @@ model TenantSourceConnection {
   schemaSnapshots            TenantSourceSchemaSnapshot[]
   mappingVersions            TenantSourceMappingVersion[]
   ownershipGaps              TenantOwnershipGap[]
+  profileRuns                TenantSourceProfileRun[]
+  profiles                   TenantSourceProfile[]
+  profilePurges              TenantSourceProfilePurge[]
   authorityAccountProfile    TenantSourceAuthorityVersion[] @relation("AuthorityAccountProfile")
   authorityPersonProfile     TenantSourceAuthorityVersion[] @relation("AuthorityPersonProfile")
   authoritySubscriptionLines TenantSourceAuthorityVersion[] @relation("AuthoritySubscriptionLines")
@@ -743,6 +747,8 @@ model TenantSourceSchemaSnapshot {
 
   connection      TenantSourceConnection       @relation(fields: [tenantId, connectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
   mappingVersions TenantSourceMappingVersion[]
+  profileRuns     TenantSourceProfileRun[]
+  profiles        TenantSourceProfile[]
 
   @@id([tenantId, connectionId, hash])
   @@index([tenantId, connectionId, capturedAt])
@@ -786,6 +792,8 @@ model TenantSourceAuthorityVersion {
   subscriptionStateConnectionId String?  @map("subscription_state_connection_id") @db.Uuid
   subscriptionTermsConnectionId String?  @map("subscription_terms_connection_id") @db.Uuid
   contentHash                   String   @map("content_hash")
+  /// M9A: operator acceptances of adapter-declared stable_snapshot proofs (ADR 0023)
+  proofAcceptances              Json     @default("[]") @map("proof_acceptances")
   publishedBy                   String   @map("published_by")
   publishedAt                   DateTime @default(now()) @map("published_at") @db.Timestamptz(3)
 
@@ -809,7 +817,8 @@ model TenantOwnershipGap {
   sourceObjectType String   @map("source_object_type")
   sourceRecordId   String   @map("source_record_id")
   companyId        String   @map("company_id") @db.Uuid
-  /// missing_product_reference | orphan_product_reference
+  /// missing_product_reference | orphan_product_reference | observation_rejected |
+  /// holding_filter_value_unreviewed | account_reference_orphaned (M9A)
   reason           String
   checkpointId     String   @map("checkpoint_id") @db.Uuid
   recordedAt       DateTime @default(now()) @map("recorded_at") @db.Timestamptz(3)
@@ -820,4 +829,109 @@ model TenantOwnershipGap {
   @@id([tenantId, connectionId, sourceObjectType, sourceRecordId])
   @@index([tenantId, companyId])
   @@map("tenant_ownership_gaps")
+}
+
+/// M9A (ADR 0022): a source profiling run. Mutable until terminal (forward-only
+/// lifecycle trigger); one active run per connection (active_key).
+model TenantSourceProfileRun {
+  tenantId           String    @map("tenant_id") @db.Uuid
+  id                 String    @db.Uuid
+  connectionId       String    @map("connection_id") @db.Uuid
+  schemaSnapshotHash String    @map("schema_snapshot_hash")
+  /// requested | running | completed | failed | abandoned
+  status             String    @default("requested")
+  activeKey          String?   @map("active_key")
+  /// objects, selected field names, opt-ins, sampling method, maxRows (names only)
+  request            Json
+  sampling           Json?
+  errorCode          String?   @map("error_code")
+  requestedBy        String    @map("requested_by")
+  correlationId      String    @map("correlation_id") @db.Uuid
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  startedAt          DateTime? @map("started_at") @db.Timestamptz(3)
+  finishedAt         DateTime? @map("finished_at") @db.Timestamptz(3)
+
+  connection TenantSourceConnection     @relation(fields: [tenantId, connectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "tenant_source_profile_runs_tenant_id_connection_id_fkey")
+  snapshot   TenantSourceSchemaSnapshot @relation(fields: [tenantId, connectionId, schemaSnapshotHash], references: [tenantId, connectionId, hash], onDelete: Restrict, onUpdate: Restrict, map: "tenant_source_profile_runs_snapshot_fkey")
+  profiles   TenantSourceProfile[]
+
+  @@id([tenantId, id])
+  @@unique([tenantId, activeKey])
+  @@index([tenantId, connectionId, createdAt(sort: Desc)], map: "tenant_source_profile_runs_tenant_id_connection_id_created_idx")
+  @@map("tenant_source_profile_runs")
+}
+
+/// M9A: one object's profile (aggregates only; immutable). Origin is a profile
+/// run or a sync run (run-quality profile).
+model TenantSourceProfile {
+  tenantId           String   @map("tenant_id") @db.Uuid
+  id                 String   @db.Uuid
+  runId              String?  @map("run_id") @db.Uuid
+  syncRunId          String?  @map("sync_run_id") @db.Uuid
+  connectionId       String   @map("connection_id") @db.Uuid
+  object             String
+  schemaSnapshotHash String   @map("schema_snapshot_hash")
+  /// profile | sync
+  samplingFamily     String   @map("sampling_family")
+  previousProfileId  String?  @map("previous_profile_id") @db.Uuid
+  document           Json
+  documentVersion    Int      @map("document_version")
+  contentHash        String   @map("content_hash")
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  run        TenantSourceProfileRun?      @relation(fields: [tenantId, runId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "tenant_source_profiles_tenant_id_run_id_fkey")
+  syncRun    TenantSyncCheckpoint?        @relation(fields: [tenantId, syncRunId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "tenant_source_profiles_tenant_id_sync_run_id_fkey")
+  connection TenantSourceConnection       @relation(fields: [tenantId, connectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "tenant_source_profiles_tenant_id_connection_id_fkey")
+  snapshot   TenantSourceSchemaSnapshot   @relation(fields: [tenantId, connectionId, schemaSnapshotHash], references: [tenantId, connectionId, hash], onDelete: Restrict, onUpdate: Restrict, map: "tenant_source_profiles_tenant_id_connection_id_snapshot_fkey")
+  previous   TenantSourceProfile?         @relation("ProfileBaseline", fields: [tenantId, previousProfileId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "tenant_source_profiles_tenant_id_previous_profile_id_fkey")
+  next       TenantSourceProfile[]        @relation("ProfileBaseline")
+  findings   TenantSourceProfileFinding[]
+
+  @@id([tenantId, id])
+  @@unique([tenantId, runId, object])
+  @@unique([tenantId, syncRunId, object])
+  @@index([tenantId, connectionId, object, samplingFamily, createdAt(sort: Desc)], map: "tenant_source_profiles_baseline_idx")
+  @@map("tenant_source_profiles")
+}
+
+/// M9A: a finding of a profile (codes, names, counts and ratios; immutable).
+model TenantSourceProfileFinding {
+  tenantId  String   @map("tenant_id") @db.Uuid
+  id        String   @db.Uuid
+  profileId String   @map("profile_id") @db.Uuid
+  code      String
+  /// advisory | existing_fail_closed | m9a_fail_closed
+  class     String
+  /// info | warning | review_required
+  severity  String
+  object    String
+  field     String?
+  evidence  Json
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  profile TenantSourceProfile @relation(fields: [tenantId, profileId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "tenant_source_profile_findings_tenant_id_profile_id_fkey")
+
+  @@id([tenantId, id])
+  @@index([tenantId, profileId], map: "tenant_source_profile_findings_profile_idx")
+  @@index([tenantId, code], map: "tenant_source_profile_findings_code_idx")
+  @@map("tenant_source_profile_findings")
+}
+
+/// M9A: append-only audit of privileged profile purges (retention, D3).
+model TenantSourceProfilePurge {
+  tenantId        String   @map("tenant_id") @db.Uuid
+  id              String   @db.Uuid
+  connectionId    String   @map("connection_id") @db.Uuid
+  object          String
+  kept            Int
+  deletedProfiles Int      @map("deleted_profiles")
+  deletedFindings Int      @map("deleted_findings")
+  actor           String
+  correlationId   String   @map("correlation_id") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  connection TenantSourceConnection @relation(fields: [tenantId, connectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "tenant_source_profile_purges_tenant_id_connection_id_fkey")
+
+  @@id([tenantId, id])
+  @@map("tenant_source_profile_purges")
 }

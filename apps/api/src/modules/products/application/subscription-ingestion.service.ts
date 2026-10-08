@@ -72,6 +72,18 @@ export class SubscriptionIngestionService {
     );
   }
 
+  /** The company of the existing canonical line for a source key (gap attribution). */
+  async lineCompanyFor(
+    ctx: TenantContext,
+    system: string,
+    objectType: string,
+    recordId: string,
+  ): Promise<string | undefined> {
+    return this.db.transaction(ctx, (tx) =>
+      this.queries.lineCompanyFor(tx, system, objectType, recordId),
+    );
+  }
+
   async ingest(
     ctx: TenantContext,
     observation: SubscriptionObservation,

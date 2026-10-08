@@ -1,6 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import {
+  proofOfRun,
+  requiresAcceptance,
+  type KnownCoverageTier,
+  type ProofMetadata,
+  type RunProof,
+} from '../../domain';
+import {
   tenantClient,
   translateDatabaseError,
   UniqueConstraintError,
@@ -49,8 +56,28 @@ export type TenantCoverage =
       readonly connectionId: string;
       /** Versioned sources: only this system's lines are ownership facts (no cross-source lines). */
       readonly sourceSystem?: string;
+      /** From the proof of the run that established coverage (ADR 0023); never configured. */
+      readonly coverageTier: KnownCoverageTier;
+      readonly proof: ProofMetadata;
     }
-  | { readonly known: false; readonly reason: 'authority_unassigned' | 'no_complete_run' };
+  | {
+      readonly known: false;
+      readonly reason: 'authority_unassigned' | 'no_complete_run' | 'proof_not_accepted';
+    };
+
+/** Operator acceptances of adapter-declared stable proofs, stored on an authority version. */
+function acceptsStableSnapshot(acceptances: unknown, connectionId: string): boolean {
+  return (
+    Array.isArray(acceptances) &&
+    acceptances.some(
+      (a) =>
+        a !== null &&
+        typeof a === 'object' &&
+        (a as Record<string, unknown>).connectionId === connectionId &&
+        (a as Record<string, unknown>).tier === 'stable_snapshot',
+    )
+  );
+}
 
 @Injectable()
 export class SubscriptionRunsStore {
@@ -108,12 +135,15 @@ export class SubscriptionRunsStore {
       skipped: number;
       failed: number;
       errorCode?: string;
+      /** The full-read proof of a completed full load (M9A, ADR 0023). */
+      proof?: RunProof;
     },
   ): Promise<void> {
     await tenantClient(tx).tenantSyncCheckpoint.update({
       where: { tenantId_id: { tenantId: tx.tenantId, id } },
       data: {
         status: result.status,
+        ...(result.proof ? { quality: { proof: result.proof } } : {}),
         activeKey: null,
         recordsSeen: result.seen,
         recordsChanged: result.changed,
@@ -159,11 +189,26 @@ export class SubscriptionRunsStore {
           mode: 'import_full',
         },
         orderBy: { completedAt: 'desc' },
-        select: { completedAt: true },
+        select: { id: true, completedAt: true, quality: true },
       });
-      return row?.completedAt
-        ? { known: true, knownAsOf: row.completedAt, connectionId: connection.id }
-        : { known: false, reason: 'no_complete_run' };
+      if (!row?.completedAt) return { known: false, reason: 'no_complete_run' };
+      // M7 CSV imports: an operator-declared full file (A2: stable_snapshot).
+      // Runs completed before M9A carry no proof and are inferred the same way.
+      const proof = proofOfRun(row.quality, 'operator_full_file');
+      return {
+        known: true,
+        knownAsOf: row.completedAt,
+        connectionId: connection.id,
+        coverageTier: proof.tier,
+        proof: {
+          method: proof.method,
+          tier: proof.tier,
+          connectionId: connection.id,
+          runId: row.id,
+          completedAt: row.completedAt,
+          inferred: proof.inferred,
+        },
+      };
     }
     // The current authority streak: since the last version that named someone else.
     const before = await db.tenantSourceAuthorityVersion.findFirst({
@@ -199,16 +244,35 @@ export class SubscriptionRunsStore {
         startedAt: { gte: since.publishedAt },
       },
       orderBy: { completedAt: 'desc' },
-      select: { completedAt: true },
+      select: { id: true, completedAt: true, quality: true },
     });
-    return row?.completedAt
-      ? {
-          known: true,
-          knownAsOf: row.completedAt,
-          connectionId: connection.id,
-          sourceSystem: connection.kind,
-        }
-      : { known: false, reason: 'no_complete_run' };
+    if (!row?.completedAt) return { known: false, reason: 'no_complete_run' };
+    // The newest qualifying run decides the tier, so a weaker newer run lowers
+    // it. Runs completed before M9A could only complete after a count proof.
+    const proof = proofOfRun(row.quality, 'count');
+    let acceptedInAuthorityVersion: number | undefined;
+    if (requiresAcceptance(proof.method)) {
+      if (!acceptsStableSnapshot(authority.proofAcceptances, connection.id)) {
+        return { known: false, reason: 'proof_not_accepted' };
+      }
+      acceptedInAuthorityVersion = authority.version;
+    }
+    return {
+      known: true,
+      knownAsOf: row.completedAt,
+      connectionId: connection.id,
+      sourceSystem: connection.kind,
+      coverageTier: proof.tier,
+      proof: {
+        method: proof.method,
+        tier: proof.tier,
+        connectionId: connection.id,
+        runId: row.id,
+        completedAt: row.completedAt,
+        inferred: proof.inferred,
+        ...(acceptedInAuthorityVersion !== undefined ? { acceptedInAuthorityVersion } : {}),
+      },
+    };
   }
 
   /** When ownership facts became complete for the tenant, if ever. */

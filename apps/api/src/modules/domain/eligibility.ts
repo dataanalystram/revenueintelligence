@@ -1,4 +1,5 @@
 import type { CustomerStatus } from './company';
+import { assertNeverTier, type CoverageTier, type KnownCoverageTier } from './coverage';
 import type { ProductKey } from './product';
 import type { IndexedProductModel, ProductDefinition } from './product-model';
 import { canonicalHash } from './shared/canonical-json';
@@ -14,8 +15,10 @@ import type { OwnableState, SubscriptionFact } from './subscription';
 /**
  * Bumped whenever built-in check semantics change. Recorded on every result.
  * 2 (M8): per-account ownership gaps (`ownership_incomplete`).
+ * 3 (M9A): structural coverage tiers; under `stable_snapshot` absence is
+ * never concluded (`coverage_tier_insufficient`, ADR 0023).
  */
-export const EVALUATOR_VERSION = 2;
+export const EVALUATOR_VERSION = 3;
 
 export type EligibilityStatus = 'eligible' | 'ineligible' | 'unknown';
 export type OwnershipStatus = 'owned' | 'not_owned' | 'unknown';
@@ -36,6 +39,8 @@ export type ReasonCode =
   | 'ownership_not_loaded'
   /** The account holds a line whose product cannot be known (M8 ownership gap). */
   | 'ownership_incomplete'
+  /** Coverage is complete as delivered but not externally grounded: absence is not concluded (M9A). */
+  | 'coverage_tier_insufficient'
   | 'subscription_state_unknown'
   | 'subscription_state_conflict'
   | 'attribute_missing'
@@ -63,11 +68,14 @@ export interface EligibilityCheck {
 export type OwnershipInput =
   | {
       readonly coverage: 'known';
+      /** How completeness is grounded (ADR 0023); never defaulted. */
+      readonly coverageTier: KnownCoverageTier;
       readonly knownAsOf: Date;
       readonly subscriptions: readonly SubscriptionFact[];
     }
   | {
       readonly coverage: 'unknown';
+      readonly coverageTier: 'none';
       /**
        * Why ownership is not known: the tenant's facts are not loaded (default)
        * or this account has an ownership gap (ADR 0020 §15). Tenant-level
@@ -103,6 +111,8 @@ export interface EligibilityResult {
   readonly asOf: Date;
   readonly status: EligibilityStatus;
   readonly ownership: OwnershipStatus;
+  /** The coverage tier the result was derived under (M9A). */
+  readonly coverageTier: CoverageTier;
   readonly checks: readonly EligibilityCheck[];
   readonly modelVersion: number;
   readonly modelHash: string;
@@ -205,6 +215,19 @@ export function deriveOwnership(
     }
     if (!changed) break;
   }
+  // Tier rule (ADR 0023): without externally grounded completeness, absence
+  // is never concluded. Presence (owned) and unknown stay as derived.
+  if (ownership.coverageTier === 'stable_snapshot') {
+    for (const [key, own] of result) {
+      if (own.status === 'not_owned') {
+        result.set(key, {
+          status: 'unknown',
+          reason: 'coverage_tier_insufficient',
+          facts: own.facts,
+        });
+      }
+    }
+  }
   return result;
 }
 
@@ -253,16 +276,7 @@ function evaluateInContext(ctx: EvaluationContext, productKey: ProductKey): Elig
   const checks: EligibilityCheck[] = [];
 
   // 1. Coverage: is "owns nothing" distinguishable from "no data yet"?
-  checks.push(
-    ctx.input.ownership.coverage === 'known'
-      ? { check: 'ownership_coverage', outcome: 'pass', reason: 'ok', facts: [] }
-      : {
-          check: 'ownership_coverage',
-          outcome: 'unknown',
-          reason: unknownOwnershipReason(ctx.input.ownership),
-          facts: [],
-        },
-  );
+  checks.push(coverageCheck(ctx.input.ownership));
 
   // 2. Product available at asOf.
   checks.push(availability(product, asOf));
@@ -362,6 +376,7 @@ function evaluateInContext(ctx: EvaluationContext, productKey: ProductKey): Elig
     asOf,
     status,
     ownership: self.status,
+    coverageTier: ctx.input.ownership.coverageTier,
     checks,
     modelVersion: model.version,
     modelHash: model.contentHash,
@@ -375,16 +390,43 @@ export function factsHash(input: Pick<EligibilityInput, 'account' | 'ownership' 
   const ownership =
     input.ownership.coverage === 'unknown'
       ? input.ownership.reason
-        ? { coverage: 'unknown', reason: input.ownership.reason }
-        : { coverage: 'unknown' }
+        ? { coverage: 'unknown', coverageTier: 'none', reason: input.ownership.reason }
+        : { coverage: 'unknown', coverageTier: 'none' }
       : {
           coverage: 'known',
+          coverageTier: input.ownership.coverageTier,
           knownAsOf: input.ownership.knownAsOf,
           subscriptions: [...input.ownership.subscriptions].sort((a, b) =>
             a.id.localeCompare(b.id),
           ),
         };
   return canonicalHash({ account: input.account, ownership, asOf: input.asOf });
+}
+
+/** Coverage: is "owns nothing" distinguishable from "no data yet"? Exhaustive over tiers. */
+function coverageCheck(ownership: OwnershipInput): EligibilityCheck {
+  if (ownership.coverage === 'unknown') {
+    return {
+      check: 'ownership_coverage',
+      outcome: 'unknown',
+      reason: unknownOwnershipReason(ownership),
+      facts: [],
+    };
+  }
+  const tier = ownership.coverageTier;
+  switch (tier) {
+    case 'externally_grounded':
+      return { check: 'ownership_coverage', outcome: 'pass', reason: 'ok', facts: [] };
+    case 'stable_snapshot':
+      return {
+        check: 'ownership_coverage',
+        outcome: 'unknown',
+        reason: 'coverage_tier_insufficient',
+        facts: [],
+      };
+    default:
+      return assertNeverTier(tier);
+  }
 }
 
 function availability(product: ProductDefinition, asOf: Date): EligibilityCheck {

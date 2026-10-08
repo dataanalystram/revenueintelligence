@@ -225,6 +225,13 @@ must be complete before M8 starts.
 
 ### M9 — Remaining system read connector
 
+> **Redefined by approved decision D1 (2026-10).** M9 is now _multi-source
+> data quality and subscription validation_
+> ([M9 plan](../milestones/M09-multi-source-data-quality-plan.md), phased;
+> M9A = [source data profiling foundation](../milestones/M09A-source-data-profiling-plan.md)).
+> The scope below (pipeline suppression context, CS/usage context) moves to a
+> later milestone that reuses the M9 profiling and source contracts.
+
 - **Business purpose**: the context from the system M8 did not cover, for
   example:
   - Sugar: what is already in the sales pipeline (so it is not re-suggested)

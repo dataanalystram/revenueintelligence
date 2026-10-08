@@ -77,6 +77,7 @@ export class MappingPreviewService {
     const out: PreviewReport[] = [];
     for (const obj of doc.objects.filter((o) => o.entity === 'subscription')) {
       const page = await connector.readRecords({
+        purpose: 'preview',
         object: obj.source,
         fields: mappedFields(obj),
         selection: { mode: 'full', boundary: new Date() },
@@ -99,6 +100,7 @@ export class MappingPreviewService {
         const values = unique(records.map((r) => r.values[fb.field]));
         const page2 = values.length
           ? await connector.readRecords({
+              purpose: 'preview',
               object: fb.object,
               fields: [fb.targetField],
               selection: { mode: 'ids', ids: values.slice(0, 100) },
@@ -180,6 +182,7 @@ async function readIds(
   const found = new Set<string>();
   for (let i = 0; i < ids.length; i += 100) {
     const page = await connector.readRecords({
+      purpose: 'preview',
       object,
       fields: [],
       selection: { mode: 'ids', ids: ids.slice(i, i + 100) },

@@ -59,6 +59,8 @@ const m5MigrationsConfig = (dir: string) => migrationsBefore(dir, '20261005');
 const m6MigrationsConfig = (dir: string) => migrationsBefore(dir, '20261010');
 /** The migrations shipped up to M7 (before M8). */
 const m7MigrationsConfig = (dir: string) => migrationsBefore(dir, '20261020');
+/** The migrations shipped up to M8 (before M9A). */
+const m8MigrationsConfig = (dir: string) => migrationsBefore(dir, '20261101');
 
 /** M8 migrations in apply order. */
 const M8_MIGRATIONS = [
@@ -66,6 +68,10 @@ const M8_MIGRATIONS = [
   '20261020120000_m8_connector_kinds_and_connections',
   '20261020130000_m8_schema_snapshots_mappings_authority',
 ];
+
+/** M9A migrations in apply order. */
+const M9A_MIGRATIONS = ['20261101120000_m9a_source_profiling'];
+const M9A_DOWN = resolve(`prisma/rollback/${M9A_MIGRATIONS[0]}.down.sql`);
 
 /** Everything a migration can change, as sorted text (for exact schema comparison). */
 async function schemaSnapshot(url: string): Promise<Record<string, string[]>> {
@@ -92,13 +98,13 @@ async function schemaSnapshot(url: string): Promise<Record<string, string[]>> {
   });
 }
 
-/** M8 down-scripts, in the order they must run (newest first). */
-const M8_DOWNS = [...M8_MIGRATIONS]
+/** Down-scripts back to M7 (M9A, then M8), in the order they must run (newest first). */
+const POST_M7_DOWNS = [...M8_MIGRATIONS, ...M9A_MIGRATIONS]
   .reverse()
   .map((name) => resolve(`prisma/rollback/${name}.down.sql`));
 
-async function rollbackM8(db: { query: (sql: string) => Promise<unknown> }): Promise<void> {
-  for (const file of M8_DOWNS) await db.query(readFileSync(file, 'utf8'));
+async function rollbackToM7(db: { query: (sql: string) => Promise<unknown> }): Promise<void> {
+  for (const file of POST_M7_DOWNS) await db.query(readFileSync(file, 'utf8'));
 }
 
 const ROLLBACK = {
@@ -142,6 +148,7 @@ describe('database migrations and schema guard', () => {
         '20261010120000_m7_product_model_and_subscriptions',
         '20261010130000_m7_eligibility_snapshots',
         ...M8_MIGRATIONS,
+        ...M9A_MIGRATIONS,
       ]);
       expect(rows.every((r) => r.finished_at !== null)).toBe(true);
     });
@@ -497,7 +504,7 @@ describe('database migrations and schema guard', () => {
         const tenant = '44444444-4444-4444-8444-444444444444';
         await withAdmin(url, async (db) => {
           // Later milestones roll back first (M8, M7), then M6.
-          await rollbackM8(db);
+          await rollbackToM7(db);
           await db.query(readFileSync(ROLLBACK.snapshots, 'utf8'));
           await db.query(readFileSync(ROLLBACK.productModel, 'utf8'));
           await db.query(
@@ -679,7 +686,7 @@ describe('database migrations and schema guard', () => {
              VALUES ($1, gen_random_uuid(), $2, 'portal', 'active', 'import', 'csv_line', 'line-1', now())`,
             [tenant, company],
           );
-          await rollbackM8(db);
+          await rollbackToM7(db);
           await db.query(readFileSync(ROLLBACK.snapshots, 'utf8'));
           await expect(db.query(readFileSync(ROLLBACK.productModel, 'utf8'))).rejects.toThrow(
             /cannot be rolled back/,
@@ -879,7 +886,7 @@ describe('database migrations and schema guard', () => {
         await migrate(m7Url, ['--config', m7MigrationsConfig(dir)]);
         await migrate(url);
         const latest = await schemaSnapshot(url);
-        await withAdmin(url, (db) => rollbackM8(db));
+        await withAdmin(url, (db) => rollbackToM7(db));
         expect(await schemaSnapshot(url)).toEqual(await schemaSnapshot(m7Url));
         const output = await migrate(url);
         for (const name of M8_MIGRATIONS) expect(output).toMatch(new RegExp(name));
@@ -1197,8 +1204,8 @@ describe('database migrations and schema guard', () => {
            VALUES ($1, gen_random_uuid(), 'import', 'Operator import (CSV)', 'enabled', 'code')`,
           [tenantA],
         );
-        // Later M8 down-scripts first (newest first), then this one.
-        for (const file of M8_DOWNS) {
+        // Later down-scripts first (newest first), then this one.
+        for (const file of POST_M7_DOWNS) {
           await db.query(readFileSync(file, 'utf8'));
           if (file.includes('20261020120000_m8_connector_kinds_and_connections')) break;
         }
@@ -1351,6 +1358,168 @@ describe('database migrations and schema guard', () => {
       await expect(withAdmin(target, (db) => db.query(down))).rejects.toThrow(message);
       expect(await schemaSnapshot(target)).toEqual(snapshot);
     });
+  });
+
+  describe('source profiling (M9A migration on M8 data)', () => {
+    const tenantA = '9a9a9a9a-9a9a-49a9-89a9-9a9a9a9a9a9a';
+    const SNAP = 'e'.repeat(64);
+
+    /** An M8 database with one tenant, its import connection and a schema snapshot. */
+    async function m8Database(name: string): Promise<string> {
+      const target = await createDatabase(pg, name);
+      const dir = resolve(`test/.tmp/${name}`);
+      try {
+        await migrate(target, ['--config', m8MigrationsConfig(dir)]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+      await withAdmin(target, async (db) => {
+        await db.query(
+          `INSERT INTO tenants (id, slug, name, updated_at) VALUES ($1, 'mninea', 'A', now())`,
+          [tenantA],
+        );
+        await db.query(
+          `INSERT INTO tenant_source_connections (tenant_id, id, kind, label, status, mapping_mode)
+           VALUES ($1, gen_random_uuid(), 'import', 'Operator import (CSV)', 'enabled', 'code')`,
+          [tenantA],
+        );
+        const { rows } = await db.query<{ id: string }>(
+          `SELECT id FROM tenant_source_connections WHERE tenant_id = $1`,
+          [tenantA],
+        );
+        const hash = authorityContentHash({
+          facts: {
+            account_profile: null,
+            person_profile: null,
+            subscription_lines: rows[0]!.id,
+            subscription_state: rows[0]!.id,
+            subscription_terms: rows[0]!.id,
+          },
+        });
+        await db.query(
+          `INSERT INTO tenant_source_authority_versions (tenant_id, version, base_version,
+             subscription_lines_connection_id, subscription_state_connection_id, subscription_terms_connection_id,
+             content_hash, published_by)
+           VALUES ($1, 1, 0, $2, $2, $2, $3, 'provisioning')`,
+          [tenantA, rows[0]!.id, hash],
+        );
+        await db.query(
+          `INSERT INTO tenant_source_schema_snapshots (tenant_id, connection_id, hash, document, captured_by)
+           VALUES ($1, $2, $3, '{"objects":[]}', 'test')`,
+          [tenantA, rows[0]!.id, SNAP],
+        );
+      });
+      return target;
+    }
+
+    it('applies on M8 data: existing authority versions get empty acceptances and keep their hash', async () => {
+      const target = await m8Database('m9a_on_m8');
+      const before = await withAdmin(target, (db) =>
+        db.query<{ content_hash: string }>(
+          'SELECT content_hash FROM tenant_source_authority_versions',
+        ),
+      );
+      const output = await migrate(target);
+      expect(output).toMatch(new RegExp(M9A_MIGRATIONS[0]!));
+      const { rows } = await withAdmin(target, (db) =>
+        db.query<{ content_hash: string; proof_acceptances: unknown }>(
+          'SELECT content_hash, proof_acceptances FROM tenant_source_authority_versions',
+        ),
+      );
+      expect(rows).toEqual(
+        before.rows.map((r) => ({ content_hash: r.content_hash, proof_acceptances: [] })),
+      );
+    });
+
+    it('refuses to apply when an existing authority hash does not match the M8 rule (parity check can fail)', async () => {
+      const target = await m8Database('m9a_parity_fail');
+      await withAdmin(target, (db) =>
+        db.query(
+          `INSERT INTO tenant_source_authority_versions (tenant_id, version, base_version, content_hash, published_by)
+           VALUES ($1, 2, 1, repeat('f', 64), 'test')`,
+          [tenantA],
+        ),
+      );
+      await expect(migrate(target)).rejects.toThrow(/authority hash parity failed for 1 versions/);
+    });
+
+    it('the M9A down-script restores exactly the M8 schema and M9A re-applies', async () => {
+      const m8Url = await createDatabase(pg, 'm8_reference_db');
+      const url = await createDatabase(pg, 'm9a_down_db');
+      const dir = resolve('test/.tmp/m8-reference');
+      try {
+        await migrate(m8Url, ['--config', m8MigrationsConfig(dir)]);
+        await migrate(url);
+        const latest = await schemaSnapshot(url);
+        await withAdmin(url, (db) => db.query(readFileSync(M9A_DOWN, 'utf8')));
+        expect(await schemaSnapshot(url)).toEqual(await schemaSnapshot(m8Url));
+        const output = await migrate(url);
+        expect(output).toMatch(new RegExp(M9A_MIGRATIONS[0]!));
+        expect(await schemaSnapshot(url)).toEqual(latest);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    // Gap and snapshot rows need companies, products and models; their FKs are
+    // irrelevant to the refusal, so those two cases seed in replica mode.
+    const replica = (sql: string) =>
+      `SET session_replication_role = replica; ${sql}; SET session_replication_role = origin`;
+    it.each([
+      [
+        'a profile run',
+        `INSERT INTO tenant_source_profile_runs (tenant_id, id, connection_id, schema_snapshot_hash, active_key, request, requested_by, correlation_id)
+         SELECT tenant_id, gen_random_uuid(), connection_id, hash, connection_id::text, '{}', 'test', gen_random_uuid()
+           FROM tenant_source_schema_snapshots LIMIT 1`,
+        /profile runs exist/,
+      ],
+      [
+        'an ownership gap with an M9A reason',
+        replica(
+          `INSERT INTO tenant_ownership_gaps (tenant_id, connection_id, source_object_type, source_record_id, company_id, reason, checkpoint_id)
+           SELECT tenant_id, id, 'RevenueLineItems', 'r1', gen_random_uuid(), 'observation_rejected', gen_random_uuid()
+             FROM tenant_source_connections LIMIT 1`,
+        ),
+        /ownership gaps use an M9A reason/,
+      ],
+      [
+        'a proof acceptance',
+        `INSERT INTO tenant_source_authority_versions (tenant_id, version, base_version, content_hash, published_by, proof_acceptances)
+         SELECT tenant_id, 2, 1, repeat('a', 64), 'test',
+                jsonb_build_array(jsonb_build_object('tier', 'stable_snapshot', 'connectionId', id, 'reason', 'r', 'actor', 'test'))
+           FROM tenant_source_connections LIMIT 1`,
+        /authority versions carry proof acceptances/,
+      ],
+      [
+        'a mapping version with a reviewed holding domain',
+        `INSERT INTO tenant_source_mapping_versions (tenant_id, connection_id, version, base_version, document, content_hash, schema_snapshot_hash, authority_version, published_by)
+         SELECT tenant_id, connection_id, 1, 0,
+                '{"objects":[{"holdingFilter":{"field":"s","operator":"in","values":["x"],"reviewedDomain":{}}}]}',
+                repeat('b', 64), hash, 1, 'test'
+           FROM tenant_source_schema_snapshots LIMIT 1`,
+        /mapping versions carry a reviewed holding domain/,
+      ],
+      [
+        'an evaluator v3 eligibility snapshot',
+        replica(
+          `INSERT INTO tenant_eligibility_snapshots (tenant_id, id, requested_company_id, evaluated_company_id, product_key, as_of, status, ownership, model_version, model_hash, evaluator_version, facts_hash, result, purpose, correlation_id)
+           VALUES ('${tenantA}', gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 'core', now(), 'unknown', 'unknown', 1, repeat('c', 64), 3, repeat('d', 64), '{}', 'test', gen_random_uuid())`,
+        ),
+        /eligibility snapshots were written by evaluator v3/,
+      ],
+    ])(
+      'the M9A down-script refuses (and changes nothing) with %s',
+      async (_label, sql, message) => {
+        const target = await m8Database(`m9a_down_${Math.random().toString(36).slice(2, 8)}`);
+        await migrate(target);
+        await withAdmin(target, (db) => db.query(sql));
+        const snapshot = await schemaSnapshot(target);
+        await expect(
+          withAdmin(target, (db) => db.query(readFileSync(M9A_DOWN, 'utf8'))),
+        ).rejects.toThrow(message);
+        expect(await schemaSnapshot(target)).toEqual(snapshot);
+      },
+    );
   });
 
   describe('upgrading from the Milestone 1 state', () => {

@@ -170,6 +170,27 @@ export class SubscriptionQueries {
   }
 
   /** Source record ids of a system's non-deleted lines (full-run tombstone pass). */
+  /** The company of the canonical line for a source key, if a line exists (gap attribution, M9A §9.4). */
+  async lineCompanyFor(
+    tx: TenantTransaction,
+    system: string,
+    objectType: string,
+    recordId: string,
+  ): Promise<string | undefined> {
+    const row = await tenantClient(tx).tenantSubscription.findUnique({
+      where: {
+        tenantId_sourceSystem_sourceObjectType_sourceRecordId: {
+          tenantId: tx.tenantId,
+          sourceSystem: system,
+          sourceObjectType: objectType,
+          sourceRecordId: recordId,
+        },
+      },
+      select: { companyId: true },
+    });
+    return row?.companyId;
+  }
+
   async activeSourceRecordIds(
     tx: TenantTransaction,
     system: string,

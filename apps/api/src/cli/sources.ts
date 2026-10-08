@@ -1,6 +1,6 @@
 import 'reflect-metadata';
 import { randomUUID } from 'node:crypto';
-import { readFileSync, statSync } from 'node:fs';
+import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { Module, type INestApplicationContext } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
@@ -9,10 +9,12 @@ import { HubSpotModule } from '../modules/hubspot';
 import { SubscriptionMergeModule, SubscriptionMergeParticipant } from '../modules/products';
 import {
   MappingPreviewService,
+  ProfilePurgeService,
   SchemaSnapshotsService,
   SourceAuthorityService,
   SourceConnectionsService,
   SourceMappingsService,
+  SourceProfilingService,
   SourceReportService,
   SourcesError,
   SourcesModule,
@@ -48,6 +50,21 @@ import { fail } from './hubspot-context';
  *   pnpm --filter @lip/api sync:incremental    --tenant <slug> --connection <id|kind> [--execute]
  *   pnpm --filter @lip/api sync:status         --tenant <slug> --connection <id|kind>
  *   pnpm --filter @lip/api source:report       --tenant <slug> --connection <id|kind> [--drift] [--products]
+ *
+ * Source profiling (M9A, ADR 0022; aggregates only, never raw values except safe categories):
+ *   sources profile-run      --tenant <slug> --connection <id|kind> --objects A[,B] [--fields f1,f2]
+ *                            --sampling full|systematic|recent|head [--max-rows N]
+ *                            [--include-excluded Object.field,...] [--actor <id>] [--execute]
+ *   sources profile-status   --tenant <slug> --connection <id|kind> [--run <id>]
+ *   sources profile-show     --tenant <slug> --connection <id|kind> --object A [--profile <id>]
+ *   sources profile-findings --tenant <slug> --connection <id|kind> [--object A] [--severity info|warning|review_required]
+ *   sources profile-drift    --tenant <slug> --connection <id|kind> --object A
+ *   sources mappings-draft   --tenant <slug> --connection <id|kind> --from-profile [--out <file>]
+ *   sources profile-purge    --tenant <slug> --connection <id|kind> --object A --keep 10 [--execute]
+ *                            (schema owner credentials: MIGRATION_DATABASE_URL; the app role is refused)
+ * mappings-publish/validate also take `--ack <findingId>:<reasonCode>` (repeatable) and
+ * `--profile-override <reason>`, which is always refused in M9A (no authenticated operator).
+ * authority-publish takes `--accept-proof <connectionId>:<reason>` (stable_snapshot only).
  *
  * Sync runs are processed by the worker (CONTEXT_PROCESSING_ENABLED=true).
  * Exit codes: 2 invalid input or refused publication/run, 1 unexpected failure.
@@ -124,12 +141,41 @@ async function main(): Promise<void> {
       drift: { type: 'boolean', default: false },
       products: { type: 'boolean', default: false },
       execute: { type: 'boolean', default: false },
+      ack: { type: 'string', multiple: true },
+      'profile-override': { type: 'string' },
+      'accept-proof': { type: 'string', multiple: true },
+      objects: { type: 'string' },
+      object: { type: 'string' },
+      fields: { type: 'string' },
+      sampling: { type: 'string' },
+      'max-rows': { type: 'string' },
+      'include-excluded': { type: 'string' },
+      run: { type: 'string' },
+      profile: { type: 'string' },
+      severity: { type: 'string' },
+      'from-profile': { type: 'boolean', default: false },
+      out: { type: 'string' },
+      keep: { type: 'string' },
     },
   });
   if (!values.tenant) throw new Error('--tenant <slug> is required');
   const tenant = values.tenant;
   const execute = values.execute;
   const actor = values.actor ?? 'cli';
+  // `--ack <findingId>:<reasonCode>` (M9A §7.4); validated by the mapping service.
+  const acknowledgements = (values.ack ?? []).map((a) => {
+    const [findingId = '', reasonCode = ''] = a.split(':');
+    return { findingId, reasonCode } as { findingId: string; reasonCode: never };
+  });
+  const mappingOptions = {
+    ...(values['validated-against'] ? { validatedAgainst: values['validated-against'] } : {}),
+    ...(acknowledgements.length > 0 ? { acknowledgements } : {}),
+    // Accepted as input only to be refused and audited (decision A1).
+    ...(values['profile-override'] !== undefined
+      ? { profileOverride: { reason: values['profile-override'] } }
+      : {}),
+    actor,
+  };
 
   const result = await withSources(async (app) => {
     const ctx = await app.get(TenantContextService).forSlug(tenant);
@@ -199,7 +245,7 @@ async function main(): Promise<void> {
           const conn = await connection(ctx);
           const report = await app
             .get(SourceMappingsService)
-            .validate(ctx, conn.id, readJson(values.file), values['validated-against']);
+            .validate(ctx, conn.id, readJson(values.file), mappingOptions);
           if (!report.ok) exitCode = 2;
           return report;
         }
@@ -216,12 +262,7 @@ async function main(): Promise<void> {
           const conn = await connection(ctx);
           const mappings = app.get(SourceMappingsService);
           const document = readJson(values.file);
-          const report = await mappings.validate(
-            ctx,
-            conn.id,
-            document,
-            values['validated-against'],
-          );
+          const report = await mappings.validate(ctx, conn.id, document, mappingOptions);
           if (!report.ok) exitCode = 2;
           if (!execute || !report.ok) return { dryRun: true, ...report };
           const basedOn = int(values['based-on'], 'based-on');
@@ -232,11 +273,8 @@ async function main(): Promise<void> {
           }
           return {
             published: await mappings.publish(ctx, conn.id, document, {
+              ...mappingOptions,
               expectedBaseVersion: basedOn,
-              actor,
-              ...(values['validated-against']
-                ? { validatedAgainst: values['validated-against'] }
-                : {}),
             }),
           };
         }
@@ -259,9 +297,14 @@ async function main(): Promise<void> {
             throw new Error('--based-on <version> is required to publish');
           }
           return {
-            published: await app
-              .get(SourceAuthorityService)
-              .publish(ctx, document, { expectedBaseVersion: basedOn, actor }),
+            published: await app.get(SourceAuthorityService).publish(ctx, document, {
+              expectedBaseVersion: basedOn,
+              actor,
+              proofAcceptances: (values['accept-proof'] ?? []).map((a) => {
+                const at = a.indexOf(':');
+                return { connectionId: a.slice(0, at), reason: a.slice(at + 1) };
+              }),
+            }),
           };
         }
         case 'sync-full':
@@ -278,6 +321,107 @@ async function main(): Promise<void> {
           const conn = await connection(ctx);
           return { runs: await app.get(SourceReportService).status(ctx, conn.id) };
         }
+        case 'profile-run': {
+          const conn = await connection(ctx);
+          if (!values.objects) throw new Error('--objects A[,B] is required');
+          if (!values.sampling)
+            throw new Error('--sampling full|systematic|recent|head is required');
+          const objects = values.objects.split(',').filter(Boolean);
+          const fields = values.fields?.split(',').filter(Boolean);
+          if (fields && objects.length !== 1) throw new Error('--fields needs exactly one object');
+          const result = await app.get(SourceProfilingService).request(
+            ctx,
+            conn.id,
+            {
+              objects: objects.map((object) => ({ object, ...(fields ? { fields } : {}) })),
+              sampling: values.sampling,
+              ...(values['max-rows'] !== undefined
+                ? { maxRows: int(values['max-rows'], 'max-rows') }
+                : {}),
+              includeExcluded: values['include-excluded']?.split(',').filter(Boolean) ?? [],
+            },
+            { actor, execute, correlationId: randomUUID() },
+          );
+          return { ...result };
+        }
+        case 'profile-status': {
+          const conn = await connection(ctx);
+          const runs = await app.get(SourceProfilingService).status(ctx, conn.id, values.run);
+          return {
+            runs: runs.map((r) => ({
+              id: r.id,
+              status: r.status,
+              errorCode: r.errorCode ?? null,
+              objects: r.request.objects.map((o) => o.object),
+              sampling: r.request.sampling,
+              maxRows: r.request.maxRows,
+              requestedBy: r.requestedBy,
+              createdAt: r.createdAt,
+              finishedAt: r.finishedAt ?? null,
+              summary: r.sampling ?? null,
+            })),
+          };
+        }
+        case 'profile-show': {
+          const conn = await connection(ctx);
+          if (!values.object) throw new Error('--object is required');
+          const shown = await app
+            .get(SourceProfilingService)
+            .show(ctx, conn.id, values.object, values.profile);
+          return shown
+            ? {
+                profileId: shown.id,
+                runId: shown.runId ?? null,
+                syncRunId: shown.syncRunId ?? null,
+                family: shown.samplingFamily,
+                contentHash: shown.contentHash,
+                previousProfileId: shown.previousProfileId ?? null,
+                document: shown.document,
+              }
+            : { found: false };
+        }
+        case 'profile-findings': {
+          const conn = await connection(ctx);
+          const severity = values.severity as 'info' | 'warning' | 'review_required' | undefined;
+          if (severity && !['info', 'warning', 'review_required'].includes(severity)) {
+            throw new Error('--severity must be info, warning or review_required');
+          }
+          const findings = await app.get(SourceProfilingService).findings(ctx, conn.id, {
+            ...(values.object ? { object: values.object } : {}),
+            ...(severity ? { severity } : {}),
+          });
+          return { findings };
+        }
+        case 'profile-drift': {
+          const conn = await connection(ctx);
+          if (!values.object) throw new Error('--object is required');
+          return await app.get(SourceProfilingService).drift(ctx, conn.id, values.object);
+        }
+        case 'mappings-draft': {
+          const conn = await connection(ctx);
+          if (!values['from-profile']) throw new Error('--from-profile is required');
+          const draft = await app.get(SourceProfilingService).draftMapping(ctx, conn.id);
+          if (values.out) {
+            writeFileSync(values.out, `${JSON.stringify(draft, null, 2)}\n`, { flag: 'wx' });
+            return { written: values.out, draft: true, basedOnProfiles: draft.basedOnProfiles };
+          }
+          return draft;
+        }
+        case 'profile-purge': {
+          const conn = await connection(ctx);
+          if (!values.object) throw new Error('--object is required');
+          const keep = int(values.keep, 'keep');
+          if (keep === undefined) throw new Error('--keep N is required');
+          return {
+            purge: await app.get(ProfilePurgeService).purge(ctx, conn.id, values.object, {
+              keep,
+              actor,
+              execute,
+              // The schema owner's URL (never printed); the app role is refused.
+              ownerDatabaseUrl: process.env.MIGRATION_DATABASE_URL,
+            }),
+          };
+        }
         case 'report': {
           const conn = await connection(ctx);
           return await app
@@ -286,7 +430,7 @@ async function main(): Promise<void> {
         }
         default:
           throw new Error(
-            'Usage: sources <list|configure|test|schema|mappings-validate|mappings-preview|mappings-publish|mappings-show|authority-show|authority-publish|sync-full|sync-incremental|sync-status|report> --tenant <slug> [...]',
+            'Usage: sources <list|configure|test|schema|mappings-validate|mappings-preview|mappings-publish|mappings-show|mappings-draft|authority-show|authority-publish|sync-full|sync-incremental|sync-status|report|profile-run|profile-status|profile-show|profile-findings|profile-drift|profile-purge> --tenant <slug> [...]',
           );
       }
     } catch (error) {

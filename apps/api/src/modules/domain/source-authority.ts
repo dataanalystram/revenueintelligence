@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { stableJson } from './source-connector';
 import { z } from 'zod';
 
 /**
@@ -64,5 +65,45 @@ export function factsHeldBy(doc: AuthorityDocument, connectionId: string): Autho
 export function authorityContentHash(doc: AuthorityDocument): string {
   return createHash('sha256')
     .update(AUTHORITY_FACTS.map((f) => doc.facts[f] ?? '-').join('|'))
+    .digest('hex');
+}
+
+/**
+ * An operator acceptance of an adapter-declared stable full-read proof
+ * (ADR 0023, M9A §11.4). It can only ever accept `stable_snapshot`: no
+ * acceptance yields `externally_grounded`.
+ */
+export const ProofAcceptanceSchema = z.strictObject({
+  connectionId: z.uuid(),
+  tier: z.literal('stable_snapshot'),
+  reason: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .refine((r) => !/(secret|password|token|apikey|bearer)/i.test(r), 'no secrets in reasons'),
+  actor: z.string().regex(/^[A-Za-z0-9_.:@-]{1,128}$/),
+  at: z.iso.datetime().optional(),
+});
+export type ProofAcceptance = z.infer<typeof ProofAcceptanceSchema>;
+
+/**
+ * Content hash with proof acceptances: identical to the M8 hash while there
+ * are none (parity with the M8 SQL seed); otherwise the M8 hash, `|`, and the
+ * stable JSON of the acceptances sorted by connection (timestamps excluded).
+ */
+export function authorityContentHashWith(
+  doc: AuthorityDocument,
+  acceptances: readonly ProofAcceptance[],
+): string {
+  const base = authorityContentHash(doc);
+  if (acceptances.length === 0) return base;
+  const content = [...acceptances]
+    .map(({ connectionId, tier, reason, actor }) => ({ connectionId, tier, reason, actor }))
+    .sort((a, b) =>
+      a.connectionId < b.connectionId ? -1 : a.connectionId > b.connectionId ? 1 : 0,
+    );
+  return createHash('sha256')
+    .update(`${base}|${stableJson(content)}`)
     .digest('hex');
 }

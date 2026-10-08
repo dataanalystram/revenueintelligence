@@ -1,8 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import {
   AUTHORITY_FACTS,
-  authorityContentHash,
+  authorityContentHashWith,
   AuthorityDocumentSchema,
+  ProofAcceptanceSchema,
+  type ProofAcceptance,
   holdingsConfirmed,
   MappingDocumentSchema,
   type AuthorityDocument,
@@ -46,7 +48,15 @@ export class SourceAuthorityService {
   async publish(
     ctx: TenantContext,
     raw: unknown,
-    options: { expectedBaseVersion: number; actor: string },
+    options: {
+      expectedBaseVersion: number;
+      actor: string;
+      /**
+       * M9A (§11.4): accept an adapter-declared stable full-read proof for a
+       * versioned connection. Only `stable_snapshot` can be accepted.
+       */
+      proofAcceptances?: ReadonlyArray<{ connectionId: string; reason: string }>;
+    },
   ): Promise<StoredAuthorityVersion> {
     const base = (options as { expectedBaseVersion?: number }).expectedBaseVersion;
     if (base === undefined || !Number.isInteger(base) || base < 0) {
@@ -128,12 +138,45 @@ export class SourceAuthorityService {
           }
         }
       }
+      const at = new Date().toISOString();
+      const acceptances: ProofAcceptance[] = [];
+      for (const [i, a] of (options.proofAcceptances ?? []).entries()) {
+        const parsed = ProofAcceptanceSchema.safeParse({
+          connectionId: a.connectionId,
+          tier: 'stable_snapshot',
+          reason: a.reason,
+          actor: options.actor,
+          at,
+        });
+        const connection = parsed.success
+          ? await this.repo.connection(tx, a.connectionId)
+          : undefined;
+        if (!parsed.success || !connection || connection.mappingMode !== 'versioned') {
+          issues.push({
+            code: 'invalid_proof_acceptance',
+            path: `proofAcceptances.${i}`,
+            message: 'an acceptance names a versioned connection of this tenant and a reason',
+          });
+          continue;
+        }
+        if (acceptances.some((x) => x.connectionId === a.connectionId)) {
+          issues.push({
+            code: 'invalid_proof_acceptance',
+            path: `proofAcceptances.${i}`,
+            message: 'a connection is accepted once',
+          });
+          continue;
+        }
+        acceptances.push(parsed.data);
+      }
       if (issues.length > 0) throw new AuthorityInvalidError(issues);
       return this.repo.insertAuthority(tx, {
         version: latestVersion + 1,
         document: doc,
-        contentHash: authorityContentHash(doc),
+        // Unchanged from M8 while there are no acceptances (hash parity).
+        contentHash: authorityContentHashWith(doc, acceptances),
         publishedBy: options.actor,
+        proofAcceptances: acceptances,
       });
     });
   }

@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { CompanyMerge } from '../../context';
+import type { ProtectionGapReason } from '../../domain';
 import { tenantClient, type TenantTransaction } from '../../tenancy';
 
 export interface OwnershipGap {
@@ -7,7 +8,8 @@ export interface OwnershipGap {
   readonly companyId: string;
   readonly sourceObjectType: string;
   readonly sourceRecordId: string;
-  readonly reason: 'missing_product_reference' | 'orphan_product_reference';
+  /** M8 product-reference reasons, plus the M9A seen-but-rejected reasons (ADR 0023). */
+  readonly reason: ProtectionGapReason;
 }
 
 /** Per-account ownership gaps (ADR 0020 §15): derived state, never evidence. */

@@ -1,4 +1,5 @@
 import type { ConnectorKind } from './connector-kinds';
+import { classifyHoldingValue, type HoldingValueClass } from './holding-domain';
 import type { ExternalRef, ExternalSystem } from './external-ref';
 import { companyFields, personFields, type SourceObservation } from './source-observation';
 import type { SourceRecord } from './source-connector';
@@ -42,13 +43,31 @@ export const QUALITY_CODES = [
 ] as const;
 export type QualityCode = (typeof QUALITY_CODES)[number];
 
-/** Literal set membership on the mapped object's own field. An empty value is
- * never a member of `values` (so `not_in` admits it, `in` does not). */
-export function holdingFilterMatches(filter: HoldingFilter, record: SourceRecord): boolean {
-  const raw = record.values[filter.field];
-  const value = raw === null || raw === undefined ? undefined : String(raw).trim();
-  const member = value !== undefined && value !== '' && filter.values.includes(value);
-  return filter.operator === 'in' ? member : !member;
+/** Every `skipped` outcome code of {@link mapSubscriptionRecord} (protection decisions cover each). */
+export const SKIP_CODES = [
+  'non_subscription_product',
+  'missing_product_reference',
+  'orphan_product_reference',
+  'missing_account_reference',
+  'orphan_account_reference',
+  'missing_identity',
+  'record_rejected',
+  'unreviewed_holding_value',
+] as const;
+export type SkipCode = (typeof SKIP_CODES)[number];
+
+/**
+ * The holding decision for one record (ADR 0023, M9A §10.3): the value is
+ * looked up in the filter's reviewed domain. A value outside it is
+ * `unreviewed` under `in` and `not_in` alike, and an empty value uses the
+ * explicit empty entry: M8's "an empty value is never a member", which made
+ * `not_in` admit empty values as holdings, no longer applies. A filter
+ * without a reviewed domain (published before M9A) classifies nothing: every
+ * value is `unreviewed` (runs refuse such versions before reading anyway).
+ */
+export function holdingClassOf(filter: HoldingFilter, record: SourceRecord): HoldingValueClass {
+  if (!filter.reviewedDomain) return 'unreviewed';
+  return classifyHoldingValue(filter.reviewedDomain, record.values[filter.field]);
 }
 
 /** What the run knows about a source product id. */
@@ -78,15 +97,8 @@ export type SubscriptionMappingResult =
   | { readonly outcome: 'filtered_out' }
   | {
       readonly outcome: 'skipped';
-      readonly code:
-        | 'non_subscription_product'
-        | 'missing_product_reference'
-        | 'orphan_product_reference'
-        | 'missing_account_reference'
-        | 'orphan_account_reference'
-        | 'missing_identity'
-        | 'record_rejected';
-      /** The line's account when it resolved: an ownership gap for missing/orphan products. */
+      readonly code: SkipCode;
+      /** The line's account when it could be read: the ownership gap's attribution (§9.4). */
       readonly gapAccountId?: string;
     }
   | {
@@ -100,6 +112,22 @@ export type SubscriptionMappingResult =
       readonly accountId?: string;
       readonly quality: readonly QualityCode[];
     };
+
+/** The record's account id when one can be read (primary reference, else the hop), for gap attribution only. */
+function bestEffortAccount(
+  obj: ObjectMapping,
+  record: SourceRecord,
+  env: SubscriptionMappingEnv,
+): string | undefined {
+  const rel = obj.relationships.find((r) => r.target === 'subscription.account');
+  if (!rel) return undefined;
+  const primary = text(record.values[rel.field]);
+  if (primary) return primary;
+  if (!rel.fallbackVia) return undefined;
+  const via = text(record.values[rel.fallbackVia.field]);
+  const hop = via ? env.fallbackAccount(via) : undefined;
+  return hop?.kind === 'account' ? hop.id : undefined;
+}
 
 function text(value: RawValue): string | undefined {
   if (value === null || value === undefined) return undefined;
@@ -134,8 +162,20 @@ export function mapSubscriptionRecord(
     };
   }
 
-  if (obj.holdingFilter && !holdingFilterMatches(obj.holdingFilter, record)) {
-    return { outcome: 'filtered_out' };
+  if (obj.holdingFilter) {
+    const holding = holdingClassOf(obj.holdingFilter, record);
+    // A reviewed non-holding value is a confident exclusion (tombstonable).
+    if (holding === 'non_holding') return { outcome: 'filtered_out' };
+    // An unreviewed value is never classified: the record is protected and its
+    // account (best effort, for the ownership gap) is reported.
+    if (holding === 'unreviewed') {
+      const gapAccountId = bestEffortAccount(obj, record, env);
+      return {
+        outcome: 'skipped',
+        code: 'unreviewed_holding_value',
+        ...(gapAccountId ? { gapAccountId } : {}),
+      };
+    }
   }
 
   const quality: QualityCode[] = [];
@@ -199,7 +239,9 @@ export function mapSubscriptionRecord(
     const result = applyTransforms(record.values[entry.source], entry.transforms);
     if (!result.ok) {
       quality.push(result.code === 'invalid_boolean' ? 'invalid_number' : result.code);
-      if (result.rejectRecord) return { outcome: 'skipped', code: 'record_rejected' };
+      if (result.rejectRecord) {
+        return { outcome: 'skipped', code: 'record_rejected', gapAccountId: accountId };
+      }
       if (entry.target === 'subscription.startsAt' || entry.target === 'subscription.endsAt') {
         invalidTerms = true;
       }
