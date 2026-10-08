@@ -438,6 +438,73 @@ updated once more ~6 s after the call (not visible from a read which attribute).
 (this connector had not recorded S10's parent before M03); the "after" values were read independently and are
 later than the "before". **V12 PRICE REPLACEMENT LIVE CONFIRMED.** Incremental line sync stays disabled until M04.
 
+## Live mutation M04 — S12 plan replacement, Basic monthly USD → Pro monthly USD (2026-10-08)
+
+**Source side (owner's setup agent):** HTTP 200 via `update_for_items` with `replace_items_list=true`; quantity 1,
+status `active`; product Basic → Pro; no unrelated record modified. **Live Chargebee mutation behaviour (setup API,
+not connector reads):** `trial_end=0` had to be supplied explicitly, otherwise the Pro price's default trial would have
+moved the subscription into a trial.
+
+**Connector verification** (generic replay check, Key A, sanitized): run 1 replays S12's pre-M04 item list (Basic
+monthly USD, qty 1 — key fingerprint identical to the post-M03 evidence), run 2 reads the live site unchanged.
+
+| Check                                              | Observed                                                                                                                                                                                                     |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Live S12                                           | 1 item: Pro monthly USD, qty 1, `active`                                                                                                                                                                     |
+| Run 2 (live)                                       | completed; proof `double_enumeration / stable_snapshot / passed`; `child_retired: 1`; no rejection or uncertain set                                                                                          |
+| Old line `<subscription_id>:<Basic monthly price>` | resolves to the Basic item; retired by G4 (`record_state = deleted`, state left `active`)                                                                                                                    |
+| New line `<subscription_id>:<Pro monthly price>`   | resolves to the Pro item; created through the normal ingest path, `active`, qty 1                                                                                                                            |
+| Identities                                         | key fingerprints equal the hashes of the two expected identity strings; they differ only in the item-price part                                                                                              |
+| Ownership (S12 account)                            | owned products before: {Basic} → after: {Pro}; eligible whitespace 0 before and after                                                                                                                        |
+| Status / terms                                     | `active`; terms equal the raw `current_term_*`                                                                                                                                                               |
+| Unrelated lines                                    | changed keys: exactly the two S12 keys; active 23 → 23; diff vs post-M03 fingerprints: 1 removed, 1 added, 0 other                                                                                           |
+| Gaps / coverage                                    | no gap; `stable_snapshot` from run 2                                                                                                                                                                         |
+| Page size 10 / Key B                               | proof passed / `forbidden`, `source_forbidden`, no change                                                                                                                                                    |
+| Incremental window probe (read-only)               | `updated_at[after]` + `sort_by[asc]=updated_at` accepted by the live API; window since before M02 returned exactly S02, S10, S12 (the three mutated parents), ordered by `updated_at`, all inside the window |
+
+**V12 plan replacement (parent S12):** `updated_at` `1791486576` (owner) → `1791495611` (owner, after the call) →
+`1791495617` read here; `resource_version` `1791486576495` → `1791495611107` → `1791495617217` (again one further update
+~6 s after the call). **V12 PLAN REPLACEMENT LIVE CONFIRMED.**
+
+## V12 final decision and incremental-sync assessment
+
+**V12: LIVE CONFIRMED for API-driven subscription-item changes** — quantity change (M01), item removal (M02), price
+replacement within an item (M03) and plan/product replacement (M04) each moved the parent's `updated_at` and
+`resource_version`. **Not covered:** changes Chargebee applies by itself over time (trial end, scheduled
+cancellation at term end, `future` → `active`, scheduled changes, renewals); whether those move `updated_at` is not
+observed.
+
+Assessment of the existing incremental algorithm against the live evidence (no code changed):
+
+| Concern                                            | Behaviour                                                                                                                                                                                                                                                                                                                                                                                                      |
+| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Nested quantity / removal / price / product change | Parent `updated_at` moves (M01–M04) → the parent re-enters the window; its complete child set is re-read in one record; G4 retires removed children, new children are ingested (as proven on full runs)                                                                                                                                                                                                        |
+| Checkpoint                                         | the run boundary (`run start − settleMinutes`) stored as `highWatermark`; next window `since = last completed run's highWatermark − overlapMinutes`; within a run, resume via the opaque position                                                                                                                                                                                                              |
+| Ordering / ties                                    | `sort_by[asc]=updated_at` with `updated_at[after]=since−1` / `[before]=boundary+1` (seconds, widened). A compound `(updated_at, id)` checkpoint is **not** required: windows overlap, writes are idempotent (field-hash), and the continuation token is a two-part value (V2) consistent with keyset paging; records updated during the read have `updated_at` > boundary and are picked up by the next window |
+| Pagination                                         | `pagination_stalled` and page ceiling apply; a parent split across pages makes its set uncertain (no retirement)                                                                                                                                                                                                                                                                                               |
+| Overlap / replay                                   | re-reading a parent is idempotent (rerun 0 changes, live)                                                                                                                                                                                                                                                                                                                                                      |
+| Duplicates / seen-but-rejected                     | duplicate keys fail closed; G4 honours `mayTombstone`; incremental runs never run the tombstone pass; gaps are only added                                                                                                                                                                                                                                                                                      |
+| Deletion                                           | **full-run only**: reads are live-records-only, so a deleted subscription never appears in a window; it is retired by the next accepted full run                                                                                                                                                                                                                                                               |
+| Coverage                                           | only full (`backfill`) runs carry a proof; incremental runs neither establish nor raise coverage                                                                                                                                                                                                                                                                                                               |
+
+**Recommendation (not enabled):**
+
+1. Incremental Subscription/SubscriptionItem reads are **architecturally safe to enable per connection** for the
+   API-driven changes above, **provided** periodic accepted full runs continue.
+2. Checkpoint: the existing run boundary/`highWatermark` (seconds); no new checkpoint type.
+3. `updated_at` + source id are **not** both required for checkpointing (reasons above); ordering by `updated_at`
+   with the opaque continuation token is sufficient.
+4. Overlap/lookback: `overlapMinutes ≥ 10` and `settleMinutes ≥ 1` (an asynchronous follow-up update ~6 s after each
+   mutation was observed; V9 lag otherwise unmeasured).
+5. Periodic accepted full runs remain **required** — for deletions, completeness/coverage proof, and to bound
+   staleness from time-driven transitions that V12 has not covered (recommend at least daily).
+6. Work before enabling: **no code change**. Required: (a) set `incrementalLines: "verified"` in the connection
+   config, re-capture the snapshot and publish a new mapping version (governed; the snapshot hash changes);
+   (b) set `sync.settleMinutes` / `sync.overlapMinutes` as above; (c) an operational schedule for periodic full runs —
+   **the platform has no scheduler today** (runs are started by the CLI/worker on request), so this is operational
+   or follow-up work; (d) owner decision on the time-driven-transition gap (accept bounded staleness until the next
+   full run, or verify on the test site, e.g. a trial ending).
+
 ## V2–V12 (live gate)
 
 | #   | Status                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
@@ -453,7 +520,7 @@ later than the "before". **V12 PRICE REPLACEMENT LIVE CONFIRMED.** Incremental l
 | V9  | PENDING (needs a mutation)                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | V10 | PENDING — `decommissioned` is `false` on all 23 subscription records; no decommissioned record to observe                                                                                                                                                                                                                                                                                                                                                                                           |
 | V11 | Live site is PC 2.0 (`/items` 200). PC 1.0 detection cannot be observed on this site: remains fake-only                                                                                                                                                                                                                                                                                                                                                                                             |
-| V12 | **LIVE CONFIRMED for a quantity change (M01), an item removal (M02) and a price replacement (M03)**: parent `updated_at` and `resource_version` moved. Plan replacement pending (M04); incremental line sync stays **disabled** until decided                                                                                                                                                                                                                                                       |
+| V12 | **LIVE CONFIRMED for API-driven item changes** (quantity M01, removal M02, price replacement M03, plan replacement M04). Time-driven transitions not observed. Incremental line sync **remains disabled**; enabling is config/governance + periodic full runs (see the V12 decision)                                                                                                                                                                                                                |
 
 ## Live baseline (TEST site)
 

@@ -627,6 +627,21 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
           })
           .sort((a, b) => a.keyFp.localeCompare(b.keyFp));
       const before = await all();
+      const companyOfTarget = async () =>
+        (
+          await c.sql<{ company_id: string }>(
+            `SELECT company_id FROM company_external_refs WHERE tenant_id = $1 AND system = 'chargebee' AND object_type = 'Customers' AND external_id = $2`,
+            [f.ctx.tenantId, target.customer_id],
+          )
+        )[0]!.company_id;
+      const owned = async () => {
+        const w = await c.app.get(EligibilityService).whitespace(f.ctx, await companyOfTarget());
+        return {
+          owned: w.categories.owned.map((x) => x.productKey).sort(),
+          eligibleWhitespace: w.categories.eligible_whitespace.length,
+        };
+      };
+      const ownedBefore = await owned();
       const out: E = {
         run1: { status: run1.status, quality: run1.quality },
         targetBefore: await targetLines(),
@@ -671,6 +686,26 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
       out.whitespaceTarget = {
         owned: ws.categories.owned.length,
         eligibleWhitespace: ws.categories.eligible_whitespace.length,
+      };
+      out.ownershipTransition = { before: ownedBefore, after: await owned() };
+      // Read-only probe of the exact incremental window query the adapter would send.
+      const since = Number(process.env.CHARGEBEE_REPLAY_SINCE ?? target.updated_at - 3600);
+      const window = (
+        await raw(
+          `/subscriptions?updated_at[after]=${since - 1}&updated_at[before]=${Math.floor(Date.now() / 1000) + 1}&sort_by[asc]=updated_at`,
+        )
+      ).map((e) => e.subscription as E);
+      out.incrementalWindowProbe = {
+        sinceIsBeforeMutation: true,
+        returned: window.length,
+        includesTarget: window.some((x) => x.id === target.id),
+        orderedByUpdatedAt: window.every(
+          (x, n) => n === 0 || Number(x.updated_at) >= Number(window[n - 1]!.updated_at),
+        ),
+        allWithinWindow: window.every((x) => Number(x.updated_at) >= since - 1),
+        labels: window.map((x) =>
+          /_s\d\d$/.test(String(x.id)) ? String(x.id).slice(-3).toUpperCase() : 'other',
+        ),
       };
       out.parent = {
         updatedAt: target.updated_at,
