@@ -133,7 +133,7 @@ export class ChargebeeConnector implements SourceConnector {
         capabilities: {
           pagination: 'cursor',
           changeField: CHANGE_FIELD,
-          deleteVisibility: 'flag',
+          deleteVisibility: 'none',
           count: false,
           maxPageSize: page,
         },
@@ -198,7 +198,7 @@ export class ChargebeeConnector implements SourceConnector {
         capabilities: {
           pagination: 'cursor',
           changeField: CHANGE_FIELD,
-          deleteVisibility: 'flag',
+          deleteVisibility: 'none',
           count: false,
           maxPageSize: page,
           fullReadProof: 'double_enumeration',
@@ -234,7 +234,7 @@ export class ChargebeeConnector implements SourceConnector {
         capabilities: {
           pagination: 'cursor',
           changeField: CHANGE_FIELD,
-          deleteVisibility: 'flag',
+          deleteVisibility: 'none',
           count: false,
           maxPageSize: page,
           fullReadProof: 'double_enumeration',
@@ -280,21 +280,23 @@ export class ChargebeeConnector implements SourceConnector {
     }
     switch (request.object) {
       case 'Customers': {
-        const page = await this.list('/customers', request, pageSize, true, true);
+        const page = await this.list('/customers', request, pageSize, true);
         return {
-          records: page.list.map((e) => this.customer(e.customer, request.fields)),
+          records: live(page.list, 'customer').map((e) =>
+            this.customer(e.customer, request.fields),
+          ),
           ...next(page.next_offset),
         };
       }
       case 'Items': {
-        const page = await this.list('/items', request, pageSize, false, false);
+        const page = await this.list('/items', request, pageSize, false);
         return {
           records: page.list.map((e) => catalogueRecord('Items', e.item, ItemSchema, request)),
           ...next(page.next_offset),
         };
       }
       case 'ItemPrices': {
-        const page = await this.list('/item_prices', request, pageSize, false, false);
+        const page = await this.list('/item_prices', request, pageSize, false);
         return {
           records: page.list.map((e) =>
             catalogueRecord('ItemPrices', e.item_price, ItemPriceSchema, request),
@@ -303,16 +305,18 @@ export class ChargebeeConnector implements SourceConnector {
         };
       }
       case 'Subscriptions': {
-        const page = await this.list('/subscriptions', request, pageSize, true, true);
+        const page = await this.list('/subscriptions', request, pageSize, true);
         return {
-          records: page.list.map((e) => subscriptionRecord(e.subscription, request.fields)),
+          records: live(page.list, 'subscription').map((e) =>
+            subscriptionRecord(e.subscription, request.fields),
+          ),
           ...next(page.next_offset),
         };
       }
       case 'SubscriptionItems': {
-        const page = await this.list('/subscriptions', request, pageSize, true, true);
+        const page = await this.list('/subscriptions', request, pageSize, true);
         const records: SourceRecord[] = [];
-        for (const entry of page.list) {
+        for (const entry of live(page.list, 'subscription')) {
           records.push(...(await this.subscriptionItems(entry.subscription, request.fields)));
         }
         return { records, ...next(page.next_offset) };
@@ -322,18 +326,22 @@ export class ChargebeeConnector implements SourceConnector {
     }
   }
 
-  /** One list page of an allowlisted resource for a bounded selection. */
+  /**
+   * One list page of an allowlisted resource for a bounded selection. Live
+   * records only (M9B live gate, V5/V7): `include_deleted` is never sent,
+   * because Chargebee reuses a deleted subscription's id, so a list with
+   * deleted records can hold two records with one id. Deletion is absence,
+   * retired only by an accepted full run (and G4 for children).
+   */
   private list(
     path: ChargebeePath,
     request: ReadRequest,
     pageSize: number,
-    includeDeleted: boolean,
     createdBounded: boolean,
   ) {
     const query = selectionQuery(request.selection, createdBounded);
     query.set('limit', String(pageSize));
     if (request.position) query.set('offset', request.position);
-    if (includeDeleted) query.set('include_deleted', 'true');
     if (this.config.businessEntityId && path !== '/items' && path !== '/item_prices') {
       query.set('business_entity_id[is]', this.config.businessEntityId);
     }
@@ -356,7 +364,6 @@ export class ChargebeeConnector implements SourceConnector {
       object: 'Customers',
       id: c.id,
       ...(c.updated_at !== undefined ? { modifiedAt: new Date(c.updated_at * 1000) } : {}),
-      ...(c.deleted ? { deleted: true } : {}),
       values: project('Customers', all, fields),
     };
   }
@@ -402,7 +409,6 @@ export class ChargebeeConnector implements SourceConnector {
         // A row id, unique per page; the line identity is the mapping's choice.
         id: `${s.id}:${i}`,
         ...(s.updated_at !== undefined ? { modifiedAt: new Date(s.updated_at * 1000) } : {}),
-        ...(s.deleted ? { deleted: true } : {}),
         values: project('SubscriptionItems', all, fields),
       };
     });
@@ -453,6 +459,15 @@ const ItemPriceLinkSchema = z.looseObject({
   id: z.string().min(1).max(100),
   item_id: z.string().min(1).max(100).optional(),
 });
+
+/**
+ * Live entries only: a `deleted: true` entry (never requested) is dropped, so
+ * it can neither collide with a live record of a reused id nor act as
+ * deletion evidence.
+ */
+function live<K extends string>(list: Array<Record<string, unknown>>, key: K) {
+  return list.filter((e) => (e[key] as { deleted?: unknown } | undefined)?.deleted !== true);
+}
 
 function next(offset: string | undefined): { next?: string } {
   return offset ? { next: offset } : {};
@@ -531,7 +546,6 @@ function subscriptionRecord(raw: unknown, fields: readonly string[]): SourceReco
     object: 'Subscriptions',
     id: s.id,
     ...(s.updated_at !== undefined ? { modifiedAt: new Date(s.updated_at * 1000) } : {}),
-    ...(s.deleted ? { deleted: true } : {}),
     values: project('Subscriptions', all, fields),
   };
 }

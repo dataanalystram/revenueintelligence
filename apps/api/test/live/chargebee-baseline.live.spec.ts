@@ -334,6 +334,14 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
       credentialName: 'chargebee_nocatalog',
     });
     const before = (await linesOf(f.ctx)).filter((l) => l.record_state === 'active').length;
+    const snapshotLines = async () =>
+      JSON.stringify(
+        (await linesOf(f.ctx))
+          .map((l) => [l.source_record_id, l.state, l.record_state, l.quantity, l.product_key])
+          .sort(),
+      );
+    const linesBeforeB = await snapshotLines();
+    const covBefore = await c.h.db.transaction(f.ctx, (tx) => runs.coverage(tx));
     report.keyBTest = await s.connections.test(f.ctx, f.connectionId);
     const runB = await runSync(c, f, 'full');
     report.keyBFull = {
@@ -346,6 +354,21 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
       before,
       (await linesOf(f.ctx)).filter((l) => l.record_state === 'active').length,
     ];
+    const covAfter = await c.h.db.transaction(f.ctx, (tx) => runs.coverage(tx));
+    report.keyBNoChange = {
+      linesIdentical: (await snapshotLines()) === linesBeforeB,
+      coverageUnchanged:
+        covBefore.known && covAfter.known
+          ? covBefore.proof.runId === covAfter.proof.runId &&
+            covAfter.coverageTier === covBefore.coverageTier
+          : covBefore.known === covAfter.known,
+      changedRecords: (
+        await c.sql<{ records_changed: number }>(
+          `SELECT records_changed FROM tenant_sync_checkpoints WHERE id = $1`,
+          [runB.runId],
+        )
+      )[0]!.records_changed,
+    };
     const incr = await s.sync
       .start(f.ctx, f.connectionId, 'incremental', { enqueue: false, correlationId: randomUUID() })
       .then(() => 'started')
@@ -363,6 +386,13 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
       proof: run.quality.proof ?? null,
       detail: (run.quality as E).read ?? null,
     };
-    report.page10Lines = (await linesOf(f.ctx)).length;
+    const pageLines = await linesOf(f.ctx);
+    report.page10Lines = pageLines.length;
+    report.page10DuplicateExternalId = run.quality.duplicate_external_id ?? 0;
+    report.page10S02Lines = pageLines.filter((l) =>
+      /_s02$/.test(l.source_record_id.split(':')[0]!),
+    ).length;
+    const again = await runSync(c, f, 'full');
+    report.page10Repeat = { status: again.status, proof: again.quality.proof ?? null };
   }, 900_000);
 });

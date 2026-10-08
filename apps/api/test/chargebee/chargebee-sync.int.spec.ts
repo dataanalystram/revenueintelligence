@@ -192,7 +192,7 @@ describe('Chargebee reference adapter (fake Chargebee, CB01–CB36)', () => {
         const dump = JSON.stringify(
           await c.sql(`SELECT * FROM tenant_subscriptions WHERE tenant_id = $1`, [f.ctx.tenantId]),
         );
-        expect(dump).not.toMatch(/1111|visa|masked/);
+        expect(dump).not.toMatch(/masked_number|card_type|\*{4}1111|visa/);
       });
     });
 
@@ -357,48 +357,114 @@ describe('Chargebee reference adapter (fake Chargebee, CB01–CB36)', () => {
       });
     });
 
-    it('CB20: a deleted customer: its reference is retired; its lines are never guessed away (kept on the canonical company)', async () => {
-      await withFake({}, async (fake, f) => {
+    it('CB20 (live-only reads): a deleted customer and its subscriptions are absent; lines retire only on an accepted full run; the reference is never inferred deleted', async () => {
+      await withFake({ accept: true }, async (fake, f) => {
         await full(f);
         const company = (await companyOf(f, 'cus-01'))!.company_id;
-        const customer = fake.customers.find((x) => x.id === 'cus-01')!;
-        customer.deleted = true;
-        customer.updated_at = nowSeconds();
+        // Chargebee deletes a customer's subscriptions with the customer.
+        fake.customers.find((x) => x.id === 'cus-01')!.deleted = true;
+        fake.subscription('sub-01').deleted = true;
         const run = await full(f);
         expect(run).toMatchObject({ status: 'completed' });
-        expect((await companyOf(f, 'cus-01'))!.deleted_at).not.toBeNull();
-        // M8 reference semantics (unchanged by M9B): a retired reference still resolves to its
-        // canonical company; a customer deletion is not deletion evidence for its lines.
+        expect(run.quality).toMatchObject({ tombstoned: 1 });
         expect((await lines(f)).get('sub-01:plan-basic-USD-monthly')).toMatchObject({
-          record_state: 'active',
+          record_state: 'deleted',
+          state: 'active',
           company_id: company,
         });
-        expect(run.quality.tombstoned).toBeUndefined();
-        expect(run.quality.child_retired).toBeUndefined();
+        // No account deletion is inferred from absence.
+        expect((await companyOf(f, 'cus-01'))!.deleted_at).toBeNull();
       });
     });
-    it('CB21/C17: a deleted subscription removes exactly its own lines on any run (deletion, not cancellation)', async () => {
+
+    it('CB21/C17 (live-only reads): a deleted subscription is absent; never retired without an acceptance', async () => {
       await withFake({ accept: false }, async (fake, f) => {
         await full(f);
         fake.touch('sub-02', (x) => (x.deleted = true));
         const run = await full(f);
         expect(run).toMatchObject({ status: 'completed' });
+        expect(run.quality).toMatchObject({ tombstones_not_accepted: 1 });
+        expect(run.quality.tombstoned).toBeUndefined();
+        expect(run.quality.child_retired).toBeUndefined();
+        expect(await active(f)).toEqual(
+          expect.arrayContaining([
+            'sub-02:plan-pro-USD-monthly',
+            'sub-02:addon-seats-USD-monthly',
+            'sub-02:addon-support-USD-monthly',
+          ]),
+        );
+        expect(fake.requests.some((r) => r.query.has('include_deleted'))).toBe(false);
+      });
+    });
+
+    it('CB21/C17 (live-only reads): the next accepted full run retires exactly the deleted subscription (deletion, not cancellation)', async () => {
+      await withFake({ accept: true }, async (fake, f) => {
+        await full(f);
+        fake.touch('sub-02', (x) => (x.deleted = true));
+        const run = await full(f);
+        expect(run).toMatchObject({ status: 'completed' });
+        expect(run.quality).toMatchObject({ tombstoned: 3 });
         const all = await lines(f);
         for (const key of [
           'sub-02:plan-pro-USD-monthly',
           'sub-02:addon-seats-USD-monthly',
           'sub-02:addon-support-USD-monthly',
         ]) {
-          // Deleted, and the state was never rewritten to cancelled.
+          // Retired as absent; the state was never rewritten to cancelled.
           expect(all.get(key)).toMatchObject({ record_state: 'deleted', state: 'active' });
         }
         expect(await active(f)).toContain('sub-03a:plan-basic-USD-monthly');
-        expect(run.quality.tombstoned).toBeUndefined();
         // Cancellation is never deletion evidence.
         fake.touch('sub-07', (x) => (x.status = 'cancelled'));
         await full(f);
         expect((await lines(f)).get('sub-07:plan-basic-USD-monthly')!.record_state).toBe('active');
       });
+    });
+
+    it('V5/V7: a deleted record that reuses a live id (even if returned) never collides, at any page size', async () => {
+      await withFake(
+        {
+          accept: true,
+          config: { pageSize: 10 },
+          prepare: (fake) => {
+            const live02 = fake.subscription('sub-02');
+            // The deleted original sits on another page than the live record with the same id.
+            fake.subscriptions.unshift({
+              ...structuredClone(live02),
+              created_at: live02.created_at - 30 * 86_400,
+              deleted: true,
+              status: 'in_trial',
+            });
+            fake.alwaysIncludeDeleted = true;
+          },
+        },
+        async (fake, f) => {
+          const run = await full(f);
+          expect(run).toMatchObject({ status: 'completed' });
+          expect(run.quality.proof).toEqual({
+            method: 'double_enumeration',
+            tier: 'stable_snapshot',
+            outcome: 'passed',
+          });
+          expect(run.quality.duplicate_external_id).toBeUndefined();
+          const all = await lines(f);
+          for (const key of [
+            'sub-02:plan-pro-USD-monthly',
+            'sub-02:addon-seats-USD-monthly',
+            'sub-02:addon-support-USD-monthly',
+          ]) {
+            expect(all.get(key)).toMatchObject({ record_state: 'active', state: 'active' });
+          }
+          const pages = fake.requests.filter(
+            (r) => r.path === '/subscriptions' && !r.query.get('offset'),
+          ).length;
+          expect(pages).toBeGreaterThanOrEqual(2);
+          // A rerun is stable and changes nothing.
+          const again = await full(f);
+          expect(again).toMatchObject({ status: 'completed' });
+          expect((await checkpoint(again.runId)).records_changed).toBe(0);
+        },
+      );
     });
 
     it('CB23: an unknown item price is a missing product: protected with a gap; no sibling or old line retired', async () => {

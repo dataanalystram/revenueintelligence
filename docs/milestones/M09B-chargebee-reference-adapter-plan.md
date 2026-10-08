@@ -7,6 +7,17 @@ IMPLEMENTATION MUST WAIT`; no architectural redesign). No Chargebee code, no mig
   concurrency limit added (F16, §20), scenarios CB35 (parent structurally rejected) and CB36 (repeated pagination
   offset) with tests and mutations C21–C22, non-progress detection in pagination (§17). B1–B11 and every approved
   design choice are unchanged.
+- **Revision 3 — approved correction from the live gate (owner approval, 2026-10-08).** The TEST site showed that
+  Chargebee **reuses a deleted subscription's id**, so a list with `include_deleted=true` can hold two records with
+  one id (V5/V7). Approved change: Chargebee subscriptions and customers are read **live records only**
+  (`include_deleted` is never sent; a `deleted: true` entry is dropped by the adapter). `deleted: true` is no longer
+  deletion evidence for Chargebee. A deleted subscription is absent and is retired only by the next **accepted full
+  run** under §18 (double enumeration passed + operator acceptance + M9A protections); G4 keeps retiring removed
+  children of observed parents; all seen-but-rejected and failure protections are unchanged. Superseded below:
+  §17 pass 1 `include_deleted=true`; §18 "Explicit deletion" (for Chargebee); §19 rows for deleted
+  customer/subscription; G5 for Chargebee (`deleteVisibility: none`); CB20/CB21 expected results; C17 (now: the
+  live-only filter removed / `include_deleted` requested again). Recorded in the
+  [M9B record](M09B-chargebee-reference-adapter.md#approved-correction-live-records-only).
 - Predecessors: [M9 master plan](M09-multi-source-data-quality-plan.md) §10 (approved; this plan refines it with
   API evidence), [M9A record](M09A-source-data-profiling.md) (**CLOSED**: merge `dfcb352`, closure record
   `a8c61ee`).
@@ -483,8 +494,9 @@ A partial or failed read never creates deletion evidence.
 
 Also allowed on any run, including incremental:
 
-- **Explicit deletion:** a record returned with `deleted: true` (`include_deleted=true`) → `absent`. This is the
-  source asserting deletion, not absence.
+- ~~**Explicit deletion:** a record returned with `deleted: true` (`include_deleted=true`) → `absent`.~~
+  **Superseded by revision 3** for Chargebee: live records only; a deleted subscription is retired by the next
+  accepted full run.
 - **Parent-scoped child reconciliation (G4):** an observed, accepted subscription whose child set lacks a
   previously active line key → that line `absent`. This is suppressed when any child of that parent was rejected
   in the run, and it **never runs for a parent that was itself rejected** for any reason (structural, mapping or

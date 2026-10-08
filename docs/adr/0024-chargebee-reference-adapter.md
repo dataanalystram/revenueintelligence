@@ -61,6 +61,9 @@ parent.
 
 - Sugar keeps `count → externally_grounded`, CSV keeps `operator_full_file → stable_snapshot`; the new
   capability fields are optional with no defaults, so existing snapshot hashes are unchanged.
-- Deleting a Chargebee customer retires its reference but not its lines (M8 reference semantics); a
-  subscription's own `deleted=true` is the deletion evidence. Cancellation is never deletion evidence.
+- **Amended by the live gate (approved correction):** Chargebee reuses a deleted subscription's id, so the adapter
+  reads **live records only** (`include_deleted` is never sent; `deleted: true` entries are dropped). Deletion is
+  absence: a deleted subscription's lines are retired by the next accepted full run (double enumeration passed,
+  operator acceptance, M9A protections); removed children of observed parents by G4. No account deletion is
+  inferred from absence. Cancellation is never deletion evidence.
 - Live behaviour (V2–V12) is unproven; M9B cannot close on the fake alone.

@@ -260,6 +260,8 @@ export class FakeChargebee {
   productCatalogV1 = false;
   /** Answer every list page of this path with the same `next_offset` (non-progress). */
   repeatOffsetFor: string | undefined;
+  /** Return deleted records even without `include_deleted` (defensive-filter tests). */
+  alwaysIncludeDeleted = false;
   /** Called after each list page is served (e.g. insert a record between passes). */
   afterListPage: ((path: string, offset: number) => void) | undefined;
   private server: Server | undefined;
@@ -394,7 +396,9 @@ export class FakeChargebee {
     }
     const offset = decodeOffset(q.get('offset'));
     if (offset < 0) return this.send(res, 400, { api_error_code: 'param_wrong_value' });
-    let out = rows.filter((r) => q.get('include_deleted') === 'true' || !r.deleted);
+    let out = rows.filter(
+      (r) => this.alwaysIncludeDeleted || q.get('include_deleted') === 'true' || !r.deleted,
+    );
     const createdBefore = q.get('created_at[before]');
     if (createdBefore) out = out.filter((r) => (r.created_at ?? 0) < Number(createdBefore));
     const updatedAfter = q.get('updated_at[after]');

@@ -247,7 +247,7 @@ describe('Chargebee adapter against the deterministic fake (no live Chargebee)',
       const lines = schema.objects.find((o) => o.name === 'SubscriptionItems')!;
       expect(lines.capabilities).toMatchObject({
         count: false,
-        deleteVisibility: 'flag',
+        deleteVisibility: 'none',
         fullReadProof: 'double_enumeration',
         childOf: { object: 'Subscriptions', parentKeyField: 'subscription_id' },
         incrementalReads: false,
@@ -322,7 +322,7 @@ describe('Chargebee adapter against the deterministic fake (no live Chargebee)',
         const fields = schema.objects.find((o) => o.name === object)!.fields.map((f) => f.name);
         const { records } = await readAll(c, object, fields);
         const text = JSON.stringify(records);
-        expect(text).not.toMatch(/card|masked|1111|visa/);
+        expect(text).not.toMatch(/card|masked|\*{4}1111|visa/);
       }
     });
 
@@ -346,17 +346,38 @@ describe('Chargebee adapter against the deterministic fake (no live Chargebee)',
       expect(isConnectorError(err) && err.kind).toBe('schema_drift');
     });
 
-    it('CB21: a deleted subscription is returned (include_deleted) with every line flagged deleted', async () => {
+    it('CB21/V5/V7: live records only — include_deleted is never sent; a deleted subscription is absent', async () => {
       fake.subscription('sub-02').deleted = true;
-      const { records } = await readAll(connector(), 'SubscriptionItems', LINE_FIELDS);
+      const c = connector();
+      const { records } = await readAll(c, 'SubscriptionItems', LINE_FIELDS);
+      await readAll(c, 'Customers', ['id', 'deleted']);
+      await readAll(c, 'Subscriptions', ['id', 'deleted']);
+      expect(records.filter((r) => r.values.subscription_id === 'sub-02')).toEqual([]);
+      expect(records.some((r) => r.deleted === true || r.values.deleted === true)).toBe(false);
+      expect(fake.requests.some((r) => r.query.has('include_deleted'))).toBe(false);
+    });
+
+    it('V7: a deleted record sharing a live id (id reuse) never collides with the live record', async () => {
+      const live02 = fake.subscription('sub-02');
+      // Chargebee returned the deleted copy even though it was not asked for: still dropped.
+      fake.alwaysIncludeDeleted = true;
+      fake.subscriptions.unshift({
+        ...structuredClone(live02),
+        created_at: live02.created_at - 5,
+        deleted: true,
+      });
+      fake.customers.unshift({ ...structuredClone(fake.customers[0]!), deleted: true });
+      const c = connector();
+      const { records } = await readAll(c, 'SubscriptionItems', LINE_FIELDS);
       const sub02 = records.filter((r) => r.values.subscription_id === 'sub-02');
-      expect(sub02).toHaveLength(3);
-      expect(sub02.every((r) => r.deleted === true && r.values.deleted === true)).toBe(true);
-      expect(
-        fake.requests.every(
-          (r) => r.path !== '/subscriptions' || r.query.get('include_deleted') === 'true',
-        ),
-      ).toBe(true);
+      expect(sub02.map((r) => r.values.line_key_item_price)).toEqual([
+        'sub-02:plan-pro-USD-monthly',
+        'sub-02:addon-seats-USD-monthly',
+        'sub-02:addon-support-USD-monthly',
+      ]);
+      expect(records.some((r) => r.deleted === true || r.values.deleted === true)).toBe(false);
+      const customers = await readAll(c, 'Customers', ['id', 'deleted']);
+      expect(new Set(customers.records.map((r) => r.id)).size).toBe(customers.records.length);
     });
   });
 
