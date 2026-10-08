@@ -344,6 +344,39 @@ Connector with Key B on a tenant that already holds an accepted Key A run: `test
 0 records changed, 0 tombstones, coverage unchanged (same proof run). Neither key appears in any report, log or file
 (asserted and scanned).
 
+## Live mutation M01 — S02 Seats quantity 3 → 5 (2026-10-08)
+
+Executed by the owner's setup agent (HTTP 200; no other record reported changed). Verified independently through the
+connector with a fresh full pipeline run (Key A, `test/live/chargebee-baseline.live.spec.ts`), sanitized:
+
+| Check                 | Observed                                                                                                                                                          |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S02 accepted          | yes — 3 lines written, no rejection, no `duplicate_external_id`, no gap                                                                                           |
+| Seats line            | quantity **5**; identity unchanged — key `<subscription_id>:<item_price_id>` with the same item price (the mutation changed quantity only; 3 S02 lines as before) |
+| Product resolution    | unchanged — each S02 line resolves to the item of its item price (plan, 2 add-ons)                                                                                |
+| Other S02 lines       | plan quantity 1, Support add-on quantity 1; state `active`; terms equal the raw `current_term_*`                                                                  |
+| Status / terms        | `active`; terms unchanged and equal to the raw values                                                                                                             |
+| Whole tenant          | 24 active lines (same as the pre-M01 baseline), by state active 17 / unknown 3 / trial 2 / cancelled 2 (unchanged), no gaps, no deletion                          |
+| Double read           | page 100 and page 10 both `double_enumeration / stable_snapshot / passed`; rerun 0 changes                                                                        |
+| Coverage / whitespace | `stable_snapshot` (accepted); S01 account eligible whitespace 0                                                                                                   |
+| Key B                 | still `forbidden` / `source_forbidden`, no change                                                                                                                 |
+
+**V12 evidence (parent Subscription S02):**
+
+- `updated_at`: before `1791486525` (owner, and **independently read** by this connector's probe before M01) → after
+  `1791494001` (owner, immediately after the call) → `1791494007` when read here (6 s later: S02 was updated once more
+  after the mutation call; not visible from a read which attribute changed).
+- `resource_version` (milliseconds): before `1791486525252` (owner) → after `1791494001827` (owner) →
+  `1791494007579` when read here.
+- Subscription items carry no `updated_at` / `resource_version` of their own (owner; confirmed by the probe's field
+  list).
+
+**V12 status: LIVE CONFIRMED for a subscription-item quantity change** — changing a nested item moves the parent's
+`updated_at` and `resource_version`. Not yet observed for an item **removal** (M02), a **price-point change** (M03)
+or a plan **change** (M04). Incremental line sync stays **disabled**: the plan (B8) enables it per connection
+(`incrementalLines: verified`) only once V12 is proven; recommendation: decide after M02–M04 confirm the same
+behaviour for removals and replacements, which are what G4 relies on in incremental runs.
+
 ## V2–V12 (live gate)
 
 | #   | Status                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
@@ -359,7 +392,7 @@ Connector with Key B on a tenant that already holds an accepted Key A run: `test
 | V9  | PENDING (needs a mutation)                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | V10 | PENDING — `decommissioned` is `false` on all 23 subscription records; no decommissioned record to observe                                                                                                                                                                                                                                                                                                                                                                                           |
 | V11 | Live site is PC 2.0 (`/items` 200). PC 1.0 detection cannot be observed on this site: remains fake-only                                                                                                                                                                                                                                                                                                                                                                                             |
-| V12 | PENDING (M01/M02); incremental line sync stays **disabled** (refused live: `incremental_not_supported`)                                                                                                                                                                                                                                                                                                                                                                                             |
+| V12 | **LIVE CONFIRMED for an item quantity change (M01)**: parent `updated_at` and `resource_version` moved. Removal/price/plan changes pending (M02–M04); incremental line sync stays **disabled** until decided                                                                                                                                                                                                                                                                                        |
 
 ## Live baseline (TEST site)
 

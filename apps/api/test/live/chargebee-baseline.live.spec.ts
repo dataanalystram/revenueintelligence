@@ -277,6 +277,37 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
       };
     });
     report.lineCheck = check;
+    // Per-mutation evidence (sanitized): S02 parent change markers and its lines; key fingerprints.
+    const s02 = live.find((x) => /_s02$/.test(String(x.id)));
+    if (s02) {
+      report.s02 = {
+        parentUpdatedAt: s02.updated_at,
+        parentResourceVersion: s02.resource_version,
+        status: s02.status,
+        lines: lines
+          .filter((l) => l.source_record_id.startsWith(`${String(s02.id)}:`))
+          .map((l) => ({
+            keyFp: fp(l.source_record_id),
+            productKey: l.product_key,
+            itemType: (s02.subscription_items as E[]).find(
+              (i) => `${String(s02.id)}:${String(i.item_price_id)}` === l.source_record_id,
+            )?.item_type,
+            quantity: l.quantity,
+            state: l.state,
+            recordState: l.record_state,
+            termsMatchRaw:
+              (l.starts_at?.getTime() ?? null) === s02.current_term_start * 1000 &&
+              (l.ends_at?.getTime() ?? null) === s02.current_term_end * 1000,
+          }))
+          .sort((a, b) => String(a.itemType).localeCompare(String(b.itemType))),
+      };
+    }
+    report.lineKeyFps = lines
+      .map(
+        (l) =>
+          `${fp(l.source_record_id)}:${l.record_state}:${l.state}:${l.quantity}:${l.product_key}`,
+      )
+      .sort();
     report.lineSummary = {
       liveSubscriptions: live.length,
       deletedSubscriptionRecords: subsRaw.length - live.length,
