@@ -116,6 +116,8 @@ inferred, acceptedInAuthorityVersion?}}`.
   `--profile-override` (always refused); `authority-publish --accept-proof <connectionId>:<reason>`. The CLI only
   parses arguments and calls services (no Prisma, no business logic); output carries ids, codes, counts and
   safe-category values only.
+- `profile-run` refuses a code-mapped connection (`mapping_not_versioned`), a disabled connection
+  (`connection_disabled`) and a kind with no adapter in the process (`adapter_not_registered`) before any run row.
 - Job `source.profile` `{v: 1, tenantId, runId, correlationId}` on `lip-sources`; the existing processor dispatches
   by job name; exhausted retries mark the run failed and dead-letter through the M6 recorder.
 
@@ -196,6 +198,116 @@ Items 44–54 in the [register](../tech-debt.md) (item 31 extended to `seenButRe
 3. Production values for `profile.maxRows` per connection (suggested 50,000) and the freshness window (30 days).
 4. The holding stages and their reviewed domain for Juniper remain a **business** decision (TEST configuration
    only here); LIVE SUGAR VERIFICATION remains PENDING.
+
+## Evidence
+
+Implementation SHA: **`0c5037a15677c10c7ff3a1c261b24693e12ba0a2`** (branch `claude/blissful-mendel-urbh4r`, pushed).
+Diff against the approved planning merge `73bc0c6`: 88 files changed, 12,205 insertions, 442 deletions (40 new
+files). `git diff 73bc0c6 0c5037a -- apps/api/src/modules/sugar` is empty (the Sugar adapter is unchanged;
+`ReadRequest.purpose` defaults to `sync`). Later commits on the branch touch this record only.
+
+### Gates (working tree, at `0c5037a`)
+
+| Command                                                                                                    | Result                                                                                                                                                                                                                                         |
+| ---------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm verify` (format, lint, typecheck, dependency-cruiser, unit, integration)                             | unit **794 passed (59 files)**; integration **412 passed (24 files)**; `no dependency violations found (321 modules, 1361 dependencies cruised)`                                                                                               |
+| `pnpm verify:runtime`                                                                                      | `== Summary: 149 passed, 0 failed`                                                                                                                                                                                                             |
+| `LIP_DOCKERFILE=… LIP_DOCKER_BUILD_ARGS="--network host --build-context ca=/root/.ccr" pnpm verify:docker` | `== Summary: 23 passed, 0 failed`; `Cleanup verified: no containers, volumes, networks or images … remain` (includes `migrate job applies the M9A profiling migration` and `profile-status` / `profile-run` / `profile-show` inside the image) |
+
+### Failed runs (investigated and recorded; none accepted by retry)
+
+1. `pnpm verify` run 1 stopped at `prettier --check` (`apps/api/test/support/fake-sugar.ts` unformatted). Fixed by
+   formatting (`d27b069`); run 2 passed. Not a flake.
+2. `pnpm verify:runtime` run 1: 148 passed, 1 failed (`full sync records a count proof …`). Cause: the check compared
+   the stored proof as a JSON string, and jsonb does not keep key order. **Defect in the check**, fixed to compare
+   field by field. Not a flake.
+3. `pnpm verify:runtime` run 2: 148 passed, 1 failed (same check, next assertion). Cause: the check expected
+   `owned` for FIX-ACC-001 / fix-prod-001, but the Sugar TEST mapping declares `subscription.state` explicitly
+   `unknown` (M8, `no_reliable_source_state`), so a present line is correctly `unknown`
+   (`subscription_state_unknown`). **Defect in the check** (the product behaved as designed); the check now asserts
+   tier `externally_grounded`, coverage `pass` and `subscription_state_unknown` (`0c5037a`). Run 3: 149 passed.
+
+### Fresh clone (mandatory) at the exact SHA
+
+`$S/freshclone-m9a.sh`: clone of `claude/blissful-mendel-urbh4r`, `pnpm install --frozen-lockfile`, then all three
+gates, then a resource check:
+
+```
+### RESOURCES BEFORE: app_procs=0 lip_containers=0 all_containers=0 volumes=0 compose_networks=0 lip_images=0 testcontainers=0
+### HEAD 0c5037a15677c10c7ff3a1c261b24693e12ba0a2 expected 0c5037a15677c10c7ff3a1c261b24693e12ba0a2
+### HEAD matches gate SHA
+### install exit=0
+ no dependency violations found (321 modules, 1361 dependencies cruised)
+ Test Files  59 passed (59)
+      Tests  794 passed (794)
+ Test Files  24 passed (24)
+      Tests  412 passed (412)
+### VERIFY exit=0
+== Summary: 149 passed, 0 failed
+### RUNTIME exit=0
+### DOCKER attempt 1 exit=0
+== Summary: 23 passed, 0 failed
+### RESOURCES AFTER: app_procs=0 lip_containers=0 all_containers=0 volumes=0 compose_networks=0 lip_images=0 testcontainers=0
+### clone removed
+```
+
+Every gate passed on its first attempt in the clone (Docker attempt 1; no retry used).
+
+### Mutation proofs (each check seen to fail for the right reason)
+
+Harness `mutate-m9a.py` (session scratchpad): each mutation edits one mechanism, runs the targeted spec (or
+dependency-cruiser), requires a failure **in the named test**, restores the file and confirms green. 40 of 40
+failed as expected (row 33 covers RLS removed on each of the four tables). The named test is the first failing test.
+
+| #   | Mutation                                                        | Failing test (proof)                                                                                                      |
+| --- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Empty string counted as null                                    | distinguishes null, empty string and whitespace-only                                                                      |
+| 2   | JSON-encoded array classified as string                         | native, JSON-encoded and delimited arrays are told apart                                                                  |
+| 3   | Malformed JSON not counted                                      | malformed JSON is counted and classification continues                                                                    |
+| 4   | 1/0 alone suggests boolean (high)                               | boolean: one representation is high; {0,1} integers alone are only medium                                                 |
+| 5   | Ambiguous date reported high confidence                         | date: ISO high, d/m/y medium, any ambiguous date low                                                                      |
+| 6   | Safe-category cardinality <= 50 -> <= 51                        | distinct = 51 (undeclared): suppressed cardinality                                                                        |
+| 7   | Length gate <= 64 -> <= 65                                      | a value of exactly 64 characters is stored; 65 is suppressed value_length                                                 |
+| 8   | One PII value suppresses only itself (gate ignores PII)         | one email among 49 status values: every value suppressed (pii_value)                                                      |
+| 9   | Privacy pass skipped before persistence                         | seeded personal and payment values never appear in documents or findings                                                  |
+| 10  | assertNoRawValues disabled                                      | passes aggregate-only documents and flags any detector hit in any string                                                  |
+| 11  | Profile limit clamped instead of refused                        | --max-rows above the connection value or below the minimum is refused, never clamped                                      |
+| 12  | Hard ceiling read from configuration                            | the ceiling is code: no configuration raises it                                                                           |
+| 13  | Covering-profile requirement skipped                            | no profile at all: profile_required                                                                                       |
+| 14  | Exempt entries demand a profile                                 | exempt entries need no profile: ignored, explicit and value-independent declarations                                      |
+| 15  | Override accepted without an authenticated operator             | any override attempt is refused, even when it is the only problem                                                         |
+| 16  | Override skips acknowledgements                                 | an override never removes another error (profile_required and acknowledgements stay)                                      |
+| 17  | identity_field_absent guard removed                             | identity_field_absent fails the run before any write                                                                      |
+| 18  | Incompatible type guard removed                                 | type_incompatible fails the run before any write                                                                          |
+| 19  | Tombstone pass ignores seenButRejected                          | an isolated single rejected record keeps its line, gives its account a gap and makes eligibility unknown                  |
+| 20  | protectionFor default -> delete                                 | an unknown or future rejection code is protected by default, never deleted                                                |
+| 21  | Rejected record's gap not recorded                              | an isolated single rejected record keeps its line, gives its account a gap and makes eligibility unknown                  |
+| 22  | Unattributable rejection completes the run                      | an unattributable value rejection fails the run: no tombstones, gaps and coverage unchanged                               |
+| 23  | `in` unreviewed treated as non-holding                          | in: an unreviewed value on an existing line keeps it unchanged and makes the account unknown                              |
+| 24  | `not_in` unreviewed treated as holding                          | not_in: an unreviewed value never becomes a holding; a reviewed empty value is filtered out                               |
+| 25  | Mandatory null entry not required                               | a not_in domain without a classified empty value is refused at publish                                                    |
+| 26  | coverageTier not persisted (proof omitted)                      | a Sugar full run records a count proof: externally grounded, propagated into eligibility and snapshots                    |
+| 27  | Tier dropped between coverage and eligibility                   | records the proof; coverage is known without acceptance; owned holds, absence is unknown, no whitespace                   |
+| 28  | Older externally grounded run preferred over a newer stable run | no promotion: a newer stable run lowers the tier; acceptance gives stable_snapshot, never externally grounded             |
+| 29  | Acceptance yields externally_grounded                           | no promotion: a newer stable run lowers the tier; acceptance gives stable_snapshot, never externally grounded             |
+| 30  | stable_snapshot keeps not_owned                                 | stable_snapshot keeps positive ownership but never concludes absence or whitespace                                        |
+| 31  | Tier rule applied to externally_grounded                        | externally grounded coverage still yields eligible whitespace when otherwise eligible                                     |
+| 32  | profiling-is-advisory violated                                  | x 1 dependency violations (1 errors, 0 warnings).                                                                         |
+| 33  | RLS removed on tenant_source_profile_runs                       | tenant_source_profile_runs: A sees none of B rows and only its own tenant                                                 |
+| 33  | RLS removed on tenant_source_profiles                           | tenant_source_profiles: A sees none of B rows and only its own tenant                                                     |
+| 33  | RLS removed on tenant_source_profile_findings                   | tenant_source_profile_findings: A sees none of B rows and only its own tenant                                             |
+| 33  | RLS removed on tenant_source_profile_purges                     | tenant_source_profile_purges: A sees none of B rows and only its own tenant                                               |
+| 34  | Profile documents mutable (trigger removed)                     | profiles and findings are immutable for the app role                                                                      |
+| 35  | Purge allowed for the app role (owner check removed)            | the purge refuses the app role and, with owner credentials, keeps the newest N and referenced profiles, with an audit row |
+| 36  | TIER_OF.operator_full_file -> externally_grounded               | records the proof; coverage is known without acceptance; owned holds, absence is unknown, no whitespace                   |
+| 37  | Acceptance demanded for operator_full_file (CSV coverage drops) | records the proof; coverage is known without acceptance; owned holds, absence is unknown, no whitespace                   |
+
+Two further manual mutations on the profiling request refusals (`source-profiling.service.ts`), each restored:
+
+| Mutation                          | Result                                                                                                     |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| disabled-connection check removed | `× refuses a disabled connection and a kind with no adapter …` — expected `connection_disabled` (line 215) |
+| adapter check removed             | same test — expected `adapter_not_registered`, received `no_schema_snapshot`                               |
 
 ## Confirmation
 
