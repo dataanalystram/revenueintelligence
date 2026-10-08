@@ -554,4 +554,141 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
     },
     900_000,
   );
+
+  /**
+   * Generic live mutation check (M03+): run 1 replays the target subscription's pre-mutation item
+   * list (CHARGEBEE_REPLAY_ITEMS, from the evidence recorded before the mutation), run 2 reads the
+   * live site unchanged. Reports the target's lines before/after and every key that changed.
+   */
+  const replay =
+    process.env.CHARGEBEE_REPLAY_SUB && process.env.CHARGEBEE_REPLAY_ITEMS ? it : it.skip;
+  replay(
+    'Mutation: replayed pre-mutation subscription, then the live read',
+    async () => {
+      const suffix = process.env.CHARGEBEE_REPLAY_SUB!;
+      const preItems = JSON.parse(process.env.CHARGEBEE_REPLAY_ITEMS!) as E[];
+      const f = await tenant('cblivemut', KEY_A, {});
+      await publish(f, true, 'mut');
+      const target = (await raw('/subscriptions'))
+        .map((e) => e.subscription as E)
+        .find((x) => String(x.id).endsWith(`_${suffix}`))!;
+      const prices = new Map(
+        (await raw('/item_prices')).map((e) => [
+          String(e.item_price.id),
+          String(e.item_price.item_id),
+        ]),
+      );
+      const original = globalThis.fetch;
+      globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+        const res = await original(input, init);
+        const url = new URL(
+          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url,
+        );
+        if (!url.pathname.endsWith('/api/v2/subscriptions') || !res.ok) return res;
+        const body = (await res.json()) as E;
+        for (const e of body.list as E[]) {
+          if (e.subscription?.id === target.id) e.subscription.subscription_items = preItems;
+        }
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      };
+      let run1: Awaited<ReturnType<typeof runSync>>;
+      try {
+        run1 = await runSync(c, f, 'full');
+      } finally {
+        globalThis.fetch = original;
+      }
+      const all = async () =>
+        new Map(
+          (await linesOf(f.ctx)).map((l) => [
+            l.source_record_id,
+            `${l.record_state}:${l.state}:${l.quantity}:${l.product_key}`,
+          ]),
+        );
+      const targetLines = async () =>
+        (await linesOf(f.ctx))
+          .filter((l) => l.source_record_id.startsWith(`${String(target.id)}:`))
+          .map((l) => {
+            const price = l.source_record_id.slice(String(target.id).length + 1);
+            return {
+              keyFp: fp(l.source_record_id),
+              priceFp: fp(price),
+              itemFp: fp(prices.get(price) ?? 'unknown'),
+              productKeyIsItem: l.product_key === `cb-${fp(prices.get(price) ?? 'unknown')}`,
+              quantity: l.quantity,
+              state: l.state,
+              recordState: l.record_state,
+              termsMatchRaw:
+                (l.starts_at?.getTime() ?? null) === target.current_term_start * 1000 &&
+                (l.ends_at?.getTime() ?? null) === target.current_term_end * 1000,
+            };
+          })
+          .sort((a, b) => a.keyFp.localeCompare(b.keyFp));
+      const before = await all();
+      const out: E = {
+        run1: { status: run1.status, quality: run1.quality },
+        targetBefore: await targetLines(),
+      };
+      const run2 = await runSync(c, f, 'full');
+      const after = await all();
+      out.run2 = { status: run2.status, quality: run2.quality };
+      out.targetAfter = await targetLines();
+      out.changedKeys = [...new Set([...before.keys(), ...after.keys()])]
+        .filter((k) => before.get(k) !== after.get(k))
+        .map((k) => ({
+          keyFp: fp(k),
+          target: k.startsWith(`${String(target.id)}:`),
+          before: before.get(k) ?? null,
+          after: after.get(k) ?? null,
+        }));
+      out.activeBeforeAfter = [
+        [...before.values()].filter((v) => v.startsWith('active:')).length,
+        [...after.values()].filter((v) => v.startsWith('active:')).length,
+      ];
+      const gaps = await c.sql<{ reason: string; n: number }>(
+        `SELECT reason, count(*)::int AS n FROM tenant_ownership_gaps WHERE tenant_id = $1 GROUP BY reason`,
+        [f.ctx.tenantId],
+      );
+      out.gaps = Object.fromEntries(gaps.map((g) => [g.reason, g.n]));
+      const runs = c.app.get(SubscriptionRunsStore);
+      const cov = await c.h.db.transaction(f.ctx, (tx) => runs.coverage(tx));
+      out.coverage = cov.known
+        ? {
+            tier: cov.coverageTier,
+            method: cov.proof.method,
+            runIsLatest: cov.proof.runId === run2.runId,
+          }
+        : cov;
+      const company = (
+        await c.sql<{ company_id: string }>(
+          `SELECT company_id FROM company_external_refs WHERE tenant_id = $1 AND system = 'chargebee' AND object_type = 'Customers' AND external_id = $2`,
+          [f.ctx.tenantId, target.customer_id],
+        )
+      )[0]!.company_id;
+      const ws = await c.app.get(EligibilityService).whitespace(f.ctx, company);
+      out.whitespaceTarget = {
+        owned: ws.categories.owned.length,
+        eligibleWhitespace: ws.categories.eligible_whitespace.length,
+      };
+      out.parent = {
+        updatedAt: target.updated_at,
+        resourceVersion: target.resource_version,
+        status: target.status,
+        liveItems: (target.subscription_items as E[]).map((i) => ({
+          priceFp: fp(String(i.item_price_id)),
+          itemFp: fp(prices.get(String(i.item_price_id)) ?? 'unknown'),
+          quantity: i.quantity,
+        })),
+      };
+      out.replayedItems = preItems.map((i) => ({
+        priceFp: fp(String(i.item_price_id)),
+        itemFp: fp(prices.get(String(i.item_price_id)) ?? 'unknown'),
+        quantity: i.quantity,
+      }));
+      report.mutation = out;
+    },
+    900_000,
+  );
 });

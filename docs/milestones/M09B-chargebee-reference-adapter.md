@@ -409,6 +409,35 @@ unchanged:
 now (identical to the setup agent's). **V12 REMOVAL LIVE CONFIRMED.** Incremental line sync stays disabled until
 M03 (price replacement) and M04 (plan replacement) are verified.
 
+## Live mutation M03 — S10 price replacement, Basic monthly USD → Basic yearly USD (2026-10-08)
+
+**Source side (owner's setup agent):** HTTP 200 with `replace_items_list=true`; quantity 1, status `active`; the item
+(product) is the same Basic item before and after; no other checked subscription changed.
+
+**Connector verification** (generic replay check in `test/live/chargebee-baseline.live.spec.ts`, Key A, sanitized):
+run 1 replays S10's pre-M03 item list (Basic monthly USD, qty 1 — its line key fingerprint is the one in the post-M02
+evidence), run 2 reads the live site unchanged.
+
+| Check                        | Observed                                                                                                                                                           |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Live S10                     | 1 item: Basic **yearly** USD, qty 1                                                                                                                                |
+| Run 1 (replayed pre-M03)     | completed, proof passed; S10 1 active line = `<subscription_id>:<monthly price>`                                                                                   |
+| Run 2 (live)                 | completed; proof `double_enumeration / stable_snapshot / passed`; `child_retired: 1`; no rejection, no uncertain set, no tombstone pass involvement                |
+| Old line                     | `<subscription_id>:<monthly price>` → `record_state = deleted` (G4), state left `active`                                                                           |
+| New line                     | `<subscription_id>:<yearly price>` created, `active`, qty 1                                                                                                        |
+| Identities                   | the two keys share the subscription part and differ **only** in the item-price part (fingerprints of both keys equal the hashes of the expected identity strings)  |
+| Product                      | both lines resolve to the **same Basic item** (identical product key = the item's fingerprint)                                                                     |
+| Status / terms               | `active`; terms equal the raw `current_term_*` (term after the change)                                                                                             |
+| Unrelated lines              | changed keys: exactly the two S10 keys; active lines 23 → 23; diff against the post-M02 fingerprints: 1 removed (old monthly line), 1 added (yearly line), 0 other |
+| Gaps / coverage / whitespace | no gap; `stable_snapshot` from run 2; S10 account eligible whitespace 0; S01 account 0                                                                             |
+| Page size 10 / Key B         | proof passed / `forbidden`, `source_forbidden`, no change                                                                                                          |
+
+**V12 price replacement (parent S10):** `updated_at` `1791486548` (owner, before) → `1791495211` (owner, after the call)
+→ `1791495217` read here; `resource_version` `1791486548362` → `1791495211332` → `1791495217509`. As in M01, S10 was
+updated once more ~6 s after the call (not visible from a read which attribute). The "before" values are the owner's
+(this connector had not recorded S10's parent before M03); the "after" values were read independently and are
+later than the "before". **V12 PRICE REPLACEMENT LIVE CONFIRMED.** Incremental line sync stays disabled until M04.
+
 ## V2–V12 (live gate)
 
 | #   | Status                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
@@ -424,7 +453,7 @@ M03 (price replacement) and M04 (plan replacement) are verified.
 | V9  | PENDING (needs a mutation)                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | V10 | PENDING — `decommissioned` is `false` on all 23 subscription records; no decommissioned record to observe                                                                                                                                                                                                                                                                                                                                                                                           |
 | V11 | Live site is PC 2.0 (`/items` 200). PC 1.0 detection cannot be observed on this site: remains fake-only                                                                                                                                                                                                                                                                                                                                                                                             |
-| V12 | **LIVE CONFIRMED for a quantity change (M01) and an item removal (M02)**: parent `updated_at` and `resource_version` moved. Price/plan replacement pending (M03–M04); incremental line sync stays **disabled** until decided                                                                                                                                                                                                                                                                        |
+| V12 | **LIVE CONFIRMED for a quantity change (M01), an item removal (M02) and a price replacement (M03)**: parent `updated_at` and `resource_version` moved. Plan replacement pending (M04); incremental line sync stays **disabled** until decided                                                                                                                                                                                                                                                       |
 
 ## Live baseline (TEST site)
 
