@@ -1,8 +1,10 @@
 # Milestone 9A — Source data profiling foundation (implementation record)
 
-- Status: **M9A IMPLEMENTATION COMPLETE — closure fix applied, pending re-review.** Not closed, not merged.
-  Independent implementation review of `0c5037a`: `PASS WITH REQUIRED FIXES — DO NOT MERGE` (one blocking
-  finding: field-name privacy). The fix is recorded in [Closure fix](#closure-fix-field-name-privacy).
+- Status: **M9A CLOSED — merged to `main`** (PR [#14](https://github.com/laxmanprasadsomaraju/Garethtasktest/pull/14),
+  merge commit `dfcb352bb9e0969ba8b32aaa3c56563ff67c6a46`). Final independent implementation review:
+  `PASS WITH NON-BLOCKING FINDINGS — M9A READY TO MERGE` (after the
+  [closure fix](#closure-fix-field-name-privacy) of the earlier `PASS WITH REQUIRED FIXES` review of `0c5037a`).
+  See [Closure](#closure).
 - **LIVE SUGAR VERIFICATION: PENDING** (profiling and every M9A check ran against the deterministic fake Sugar only).
 - **M9B has NOT started.** No Chargebee, S3/file, warehouse, signal, opportunity or M9B work.
 - Plans: [M9 master plan](M09-multi-source-data-quality-plan.md) and [M9A detailed plan](M09A-source-data-profiling-plan.md)
@@ -424,9 +426,33 @@ Two further manual mutations on the profiling request refusals (`source-profilin
 | disabled-connection check removed | `× refuses a disabled connection and a kind with no adapter …` — expected `connection_disabled` (line 215) |
 | adapter check removed             | same test — expected `adapter_not_registered`, received `no_schema_snapshot`                               |
 
+## Closure
+
+- PR: [#14](https://github.com/laxmanprasadsomaraju/Garethtasktest/pull/14) from `claude/blissful-mendel-urbh4r`
+  (head `a028fedb8f2736b70c5e1dfd60a1eea935ec9009`: implementation fix `c8560da` plus docs/evidence commits through
+  `a028fed`), merged into `main` with a merge commit: **`dfcb352bb9e0969ba8b32aaa3c56563ff67c6a46`**.
+- CI on the PR head (run 50, `ubuntu-latest`, native Linux, first attempt, every job green):
+
+  | Job                                                                                       | Result                                                                           |
+  | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+  | Lint, typecheck, boundaries, unit tests                                                   | format, lint, typecheck, dependency-cruiser pass; unit **840 passed (60 files)** |
+  | Integration tests (Testcontainers)                                                        | **414 passed (24 files)**                                                        |
+  | Runtime verification                                                                      | `== Summary: 150 passed, 0 failed`                                               |
+  | Docker images build and start (repository Dockerfile, no sandbox CA, no `--network host`) | `== Summary: 23 passed, 0 failed`; cleanup verified                              |
+
+  This is the native-Linux confirmation of the Docker result (the reviewer's macOS run, 22/1, is the
+  `--network host` limitation of Docker Desktop recorded above; nothing was changed for it).
+
+- Final test counts: unit 840, integration 414, runtime 150, Docker 23 — identical in the fresh clone at
+  `c8560da` and in CI.
+- No functional change after the final review: the PR head differs from the reviewed fix only by docs commits.
+- **M9B had NOT started before the merge** and has not started now: no Chargebee, S3/file, warehouse, signal or
+  opportunity code exists (`grep -ri chargebee apps/api/src` is empty). **LIVE SUGAR VERIFICATION remains
+  PENDING.** Non-blocking findings stay as recorded (technical debt 44–54; open questions 2–4).
+
 ## Confirmation
 
 M9A only. No Chargebee, S3/file, warehouse, signal, opportunity or M9B implementation. No production writes to
 any customer system (adapters stay read-only; profiling reads with `purpose: 'profile'`). No credentials
-requested, committed or logged. **M9A is not claimed closed**: it awaits independent implementation review.
+requested, committed or logged. **M9A is closed** (merged after final independent review; see [Closure](#closure)).
 **M9B has NOT started. LIVE SUGAR VERIFICATION remains PENDING.**
