@@ -1,7 +1,9 @@
 # Milestone 9B — Chargebee reference adapter (implementation record)
 
 - Status: **FAKE IMPLEMENTATION COMPLETE — awaiting independent implementation review.**
-  **LIVE CHARGEBEE VERIFICATION: PENDING** (V2–V12; the owner's test site is not yet provisioned).
+  **LIVE CHARGEBEE VERIFICATION: IN PROGRESS** — baseline read done on the TEST site; **blocked** on the
+  reused-subscription-id contradiction (see [Live baseline](#live-baseline-test-site)) and on Key B. Independent
+  implementation review: **not yet done**.
   **M9B is NOT closed**: it cannot close on the fake alone (plan §26).
 - **LIVE SUGAR VERIFICATION: PENDING** (unchanged).
 - Not started: M9C (S3/files), M9D (warehouse), signals, opportunities, cross-source matching.
@@ -265,22 +267,79 @@ the implementation SHA), `pnpm install --frozen-lockfile` exit 0, then:
 | `pnpm verify:docker`  | **27 passed, 0 failed** (first attempt)                                       |
 | Resources after       | 0 app processes, 0 containers, 0 volumes, 0 networks, 0 images; clone removed |
 
-## V2–V12 (live gate) — all PENDING
+## V2–V12 (live gate)
 
-| #   | Status                                                                                                                        |
-| --- | ----------------------------------------------------------------------------------------------------------------------------- |
-| V1  | Resolved by documentation (F18): UTC Unix seconds                                                                             |
-| V2  | PENDING — `next_offset` stability; the fake is positional                                                                     |
-| V3  | PENDING — item / item-price repetition; TEST mapping uses the fallback identity until proven                                  |
-| V4  | PENDING — `current_term_end` of cancelled / non-renewing                                                                      |
-| V5  | PENDING — `include_deleted` retention                                                                                         |
-| V6  | PENDING — deleted items / item prices in list responses                                                                       |
-| V7  | PENDING — id immutability, length, `:` separator                                                                              |
-| V8  | PENDING — Restricted read-only key behaviour and 403 shape (C20 depends on it)                                                |
-| V9  | PENDING — eventual-consistency lag (settle window value)                                                                      |
-| V10 | PENDING — `decommissioned` flag                                                                                               |
-| V11 | PENDING — Product Catalog 1.0 detection on a real site (`configuration_incompatible` assumed)                                 |
-| V12 | PENDING — item change moves the parent's `updated_at`; incremental line sync stays **disabled** (full runs only) until proven |
+| #   | Status                                                                                                                                                                                                                                                                                                                                                                                                     |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| V1  | **DOC-CONFIRMED** (F18); live: every timestamp observed is integer UTC seconds; `resource_version` is milliseconds                                                                                                                                                                                                                                                                                         |
+| V2  | **LIVE-OBSERVED (baseline, quiescent site):** `next_offset` is an opaque JSON array of two strings; distinct per page, identical on a second pass, replaying an offset returns the same page; order follows `sort_by[asc]=created_at`. Behaviour under concurrent writes (CB28): PENDING                                                                                                                   |
+| V3  | **LIVE-RESOLVED** (owner, confirmed by read): same item + same item price twice → `400 duplicate_entry`; same item + different item prices → allowed (one live subscription holds it). `<subscription_id>:<item_id>` is **not** safe; the line identity stays `<subscription_id>:<item_price_id>`                                                                                                          |
+| V4  | **LIVE-CONFIRMED (baseline):** `non_renewing` keeps a future `current_term_end` (`cancelled_at` = term end); immediate `cancelled` keeps `current_term_end` = `cancelled_at` (one cancelled subscription that never started has no term). Connector terms match the raw values for every written line                                                                                                      |
+| V5  | **PARTLY RESOLVED — contradiction found:** deleted subscriptions **are** returned by List with `include_deleted=true` (`deleted: true`); single Retrieve returns `404 resource_not_found`. A deleted copy was still listed ~25 min after deletion although the docs say "permanently deleted after a few minutes" — retention window unknown. **Chargebee reuses a deleted subscription's id** (see below) |
+| V6  | PENDING (M09/M10) — `include_deleted=true` is accepted on `/items` and `/item_prices`; no archived/deleted catalogue record exists yet                                                                                                                                                                                                                                                                     |
+| V7  | **PARTLY RESOLVED:** ids ≤ 40 chars, charset `[A-Za-z0-9_.@-]`, never `:` (the separator is safe). **Ids are not unique over time:** a deleted subscription's id was reused by a new subscription (docs: item/item price ids are reusable after deletion too)                                                                                                                                              |
+| V8  | **NOT AS SPECIFIED:** Key B (intended without catalogue scope) returned **200** on `/items`, `/item_prices` and `/item_families`; the 403 shape could not be observed. Owner action required                                                                                                                                                                                                               |
+| V9  | PENDING (needs a mutation)                                                                                                                                                                                                                                                                                                                                                                                 |
+| V10 | PENDING — `decommissioned` is `false` on all 23 subscription records; no decommissioned record to observe                                                                                                                                                                                                                                                                                                  |
+| V11 | Live site is PC 2.0 (`/items` 200). PC 1.0 detection cannot be observed on this site: remains fake-only                                                                                                                                                                                                                                                                                                    |
+| V12 | PENDING (M01/M02); incremental line sync stays **disabled** (refused live: `incremental_not_supported`)                                                                                                                                                                                                                                                                                                    |
+
+## Live baseline (TEST site)
+
+Run 2026-10-08 against the owner's Chargebee **TEST** site (PC 2.0, USD + EUR, synthetic data), read-only, Key A
+via `TENANT_CBLIVE_CHARGEBEE_CHARGEBEE_API` (Key B via `…_NOCATALOG`). Specs: `test/live/chargebee-probe.live.spec.ts`
+(raw, sanitized) and `test/live/chargebee-baseline.live.spec.ts` (whole pipeline on a local PostgreSQL); both skip
+without `CHARGEBEE_LIVE_SITE` and the secrets. Sanitized: counts, codes and states only; no ids, names or values.
+Neither report contains either key (asserted). Product model and the ignored Legacy item are TEST configuration
+derived from the site's own catalogue at run time.
+
+| Check                       | Observed                                                                                                                                                                                                                        |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `testConnection` (Key A)    | `ok`, `sourceVersion v2:pc2`                                                                                                                                                                                                    |
+| Schema discovery            | 5 objects; SubscriptionItems = double-enumerated child set of Subscriptions; line objects full-run only                                                                                                                         |
+| Objects (raw)               | Customers 17 (0 deleted); Items 16 (plan 6, addon 8, charge 2; all active); ItemPrices 27 (USD 9, EUR 18; all resolve to an item); Subscriptions 23 records with `include_deleted` (20 live + 3 deleted), 33 subscription items |
+| Subscription statuses (raw) | active 13, in_trial 3, future 2, non_renewing 2, cancelled 2, paused 1; `decommissioned` false everywhere                                                                                                                       |
+| M9A profile                 | completed (Customers, Items, SubscriptionItems); findings: `high_cardinality_identifier` 3, `high_null_ratio` 4, `sensitive_values_detected` 12                                                                                 |
+| Covering-profile validation | v1 and v2 valid (warning `field_not_reviewed` only); published with acknowledgements; authority with lines/state/terms + acceptance                                                                                             |
+| Full run (page size 100)    | completed; proof `double_enumeration / stable_snapshot / passed`; rerun: 0 changes, proof passed again                                                                                                                          |
+| Lines                       | 25 non-charge lines expected from live subscriptions; **21 written** (all `<subscription_id>:<item_price_id>`); 1 Legacy line `non_subscription_product` (ignored, no gap); **3 S02 lines not written** (see contradiction)     |
+| Status mapping              | every written line matches the versioned map: active 14, unknown 3 (future 2, **paused S09 → `unknown`**), trial 2, cancelled 2; `non_renewing → active`                                                                        |
+| Terms / quantity / product  | every written line: terms equal the raw `current_term_*` (seconds → instant), quantity equal, product = the item resolved from its item price                                                                                   |
+| Coverage                    | known, `stable_snapshot`, method `double_enumeration`, accepted in authority v2 — never `externally_grounded`                                                                                                                   |
+| Whitespace (S01 account)    | owned 1, eligible whitespace **0**, unknown 14                                                                                                                                                                                  |
+| Gaps / protection           | `observation_rejected` 3 (the S02 keys), `seen_but_rejected` 3                                                                                                                                                                  |
+| Incremental                 | refused: `incremental_not_supported`                                                                                                                                                                                            |
+| Key B                       | `testConnection` **ok**; full run **completed** with the same proof and no change (21 → 21 active, 0 tombstones) — the catalogue was readable                                                                                   |
+| Full run (page size 10)     | **failed `unstable_read`** (S02's two records fall on different pages); 11 lines written before the failure (positive observations only), no proof, no tombstone                                                                |
+
+### Contradiction: reused subscription id (blocks M01)
+
+The setup deleted S02 and recreated it **with the same id**. With `include_deleted=true` the list returns two
+records with one id (one `deleted: true`, one live, same customer and item prices). The implementation assumes an
+id identifies one record within a read:
+
+1. **Child-set keys collide** → every S02 line key repeats → `duplicate_external_id` ×6, all protected, S02 never
+   ingested (fail-closed, but the account's ownership is incomplete forever while the deleted copy is listed).
+2. **Double enumeration** keys a child set by parent id → when the two records fall on different pages the read
+   is `unstable_read` on **every** run.
+3. **Latent safety risk:** if the deleted copy is processed after the live one on different pages (e.g. an
+   `updated_at`-ordered read), its rows would emit `absent` for the **live** line keys — deletion evidence applied to
+   a different record. Today only ordering and duplicate detection prevent it.
+
+**Required correction (not implemented; needs approval):** stop treating `deleted: true` list records as deletion
+evidence for subscriptions and customers — read without `include_deleted` (live records only; ids unique) and
+retire disappeared records only under the already-approved full-run rules (double enumeration passed + acceptance +
+M9A protections) and G4 for children of observed parents. Consequence: CB21 changes from "absent on any run" to
+"absent on the next accepted full run"; the plan's explicit-deletion path for Chargebee subscriptions/customers is
+withdrawn. This also removes the dependence on an undocumented retention window (V5). Alternative (more code, still
+needs approval): keep `include_deleted` but make deletion evidence conditional on no live record with the same id in
+the same complete read and on the deleted record being newer than the stored line.
+
+### Key B (V8)
+
+Key B was expected to lack catalogue scope but read Items, ItemPrices and Item Families (200). The negative-
+permission scenario (CB34) could not be exercised. Owner action: recreate Key B as a **Restricted read-only** key
+with only Customers and Subscriptions, or confirm the site does not allow excluding the catalogue.
 
 ## External setup still required (owner)
 
