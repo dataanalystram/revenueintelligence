@@ -81,5 +81,9 @@ parent.
   stays `unknown`). Subscription lines keep their own retirement (tombstone pass, G4); a source-level
   customer→subscription cascade is not replayed as an application cascade. A later observation of the customer
   reactivates the reference on the same company. Structurally invalid customer rows are no longer ingested as
-  empty observations (they are counted `record_rejected` and protect their reference).
+  empty observations (they are counted `record_rejected` and protect their reference). The single per-connection
+  stable-snapshot acceptance authorises both line and reference retirement (owner decision). **Migration
+  requirement:** the capability is read from the published mapping's schema snapshot, so a Chargebee connection
+  published before this change must re-capture its schema snapshot and re-publish its mapping before customer
+  reference retirement is enabled for it.
 - Live behaviour (V2–V12) is unproven; M9B cannot close on the fake alone.

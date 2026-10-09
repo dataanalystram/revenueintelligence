@@ -25,7 +25,9 @@ IMPLEMENTATION MUST WAIT`; no architectural redesign). No Chargebee code, no mig
   inactive; no whitespace follows; incremental, partial, failed, unstable or unaccepted runs and seen-but-rejected
   customers never retire; line retirement stays separate (§18, G4). One additional migration
   (`20261116120000_m9b_reference_retirement`, with down-script) — a deviation from "one M9B migration", approved
-  with this change. Recorded in the
+  with this change. One per-connection acceptance covers line and reference retirement. **Mapping/version
+  migration requirement:** existing Chargebee connections must re-capture the schema snapshot and re-publish the
+  mapping before reference retirement is enabled for them. Recorded in the
   [M9B record](M09B-chargebee-reference-adapter.md#governed-correction-customer-source-reference-retirement).
 - Predecessors: [M9 master plan](M09-multi-source-data-quality-plan.md) §10 (approved; this plan refines it with
   API evidence), [M9A record](M09A-source-data-profiling.md) (**CLOSED**: merge `dfcb352`, closure record

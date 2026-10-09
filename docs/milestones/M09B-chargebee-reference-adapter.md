@@ -680,18 +680,38 @@ safe (each attempt rebuilds `seen`; full runs never resume from a cursor). Fixed
 is applied to the run state only after the completion transaction commits; a merge of a retired reference clears the
 retirement columns (latent: only HubSpot merges exist); R7c's title now states what it proves.
 
-**Open questions for the owner (not changed without approval):**
+**Owner decisions after review (2026-10-09) and the follow-up safety tests:**
 
-1. **Existing connections need a re-captured snapshot.** Retirement is enabled by the capability stored in the
-   published mapping's schema snapshot (drift detection does not compare capabilities). A Chargebee connection
-   published before this change does not retire until its snapshot is re-captured and the mapping republished;
-   removing the capability from the adapter later would not switch it off for already-published snapshots.
-2. **One acceptance covers both.** The existing per-connection stable-snapshot acceptance now authorises customer
-   reference retirement as well as line tombstones. A separate acceptance would be a further change.
-3. **Settle window changes.** Raising `sync.settleMinutes` between runs can make a customer created inside the new
-   window absent from the next full read and retire it until the following run reactivates it (transient).
-4. The `lastSeenAt` candidate filter (a reference read after the run's read began is never a candidate) has no
-   dedicated test or mutation proof yet.
+1. **Mapping/version migration requirement (explicit).** Customer-reference retirement is enabled by the
+   `referenceRetirement` capability recorded in the published mapping's schema snapshot; drift detection does not
+   compare capabilities. Every Chargebee connection whose mapping was published before this capability must, before
+   retirement is enabled for it: **(a) re-capture the schema snapshot, (b) re-publish the mapping** (a new governed
+   mapping version on the new snapshot). Until then that connection never retires a customer reference (it behaves
+   exactly as before the change). Removing the capability from the adapter later would likewise only take effect
+   after re-capture and re-publication.
+2. **One acceptance (decided).** The existing single per-connection stable-snapshot proof acceptance authorises both
+   subscription-line retirement and customer-reference retirement. No second acceptance is introduced.
+3. **Settle-window risk (documented, behaviour unchanged).** If `sync.settleMinutes` is raised between consecutive
+   runs, a customer created inside the newly excluded window is absent from the next accepted full read and its
+   reference is retired; the company is untouched. The next clean accepted run whose window covers the customer
+   reactivates **the same reference on the same company** (no duplicate). Operators should not raise the settle
+   window and run an accepted full run within that window of a customer's creation, or should expect this transient
+   retirement. Test **R12**; mutation **C31**.
+4. **Concurrency safeguard tested.** A reference first observed after the run's read began (last seen after the run's
+   read time) is never a retirement candidate of that run. Test **R11** (a control reference last seen a day earlier
+   is retired in the same run); mutation **C30**.
+
+| #   | Mutation                                                      | Guarding test | Broken                                                                     | Restored |
+| --- | ------------------------------------------------------------- | ------------- | -------------------------------------------------------------------------- | -------- |
+| C30 | `lastSeenAt` candidate filter removed                         | R11           | FAILED: quality mismatch — the concurrently observed reference retired too | green    |
+| C31 | a retired reference is never reactivated (settle-window case) | R12           | FAILED: `cus-new` stayed `retired` after the clean run                     | green    |
+
+**Infrastructure incident (recorded separately; not an application failure).** After a Docker cache prune to recover
+disk space, Docker Hub refused anonymous pulls of `postgres:16-alpine`, `redis:7-alpine` and `node:22-alpine`
+(`429 Too Many Requests`). The first fresh-clone run of `92af9f5` therefore failed before any integration test or
+runtime check ran (880/880 unit tests had passed). The same official images were then pulled from Google's
+Docker Hub mirror (`mirror.gcr.io/library/…`) and tagged locally under their usual names; no code, Dockerfile or
+compose file was changed for this.
 
 ## V12 final decision and incremental-sync assessment
 

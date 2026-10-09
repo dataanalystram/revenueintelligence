@@ -4,7 +4,7 @@ import type { MappingDocument } from '../../src/modules/domain';
 import { EligibilityService } from '../../src/modules/products';
 import { SubscriptionRunsStore } from '../../src/modules/products/infrastructure/subscription-runs.store';
 import type { TenantContext } from '../../src/modules/tenancy';
-import { chargebeeTenant, chargebeeTestMapping } from '../support/chargebee';
+import { CHARGEBEE_CREDENTIAL, chargebeeTenant, chargebeeTestMapping } from '../support/chargebee';
 import { startContextHarness, type ContextHarness } from '../support/context';
 import { FakeChargebee, nowSeconds } from '../support/fake-chargebee';
 import {
@@ -1120,6 +1120,107 @@ describe('Chargebee reference adapter (fake Chargebee, CB01–CB36)', () => {
         // The retired Chargebee reference still counts: the company is not inferred gone.
         expect(await companyRow(company)).toMatchObject({ record_state: 'active' });
       });
+    });
+
+    it('R11: a reference first observed after the run started reading is never retired by that run (concurrency safeguard)', async () => {
+      await withFake({ accept: true }, async (_fake, f) => {
+        await full(f);
+        // Two references the next read will not return: one last observed a day ago (control)
+        // and one whose first observation is stamped after this run's read began (e.g. another
+        // writer observed it meanwhile). Only the first may be retired.
+        for (const [id, at] of [
+          ['cus-stale', `now() - interval '1 day'`],
+          ['cus-concurrent', `now() + interval '1 hour'`],
+        ] as const) {
+          const [co] = await c.sql<{ id: string }>(
+            `INSERT INTO companies (id, tenant_id, name, created_at, updated_at)
+             VALUES (gen_random_uuid(), $1, $2, now(), now()) RETURNING id`,
+            [f.ctx.tenantId, `R11 ${id}`],
+          );
+          await c.sql(
+            `INSERT INTO company_external_refs
+               (tenant_id, system, object_type, external_id, company_id, first_seen_at, last_seen_at)
+             VALUES ($1, 'chargebee', 'Customers', $2, $3, ${at}, ${at})`,
+            [f.ctx.tenantId, id, co!.id],
+          );
+        }
+        const run = await full(f);
+        expect(run).toMatchObject({ status: 'completed' });
+        expect(run.quality).toMatchObject({ references_retired: 1 });
+        expect(await refOf(f, 'cus-stale')).toMatchObject({
+          state: 'retired',
+          retired_by_run_id: run.runId,
+        });
+        expect(await refOf(f, 'cus-concurrent')).toMatchObject({
+          state: 'active',
+          retired_at: null,
+        });
+      });
+    });
+
+    it('R12: settle window raised between runs — a new customer outside the next read window is retired transiently; the next clean run reactivates the same reference (no duplicate company)', async () => {
+      const reconfigure = (fake: FakeChargebee, f: SourcesFixture, settleMinutes: number) =>
+        sourcesServices(c).connections.configure(f.ctx, {
+          kind: 'chargebee',
+          label: 'Chargebee (fake)',
+          config: {
+            site: 'synthetic-test',
+            endpoint: fake.url,
+            maxRetries: 2,
+            sync: { overlapMinutes: 10, settleMinutes },
+            profile: { maxRows: 1000 },
+          },
+          credentialName: CHARGEBEE_CREDENTIAL,
+        });
+      await withFake(
+        {
+          accept: true,
+          prepare: (fake) => {
+            const t = fake.customers.find((x) => x.id === 'cus-23')!;
+            // Created two minutes ago, no subscription.
+            fake.customers.push({
+              ...structuredClone(t),
+              id: 'cus-new',
+              created_at: nowSeconds() - 120,
+            });
+          },
+        },
+        async (fake, f) => {
+          // Run 1, settle 0: the new customer is read and referenced.
+          const first = await full(f);
+          expect(first).toMatchObject({ status: 'completed' });
+          const ref = (await refOf(f, 'cus-new'))!;
+          expect(ref.state).toBe('active');
+          const counts = await rowCounts(f);
+          // Run 2, settle raised to 30 minutes: the read window ends before the customer was created.
+          await reconfigure(fake, f, 30);
+          const before = fake.requests.length;
+          const second = await full(f);
+          expect(second).toMatchObject({ status: 'completed' });
+          const req = fake.requests.slice(before).find((r) => r.path === '/customers')!;
+          expect(Number(req.query.get('created_at[before]'))).toBeLessThan(nowSeconds() - 120);
+          // Documented risk: absent from an accepted, proven read → retired (transient).
+          expect(second.quality).toMatchObject({ references_retired: 1 });
+          expect(await refOf(f, 'cus-new')).toMatchObject({
+            state: 'retired',
+            company_id: ref.company_id,
+          });
+          expect(await companyRow(ref.company_id)).toMatchObject({ record_state: 'active' });
+          // Run 3, a clean accepted run whose window covers the customer again: reactivated.
+          await reconfigure(fake, f, 0);
+          const third = await full(f);
+          expect(third).toMatchObject({ status: 'completed' });
+          expect(third.quality.references_retired).toBeUndefined();
+          expect(await refOf(f, 'cus-new')).toMatchObject({
+            state: 'active',
+            retired_at: null,
+            retired_by_run_id: null,
+            company_id: ref.company_id,
+          });
+          expect((await rowCounts(f)).companies).toBe(counts.companies);
+          expect((await rowCounts(f)).refs).toBe(counts.refs);
+        },
+      );
     });
 
     it('R-restore: a retired customer read again is reactivated on the same company (no duplicate)', async () => {
