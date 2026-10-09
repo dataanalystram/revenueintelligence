@@ -6,7 +6,8 @@ import {
   type OnModuleDestroy,
 } from '@nestjs/common';
 import { ContextProcessingService } from '../../context';
-import { TenantContextService } from '../../tenancy';
+import { sourceSyncActor, systemActor } from '../../domain';
+import { TenantContextService, WriteAuthorizer } from '../../tenancy';
 import { APP_CONFIG, type AppConfig } from '../../../platform/config';
 import {
   PermanentJobError,
@@ -44,6 +45,7 @@ export class SourceSyncProcessor implements OnApplicationBootstrap, OnModuleDest
     private readonly profiling: SourceProfilingService,
     private readonly tenants: TenantContextService,
     private readonly processing: ContextProcessingService,
+    private readonly authorizer: WriteAuthorizer,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
@@ -92,7 +94,12 @@ export class SourceSyncProcessor implements OnApplicationBootstrap, OnModuleDest
       if (!profile.success)
         throw new PermanentJobError('invalid_payload', 'source.profile failed validation');
       const ctx = await this.tenants.forTenantId(profile.data.tenantId);
-      const result = await this.profiling.execute(ctx, profile.data.runId);
+      const actx = await this.authorizer.authorize(ctx, systemActor('worker'), 'data.profile.run', {
+        action: 'profile.execute',
+        targetKind: 'profile_run',
+        targetRef: profile.data.runId,
+      });
+      const result = await this.profiling.execute(actx, profile.data.runId);
       this.logger.log(
         { runId: result.runId, status: result.status, code: result.errorCode },
         'Profile run finished',
@@ -103,7 +110,19 @@ export class SourceSyncProcessor implements OnApplicationBootstrap, OnModuleDest
     if (!parsed.success)
       throw new PermanentJobError('invalid_payload', 'source.sync failed validation');
     const ctx = await this.tenants.forTenantId(parsed.data.tenantId);
-    const result = await this.sync.execute(ctx, parsed.data.checkpointId);
+    // The run writes canonical facts as itself: a source_sync actor named by the run.
+    const actx = await this.authorizer.authorize(
+      ctx,
+      sourceSyncActor(`run:${parsed.data.checkpointId}`),
+      'canonical.source_sync',
+      {
+        action: 'sync.execute',
+        targetKind: 'sync_run',
+        targetRef: parsed.data.checkpointId,
+        correlationId: parsed.data.correlationId,
+      },
+    );
+    const result = await this.sync.execute(actx, parsed.data.checkpointId);
     this.logger.log(
       { runId: result.runId, status: result.status, code: result.errorCode },
       'Source run finished',
@@ -116,7 +135,13 @@ export class SourceSyncProcessor implements OnApplicationBootstrap, OnModuleDest
     if (profile?.success) {
       try {
         const ctx = await this.tenants.forTenantId(profile.data.tenantId);
-        await this.profiling.abandon(ctx, profile.data.runId, 'retries_exhausted');
+        const actx = await this.authorizer.authorize(
+          ctx,
+          systemActor('worker'),
+          'data.profile.run',
+          { action: 'profile.abandon', targetKind: 'profile_run', targetRef: profile.data.runId },
+        );
+        await this.profiling.abandon(actx, profile.data.runId, 'retries_exhausted');
       } catch (err) {
         this.logger.error({ err, jobId: job.id }, 'Could not mark the profile run failed');
       }
@@ -126,7 +151,12 @@ export class SourceSyncProcessor implements OnApplicationBootstrap, OnModuleDest
     if (parsed?.success) {
       try {
         const ctx = await this.tenants.forTenantId(parsed.data.tenantId);
-        await this.sync.abandon(ctx, parsed.data.checkpointId, 'retries_exhausted');
+        const actx = await this.authorizer.authorize(ctx, systemActor('worker'), 'data.sync.run', {
+          action: 'sync.abandon',
+          targetKind: 'sync_run',
+          targetRef: parsed.data.checkpointId,
+        });
+        await this.sync.abandon(actx, parsed.data.checkpointId, 'retries_exhausted');
       } catch (err) {
         this.logger.error({ err, jobId: job.id }, 'Could not mark the source run failed');
       }

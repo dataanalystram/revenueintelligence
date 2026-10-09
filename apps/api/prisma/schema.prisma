@@ -55,6 +55,8 @@ model Tenant {
   eligibilitySnapshots TenantEligibilitySnapshot[]
   sourceConnections    TenantSourceConnection[]
   authorityVersions    TenantSourceAuthorityVersion[]
+  auditEvents          TenantAuditEvent[]
+  auditAnchors         TenantAuditAnchor[]
 
   @@unique([id, slug])
   @@map("tenants")
@@ -507,6 +509,11 @@ model TenantContextChange {
   sourceConnectionId String?   @map("source_connection_id") @db.Uuid
   /// M8: the mapping version that produced the change (versioned connections only)
   mappingVersion     Int?      @map("mapping_version")
+  /// M10A1: who wrote the change (NULL = written before M10A1)
+  actorKind          String?   @map("actor_kind")
+  actorId            String?   @map("actor_id")
+  /// system | asserted | authenticated
+  actorAssurance     String?   @map("actor_assurance")
 
   tenant     Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   source     ConnectorKind               @relation(fields: [sourceSystem], references: [kind], onDelete: Restrict, onUpdate: Restrict)
@@ -939,4 +946,62 @@ model TenantSourceProfilePurge {
 
   @@id([tenantId, id])
   @@map("tenant_source_profile_purges")
+}
+
+/// M10A1 (ADR 0026): append-only audit of privileged operations, denials
+/// included. Identifiers, codes, counts and hashes only. Hash-chained per
+/// tenant: `hash = sha256(prev_hash || canonical payload)`; unique prev_hash
+/// makes a fork impossible. No UPDATE; DELETE only by the (disabled) owner purge.
+model TenantAuditEvent {
+  tenantId       String   @map("tenant_id") @db.Uuid
+  id             String   @db.Uuid
+  seq            Int
+  occurredAt     DateTime @map("occurred_at") @db.Timestamptz(3)
+  actorKind      String   @map("actor_kind")
+  actorId        String   @map("actor_id")
+  actorAssurance String   @map("actor_assurance")
+  capability     String
+  action         String
+  /// allowed | denied | failed | completed
+  outcome        String
+  reasonCode     String?  @map("reason_code")
+  targetKind     String?  @map("target_kind")
+  targetRef      String?  @map("target_ref")
+  correlationId  String   @map("correlation_id") @db.Uuid
+  policyVersion  Int      @map("policy_version")
+  details        Json     @default("{}")
+  prevHash       String   @map("prev_hash")
+  hash           String
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, id])
+  @@unique([tenantId, seq])
+  @@unique([tenantId, prevHash])
+  @@unique([tenantId, hash])
+  @@index([tenantId, occurredAt])
+  @@index([tenantId, correlationId])
+  @@map("tenant_audit_events")
+}
+
+/// M10A1: chain anchors left by an audit purge (the last purged event's seq and
+/// hash), so the remaining chain still verifies. Append-only; written only by
+/// the owner-path purge, which stays disabled until the retention policy is
+/// approved.
+model TenantAuditAnchor {
+  tenantId      String   @map("tenant_id") @db.Uuid
+  id            String   @db.Uuid
+  anchorSeq     Int      @map("anchor_seq")
+  anchorHash    String   @map("anchor_hash")
+  purged        Int
+  cutoff        DateTime @db.Timestamptz(3)
+  actor         String
+  correlationId String   @map("correlation_id") @db.Uuid
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, id])
+  @@unique([tenantId, anchorSeq])
+  @@map("tenant_audit_anchors")
 }

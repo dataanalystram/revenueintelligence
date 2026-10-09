@@ -18,7 +18,14 @@ import {
   type WhitespaceResult,
 } from '../../domain';
 import { COMPANY_REPOSITORY, type CompanyRepository } from '../../identity';
-import { TenantDatabase, type TenantContext, type TenantTransaction } from '../../tenancy';
+import {
+  assertAuthorized,
+  AuditTrail,
+  AuthorizedContext,
+  TenantDatabase,
+  type TenantContext,
+  type TenantTransaction,
+} from '../../tenancy';
 import {
   EligibilitySnapshotStore,
   type SnapshotRow,
@@ -105,23 +112,41 @@ export class EligibilityService {
     private readonly runs: SubscriptionRunsStore,
     private readonly snapshots: EligibilitySnapshotStore,
     @Inject(COMPANY_REPOSITORY) private readonly companies: CompanyRepository,
+    private readonly audit: AuditTrail,
   ) {}
 
+  /**
+   * Evaluates one account × product. Recording a snapshot is a write: it needs
+   * an operator authorized for `data.eligibility.record` (M10A1); a plain
+   * evaluation needs only a tenant context.
+   */
   async evaluate(
-    ctx: TenantContext,
+    target: TenantContext | AuthorizedContext<'data.eligibility.record'>,
     companyId: string,
     productKey: string,
     options: { asOf?: Date; record?: { purpose: string; correlationId: string } } = {},
   ): Promise<EvaluationReport> {
+    if (options.record) assertAuthorized(target, 'data.eligibility.record');
+    const ctx = target instanceof AuthorizedContext ? target.tenant : target;
     if (options.record && !PURPOSE.test(options.record.purpose)) {
       throw new Error('snapshot purpose must match [a-z0-9_]{1,64}');
     }
     const key = ProductKeySchema.parse(productKey);
-    return this.consistent(ctx, async (tx) => {
+    // The evaluation reads one consistent snapshot (REPEATABLE READ). Recording is a
+    // separate READ COMMITTED transaction (M10A1): the snapshot row and its audit
+    // event commit together, and the audit chain head is read as committed, which a
+    // repeatable-read snapshot cannot guarantee. The recorded content is the frozen
+    // input computed above, so the split changes nothing the snapshot says.
+    const evaluated = await this.consistent(ctx, async (tx) => {
       const loaded = await this.load(tx, companyId, options.asOf ?? new Date());
       const result = evaluateEligibility({ ...loaded.input, productKey: key });
-      const report = { ...result, ...loaded.resolution };
-      if (!options.record) return report;
+      return { loaded, result, report: { ...result, ...loaded.resolution } };
+    });
+    if (!options.record) return evaluated.report;
+    const { loaded, result, report } = evaluated;
+    const record = options.record;
+    const actx = target as AuthorizedContext<'data.eligibility.record'>;
+    return this.db.transaction(ctx, async (tx) => {
       const snapshot = await this.snapshots.insert(tx, {
         requestedCompanyId: loaded.resolution.requestedCompanyId,
         evaluatedCompanyId: loaded.resolution.evaluatedCompanyId,
@@ -134,8 +159,14 @@ export class EligibilityService {
         evaluatorVersion: result.evaluatorVersion,
         factsHash: result.factsHash,
         result: { checks: result.checks, input: frozenInput(loaded.input) },
-        purpose: options.record.purpose,
-        correlationId: options.record.correlationId,
+        purpose: record.purpose,
+        correlationId: record.correlationId,
+      });
+      await this.audit.record(tx, actx, {
+        action: 'eligibility.record',
+        targetKind: 'eligibility_snapshot',
+        targetRef: snapshot.id,
+        details: { productKey: result.productKey, purpose: record.purpose },
       });
       return { ...report, snapshotId: snapshot.id };
     });

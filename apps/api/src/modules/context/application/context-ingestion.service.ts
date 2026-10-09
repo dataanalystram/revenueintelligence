@@ -1,15 +1,24 @@
 import { Inject, Injectable } from '@nestjs/common';
 import {
-  decideApply,
+  decideApplyWithHash,
   fieldHash,
+  findSecretLike,
   primaryCompanyLink,
   type ApplyDecision,
   type ContextKind,
   type ExternalRef,
   type PresentObservation,
+  type SecretPatternCode,
+  type SecurityActor,
   type SourceObservation,
 } from '../../domain';
-import { TenantDatabase, type TenantContext, type TenantTransaction } from '../../tenancy';
+import {
+  assertAuthorized,
+  SecurityEventsService,
+  TenantDatabase,
+  type AuthorizedContext,
+  type TenantTransaction,
+} from '../../tenancy';
 import { CONTEXT_ADAPTER_VERSION, type Cause } from '../jobs';
 import {
   COMPANY_CANONICAL_LOCK_SCOPE,
@@ -32,6 +41,14 @@ export interface IngestMeta {
   /** M8 versioned sources: the producing adapter version and mapping version. */
   readonly adapterVersion?: string;
   readonly mappingVersion?: number;
+  /** M10A1: who writes (recorded on the change record); set from the authorized context. */
+  readonly actor?: SecurityActor;
+}
+
+/** M10A1 amendment A1: a source value refused as secret-like and held (never written or logged). */
+export interface HeldField {
+  readonly field: string;
+  readonly code: SecretPatternCode;
 }
 
 export interface IngestResult {
@@ -41,6 +58,38 @@ export interface IngestResult {
   readonly changed: boolean;
   /** Source companies a person links to that are not known yet (read them back). */
   readonly unknownCompanies: readonly ExternalRef[];
+  /** Free-text fields refused as secret-like: not written; any previous value is kept. */
+  readonly held?: readonly HeldField[];
+}
+
+/** Free-text canonical fields checked for secret-like values (plan §11). */
+const FREE_TEXT_FIELDS: Readonly<Record<ContextKind, readonly string[]>> = {
+  company: ['name'],
+  person: ['firstName', 'lastName', 'jobTitle'],
+};
+
+function heldFields(obs: SourceObservation): HeldField[] {
+  if (obs.presence !== 'present') return [];
+  const fields = obs.fields as Record<string, unknown>;
+  const held: HeldField[] = [];
+  for (const field of FREE_TEXT_FIELDS[obs.kind]) {
+    const value = fields[field];
+    const code = typeof value === 'string' ? findSecretLike(value) : undefined;
+    if (code) held.push({ field, code });
+  }
+  return held;
+}
+
+/**
+ * The field hash with held values replaced by a marker: a re-read of the same
+ * secret-like value stays `unchanged`, removing it at the source is a change,
+ * and no hash of the refused value is ever stored.
+ */
+function heldAwareHash(obs: PresentObservation, held: readonly HeldField[]): string {
+  if (held.length === 0) return fieldHash(obs);
+  const fields: Record<string, unknown> = { ...obs.fields };
+  for (const h of held) fields[h.field] = `held:${h.code}`;
+  return fieldHash({ ...obs, fields });
 }
 
 export interface MergeInput {
@@ -87,22 +136,44 @@ export class ContextIngestionService {
     private readonly store: ContextStore,
     @Inject(COMPANY_MERGE_PARTICIPANTS)
     private readonly mergeParticipants: readonly CompanyMergeParticipant[],
+    private readonly events: SecurityEventsService,
   ) {}
 
   async ingest(
-    ctx: TenantContext,
+    actx: AuthorizedContext<'canonical.source_sync'>,
     observation: SourceObservation,
     meta: IngestMeta,
     options: IngestOptions = {},
   ): Promise<IngestResult> {
+    assertAuthorized(actx, 'canonical.source_sync');
+    const attributed: IngestMeta = { ...meta, actor: actx.actor };
     const run = async (tx: TenantTransaction) => {
-      const result = await this.apply(tx, observation, meta);
+      const result = await this.apply(tx, observation, attributed);
       await options.afterApply?.(tx, result);
       return result;
     };
-    return options.within
+    const result = await (options.within
       ? run(options.within)
-      : this.db.transaction(ctx, run, { timeoutMs: TX_TIMEOUT_MS });
+      : this.db.transaction(actx.tenant, run, { timeoutMs: TX_TIMEOUT_MS }));
+    for (const h of result.held ?? []) {
+      // Coordinates and codes only: the value is never part of the event.
+      this.events.emit({
+        event: 'secret_like_refused',
+        outcome: 'refused',
+        tenant: actx.tenant.tenantSlug,
+        actorKind: actx.actor.kind,
+        reasonCode: 'secret_like_value',
+        correlationId: meta.correlationId,
+        coordinates: {
+          system: observation.ref.system,
+          objectType: observation.ref.objectType,
+          recordId: observation.ref.id,
+          field: h.field,
+          pattern: h.code,
+        },
+      });
+    }
+    return result;
   }
 
   /**
@@ -151,7 +222,7 @@ export class ContextIngestionService {
 
   /** Applies a source merge: lineage from merged ids to the survivor (ADR 0014 §5). */
   async ingestMerge(
-    ctx: TenantContext,
+    actx: AuthorizedContext<'canonical.source_sync'>,
     input: MergeInput,
     meta: IngestMeta,
     afterApply?: (
@@ -159,12 +230,14 @@ export class ContextIngestionService {
       result: { readonly applied: boolean; readonly survivorKnown: boolean },
     ) => Promise<void>,
   ): Promise<{ readonly applied: boolean; readonly survivorKnown: boolean }> {
+    assertAuthorized(actx, 'canonical.source_sync');
+    const attributed: IngestMeta = { ...meta, actor: actx.actor };
     const run = async (tx: TenantTransaction) => {
-      const result = await this.merge(tx, input, meta);
+      const result = await this.merge(tx, input, attributed);
       await afterApply?.(tx, result);
       return result;
     };
-    return this.db.transaction(ctx, run, { timeoutMs: TX_TIMEOUT_MS });
+    return this.db.transaction(actx.tenant, run, { timeoutMs: TX_TIMEOUT_MS });
   }
 
   private change(
@@ -193,6 +266,7 @@ export class ContextIngestionService {
       adapterVersion: meta.adapterVersion ?? CONTEXT_ADAPTER_VERSION,
       correlationId: meta.correlationId,
       ...(meta.mappingVersion !== undefined ? { mappingVersion: meta.mappingVersion } : {}),
+      ...(meta.actor ? { actor: meta.actor } : {}),
     };
   }
 
@@ -211,8 +285,15 @@ export class ContextIngestionService {
       if (link) await this.store.lockRef(tx, 'company', link.company);
     }
     const stored = await this.store.findRef(tx, obs.kind, obs.ref);
-    const decision = decideApply(stored, obs);
-    const none: IngestResult = { decision, changed: false, unknownCompanies: [] };
+    const held = heldFields(obs);
+    const hash = obs.presence === 'present' ? heldAwareHash(obs, held) : undefined;
+    const decision = decideApplyWithHash(stored, obs, hash);
+    const none: IngestResult = {
+      decision,
+      changed: false,
+      unknownCompanies: [],
+      ...(held.length ? { held } : {}),
+    };
 
     switch (decision) {
       case 'not_found':
@@ -236,10 +317,13 @@ export class ContextIngestionService {
       case 'delete':
         return this.tombstone(tx, obs, stored!, meta);
       case 'create':
-        return this.create(tx, obs as PresentObservation, meta);
+        return withHeld(await this.create(tx, obs as PresentObservation, meta, held, hash!), held);
       case 'apply':
       case 'restore':
-        return this.update(tx, obs as PresentObservation, stored!, decision, meta);
+        return withHeld(
+          await this.update(tx, obs as PresentObservation, stored!, decision, meta, held, hash!),
+          held,
+        );
     }
   }
 
@@ -247,13 +331,15 @@ export class ContextIngestionService {
     tx: TenantTransaction,
     obs: PresentObservation,
     meta: IngestMeta,
+    held: readonly HeldField[],
+    hash: string,
   ): Promise<IngestResult> {
     const now = new Date();
     const unknownCompanies: ExternalRef[] = [];
     let id: string;
     let changedFields: string[];
     if (obs.kind === 'company') {
-      const values = companyValues(obs);
+      const values = withoutHeld(companyValues(obs), held, undefined);
       id = await this.store.createCompany(tx, values, now);
       changedFields = presentFields({
         name: values.name,
@@ -261,7 +347,7 @@ export class ContextIngestionService {
       });
     } else {
       const companyId = await this.primaryCompanyId(tx, obs, unknownCompanies);
-      const values = personValues(obs, companyId ?? null);
+      const values = withoutHeld(personValues(obs, companyId ?? null), held, undefined);
       id = await this.store.createPerson(tx, values, now);
       changedFields = presentFields({ ...values });
     }
@@ -278,7 +364,7 @@ export class ContextIngestionService {
       lastSeenAt: obs.observedAt,
       sourceCreatedAt: obs.sourceCreatedAt ?? null,
       sourceUpdatedAt: obs.sourceUpdatedAt ?? null,
-      fieldHash: fieldHash(obs),
+      fieldHash: hash,
       lastChangeId: changeId,
     });
     await this.afterWrite(tx, obs, id, meta);
@@ -291,6 +377,8 @@ export class ContextIngestionService {
     stored: RefRow,
     decision: 'apply' | 'restore',
     meta: IngestMeta,
+    held: readonly HeldField[],
+    hash: string,
   ): Promise<IngestResult> {
     const now = new Date();
     const id = await this.store.resolveCanonical(tx, obs.kind, stored.canonicalId);
@@ -301,7 +389,7 @@ export class ContextIngestionService {
     if (obs.kind === 'company') {
       const current = await this.store.getCompany(tx, id);
       recordStateBefore = current.recordState;
-      const next = companyValues(obs);
+      const next = withoutHeld(companyValues(obs), held, current.values);
       if (current.values.name !== next.name) changedFields.push('name');
       if (!sameList(current.values.domains, next.domains)) changedFields.push('domains');
       if (changedFields.length) await this.store.updateCompany(tx, id, next, now);
@@ -312,7 +400,7 @@ export class ContextIngestionService {
         obs.companyLinks === undefined
           ? current.values.companyId
           : ((await this.primaryCompanyId(tx, obs, unknownCompanies)) ?? null);
-      const next = personValues(obs, companyId);
+      const next = withoutHeld(personValues(obs, companyId), held, current.values);
       for (const k of Object.keys(next) as (keyof PersonValues)[]) {
         if (current.values[k] !== next[k]) changedFields.push(k);
       }
@@ -325,7 +413,7 @@ export class ContextIngestionService {
       ...(obs.kind === 'company' ? { retiredAt: null, retiredByRunId: null } : {}),
       sourceCreatedAt: obs.sourceCreatedAt ?? stored.sourceCreatedAt ?? null,
       sourceUpdatedAt: obs.sourceUpdatedAt ?? stored.sourceUpdatedAt ?? null,
-      fieldHash: fieldHash(obs),
+      fieldHash: hash,
       lastSeenAt: maxDate(stored.lastSeenAt, obs.observedAt),
     });
     if (decision === 'restore') changedFields.push('refState');
@@ -594,6 +682,23 @@ export class ContextIngestionService {
     }
     return { applied, survivorKnown: true };
   }
+}
+
+/** Held fields keep the previous accepted value (`null` when there is none). */
+function withoutHeld<V extends object>(
+  next: V,
+  held: readonly HeldField[],
+  current: Partial<V> | undefined,
+): V {
+  if (held.length === 0) return next;
+  const out = { ...next } as Record<string, unknown>;
+  for (const h of held)
+    out[h.field] = (current as Record<string, unknown> | undefined)?.[h.field] ?? null;
+  return out as V;
+}
+
+function withHeld(result: IngestResult, held: readonly HeldField[]): IngestResult {
+  return held.length ? { ...result, held } : result;
 }
 
 function companyValues(obs: Extract<PresentObservation, { kind: 'company' }>): CompanyValues {

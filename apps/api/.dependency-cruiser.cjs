@@ -49,6 +49,20 @@ module.exports = {
       to: { path: '^src/modules/tenancy/tenant-context\\.ts$' },
     },
     {
+      name: 'authorized-context-issued-only-by-security',
+      severity: 'error',
+      comment:
+        'M10A1: only the security code of the tenancy module may import the authorized-context issuer (other code uses the tenancy index).',
+      from: {
+        pathNot: [
+          '^src/modules/tenancy/security/',
+          '^src/modules/tenancy/application/',
+          '\\.spec\\.ts$',
+        ],
+      },
+      to: { path: '^src/modules/tenancy/security/authorized-context\\.ts$' },
+    },
+    {
       name: 'domain-is-pure',
       severity: 'error',
       comment:

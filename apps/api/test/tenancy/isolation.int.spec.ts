@@ -30,6 +30,7 @@ import {
   startTenancy,
   type TenancyHarness,
 } from '../support/tenancy';
+import { authz, platformAuthz } from '../support/security';
 
 describe('tenant data isolation (real PostgreSQL, app role, RLS)', () => {
   let infra: TestInfrastructure;
@@ -186,16 +187,20 @@ describe('tenant data isolation (real PostgreSQL, app role, RLS)', () => {
     });
 
     it('config deletes are tenant-scoped', async () => {
-      const mapping = await h.config.saveLeadSourceMapping(a, {
+      const mapping = await h.config.saveLeadSourceMapping(await authz(a, 'config.integration'), {
         system: 'hubspot',
         sourceProperty: 'recent_conversion',
         matchType: 'contains',
         sourceValue: 'Scoped delete',
         channel: 'demo_request',
       });
-      await expect(h.config.deleteLeadSourceMapping(b, mapping.id)).resolves.toBe(false);
+      await expect(
+        h.config.deleteLeadSourceMapping(await authz(b, 'config.integration'), mapping.id),
+      ).resolves.toBe(false);
       await expect(h.config.listLeadSourceMappings(a)).resolves.toHaveLength(1);
-      await expect(h.config.deleteLeadSourceMapping(a, mapping.id)).resolves.toBe(true);
+      await expect(
+        h.config.deleteLeadSourceMapping(await authz(a, 'config.integration'), mapping.id),
+      ).resolves.toBe(true);
     });
   });
 
@@ -243,18 +248,18 @@ describe('tenant data isolation (real PostgreSQL, app role, RLS)', () => {
 
     it('product keys and mapping keys are unique per tenant only', async () => {
       await h.catalogue.publish(
-        a,
+        await authz(a, 'config.product_model.publish'),
         { products: [{ key: 'marketplace', name: 'Marketplace (A)' }] },
-        { actor: 'test', basedOnVersion: 0 },
+        { basedOnVersion: 0 },
       );
       await h.catalogue.publish(
-        b,
+        await authz(b, 'config.product_model.publish'),
         { products: [{ key: 'marketplace', name: 'Marketplace (B)' }] },
-        { actor: 'test', basedOnVersion: 0 },
+        { basedOnVersion: 0 },
       );
       // A new version updates the projection row in place, not a duplicate.
       await h.catalogue.publish(
-        a,
+        await authz(a, 'config.product_model.publish'),
         {
           products: [
             {
@@ -264,7 +269,7 @@ describe('tenant data isolation (real PostgreSQL, app role, RLS)', () => {
             },
           ],
         },
-        { actor: 'test', basedOnVersion: 1 },
+        { basedOnVersion: 1 },
       );
 
       await expect(h.config.listProducts(a)).resolves.toEqual([
@@ -286,7 +291,12 @@ describe('tenant data isolation (real PostgreSQL, app role, RLS)', () => {
     });
 
     it("a subscription can only reference its own tenant's companies and catalogue", async () => {
-      await publishAdding(h.catalogue, b, [{ key: 'portal', name: 'Portal' }]);
+      await publishAdding(
+        h.catalogue,
+        b,
+        [{ key: 'portal', name: 'Portal' }],
+        await authz(b, 'config.product_model.publish'),
+      );
       const companyA = newCompanyId();
       await inA((tx) => h.companies.save(tx, company(a.tenantId, companyA)));
       const companyB = newCompanyId();
@@ -306,16 +316,27 @@ describe('tenant data isolation (real PostgreSQL, app role, RLS)', () => {
         observedAt: new Date(),
       });
       // Tenant B's product is not in A's catalogue; B's company is not visible to A.
-      await expect(h.subscriptions.ingest(a, obs(companyA, 'r1'), meta)).resolves.toEqual({
+      await expect(
+        h.subscriptions.ingest(await authz(a, 'canonical.source_sync'), obs(companyA, 'r1'), meta),
+      ).resolves.toEqual({
         outcome: 'rejected',
         reason: 'unknown_product',
       });
-      await publishAdding(h.catalogue, a, [{ key: 'portal', name: 'Portal' }]);
-      await expect(h.subscriptions.ingest(a, obs(companyB, 'r2'), meta)).resolves.toEqual({
+      await publishAdding(
+        h.catalogue,
+        a,
+        [{ key: 'portal', name: 'Portal' }],
+        await authz(a, 'config.product_model.publish'),
+      );
+      await expect(
+        h.subscriptions.ingest(await authz(a, 'canonical.source_sync'), obs(companyB, 'r2'), meta),
+      ).resolves.toEqual({
         outcome: 'rejected',
         reason: 'unknown_account',
       });
-      await expect(h.subscriptions.ingest(a, obs(companyA, 'r3'), meta)).resolves.toMatchObject({
+      await expect(
+        h.subscriptions.ingest(await authz(a, 'canonical.source_sync'), obs(companyA, 'r3'), meta),
+      ).resolves.toMatchObject({
         outcome: 'created',
       });
       // The database refuses a cross-tenant company even when the writer is bypassed.
@@ -329,10 +350,11 @@ describe('tenant data isolation (real PostgreSQL, app role, RLS)', () => {
               'import', 'iso', 'r4', now(), now(), now())`,
         ),
       ).rejects.toThrow(/foreign key|23503/);
-      // Catalogue entries are never deleted (K4), referenced or not.
+      // Catalogue entries are never deleted (K4), referenced or not. M10A1: the app role
+      // has no DELETE privilege (the trigger remains behind it for every other role).
       await expect(
         inA((tx) => tenantClient(tx).$executeRaw`DELETE FROM tenant_products WHERE key = 'portal'`),
-      ).rejects.toThrow(/DELETE on tenant_products is not allowed/);
+      ).rejects.toThrow(/permission denied for table tenant_products/);
       const lines = await h.subscriptionReads.accountSubscriptions(a, companyA);
       expect(lines.subscriptions.map((l) => l.productKey)).toEqual(['portal']);
       await expect(h.subscriptionReads.accountSubscriptions(b, companyA)).resolves.toMatchObject({
@@ -413,7 +435,11 @@ describe('tenant data isolation (real PostgreSQL, app role, RLS)', () => {
     it('credentials cannot be resolved across tenants', async () => {
       process.env[`TENANT_${a.tenantSlug.toUpperCase()}_HUBSPOT_REFRESH_TOKEN`] = 'token-for-a';
       process.env[`TENANT_${b.tenantSlug.toUpperCase()}_HUBSPOT_REFRESH_TOKEN`] = 'token-for-b';
-      await h.credentials.register(a, 'hubspot', 'refresh_token');
+      await h.credentials.register(
+        await authz(a, 'config.integration'),
+        'hubspot',
+        'refresh_token',
+      );
 
       await expect(h.credentials.resolve(a, 'hubspot', 'refresh_token')).resolves.toMatchObject({});
       expect((await h.credentials.resolve(a, 'hubspot', 'refresh_token')).reveal()).toBe(
@@ -424,7 +450,11 @@ describe('tenant data isolation (real PostgreSQL, app role, RLS)', () => {
         RecordNotFoundError,
       );
 
-      await h.credentials.register(b, 'hubspot', 'refresh_token');
+      await h.credentials.register(
+        await authz(b, 'config.integration'),
+        'hubspot',
+        'refresh_token',
+      );
       expect((await h.credentials.resolve(b, 'hubspot', 'refresh_token')).reveal()).toBe(
         'token-for-b',
       );
@@ -453,16 +483,22 @@ describe('tenant data isolation (real PostgreSQL, app role, RLS)', () => {
     });
 
     it('qualification mode is isolated per tenant', async () => {
-      await h.config.configureIntegration(b, 'jev', { access: 'read_only' });
+      await h.config.configureIntegration(await authz(b, 'config.integration'), 'jev', {
+        access: 'read_only',
+      });
       const current = await h.config.getQualificationConfig(b);
-      await h.config.updateQualificationConfig(b, { mode: 'hybrid' }, current.version);
+      await h.config.updateQualificationConfig(
+        await authz(b, 'config.policy'),
+        { mode: 'hybrid' },
+        current.version,
+      );
 
       await expect(h.config.getQualificationConfig(a)).resolves.toMatchObject({ mode: 'rules' });
       await expect(h.config.getQualificationConfig(b)).resolves.toMatchObject({ mode: 'hybrid' });
     });
 
     it('lead source mappings are isolated per tenant', async () => {
-      await h.config.saveLeadSourceMapping(b, {
+      await h.config.saveLeadSourceMapping(await authz(b, 'config.integration'), {
         system: 'hubspot',
         sourceProperty: 'recent_conversion',
         matchType: 'contains',
@@ -474,11 +510,13 @@ describe('tenant data isolation (real PostgreSQL, app role, RLS)', () => {
     });
 
     it('integration settings and policies are isolated per tenant', async () => {
-      await h.config.configureIntegration(b, 'sugar', {
+      await h.config.configureIntegration(await authz(b, 'config.integration'), 'sugar', {
         access: 'read_only',
         settings: { baseUrl: 'https://beta.sugarondemand.example', apiVersion: 'v11_20' },
       });
-      await h.config.savePolicy(b, 'sla', { responseMinutes: { hot: 30, warm: 600, cold: 2000 } });
+      await h.config.savePolicy(await authz(b, 'config.policy'), 'sla', {
+        responseMinutes: { hot: 30, warm: 600, cold: 2000 },
+      });
 
       await expect(h.config.getIntegration(a, 'sugar')).resolves.toMatchObject({
         access: 'disabled',
@@ -535,10 +573,10 @@ describe('tenant data isolation (real PostgreSQL, app role, RLS)', () => {
 
     it('suspension takes effect immediately, even for contexts already issued', async () => {
       const c = await provisionTenant(h, 'susp');
-      await h.registry.suspend(c.tenantId);
+      await h.registry.suspend(platformAuthz('config.tenant.status'), c.tenantId);
       await expect(h.config.listProducts(c)).rejects.toBeInstanceOf(TenantInactiveError);
       await expect(h.contexts.forTenantId(c.tenantId)).rejects.toBeInstanceOf(TenantInactiveError);
-      await h.registry.reactivate(c.tenantId);
+      await h.registry.reactivate(platformAuthz('config.tenant.status'), c.tenantId);
       await expect(h.config.listProducts(c)).resolves.toEqual([]);
     });
 
@@ -583,7 +621,12 @@ describe('tenant data isolation (real PostgreSQL, app role, RLS)', () => {
       await expect(
         inA(async (tx) => {
           await h.persons.save(tx, person(a.tenantId, id));
-          await publishAdding(h.catalogue, a, [{ key: 'rolled', name: 'Separate transaction' }]); // own tx: commits
+          await publishAdding(
+            h.catalogue,
+            a,
+            [{ key: 'rolled', name: 'Separate transaction' }],
+            await authz(a, 'config.product_model.publish'),
+          ); // own tx: commits
           throw new Error('boom');
         }),
       ).rejects.toThrow('boom');

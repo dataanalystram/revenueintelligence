@@ -18,7 +18,9 @@ import { WorkerModule } from '../../src/worker.module';
 import { startInfrastructure, withAdmin, type TestInfrastructure } from './containers';
 import { ALL_READ_SCOPES, FakeHubSpot, sampleData, type FakeHubSpotOptions } from './fake-hubspot';
 import { webhookEvent } from './hubspot-webhooks';
+import { registerSecurityApp } from './security';
 import { provisionTenant, startTenancy, type TenancyHarness } from './tenancy';
+import { authz } from './security';
 
 export const APP_ID = '22222';
 
@@ -137,11 +139,15 @@ export async function startContextHarness(
     receipts,
     async tenant(prefix, portalId) {
       const ctx = await provisionTenant(h, prefix);
-      await h.config.configureIntegration(ctx, 'hubspot', {
+      await h.config.configureIntegration(await authz(ctx, 'config.integration'), 'hubspot', {
         access: 'read_only',
         settings: { portalId: String(portalId) },
       });
-      await h.credentials.register(ctx, 'hubspot', 'access_token');
+      await h.credentials.register(
+        await authz(ctx, 'config.integration'),
+        'hubspot',
+        'access_token',
+      );
       setEnv(
         EnvSecretProvider.toEnvName(`tenant.${ctx.tenantSlug}.hubspot.access_token`),
         `token-${portalId}`,
@@ -208,5 +214,6 @@ export async function startWorkerApp(
     logger: false,
   });
   await app.init();
+  registerSecurityApp(app);
   return app;
 }

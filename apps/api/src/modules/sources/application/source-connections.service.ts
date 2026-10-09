@@ -1,16 +1,22 @@
 import { Injectable } from '@nestjs/common';
 import { z } from 'zod';
 import {
+  assertNotSecretLike,
   ConnectorKindSchema,
   connectorKindEntry,
+  findSecretLikeInJson,
+  SecretLikeValueError,
   PROFILE_LIMITS,
   SourceProfileSettingsSchema,
   type ConnectionTestResult,
   type SourceConnector,
 } from '../../domain';
 import {
+  assertAuthorized,
+  AuditTrail,
   TenantCredentialsService,
   TenantDatabase,
+  type AuthorizedContext,
   type IntegrationSystem,
   type TenantContext,
 } from '../../tenancy';
@@ -59,6 +65,7 @@ export class SourceConnectionsService {
     private readonly repo: SourcesRepository,
     private readonly registry: SourceAdapterRegistry,
     private readonly credentials: TenantCredentialsService,
+    private readonly audit: AuditTrail,
   ) {}
 
   list(ctx: TenantContext): Promise<SourceConnection[]> {
@@ -87,7 +94,11 @@ export class SourceConnectionsService {
    * configuration is validated by the adapter; credentials are names only.
    * A new connection starts disabled.
    */
-  async configure(ctx: TenantContext, input: ConfigureConnectionInput): Promise<SourceConnection> {
+  async configure(
+    actx: AuthorizedContext<'config.source.connection'>,
+    input: ConfigureConnectionInput,
+  ): Promise<SourceConnection> {
+    assertAuthorized(actx, 'config.source.connection');
     const kind = ConnectorKindSchema.safeParse(input.kind);
     if (!kind.success)
       throw new SourcesError('unknown_kind', `Unknown connector kind ${input.kind}`);
@@ -99,6 +110,11 @@ export class SourceConnectionsService {
     }
     const label = Label.safeParse(input.label);
     if (!label.success) throw new SourcesError('invalid_label', 'Invalid connection label');
+    // Plan §11: no secret-like values in the label or the (non-secret) configuration.
+    assertNotSecretLike('connection label', label.data);
+    const secretHit = findSecretLikeInJson(input.config)[0];
+    if (secretHit)
+      throw new SecretLikeValueError(`connection config ${secretHit.path}`, secretHit.code);
     if (
       input.credentialName !== undefined &&
       !CredentialName.safeParse(input.credentialName).success
@@ -131,43 +147,69 @@ export class SourceConnectionsService {
     if (input.credentialName) {
       // Registers the NAME (idempotent); the key is derived from this tenant's
       // slug, so a connection can only ever resolve its own tenant's secret.
-      await this.credentials.register(ctx, kind.data as IntegrationSystem, input.credentialName);
+      await this.credentials.register(actx, kind.data as IntegrationSystem, input.credentialName);
     }
-    return this.db.transaction(ctx, async (tx) => {
+    return this.db.transaction(actx.tenant, async (tx) => {
       const existing = await this.repo.connectionByKind(tx, kind.data);
-      if (existing) {
-        return this.repo.updateConnection(tx, existing.id, {
-          label: label.data,
-          config: input.config,
-          credentialName: input.credentialName ?? null,
-        });
-      }
-      return this.repo.createConnection(tx, {
-        kind: kind.data,
-        label: label.data,
-        mappingMode: 'versioned',
-        config: input.config,
-        ...(input.credentialName ? { credentialName: input.credentialName } : {}),
+      const saved = existing
+        ? await this.repo.updateConnection(tx, existing.id, {
+            label: label.data,
+            config: input.config,
+            credentialName: input.credentialName ?? null,
+          })
+        : await this.repo.createConnection(tx, {
+            kind: kind.data,
+            label: label.data,
+            mappingMode: 'versioned',
+            config: input.config,
+            ...(input.credentialName ? { credentialName: input.credentialName } : {}),
+          });
+      await this.audit.record(tx, actx, {
+        action: 'source_connection.configure',
+        targetKind: 'source_connection',
+        targetRef: saved.id,
+        details: { kind: kind.data, created: !existing },
       });
+      return saved;
     });
   }
 
   async setStatus(
-    ctx: TenantContext,
+    actx: AuthorizedContext<'config.source.connection'>,
     id: string,
     status: 'enabled' | 'disabled',
   ): Promise<SourceConnection> {
-    return this.db.transaction(ctx, async (tx) => {
+    assertAuthorized(actx, 'config.source.connection');
+    return this.db.transaction(actx.tenant, async (tx) => {
       if (!(await this.repo.connection(tx, id))) throw new ConnectionNotFoundError(id);
-      return this.repo.updateConnection(tx, id, { status });
+      const saved = await this.repo.updateConnection(tx, id, { status });
+      await this.audit.record(tx, actx, {
+        action: 'source_connection.status',
+        targetKind: 'source_connection',
+        targetRef: id,
+        details: { status },
+      });
+      return saved;
     });
   }
 
   /** Runs the adapter's connection test and records the outcome code (no payload). */
-  async test(ctx: TenantContext, id: string): Promise<ConnectionTestResult> {
-    const connection = await this.get(ctx, id);
-    const result = await this.connector(ctx, connection).testConnection();
-    await this.db.transaction(ctx, (tx) => this.repo.recordTest(tx, id, result.code, new Date()));
+  async test(
+    actx: AuthorizedContext<'config.source.connection'>,
+    id: string,
+  ): Promise<ConnectionTestResult> {
+    assertAuthorized(actx, 'config.source.connection');
+    const connection = await this.get(actx.tenant, id);
+    const result = await this.connector(actx.tenant, connection).testConnection();
+    await this.db.transaction(actx.tenant, async (tx) => {
+      await this.repo.recordTest(tx, id, result.code, new Date());
+      await this.audit.record(tx, actx, {
+        action: 'source_connection.test',
+        targetKind: 'source_connection',
+        targetRef: id,
+        details: { code: result.code },
+      });
+    });
     return result;
   }
 

@@ -81,6 +81,10 @@ const M9B_MIGRATIONS = [
 const M9B_DOWN = resolve(`prisma/rollback/${M9B_MIGRATIONS[0]}.down.sql`);
 const M9B_RETIRE_DOWN = resolve(`prisma/rollback/${M9B_MIGRATIONS[1]}.down.sql`);
 
+/** M10A1 migrations in apply order (security foundation). */
+const M10A1_MIGRATIONS = ['20261201120000_m10a1_security_foundation'];
+const M10A1_DOWN = resolve(`prisma/rollback/${M10A1_MIGRATIONS[0]}.down.sql`);
+
 /** Everything a migration can change, as sorted text (for exact schema comparison). */
 async function schemaSnapshot(url: string): Promise<Record<string, string[]>> {
   const queries: Record<string, string> = {
@@ -107,7 +111,7 @@ async function schemaSnapshot(url: string): Promise<Record<string, string[]>> {
 }
 
 /** Down-scripts back to M7 (M9A, then M8), in the order they must run (newest first). */
-const POST_M7_DOWNS = [...M8_MIGRATIONS, ...M9A_MIGRATIONS, ...M9B_MIGRATIONS]
+const POST_M7_DOWNS = [...M8_MIGRATIONS, ...M9A_MIGRATIONS, ...M9B_MIGRATIONS, ...M10A1_MIGRATIONS]
   .reverse()
   .map((name) => resolve(`prisma/rollback/${name}.down.sql`));
 
@@ -158,6 +162,7 @@ describe('database migrations and schema guard', () => {
         ...M8_MIGRATIONS,
         ...M9A_MIGRATIONS,
         ...M9B_MIGRATIONS,
+        ...M10A1_MIGRATIONS,
       ]);
       expect(rows.every((r) => r.finished_at !== null)).toBe(true);
     });
@@ -1157,7 +1162,8 @@ describe('database migrations and schema guard', () => {
         `m8_conn_down_${Math.random().toString(36).slice(2, 8)}`,
       );
       await migrate(target);
-      // Newest first: the M9B down-scripts run before any older one (M9B adds a connector kind).
+      // Newest first: M10A1, then the M9B down-scripts, before any older one.
+      await withAdmin(target, (db) => db.query(readFileSync(M10A1_DOWN, 'utf8')));
       await withAdmin(target, (db) => db.query(readFileSync(M9B_RETIRE_DOWN, 'utf8')));
       await withAdmin(target, (db) => db.query(readFileSync(M9B_DOWN, 'utf8')));
       await withAdmin(target, async (db) => {
@@ -1463,7 +1469,8 @@ describe('database migrations and schema guard', () => {
         await migrate(m8Url, ['--config', m8MigrationsConfig(dir)]);
         await migrate(url);
         const latest = await schemaSnapshot(url);
-        // Newest first: M9B (retirement, then the connector kind), then M9A.
+        // Newest first: M10A1, M9B (retirement, then the connector kind), then M9A.
+        await withAdmin(url, (db) => db.query(readFileSync(M10A1_DOWN, 'utf8')));
         await withAdmin(url, (db) => db.query(readFileSync(M9B_RETIRE_DOWN, 'utf8')));
         await withAdmin(url, (db) => db.query(readFileSync(M9B_DOWN, 'utf8')));
         await withAdmin(url, (db) => db.query(readFileSync(M9A_DOWN, 'utf8')));
@@ -1600,7 +1607,8 @@ describe('database migrations and schema guard', () => {
           }),
         ).rejects.toThrow(/tenant_credential_refs_system_valid/);
         await withAdmin(m9aUrl, (db) => db.query(`DELETE FROM tenants WHERE id = $1`, [tenant]));
-        // Newest first: the retirement down-script (nothing retired here), then the kind.
+        // Newest first: M10A1, the retirement down-script (nothing retired here), then the kind.
+        await withAdmin(url, (db) => db.query(readFileSync(M10A1_DOWN, 'utf8')));
         await withAdmin(url, (db) => db.query(readFileSync(M9B_RETIRE_DOWN, 'utf8')));
         await expect(
           withAdmin(url, (db) => db.query(readFileSync(M9B_DOWN, 'utf8'))),
@@ -1706,6 +1714,8 @@ describe('database migrations and schema guard', () => {
         await migrate(before, ['--config', migrationsBefore(dir, '20261116')]);
         await migrate(url);
         const latest = await schemaSnapshot(url);
+        // Newest first: M10A1 is rolled back before the M9B retirement down-script.
+        await withAdmin(url, (db) => db.query(readFileSync(M10A1_DOWN, 'utf8')));
         await seed(url);
         await withAdmin(url, (db) =>
           db.query(

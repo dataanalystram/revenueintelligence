@@ -10,6 +10,7 @@ import {
 } from '../../src/modules/tenancy';
 import { appConfig, startInfrastructure, type TestInfrastructure } from '../support/containers';
 import { provisionTenant, startTenancy, type TenancyHarness } from '../support/tenancy';
+import { authz } from '../support/security';
 
 /**
  * Regression tests for a check-then-act race between concurrent admin requests
@@ -76,8 +77,12 @@ describe('tenant configuration invariants under concurrent admin requests', () =
 
   it('a flow can never end up active while a required integration was concurrently lowered', async () => {
     const ctx = await provisionTenant(h, 'raceflow');
-    await h.config.configureIntegration(ctx, 'hubspot', { access: 'read_write' });
-    await h.config.configureIntegration(ctx, 'sugar', { access: 'read_write' });
+    await h.config.configureIntegration(await authz(ctx, 'config.integration'), 'hubspot', {
+      access: 'read_write',
+    });
+    await h.config.configureIntegration(await authz(ctx, 'config.integration'), 'sugar', {
+      access: 'read_write',
+    });
 
     const [lower, activate] = await race(
       ctx,
@@ -85,8 +90,16 @@ describe('tenant configuration invariants under concurrent admin requests', () =
         "SELECT 1 FROM tenant_integrations WHERE tenant_id = $1 AND system = 'sugar' FOR UPDATE",
         "SELECT 1 FROM tenant_flow_settings WHERE tenant_id = $1 AND flow = 'hubspot_to_sugar_handover' FOR UPDATE",
       ],
-      () => h.config.configureIntegration(ctx, 'sugar', { access: 'read_only' }),
-      () => h.config.setFlowMode(ctx, 'hubspot_to_sugar_handover', 'active'),
+      async () =>
+        h.config.configureIntegration(await authz(ctx, 'config.integration'), 'sugar', {
+          access: 'read_only',
+        }),
+      async () =>
+        h.config.setFlowMode(
+          await authz(ctx, 'config.integration'),
+          'hubspot_to_sugar_handover',
+          'active',
+        ),
     );
 
     const flows = await h.config.listFlows(ctx);
@@ -107,7 +120,9 @@ describe('tenant configuration invariants under concurrent admin requests', () =
 
   it('Jev can never be disabled while a concurrent request switches qualification to hybrid', async () => {
     const ctx = await provisionTenant(h, 'racejev');
-    await h.config.configureIntegration(ctx, 'jev', { access: 'read_only' });
+    await h.config.configureIntegration(await authz(ctx, 'config.integration'), 'jev', {
+      access: 'read_only',
+    });
     const { version } = await h.config.getQualificationConfig(ctx);
 
     const [disable, hybrid] = await race(
@@ -116,8 +131,16 @@ describe('tenant configuration invariants under concurrent admin requests', () =
         "SELECT 1 FROM tenant_integrations WHERE tenant_id = $1 AND system = 'jev' FOR UPDATE",
         'SELECT 1 FROM tenant_qualification_config WHERE tenant_id = $1 FOR UPDATE',
       ],
-      () => h.config.configureIntegration(ctx, 'jev', { access: 'disabled' }),
-      () => h.config.updateQualificationConfig(ctx, { mode: 'hybrid' }, version),
+      async () =>
+        h.config.configureIntegration(await authz(ctx, 'config.integration'), 'jev', {
+          access: 'disabled',
+        }),
+      async () =>
+        h.config.updateQualificationConfig(
+          await authz(ctx, 'config.policy'),
+          { mode: 'hybrid' },
+          version,
+        ),
     );
 
     const qualification = await h.config.getQualificationConfig(ctx);
@@ -132,12 +155,20 @@ describe('tenant configuration invariants under concurrent admin requests', () =
 
   it('Jev cannot be disabled (sequentially) while qualification depends on it', async () => {
     const ctx = await provisionTenant(h, 'seqjev');
-    await h.config.configureIntegration(ctx, 'jev', { access: 'read_only' });
+    await h.config.configureIntegration(await authz(ctx, 'config.integration'), 'jev', {
+      access: 'read_only',
+    });
     const { version } = await h.config.getQualificationConfig(ctx);
-    await h.config.updateQualificationConfig(ctx, { mode: 'jev' }, version);
+    await h.config.updateQualificationConfig(
+      await authz(ctx, 'config.policy'),
+      { mode: 'jev' },
+      version,
+    );
 
     await expect(
-      h.config.configureIntegration(ctx, 'jev', { access: 'disabled' }),
+      h.config.configureIntegration(await authz(ctx, 'config.integration'), 'jev', {
+        access: 'disabled',
+      }),
     ).rejects.toMatchObject({
       issues: [expect.stringMatching(/qualification mode "jev" needs the jev integration/)],
     });
@@ -148,16 +179,30 @@ describe('tenant configuration invariants under concurrent admin requests', () =
 
   it('many concurrent flip-flops never leave an invalid state', async () => {
     const ctx = await provisionTenant(h, 'raceloop');
-    await h.config.configureIntegration(ctx, 'hubspot', { access: 'read_write' });
-    await h.config.configureIntegration(ctx, 'sugar', { access: 'read_write' });
+    await h.config.configureIntegration(await authz(ctx, 'config.integration'), 'hubspot', {
+      access: 'read_write',
+    });
+    await h.config.configureIntegration(await authz(ctx, 'config.integration'), 'sugar', {
+      access: 'read_write',
+    });
     for (let round = 0; round < 10; round++) {
       await Promise.allSettled([
-        h.config.setFlowMode(ctx, 'hubspot_to_sugar_handover', round % 2 ? 'off' : 'active'),
-        h.config.configureIntegration(ctx, 'sugar', {
+        h.config.setFlowMode(
+          await authz(ctx, 'config.integration'),
+          'hubspot_to_sugar_handover',
+          round % 2 ? 'off' : 'active',
+        ),
+        h.config.configureIntegration(await authz(ctx, 'config.integration'), 'sugar', {
           access: round % 2 ? 'read_write' : 'read_only',
         }),
-        h.config.setFlowMode(ctx, 'hubspot_to_sugar_handover', 'active'),
-        h.config.configureIntegration(ctx, 'sugar', { access: 'disabled' }),
+        h.config.setFlowMode(
+          await authz(ctx, 'config.integration'),
+          'hubspot_to_sugar_handover',
+          'active',
+        ),
+        h.config.configureIntegration(await authz(ctx, 'config.integration'), 'sugar', {
+          access: 'disabled',
+        }),
       ]);
       const flows = await h.config.listFlows(ctx);
       const access = Object.fromEntries(
@@ -186,16 +231,28 @@ describe('tenant configuration invariants under concurrent admin requests', () =
       expect(iso).toBe('repeatable read'); // the environment really is misconfigured
 
       const ctx = await provisionTenant(rr, 'racerr');
-      await rr.config.configureIntegration(ctx, 'hubspot', { access: 'read_write' });
-      await rr.config.configureIntegration(ctx, 'sugar', { access: 'read_write' });
+      await rr.config.configureIntegration(await authz(ctx, 'config.integration'), 'hubspot', {
+        access: 'read_write',
+      });
+      await rr.config.configureIntegration(await authz(ctx, 'config.integration'), 'sugar', {
+        access: 'read_write',
+      });
       const [lower, activate] = await race(
         ctx,
         [
           "SELECT 1 FROM tenant_integrations WHERE tenant_id = $1 AND system = 'sugar' FOR UPDATE",
           "SELECT 1 FROM tenant_flow_settings WHERE tenant_id = $1 AND flow = 'hubspot_to_sugar_handover' FOR UPDATE",
         ],
-        () => rr.config.configureIntegration(ctx, 'sugar', { access: 'read_only' }),
-        () => rr.config.setFlowMode(ctx, 'hubspot_to_sugar_handover', 'active'),
+        async () =>
+          rr.config.configureIntegration(await authz(ctx, 'config.integration'), 'sugar', {
+            access: 'read_only',
+          }),
+        async () =>
+          rr.config.setFlowMode(
+            await authz(ctx, 'config.integration'),
+            'hubspot_to_sugar_handover',
+            'active',
+          ),
       );
       const flows = await rr.config.listFlows(ctx);
       const access = Object.fromEntries(
@@ -229,19 +286,31 @@ describe('tenant configuration invariants under concurrent admin requests', () =
 
       const started = Date.now();
       await expect(
-        quick.config.setFlowMode(busy, 'hubspot_to_sugar_handover', 'off'),
+        quick.config.setFlowMode(
+          await authz(busy, 'config.integration'),
+          'hubspot_to_sugar_handover',
+          'off',
+        ),
       ).rejects.toBeInstanceOf(LockTimeoutError);
       expect(Date.now() - started).toBeLessThan(5_000);
       // Another tenant's configuration is not blocked by this tenant's lock.
       await expect(
-        quick.config.setFlowMode(other, 'hubspot_to_sugar_handover', 'off'),
+        quick.config.setFlowMode(
+          await authz(other, 'config.integration'),
+          'hubspot_to_sugar_handover',
+          'off',
+        ),
       ).resolves.toMatchObject({
         mode: 'off',
       });
       await admin.query('COMMIT');
       // Once free, the busy tenant works again.
       await expect(
-        quick.config.setFlowMode(busy, 'hubspot_to_sugar_handover', 'off'),
+        quick.config.setFlowMode(
+          await authz(busy, 'config.integration'),
+          'hubspot_to_sugar_handover',
+          'off',
+        ),
       ).resolves.toMatchObject({
         mode: 'off',
       });

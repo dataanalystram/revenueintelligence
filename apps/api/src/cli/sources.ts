@@ -26,7 +26,9 @@ import { sugarAdapterFactory } from '../modules/sugar';
 import { TenancyModule, TenantContextService, type TenantContext } from '../modules/tenancy';
 import { loadConfig } from '../platform/config';
 import { PlatformModule } from '../platform/platform.module';
+import type { AuditAction, AuditTargetKind, Capability } from '../modules/domain';
 import { fail } from './hubspot-context';
+import { authorizeOperator } from './operator';
 
 /**
  * Source connectors (M8, ADRs 0019–0021): a thin CLI over the typed services.
@@ -166,7 +168,6 @@ async function main(): Promise<void> {
   if (!values.tenant) throw new Error('--tenant <slug> is required');
   const tenant = values.tenant;
   const execute = values.execute;
-  const actor = values.actor ?? 'cli';
   // `--ack <findingId>:<reasonCode>` (M9A §7.4); validated by the mapping service.
   const acknowledgements = (values.ack ?? []).map((a) => {
     const [findingId = '', reasonCode = ''] = a.split(':');
@@ -179,11 +180,23 @@ async function main(): Promise<void> {
     ...(values['profile-override'] !== undefined
       ? { profileOverride: { reason: values['profile-override'] } }
       : {}),
-    actor,
   };
 
   const result = await withSources(async (app) => {
     const ctx = await app.get(TenantContextService).forSlug(tenant);
+    // Q1: every write names an operator (asserted, not authenticated); refusals are audited.
+    const op = <C extends Capability>(
+      capability: C,
+      action: AuditAction,
+      targetKind?: AuditTargetKind,
+      targetRef?: string,
+    ) =>
+      authorizeOperator(app, ctx, capability, {
+        actorFlag: values.actor,
+        action,
+        ...(targetKind ? { targetKind } : {}),
+        ...(targetRef ? { targetRef } : {}),
+      });
     const connections = app.get(SourceConnectionsService);
     const connection = async (c: TenantContext): Promise<SourceConnection> => {
       if (!values.connection) throw new Error('--connection <id|kind> is required');
@@ -211,25 +224,40 @@ async function main(): Promise<void> {
           if (!values.kind || !values.label) throw new Error('--kind and --label are required');
           const config = readJson(values.file) as Record<string, unknown>;
           if (!execute) return { dryRun: true, kind: values.kind };
-          let configured = await connections.configure(ctx, {
+          const auth = await op('config.source.connection', 'source_connection.configure');
+          let configured = await connections.configure(auth, {
             kind: values.kind,
             label: values.label,
             config,
             ...(values.credential ? { credentialName: values.credential } : {}),
           });
           if (values.status === 'enabled' || values.status === 'disabled') {
-            configured = await connections.setStatus(ctx, configured.id, values.status);
+            configured = await connections.setStatus(auth, configured.id, values.status);
           }
           return { connection: describe(configured) };
         }
-        case 'test':
-          return { test: await connections.test(ctx, (await connection(ctx)).id) };
+        case 'test': {
+          const conn = await connection(ctx);
+          const auth = await op(
+            'config.source.connection',
+            'source_connection.test',
+            'source_connection',
+            conn.id,
+          );
+          return { test: await connections.test(auth, conn.id) };
+        }
         case 'schema': {
           const conn = await connection(ctx);
           const snapshots = app.get(SchemaSnapshotsService);
           if (values.capture) {
             if (!execute) return { dryRun: true, wouldCapture: conn.id };
-            return { captured: await snapshots.capture(ctx, conn.id, actor) };
+            const auth = await op(
+              'config.source.schema',
+              'source_schema.capture',
+              'source_connection',
+              conn.id,
+            );
+            return { captured: await snapshots.capture(auth, conn.id) };
           }
           if (values.diff) return { drift: await snapshots.drift(ctx, conn.id) };
           const latest = await snapshots.latest(ctx, conn.id);
@@ -276,8 +304,9 @@ async function main(): Promise<void> {
               '--based-on <version> is required to publish (0 for the first version)',
             );
           }
+          const auth = await op('config.mapping.publish', 'mapping.publish', 'mapping', conn.id);
           return {
-            published: await mappings.publish(ctx, conn.id, document, {
+            published: await mappings.publish(auth, conn.id, document, {
               ...mappingOptions,
               expectedBaseVersion: basedOn,
             }),
@@ -301,10 +330,10 @@ async function main(): Promise<void> {
           if (basedOn === undefined) {
             throw new Error('--based-on <version> is required to publish');
           }
+          const auth = await op('config.authority.publish', 'authority.publish', 'authority');
           return {
-            published: await app.get(SourceAuthorityService).publish(ctx, document, {
+            published: await app.get(SourceAuthorityService).publish(auth, document, {
               expectedBaseVersion: basedOn,
-              actor,
               proofAcceptances: (values['accept-proof'] ?? []).map((a) => {
                 const at = a.indexOf(':');
                 return { connectionId: a.slice(0, at), reason: a.slice(at + 1) };
@@ -317,9 +346,10 @@ async function main(): Promise<void> {
           const conn = await connection(ctx);
           const mode = command === 'sync-full' ? 'full' : 'incremental';
           if (!execute) return { dryRun: true, connection: conn.id, mode };
+          const auth = await op('data.sync.run', 'sync.start', 'source_connection', conn.id);
           const started = await app
             .get(SourceSyncService)
-            .start(ctx, conn.id, mode, { correlationId: randomUUID() });
+            .start(auth, conn.id, mode, { correlationId: auth.correlationId });
           return { started };
         }
         case 'sync-status': {
@@ -335,7 +365,9 @@ async function main(): Promise<void> {
           const fields = values.fields?.split(',').filter(Boolean);
           if (fields && objects.length !== 1) throw new Error('--fields needs exactly one object');
           const result = await app.get(SourceProfilingService).request(
-            ctx,
+            execute
+              ? await op('data.profile.run', 'profile.start', 'source_connection', conn.id)
+              : ctx,
             conn.id,
             {
               objects: objects.map((object) => ({ object, ...(fields ? { fields } : {}) })),
@@ -345,7 +377,7 @@ async function main(): Promise<void> {
                 : {}),
               includeExcluded: values['include-excluded']?.split(',').filter(Boolean) ?? [],
             },
-            { actor, execute, correlationId: randomUUID() },
+            { execute, correlationId: randomUUID() },
           );
           return { ...result };
         }
@@ -418,13 +450,21 @@ async function main(): Promise<void> {
           const keep = int(values.keep, 'keep');
           if (keep === undefined) throw new Error('--keep N is required');
           return {
-            purge: await app.get(ProfilePurgeService).purge(ctx, conn.id, values.object, {
-              keep,
-              actor,
-              execute,
-              // The schema owner's URL (never printed); the app role is refused.
-              ownerDatabaseUrl: process.env.MIGRATION_DATABASE_URL,
-            }),
+            purge: await app
+              .get(ProfilePurgeService)
+              .purge(
+                execute
+                  ? await op('data.purge', 'profile.purge', 'source_connection', conn.id)
+                  : ctx,
+                conn.id,
+                values.object,
+                {
+                  keep,
+                  execute,
+                  // The schema owner's URL (never printed); the app role is refused.
+                  ownerDatabaseUrl: process.env.MIGRATION_DATABASE_URL,
+                },
+              ),
           };
         }
         case 'report': {

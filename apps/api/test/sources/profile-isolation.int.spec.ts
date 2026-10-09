@@ -5,9 +5,11 @@ import {
   translateDatabaseError,
   type TenantTransaction,
 } from '../../src/modules/tenancy';
+import { rawText } from '../support/errors';
 import { startContextHarness, type ContextHarness } from '../support/context';
 import { FakeSugar } from '../support/fake-sugar';
 import { runSync, sugarTenant, type SourcesFixture } from '../support/sources';
+import { authz } from '../support/security';
 
 /**
  * Adversarial cross-tenant tests for the four M9A tables, the authority
@@ -61,7 +63,9 @@ describe('M9A profile tables: cross-tenant isolation (raw SQL, app role, forced 
         translateDatabaseError(error, 'attack');
       } catch (translated) {
         const e = translated as Error;
-        return { refused: e.constructor.name, message: e.message };
+        // `cause` keeps the raw database text: 42501 is translated to the same class
+        // for an RLS refusal and a missing privilege, so tests tell them apart here.
+        return { refused: e.constructor.name, message: e.message, cause: rawText(error) };
       }
     }
   };
@@ -87,9 +91,8 @@ describe('M9A profile tables: cross-tenant isolation (raw SQL, app role, forced 
     expect((await runSync(c, b, 'full')).status).toBe('completed');
     const purge = c.app.get(ProfilePurgeService);
     for (const f of [a, b]) {
-      await purge.purge(f.ctx, f.connectionId, 'Accounts', {
+      await purge.purge(await authz(f.ctx, 'data.purge'), f.connectionId, 'Accounts', {
         keep: 10,
-        actor: 'ops',
         execute: true,
         ownerDatabaseUrl: c.adminUrl,
       });
@@ -404,7 +407,11 @@ describe('M9A profile tables: cross-tenant isolation (raw SQL, app role, forced 
           b.connectionId,
         ),
       ).toMatchObject({
-        message: expect.stringMatching(/published authority versions are immutable/),
+        // M10A1: the app role has no UPDATE privilege; the owner still meets the trigger below.
+        ...RLS_REFUSED,
+        cause: expect.stringMatching(
+          /permission denied for table tenant_source_authority_versions\b/,
+        ),
       });
       await expect(
         c.sql(

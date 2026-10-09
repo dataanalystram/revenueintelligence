@@ -40,6 +40,8 @@ describe('source sync processor final failure', () => {
       { abandon: profileAbandon } as never,
       { forTenantId: vi.fn().mockResolvedValue({ tenantId: 't' }) } as never,
       { onFinalFailure: deadLetter } as never,
+      // M10A1: the processor authorizes a system actor before abandoning the run.
+      { authorize: vi.fn((tenant: unknown) => Promise.resolve({ tenant })) } as never,
       { context: { processingEnabled: false } } as never,
     );
     const job = {
@@ -60,7 +62,7 @@ describe('source sync processor final failure', () => {
       processor as unknown as { onFinalFailure: (j: unknown, e: Error) => Promise<void> }
     ).onFinalFailure(job, new Error('boom'));
     expect(abandon).toHaveBeenCalledWith(
-      { tenantId: 't' },
+      { tenant: { tenantId: 't' } },
       '22222222-2222-4222-8222-222222222222',
       'retries_exhausted',
     );
@@ -78,6 +80,8 @@ describe('source sync processor final failure', () => {
       { abandon: profileAbandon } as never,
       { forTenantId: vi.fn().mockResolvedValue({ tenantId: 't' }) } as never,
       { onFinalFailure: deadLetter } as never,
+      // M10A1: the processor authorizes a system actor before abandoning the run.
+      { authorize: vi.fn((tenant: unknown) => Promise.resolve({ tenant })) } as never,
       { context: { processingEnabled: false } } as never,
     );
     const job = {
@@ -98,7 +102,7 @@ describe('source sync processor final failure', () => {
       processor as unknown as { onFinalFailure: (j: unknown, e: Error) => Promise<void> }
     ).onFinalFailure(job, new Error('boom'));
     expect(profileAbandon).toHaveBeenCalledWith(
-      { tenantId: 't' },
+      { tenant: { tenantId: 't' } },
       '44444444-4444-4444-8444-444444444444',
       'retries_exhausted',
     );

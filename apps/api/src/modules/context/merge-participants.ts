@@ -1,4 +1,4 @@
-import type { ExternalRef } from '../domain';
+import type { ExternalRef, SecurityActor } from '../domain';
 import type { TenantTransaction } from '../tenancy';
 
 /**
@@ -24,6 +24,8 @@ export interface CompanyMerge {
     readonly adapter: string;
     readonly adapterVersion: string;
     readonly correlationId: string;
+    /** M10A1: who wrote the merge. */
+    readonly actor?: SecurityActor;
   };
 }
 

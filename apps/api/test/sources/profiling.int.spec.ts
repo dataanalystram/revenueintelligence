@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { operatorActor } from '../../src/modules/domain';
 import { resolve } from 'node:path';
 import { Client } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -17,6 +18,7 @@ import {
   withSnapshot,
   type SourcesFixture,
 } from '../support/sources';
+import { authz } from '../support/security';
 
 /**
  * M9A source profiling end to end (ADR 0022): request validation and D2
@@ -58,7 +60,7 @@ describe('source profiling (fake Sugar, app role, forced RLS)', () => {
       const f = await sugarTenant(c, fake, { prefix: 'prfend', stopAfter: 'profile' });
       const s = sourcesServices(c);
       const [run] = await s.profiling.status(f.ctx, f.connectionId);
-      expect(run).toMatchObject({ status: 'completed', requestedBy: 'test' });
+      expect(run).toMatchObject({ status: 'completed', requestedBy: 'test-operator' });
       expect(run!.request).toMatchObject({ sampling: 'full', maxRows: 1000 });
       expect(Object.keys(run!.sampling!).sort()).toEqual(mappingObjects(sugarTestMapping()));
       const rows = await profileRows(f);
@@ -92,7 +94,10 @@ describe('source profiling (fake Sugar, app role, forced RLS)', () => {
         const f = await sugarTenant(c, local, { prefix: 'prfdrift', stopAfter: 'profile' });
         // A new pipeline value appears on one line: a new safe category.
         local.addEnumOption('RevenueLineItems', 'sales_stage', 'Renewal Pending');
-        await sourcesServices(c).snapshots.capture(f.ctx, f.connectionId, 'test');
+        await sourcesServices(c).snapshots.capture(
+          await authz(f.ctx, 'config.source.schema'),
+          f.connectionId,
+        );
         for (let i = 0; i < 12; i++) {
           local.upsert('RevenueLineItems', {
             ...local.data.get('RevenueLineItems')!.find((r) => r.id === 'FIX-RLI-001')!,
@@ -128,10 +133,10 @@ describe('source profiling (fake Sugar, app role, forced RLS)', () => {
       });
       await expect(
         sourcesServices(c).profiling.request(
-          f.ctx,
+          await authz(f.ctx, 'data.profile.run'),
           f.connectionId,
           { objects: [{ object: 'RevenueLineItems' }], sampling: 'full', includeExcluded: [] },
-          { actor: 'test', execute: true, enqueue: false },
+          { execute: true, enqueue: false },
         ),
       ).rejects.toMatchObject({ code: 'profile_limit_unset' });
       expect(
@@ -147,7 +152,7 @@ describe('source profiling (fake Sugar, app role, forced RLS)', () => {
       const conn = await s.connections.get(f.ctx, f.connectionId);
       for (const maxRows of [999, 250_001]) {
         await expect(
-          s.connections.configure(f.ctx, {
+          s.connections.configure(await authz(f.ctx, 'config.source.connection'), {
             kind: 'sugar',
             label: conn.label,
             config: { ...conn.config, profile: { maxRows } },
@@ -167,10 +172,10 @@ describe('source profiling (fake Sugar, app role, forced RLS)', () => {
       for (const maxRows of [5001, 999, 250_001]) {
         await expect(
           s.profiling.request(
-            f.ctx,
+            await authz(f.ctx, 'data.profile.run'),
             f.connectionId,
             { objects: [{ object: 'Accounts' }], sampling: 'full', maxRows, includeExcluded: [] },
-            { actor: 'test', execute: true, enqueue: false },
+            { execute: true, enqueue: false },
           ),
         ).rejects.toMatchObject({ code: 'profile_limit_out_of_range' });
       }
@@ -178,7 +183,7 @@ describe('source profiling (fake Sugar, app role, forced RLS)', () => {
         f.ctx,
         f.connectionId,
         { objects: [{ object: 'Accounts' }], sampling: 'full', maxRows: 2000, includeExcluded: [] },
-        { actor: 'test', execute: false },
+        { execute: false },
       );
       expect(ok).toMatchObject({ dryRun: true, request: { maxRows: 2000 } });
     });
@@ -208,19 +213,29 @@ describe('source profiling (fake Sugar, app role, forced RLS)', () => {
         sampling: 'full' as const,
         includeExcluded: [],
       };
-      const opts = { actor: 'test', execute: true, enqueue: false };
-      await s.connections.setStatus(f.ctx, f.connectionId, 'disabled');
+      const opts = { execute: true, enqueue: false };
+      await s.connections.setStatus(
+        await authz(f.ctx, 'config.source.connection'),
+        f.connectionId,
+        'disabled',
+      );
       await expect(
         s.profiling.request(f.ctx, f.connectionId, input, { ...opts, execute: false }),
       ).rejects.toMatchObject({ code: 'connection_disabled' });
-      await s.connections.setStatus(f.ctx, f.connectionId, 'enabled');
+      await s.connections.setStatus(
+        await authz(f.ctx, 'config.source.connection'),
+        f.connectionId,
+        'enabled',
+      );
       // A connection of a kind without an adapter (created outside the service).
       const [{ id }] = (await c.sql<{ id: string }>(
         `INSERT INTO tenant_source_connections (tenant_id, id, kind, label, status, mapping_mode)
          VALUES ($1, gen_random_uuid(), 'gainsight_cs', 'GS', 'enabled', 'versioned') RETURNING id::text`,
         [f.ctx.tenantId],
       )) as [{ id: string }];
-      await expect(s.profiling.request(f.ctx, id, input, opts)).rejects.toMatchObject({
+      await expect(
+        s.profiling.request(await authz(f.ctx, 'data.profile.run'), id, input, opts),
+      ).rejects.toMatchObject({
         code: 'adapter_not_registered',
       });
       expect(
@@ -236,14 +251,12 @@ describe('source profiling (fake Sugar, app role, forced RLS)', () => {
       const f = await sugarTenant(c, fake, { prefix: 'prfone', stopAfter: 'snapshot' });
       const s = sourcesServices(c);
       const req = { objects: [{ object: 'Accounts' }], sampling: 'full', includeExcluded: [] };
-      await s.profiling.request(f.ctx, f.connectionId, req, {
-        actor: 'test',
+      await s.profiling.request(await authz(f.ctx, 'data.profile.run'), f.connectionId, req, {
         execute: true,
         enqueue: false,
       });
       await expect(
-        s.profiling.request(f.ctx, f.connectionId, req, {
-          actor: 'test',
+        s.profiling.request(await authz(f.ctx, 'data.profile.run'), f.connectionId, req, {
           execute: true,
           enqueue: false,
         }),
@@ -256,18 +269,20 @@ describe('source profiling (fake Sugar, app role, forced RLS)', () => {
         const f = await sugarTenant(c, local, { prefix: 'prfretry', stopAfter: 'snapshot' });
         const s = sourcesServices(c);
         const requested = await s.profiling.request(
-          f.ctx,
+          await authz(f.ctx, 'data.profile.run'),
           f.connectionId,
           {
             objects: [{ object: 'Accounts' }, { object: 'RevenueLineItems' }],
             sampling: 'full',
             includeExcluded: [],
           },
-          { actor: 'test', execute: true, enqueue: false },
+          { execute: true, enqueue: false },
         );
         local.fail({ match: /^GET \/RevenueLineItems$/, status: 503, times: 10 });
         // (cleared below so the retry can complete)
-        await expect(s.profiling.execute(f.ctx, requested.runId!)).rejects.toMatchObject({
+        await expect(
+          s.profiling.execute(await authz(f.ctx, 'data.profile.run'), requested.runId!),
+        ).rejects.toMatchObject({
           kind: 'server_error',
         });
         expect((await s.profiling.status(f.ctx, f.connectionId, requested.runId))[0]!.status).toBe(
@@ -275,7 +290,10 @@ describe('source profiling (fake Sugar, app role, forced RLS)', () => {
         );
         expect(await profileRows(f)).toEqual([]);
         local.faults.length = 0;
-        expect((await s.profiling.execute(f.ctx, requested.runId!)).status).toBe('completed');
+        expect(
+          (await s.profiling.execute(await authz(f.ctx, 'data.profile.run'), requested.runId!))
+            .status,
+        ).toBe('completed');
         const rows = await profileRows(f);
         expect(rows.map((r) => r.object)).toEqual(['Accounts', 'RevenueLineItems']);
         // Never a mix of attempts: rows read equals the population, once.
@@ -324,10 +342,10 @@ describe('source profiling (fake Sugar, app role, forced RLS)', () => {
       // A requested run can only move forward.
       const s = sourcesServices(c);
       const req = await s.profiling.request(
-        f.ctx,
+        await authz(f.ctx, 'data.profile.run'),
         f.connectionId,
         { objects: [{ object: 'Accounts' }], sampling: 'full', includeExcluded: [] },
-        { actor: 'test', execute: true, enqueue: false },
+        { execute: true, enqueue: false },
       );
       await expect(
         asApp(
@@ -374,17 +392,15 @@ describe('source profiling (fake Sugar, app role, forced RLS)', () => {
         expect((await runProfile(c, f, ['Accounts'])).status).toBe('completed');
       const purge = c.app.get(ProfilePurgeService);
       await expect(
-        purge.purge(f.ctx, f.connectionId, 'Accounts', {
+        purge.purge(await authz(f.ctx, 'data.purge'), f.connectionId, 'Accounts', {
           keep: 1,
-          actor: 'ops',
           execute: true,
           ownerDatabaseUrl: c.appUrl,
         }),
       ).rejects.toMatchObject({ code: 'purge_requires_owner_credentials' });
       await expect(
-        purge.purge(f.ctx, f.connectionId, 'Accounts', {
+        purge.purge(await authz(f.ctx, 'data.purge'), f.connectionId, 'Accounts', {
           keep: 1,
-          actor: 'ops',
           execute: true,
           ownerDatabaseUrl: undefined,
         }),
@@ -394,18 +410,21 @@ describe('source profiling (fake Sugar, app role, forced RLS)', () => {
       // Dry run changes nothing.
       const dry = await purge.purge(f.ctx, f.connectionId, 'Accounts', {
         keep: 1,
-        actor: 'ops',
         execute: false,
         ownerDatabaseUrl: c.adminUrl,
       });
       expect(dry.dryRun).toBe(true);
       expect((await profileRows(f)).filter((r) => r.object === 'Accounts')).toHaveLength(4);
-      const result = await purge.purge(f.ctx, f.connectionId, 'Accounts', {
-        keep: 1,
-        actor: 'ops',
-        execute: true,
-        ownerDatabaseUrl: c.adminUrl,
-      });
+      const result = await purge.purge(
+        await authz(f.ctx, 'data.purge', operatorActor('ops')),
+        f.connectionId,
+        'Accounts',
+        {
+          keep: 1,
+          execute: true,
+          ownerDatabaseUrl: c.adminUrl,
+        },
+      );
       // Kept: the newest, its direct baseline and the published mapping's covering profile
       // (the first). The one in between is purged and its kept successor loses that link.
       const after = (await profileRows(f)).filter((r) => r.object === 'Accounts');
@@ -525,12 +544,15 @@ describe('source profiling (fake Sugar, app role, forced RLS)', () => {
 
         const s = sourcesServices(c);
         const requested = await s.profiling.request(
-          f.ctx,
+          await authz(f.ctx, 'data.profile.run'),
           f.connectionId,
           { objects: [{ object: 'RevenueLineItems' }], sampling: 'full', includeExcluded: [] },
-          { actor: 'test', execute: true, enqueue: false },
+          { execute: true, enqueue: false },
         );
-        const result = await s.profiling.execute(f.ctx, requested.runId!);
+        const result = await s.profiling.execute(
+          await authz(f.ctx, 'data.profile.run'),
+          requested.runId!,
+        );
         expect(result).toMatchObject({ status: 'completed' });
         const surfaces = {
           request: requested,
@@ -598,18 +620,21 @@ describe('source profiling (fake Sugar, app role, forced RLS)', () => {
       ]);
       expect(c.metrics.total('lip_profile_override_total', { kind: 'refused' })).toBe(before + 1);
       await expect(
-        s.mappings.publish(f.ctx, f.connectionId, doc, {
+        s.mappings.publish(await authz(f.ctx, 'config.mapping.publish'), f.connectionId, doc, {
           expectedBaseVersion: 0,
-          actor: 'ops',
           acknowledgements: [{ findingId, reasonCode: 'accepted_known_issue' }],
           profileOverride: { reason: 'profiling outage' },
         }),
       ).rejects.toMatchObject({ code: 'mapping_invalid' });
-      const published = await s.mappings.publish(f.ctx, f.connectionId, doc, {
-        expectedBaseVersion: 0,
-        actor: 'ops',
-        acknowledgements: [{ findingId, reasonCode: 'accepted_known_issue' }],
-      });
+      const published = await s.mappings.publish(
+        await authz(f.ctx, 'config.mapping.publish', operatorActor('ops')),
+        f.connectionId,
+        doc,
+        {
+          expectedBaseVersion: 0,
+          acknowledgements: [{ findingId, reasonCode: 'accepted_known_issue' }],
+        },
+      );
       expect(published.acknowledgements).toBe(1);
       const [version] = await c.sql<{
         validation: {
@@ -636,7 +661,7 @@ describe('source profiling (fake Sugar, app role, forced RLS)', () => {
         const f = await sugarTenant(c, local, { prefix: 'prfsnap', stopAfter: 'profile' });
         const s = sourcesServices(c);
         local.addEnumOption('RevenueLineItems', 'sales_stage', 'Renewal Pending');
-        await s.snapshots.capture(f.ctx, f.connectionId, 'test');
+        await s.snapshots.capture(await authz(f.ctx, 'config.source.schema'), f.connectionId);
         const latest = await s.snapshots.latest(f.ctx, f.connectionId);
         const report = await s.mappings.validate(
           f.ctx,

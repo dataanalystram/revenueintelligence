@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { COMPANY_CANONICAL_LOCK_SCOPE, type CompanyMerge } from '../../context';
-import type { SubscriptionSource, SubscriptionState } from '../../domain';
+import type { SecurityActor, SubscriptionSource, SubscriptionState } from '../../domain';
 import { tenantAdvisoryLock, tenantClient, type TenantTransaction } from '../../tenancy';
 import { toRow, type SubscriptionRow } from './subscription.rows';
 
@@ -38,6 +38,8 @@ export interface SubscriptionChange {
   readonly sourceConnectionId?: string;
   readonly mappingVersion?: number;
   readonly correlationId: string;
+  /** M10A1: who wrote the change. */
+  readonly actor?: SecurityActor;
 }
 
 @Injectable()
@@ -155,6 +157,9 @@ export class SubscriptionStore {
           )?.id ??
           null,
         mappingVersion: change.mappingVersion ?? null,
+        actorKind: change.actor?.kind ?? null,
+        actorId: change.actor?.id ?? null,
+        actorAssurance: change.actor?.assurance ?? null,
       },
     });
     await this.update(tx, change.subscriptionId, { lastChangeId: id });
@@ -178,11 +183,13 @@ export class SubscriptionStore {
           tenant_id, id, entity_kind, entity_id, change_type, changed_fields,
           source_system, source_object_type, source_record_id, cause,
           receipt_delivery_key, checkpoint_id, source_updated_at,
-          adapter, adapter_version, correlation_id)
+          adapter, adapter_version, correlation_id,
+          actor_kind, actor_id, actor_assurance)
         SELECT ${tx.tenantId}::uuid, gen_random_uuid(), 'subscription', target.id, 'merged', ARRAY['companyId'],
                ${p.source.system}, ${p.source.objectType}, ${p.source.id}, ${p.cause},
                ${p.receiptDeliveryKey ?? null}, ${p.checkpointId ?? null}::uuid, ${p.sourceUpdatedAt ?? null}::timestamptz,
-               ${p.adapter}, ${p.adapterVersion}, ${p.correlationId}::uuid
+               ${p.adapter}, ${p.adapterVersion}, ${p.correlationId}::uuid,
+               ${p.actor?.kind ?? null}, ${p.actor?.id ?? null}, ${p.actor?.assurance ?? null}
           FROM target
         RETURNING id, entity_id
       )

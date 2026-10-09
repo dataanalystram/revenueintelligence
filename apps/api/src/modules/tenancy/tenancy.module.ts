@@ -10,6 +10,9 @@ import { OAuthAccountRouter } from './infrastructure/oauth-account-router';
 import { TenantDatabase } from './infrastructure/tenant-database';
 import { TENANT_OAUTH_GRANT_STORE } from './oauth/oauth-grants';
 import { OAuthStateService } from './oauth/oauth-state.service';
+import { AuditTrail } from './security/audit-trail';
+import { SecurityEventsService } from './security/security-events.service';
+import { WriteAuthorizer } from './security/write-authorizer.service';
 
 @Module({
   providers: [
@@ -23,6 +26,9 @@ import { OAuthStateService } from './oauth/oauth-state.service';
     OAuthStateService,
     OAuthAccountRouter,
     { provide: TENANT_OAUTH_GRANT_STORE, useClass: EncryptedDatabaseOAuthGrantStore },
+    AuditTrail,
+    SecurityEventsService,
+    WriteAuthorizer,
   ],
   exports: [
     TenantDatabase,
@@ -33,6 +39,9 @@ import { OAuthStateService } from './oauth/oauth-state.service';
     OAuthStateService,
     OAuthAccountRouter,
     TENANT_OAUTH_GRANT_STORE,
+    AuditTrail,
+    SecurityEventsService,
+    WriteAuthorizer,
   ],
 })
 export class TenancyModule {}

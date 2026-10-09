@@ -40,3 +40,4 @@ export * from './product-model';
 export * from './shared/canonical-json';
 export * from './subscription';
 export * from './profiling';
+export * from './security';

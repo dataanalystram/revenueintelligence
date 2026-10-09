@@ -11,6 +11,7 @@ import { SubscriptionQueries } from '../../src/modules/products/infrastructure/s
 import { tenantClient, type TenantContext } from '../../src/modules/tenancy';
 import { startContextHarness, type ContextHarness } from '../support/context';
 import { genericModel } from '../support/product-models';
+import { authz } from '../support/security';
 
 /**
  * M7 eligibility (ADR 0018): on-demand evaluation and whitespace from one
@@ -33,8 +34,8 @@ describe('eligibility: evaluate, whitespace, snapshots, replay', () => {
   const HEADER = 'record_id,account,product,state,starts_at,ends_at,quantity,source_updated_at';
   const csv = (...rows: string[]) => enc([HEADER, ...rows].join('\n') + '\n');
   const hs = (id: string): ExternalRef => ({ system: 'hubspot', objectType: 'companies', id });
-  const full = (t: TenantContext, ...rows: string[]) =>
-    c.h.imports.import(t, csv(...rows), {
+  const full = async (t: TenantContext, ...rows: string[]) =>
+    c.h.imports.import(await authz(t, 'canonical.import'), csv(...rows), {
       source: 'billing',
       mode: 'full',
       execute: true,
@@ -46,8 +47,7 @@ describe('eligibility: evaluate, whitespace, snapshots, replay', () => {
     ids: string[],
   ): Promise<{ t: TenantContext; company: Record<string, string> }> {
     const t = await c.tenant(prefix, 1001);
-    await c.h.catalogue.publish(t, genericModel(), {
-      actor: 'test',
+    await c.h.catalogue.publish(await authz(t, 'config.product_model.publish'), genericModel(), {
       basedOnVersion: 0,
       effectiveFrom: new Date('2026-01-01T00:00:00Z'),
       now: new Date('2026-01-01T00:00:00Z'),
@@ -55,7 +55,7 @@ describe('eligibility: evaluate, whitespace, snapshots, replay', () => {
     const company: Record<string, string> = {};
     for (const id of ids) {
       const r = await c.ingestion.ingest(
-        t,
+        await authz(t, 'canonical.source_sync'),
         {
           kind: 'company',
           presence: 'present',
@@ -157,7 +157,12 @@ describe('eligibility: evaluate, whitespace, snapshots, replay', () => {
   it('records frozen snapshots that replay exactly, even after the facts change', async () => {
     const { t, company } = await setup('snap', ['911']);
     await full(t, 'S1,hubspot:companies:911,core,active,,,,');
-    const r = await eligibility.evaluate(t, company['911']!, 'analytics', { record: record() });
+    const r = await eligibility.evaluate(
+      await authz(t, 'data.eligibility.record'),
+      company['911']!,
+      'analytics',
+      { record: record() },
+    );
     expect(r.snapshotId).toBeDefined();
     const snap = await eligibility.snapshot(t, r.snapshotId!);
     expect(snap).toMatchObject({
@@ -197,12 +202,11 @@ describe('eligibility: evaluate, whitespace, snapshots, replay', () => {
 
     // A new model version does not change what the snapshot was evaluated against.
     await c.h.catalogue.publish(
-      t,
+      await authz(t, 'config.product_model.publish'),
       genericModel({
         relationships: genericModel().relationships!.filter((x) => x.id !== 'cloud-or-onprem'),
       }),
       {
-        actor: 'test',
         basedOnVersion: 1,
       },
     );
@@ -214,7 +218,7 @@ describe('eligibility: evaluate, whitespace, snapshots, replay', () => {
         t,
         (tx) => tenantClient(tx).$executeRaw`UPDATE tenant_eligibility_snapshots SET purpose = 'x'`,
       ),
-    ).rejects.toThrow(/UPDATE on tenant_eligibility_snapshots is not allowed/);
+    ).rejects.toThrow(/permission denied for table tenant_eligibility_snapshots/);
     // Replay safety (M8 bumped the evaluator to 2, M9A to 3): a snapshot recorded
     // by an older evaluator is never reinterpreted by the current one.
     const oldId = randomUUID();
@@ -245,11 +249,16 @@ describe('eligibility: evaluate, whitespace, snapshots, replay', () => {
     const { t, company } = await setup('lin', ['921', '922']);
     await full(t, 'A1,hubspot:companies:922,core,active,,,,');
     await c.ingestion.ingestMerge(
-      t,
+      await authz(t, 'canonical.source_sync'),
       { kind: 'company', survivor: hs('921'), merged: [hs('922')], observedAt: new Date() },
       { cause: 'webhook', correlationId: randomUUID() },
     );
-    const r = await eligibility.evaluate(t, company['922']!, 'core', { record: record() });
+    const r = await eligibility.evaluate(
+      await authz(t, 'data.eligibility.record'),
+      company['922']!,
+      'core',
+      { record: record() },
+    );
     expect(r).toMatchObject({
       requestedCompanyId: company['922'],
       evaluatedCompanyId: company['921'],
@@ -269,7 +278,9 @@ describe('eligibility: evaluate, whitespace, snapshots, replay', () => {
         ...Array.from({ length: 300 }, (_, i) => ({ key: `extra-${i}`, name: `Extra ${i}` })),
       ],
     });
-    await c.h.catalogue.publish(t, many, { actor: 'test', basedOnVersion: 1 });
+    await c.h.catalogue.publish(await authz(t, 'config.product_model.publish'), many, {
+      basedOnVersion: 1,
+    });
     await full(t, 'N1,hubspot:companies:931,core,active,,,,');
     const queries = c.app.get(SubscriptionQueries);
     const companies = c.app.get<CompanyRepository>(COMPANY_REPOSITORY);
@@ -290,8 +301,13 @@ describe('eligibility: evaluate, whitespace, snapshots, replay', () => {
   it('under concurrent imports, publishes and snapshot creation every recorded result is consistent and replays', async () => {
     const { t, company } = await setup('cc', ['941']);
     await full(t, 'C1,hubspot:companies:941,core,active,,,,');
-    const evaluations = Array.from({ length: 12 }, () =>
-      eligibility.evaluate(t, company['941']!, 'analytics', { record: record() }),
+    const evaluations = Array.from({ length: 12 }, async () =>
+      eligibility.evaluate(
+        await authz(t, 'data.eligibility.record'),
+        company['941']!,
+        'analytics',
+        { record: record() },
+      ),
     );
     const churn = [
       full(
@@ -300,8 +316,12 @@ describe('eligibility: evaluate, whitespace, snapshots, replay', () => {
         'C2,hubspot:companies:941,analytics,active,,,,',
       ),
       // Two publishes from the same base: one wins, the other gets concurrent_publish.
-      c.h.catalogue.publish(t, genericModel(), { actor: 'test', basedOnVersion: 1 }),
-      c.h.catalogue.publish(t, genericModel(), { actor: 'test', basedOnVersion: 1 }),
+      c.h.catalogue.publish(await authz(t, 'config.product_model.publish'), genericModel(), {
+        basedOnVersion: 1,
+      }),
+      c.h.catalogue.publish(await authz(t, 'config.product_model.publish'), genericModel(), {
+        basedOnVersion: 1,
+      }),
     ];
     const settled = await Promise.allSettled([...evaluations, ...churn]);
     const failures = settled.filter((s) => s.status === 'rejected');
@@ -330,7 +350,12 @@ describe('eligibility: evaluate, whitespace, snapshots, replay', () => {
     const a = await setup('sna', ['951']);
     const b = await setup('snb', ['951']);
     await full(b.t, 'B1,hubspot:companies:951,core,active,,,,');
-    const r = await eligibility.evaluate(b.t, b.company['951']!, 'core', { record: record() });
+    const r = await eligibility.evaluate(
+      await authz(b.t, 'data.eligibility.record'),
+      b.company['951']!,
+      'core',
+      { record: record() },
+    );
     await expect(eligibility.snapshot(a.t, r.snapshotId!)).rejects.toBeInstanceOf(
       SnapshotNotFoundError,
     );

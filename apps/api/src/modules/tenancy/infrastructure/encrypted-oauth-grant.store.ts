@@ -39,9 +39,17 @@ export class EncryptedDatabaseOAuthGrantStore implements TenantOAuthGrantStore {
     return await this.db.transaction(ctx, (tx) => this.read(tx, cipher, system));
   }
 
-  async put(ctx: TenantContext, system: OAuthSystem, grant: OAuthGrant): Promise<void> {
+  async put(
+    ctx: TenantContext,
+    system: OAuthSystem,
+    grant: OAuthGrant,
+    afterWrite?: (tx: TenantTransaction) => Promise<void>,
+  ): Promise<void> {
     const cipher = await this.ciphers.get();
-    await this.db.transaction(ctx, (tx) => this.write(tx, cipher, system, grant));
+    await this.db.transaction(ctx, async (tx) => {
+      await this.write(tx, cipher, system, grant);
+      await afterWrite?.(tx);
+    });
   }
 
   async delete(ctx: TenantContext, system: OAuthSystem): Promise<boolean> {
@@ -57,6 +65,7 @@ export class EncryptedDatabaseOAuthGrantStore implements TenantOAuthGrantStore {
     ctx: TenantContext,
     system: OAuthSystem,
     work: (current: OAuthGrant | undefined) => Promise<{ save?: OAuthGrant; result: T }>,
+    afterSave?: (tx: TenantTransaction) => Promise<void>,
   ): Promise<T> {
     const cipher = await this.ciphers.get();
     return await this.db.transaction(
@@ -73,7 +82,10 @@ export class EncryptedDatabaseOAuthGrantStore implements TenantOAuthGrantStore {
         // Read after the lock: a previous holder's committed refresh is visible.
         const current = await this.read(tx, cipher, system);
         const { save, result } = await work(current);
-        if (save) await this.write(tx, cipher, system, save);
+        if (save) {
+          await this.write(tx, cipher, system, save);
+          await afterSave?.(tx);
+        }
         return result;
       },
       { timeoutMs: OAUTH_GRANT_LOCKED_TRANSACTION_MS },

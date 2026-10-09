@@ -7,6 +7,7 @@ import {
   type TenantOAuthGrantStore,
 } from '../modules/tenancy';
 import { fail, withHubSpotContext } from './hubspot-context';
+import { authorizeOperator } from './operator';
 
 /**
  * Live evidence of HubSpot token refresh behaviour (M5, ADR 0010/0011),
@@ -29,7 +30,11 @@ import { fail, withHubSpotContext } from './hubspot-context';
  */
 async function main(): Promise<void> {
   const { values } = parseArgs({
-    options: { tenant: { type: 'string' }, mode: { type: 'string', default: 'refresh' } },
+    options: {
+      tenant: { type: 'string' },
+      mode: { type: 'string', default: 'refresh' },
+      actor: { type: 'string' },
+    },
   });
   const mode = values.mode;
   if (!values.tenant || (mode !== 'refresh' && mode !== 'expire' && mode !== 'observe')) {
@@ -50,11 +55,19 @@ async function main(): Promise<void> {
     const before = await grants.get(ctx, 'hubspot');
     if (!before) throw new Error(`Tenant ${tenant} has no stored HubSpot grant`);
 
+    // Expiring the stored token changes the grant: an operator must be named (Q1).
+    const expireAs = () =>
+      authorizeOperator(app, ctx, 'config.integration', {
+        actorFlag: values.actor,
+        action: 'oauth.grant.store',
+        targetKind: 'oauth',
+        targetRef: 'hubspot',
+      });
     if (mode === 'expire') {
-      await oauth.expireStoredAccessToken(ctx);
+      await oauth.expireStoredAccessToken(await expireAs());
       return { mode, accessTokenExpired: true };
     }
-    if (mode === 'refresh') await oauth.expireStoredAccessToken(ctx);
+    if (mode === 'refresh') await oauth.expireStoredAccessToken(await expireAs());
     const token = await oauth.accessToken(ctx, accountId);
     const after = (await grants.get(ctx, 'hubspot'))!;
     const outcomes = oauth.refreshOutcomes();

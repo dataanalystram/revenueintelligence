@@ -2,7 +2,13 @@ import { createHash } from 'node:crypto';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { TokenDecryptionError, TokenKeyError } from '../../../platform/crypto';
 import { SECRET_PROVIDER, Secret, type SecretProvider } from '../../../platform/secrets';
+import { systemActor } from '../../domain';
 import {
+  assertAuthorized,
+  AuditTrail,
+  TenantDatabase,
+  WriteAuthorizer,
+  type AuthorizedContext,
   OAuthStateError,
   OAuthStateService,
   RecordNotFoundError,
@@ -109,6 +115,9 @@ export class HubSpotOAuthService {
     @Inject(SECRET_PROVIDER) private readonly secrets: SecretProvider,
     @Inject(HUBSPOT_CONFIG) private readonly config: HubSpotConfig,
     private readonly client: HubSpotOAuthClient,
+    private readonly authorizer: WriteAuthorizer,
+    private readonly audit: AuditTrail,
+    private readonly db: TenantDatabase,
   ) {}
 
   /**
@@ -119,10 +128,22 @@ export class HubSpotOAuthService {
    * Which account the admin picks is enforced after the code exchange
    * (`completeInstall`: hub_id must equal the tenant's portalId).
    */
-  async installUrl(ctx: TenantContext): Promise<{ url: string; expiresAt: Date }> {
+  async installUrl(
+    actx: AuthorizedContext<'config.oauth.install'>,
+  ): Promise<{ url: string; expiresAt: Date }> {
+    assertAuthorized(actx, 'config.oauth.install');
+    const ctx = actx.tenant;
     const { uiDomain } = await this.oauthSettings(ctx);
     const app = await this.app();
     const { state, expiresAt } = await this.guarded(() => this.states.issue(ctx, 'hubspot'));
+    // The state itself is a bearer value: only the fact of issuing it is audited.
+    await this.db.transaction(ctx, (tx) =>
+      this.audit.record(tx, actx, {
+        action: 'oauth.install_state.issue',
+        targetKind: 'oauth',
+        targetRef: 'hubspot',
+      }),
+    );
     const url = hubspotConsentUrl({
       uiDomain,
       testAuthorizeBaseUrl: this.config.oauth.authorizeBaseUrl,
@@ -165,7 +186,23 @@ export class HubSpotOAuthService {
       accessToken: { token: tokens.accessToken, expiresAt: this.expiry(tokens.expiresInSeconds) },
       scopes: tokens.scopes,
     };
-    await this.guarded(() => this.grants.put(ctx, 'hubspot', grant));
+    // The callback proved the state (single use, signed): the platform stores the grant as itself.
+    const actx = await this.authorizer.authorize(
+      ctx,
+      systemActor('api:oauth-callback'),
+      'config.oauth.grant',
+      { action: 'oauth.grant.store', targetKind: 'oauth', targetRef: 'hubspot' },
+    );
+    await this.guarded(() =>
+      this.grants.put(ctx, 'hubspot', grant, (tx) =>
+        this.audit.record(tx, actx, {
+          action: 'oauth.grant.store',
+          targetKind: 'oauth',
+          targetRef: 'hubspot',
+          details: { accountId: portalId, scopes: tokens.scopes.length },
+        }),
+      ),
+    );
     this.cache.delete(ctx.tenantId);
     this.rejected.delete(ctx.tenantId);
     this.logger.log({ msg: 'HubSpot app installed', tenantId: ctx.tenantId, accountId: portalId });
@@ -328,18 +365,31 @@ export class HubSpotOAuthService {
    * a real refresh. The refresh token is not touched; nothing is sent to
    * HubSpot here. Returns false when the tenant has no grant.
    */
-  async expireStoredAccessToken(ctx: TenantContext): Promise<boolean> {
+  async expireStoredAccessToken(actx: AuthorizedContext<'config.integration'>): Promise<boolean> {
+    assertAuthorized(actx, 'config.integration');
+    const ctx = actx.tenant;
     const expired = await this.guarded(() =>
-      this.grants.withLockedGrant(ctx, 'hubspot', (current) => {
-        if (!current?.accessToken) return Promise.resolve({ result: current !== undefined });
-        return Promise.resolve({
-          save: {
-            ...current,
-            accessToken: { ...current.accessToken, expiresAt: new Date(Date.now() - 60_000) },
-          },
-          result: true,
-        });
-      }),
+      this.grants.withLockedGrant(
+        ctx,
+        'hubspot',
+        (current) => {
+          if (!current?.accessToken) return Promise.resolve({ result: current !== undefined });
+          return Promise.resolve({
+            save: {
+              ...current,
+              accessToken: { ...current.accessToken, expiresAt: new Date(Date.now() - 60_000) },
+            },
+            result: true,
+          });
+        },
+        (tx) =>
+          this.audit.record(tx, actx, {
+            action: 'oauth.grant.store',
+            targetKind: 'oauth',
+            targetRef: 'hubspot',
+            details: { operation: 'expire_access' },
+          }),
+      ),
     );
     this.cache.delete(ctx.tenantId);
     return expired;

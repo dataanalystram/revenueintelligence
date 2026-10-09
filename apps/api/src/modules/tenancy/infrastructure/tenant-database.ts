@@ -113,6 +113,29 @@ export class TenantDatabase {
   }
 
   /**
+   * M10A1: a platform-level change of the `tenants` row (no tenant bound, as
+   * the registry policy requires), then `record` in the same transaction bound
+   * to that tenant (its audit trail). Either both commit or neither does. The
+   * tenant's status is deliberately not checked: suspension and offboarding
+   * must still be audited.
+   */
+  async platformChange<T>(
+    tenant: { id: TenantId; slug: TenantSlug },
+    change: (root: Client) => Promise<T>,
+    record: (tx: TenantTransaction, result: T) => Promise<void>,
+  ): Promise<T> {
+    return this.prisma.$transaction(
+      async (client) => {
+        const result = await change(client);
+        await client.$queryRaw`SELECT set_config('app.current_tenant', ${tenant.id}, true)`;
+        await runBound(client, tenant, (tx) => record(tx, result));
+        return result;
+      },
+      { timeout: this.config.database.transactionTimeoutMs },
+    );
+  }
+
+  /**
    * Creates a tenant and runs `work` for it in the same transaction, so a
    * tenant never exists without its default configuration. Platform-level:
    * used only by tenant provisioning.

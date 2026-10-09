@@ -11,6 +11,7 @@ import {
 import { tenantClient, type TenantContext } from '../../src/modules/tenancy';
 import { startContextHarness, type ContextHarness } from '../support/context';
 import { genericModel } from '../support/product-models';
+import { authz } from '../support/security';
 
 /**
  * M7 subscriptions (ADR 0017): the single writer, the CSV import and
@@ -42,13 +43,15 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
   /** A tenant with the generic model published and HubSpot companies by id. */
   async function tenantWithCompanies(prefix: string, ids: string[]): Promise<TenantContext> {
     const t = await c.tenant(prefix, 1001);
-    await c.h.catalogue.publish(t, genericModel(), { actor: 'test', basedOnVersion: 0 });
+    await c.h.catalogue.publish(await authz(t, 'config.product_model.publish'), genericModel(), {
+      basedOnVersion: 0,
+    });
     for (const id of ids) await company(t, id);
     return t;
   }
   async function company(t: TenantContext, id: string, ref: ExternalRef = hs(id)): Promise<string> {
     const r = await c.ingestion.ingest(
-      t,
+      await authz(t, 'canonical.source_sync'),
       {
         kind: 'company',
         presence: 'present',
@@ -145,7 +148,7 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
         await c.sql('SELECT 1 FROM tenant_sync_checkpoints WHERE tenant_id = $1', [t.tenantId]),
       ).toEqual([]);
 
-      const run = await c.h.imports.import(t, file, {
+      const run = await c.h.imports.import(await authz(t, 'canonical.import'), file, {
         source: 'billing',
         mode: 'full',
         execute: true,
@@ -193,7 +196,7 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
       expect(prov.flatMap((p) => p.changed_fields).every((f) => /^[a-zA-Z]+$/.test(f))).toBe(true);
 
       // Idempotent: the same file again changes nothing and writes no provenance.
-      const again = await c.h.imports.import(t, file, {
+      const again = await c.h.imports.import(await authz(t, 'canonical.import'), file, {
         source: 'billing',
         mode: 'full',
         execute: true,
@@ -211,7 +214,7 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
         'L1,hubspot:companies:601,core,active,2026-01-01T00:00:00Z,2027-01-01T00:00:00Z,10,2026-01-01T00:00:00Z',
         'L3,hubspot:companies:602,core-pro,cancelled,2025-01-01T00:00:00+01:00,2026-01-01T00:00:00+01:00,,',
       );
-      const incr = await c.h.imports.import(t, fewer, {
+      const incr = await c.h.imports.import(await authz(t, 'canonical.import'), fewer, {
         source: 'billing',
         mode: 'incremental',
         execute: true,
@@ -225,7 +228,7 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
         correlationId: randomUUID(),
       });
       expect(dryFull.tombstoned).toBe(1);
-      const full = await c.h.imports.import(t, fewer, {
+      const full = await c.h.imports.import(await authz(t, 'canonical.import'), fewer, {
         source: 'billing',
         mode: 'full',
         execute: true,
@@ -240,7 +243,7 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
       ]);
 
       // Reappearing in a later load restores the same row (no duplicate).
-      const restored = await c.h.imports.import(t, file, {
+      const restored = await c.h.imports.import(await authz(t, 'canonical.import'), file, {
         source: 'billing',
         mode: 'full',
         execute: true,
@@ -254,7 +257,7 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
 
       // An explicit absent row in an incremental load tombstones that line only.
       const absent = enc(`${HEADER},presence\nL1,,,,,,,,absent\n`);
-      const del = await c.h.imports.import(t, absent, {
+      const del = await c.h.imports.import(await authz(t, 'canonical.import'), absent, {
         source: 'billing',
         mode: 'incremental',
         execute: true,
@@ -267,13 +270,13 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
       const t = await tenantWithCompanies('src', ['611']);
       const a = csv('A1,hubspot:companies:611,core,active,,,,');
       const b = csv('B1,hubspot:companies:611,reporting,active,,,,');
-      await c.h.imports.import(t, a, {
+      await c.h.imports.import(await authz(t, 'canonical.import'), a, {
         source: 'source_a',
         mode: 'full',
         execute: true,
         correlationId: randomUUID(),
       });
-      await c.h.imports.import(t, b, {
+      await c.h.imports.import(await authz(t, 'canonical.import'), b, {
         source: 'source_b',
         mode: 'full',
         execute: true,
@@ -281,7 +284,7 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
       });
       expect((await lines(t)).map((l) => l.record_state)).toEqual(['active', 'active']);
       await expect(
-        c.h.imports.import(t, a, {
+        c.h.imports.import(await authz(t, 'canonical.import'), a, {
           source: 'legacy_company_product',
           mode: 'full',
           execute: true,
@@ -309,7 +312,7 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
         { row: 4, reason: 'unknown_product' },
         { row: 5, reason: 'unknown_account' },
       ]);
-      const run = await c.h.imports.import(t, file, {
+      const run = await c.h.imports.import(await authz(t, 'canonical.import'), file, {
         source: 'billing',
         mode: 'full',
         execute: true,
@@ -332,7 +335,7 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
         coverage: 'unknown',
       });
       // The incremental equivalent completes but never establishes coverage.
-      const incr = await c.h.imports.import(t, file, {
+      const incr = await c.h.imports.import(await authz(t, 'canonical.import'), file, {
         source: 'billing',
         mode: 'incremental',
         execute: true,
@@ -365,7 +368,7 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
         [new Uint8Array(10 * 1024 * 1024 + 1), 'file_too_large'],
       ];
       for (const [file, code] of cases) {
-        const r = await c.h.imports.import(t, file, {
+        const r = await c.h.imports.import(await authz(t, 'canonical.import'), file, {
           source: 'billing',
           mode: 'full',
           execute: true,
@@ -414,7 +417,7 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
       });
       try {
         await expect(
-          c.h.imports.import(t, file, {
+          c.h.imports.import(await authz(t, 'canonical.import'), file, {
             source: 'billing',
             mode: 'full',
             execute: true,
@@ -440,7 +443,7 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
         [t.tenantId],
       );
       await expect(
-        c.h.imports.import(t, file, {
+        c.h.imports.import(await authz(t, 'canonical.import'), file, {
           source: 'billing',
           mode: 'full',
           execute: true,
@@ -450,9 +453,11 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
       await expect(c.h.subscriptionReads.coverage(t)).resolves.toMatchObject({
         coverage: 'unknown',
       });
-      await expect(c.h.imports.cancel(t, stuck!.id)).resolves.toEqual({ cancelled: true });
       await expect(
-        c.h.imports.import(t, file, {
+        c.h.imports.cancel(await authz(t, 'canonical.import'), stuck!.id),
+      ).resolves.toEqual({ cancelled: true });
+      await expect(
+        c.h.imports.import(await authz(t, 'canonical.import'), file, {
           source: 'billing',
           mode: 'full',
           execute: true,
@@ -470,8 +475,8 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
         'P2,hubspot:companies:661,reporting,active,,,,',
       );
       const runs = await Promise.allSettled(
-        Array.from({ length: 4 }, () =>
-          c.h.imports.import(t, file, {
+        Array.from({ length: 4 }, async () =>
+          c.h.imports.import(await authz(t, 'canonical.import'), file, {
             source: 'billing',
             mode: 'full',
             execute: true,
@@ -495,9 +500,9 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
       const newer = new Date('2026-05-01T00:00:00Z');
       const older = new Date('2026-04-01T00:00:00Z');
       const results = await Promise.all(
-        Array.from({ length: 6 }, () =>
+        Array.from({ length: 6 }, async () =>
           c.h.subscriptions.ingest(
-            t,
+            await authz(t, 'canonical.source_sync'),
             present('D1', ref, 'core', { sourceUpdatedAt: newer }),
             meta(),
           ),
@@ -508,14 +513,14 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
       expect(await lines(t)).toHaveLength(1);
       await expect(
         c.h.subscriptions.ingest(
-          t,
+          await authz(t, 'canonical.source_sync'),
           present('D1', ref, 'core', { state: 'cancelled', sourceUpdatedAt: older }),
           meta(),
         ),
       ).resolves.toMatchObject({ outcome: 'stale' });
       await expect(
         c.h.subscriptions.ingest(
-          t,
+          await authz(t, 'canonical.source_sync'),
           present('D1', ref, 'core', {
             state: 'cancelled',
             sourceUpdatedAt: new Date('2026-06-01T00:00:00Z'),
@@ -526,14 +531,14 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
       // An invalid observation is rejected before any transaction.
       await expect(
         c.h.subscriptions.ingest(
-          t,
+          await authz(t, 'canonical.source_sync'),
           { ...present('D2', ref, 'core'), state: 'owned' } as never,
           meta(),
         ),
       ).resolves.toEqual({ outcome: 'rejected', reason: 'invalid_observation' });
       // Product refs resolve through the model's externalRefs too.
       await c.h.catalogue.publish(
-        t,
+        await authz(t, 'config.product_model.publish'),
         genericModel({
           products: genericModel().products.map((p) =>
             p.key === 'reporting'
@@ -544,10 +549,14 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
               : p,
           ),
         }),
-        { actor: 'test', basedOnVersion: 1 },
+        { basedOnVersion: 1 },
       );
       await expect(
-        c.h.subscriptions.ingest(t, present('D3', ref, 'gainsight_cs:Product:GS-REP'), meta()),
+        c.h.subscriptions.ingest(
+          await authz(t, 'canonical.source_sync'),
+          present('D3', ref, 'gainsight_cs:Product:GS-REP'),
+          meta(),
+        ),
       ).resolves.toMatchObject({
         outcome: 'created',
       });
@@ -564,8 +573,12 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
       const b = await companyId(t, '672');
       // Different accounts take different company locks: only the line lock serialises them.
       const results = await Promise.allSettled(
-        Array.from({ length: 8 }, (_, i) =>
-          c.h.subscriptions.ingest(t, present('LK1', i % 2 ? a : b, 'core'), meta()),
+        Array.from({ length: 8 }, async (_, i) =>
+          c.h.subscriptions.ingest(
+            await authz(t, 'canonical.source_sync'),
+            present('LK1', i % 2 ? a : b, 'core'),
+            meta(),
+          ),
         ),
       );
       expect(results.filter((r) => r.status === 'rejected')).toEqual([]);
@@ -578,9 +591,9 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
   });
 
   describe('account merge participation (ADR 0017 §8)', () => {
-    const merge = (t: TenantContext, survivor: string, merged: string[]) =>
+    const merge = async (t: TenantContext, survivor: string, merged: string[]) =>
       c.ingestion.ingestMerge(
-        t,
+        await authz(t, 'canonical.source_sync'),
         { kind: 'company', survivor: hs(survivor), merged: merged.map(hs), observedAt: new Date() },
         { cause: 'webhook', correlationId: randomUUID() },
       );
@@ -588,7 +601,7 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
     it('moves the same rows to the survivor with one provenance row each; replay and chains are safe', async () => {
       const t = await tenantWithCompanies('mrg', ['701', '702', '703']);
       await c.h.imports.import(
-        t,
+        await authz(t, 'canonical.import'),
         csv(
           'M1,hubspot:companies:701,core,active,,,,',
           'M2,hubspot:companies:702,analytics,active,,,,',
@@ -597,12 +610,16 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
         { source: 'billing', mode: 'full', execute: true, correlationId: randomUUID() },
       );
       // A tombstoned line of the loser moves too (history stays with the account).
-      await c.h.imports.import(t, enc(`${HEADER},presence\nM3,,,,,,,,absent\n`), {
-        source: 'billing',
-        mode: 'incremental',
-        execute: true,
-        correlationId: randomUUID(),
-      });
+      await c.h.imports.import(
+        await authz(t, 'canonical.import'),
+        enc(`${HEADER},presence\nM3,,,,,,,,absent\n`),
+        {
+          source: 'billing',
+          mode: 'incremental',
+          execute: true,
+          correlationId: randomUUID(),
+        },
+      );
       const before = await lines(t);
       const hashesBefore = await hashes(t);
       const c701 = await companyId(t, '701');
@@ -635,7 +652,11 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
 
       // A line delivered later for the merged-away account lands on the survivor.
       await expect(
-        c.h.subscriptions.ingest(t, present('M4', 'hubspot:companies:702', 'reporting'), meta()),
+        c.h.subscriptions.ingest(
+          await authz(t, 'canonical.source_sync'),
+          present('M4', 'hubspot:companies:702', 'reporting'),
+          meta(),
+        ),
       ).resolves.toMatchObject({
         outcome: 'created',
       });
@@ -643,7 +664,7 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
       // Re-delivered unchanged source lines are unchanged after the merge (the
       // field hash covers source values, never the resolved canonical company).
       const redelivered = await c.h.imports.import(
-        t,
+        await authz(t, 'canonical.import'),
         csv(
           'M1,hubspot:companies:701,core,active,,,,',
           'M2,hubspot:companies:702,analytics,active,,,,',
@@ -673,12 +694,16 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
          VALUES ($1, $2, 'sugar', 'Accounts', 'acc-712', 'active')`,
         [t.tenantId, loser],
       );
-      await c.h.imports.import(t, csv('X1,hubspot:companies:712,core,active,,,,'), {
-        source: 'billing',
-        mode: 'full',
-        execute: true,
-        correlationId: randomUUID(),
-      });
+      await c.h.imports.import(
+        await authz(t, 'canonical.import'),
+        csv('X1,hubspot:companies:712,core,active,,,,'),
+        {
+          source: 'billing',
+          mode: 'full',
+          execute: true,
+          correlationId: randomUUID(),
+        },
+      );
       await merge(t, '711', ['712']);
       expect((await lines(t)).map((l) => l.company_id)).toEqual([loser]);
       expect(await provenance(t)).toHaveLength(1);
@@ -697,7 +722,7 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
       const inside = new Promise<void>((r) => (entered = r));
       const gate = new Promise<void>((r) => (release = r));
       const merging = c.ingestion.ingestMerge(
-        t,
+        await authz(t, 'canonical.source_sync'),
         { kind: 'company', survivor: hs('721'), merged: [hs('722')], observedAt: new Date() },
         { cause: 'webhook', correlationId: randomUUID() },
         async () => {
@@ -708,7 +733,11 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
       await inside;
       let settled = false;
       const writing = c.h.subscriptions
-        .ingest(t, present('R1', 'hubspot:companies:722', 'core'), meta())
+        .ingest(
+          await authz(t, 'canonical.source_sync'),
+          present('R1', 'hubspot:companies:722', 'core'),
+          meta(),
+        )
         .finally(() => (settled = true));
       await new Promise((r) => setTimeout(r, 300));
       expect(settled).toBe(false); // blocked on the canonical-company lock
@@ -723,9 +752,9 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
       const ids = Array.from({ length: 8 }, (_, i) => String(730 + i));
       const t = await tenantWithCompanies('storm', ids);
       const writes = ids.flatMap((id, i) =>
-        Array.from({ length: 4 }, (_, j) =>
+        Array.from({ length: 4 }, async (_, j) =>
           c.h.subscriptions.ingest(
-            t,
+            await authz(t, 'canonical.source_sync'),
             present(`S${i}-${j}`, `hubspot:companies:${id}`, j % 2 ? 'core' : 'reporting'),
             meta(),
           ),
@@ -761,12 +790,16 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
     it("tenants cannot read or write each other's models, subscriptions or runs", async () => {
       const a = await tenantWithCompanies('isoa', ['801']);
       const b = await tenantWithCompanies('isob', ['801']);
-      await c.h.imports.import(b, csv('I1,hubspot:companies:801,core,active,,,,'), {
-        source: 'billing',
-        mode: 'full',
-        execute: true,
-        correlationId: randomUUID(),
-      });
+      await c.h.imports.import(
+        await authz(b, 'canonical.import'),
+        csv('I1,hubspot:companies:801,core,active,,,,'),
+        {
+          source: 'billing',
+          mode: 'full',
+          execute: true,
+          correlationId: randomUUID(),
+        },
+      );
       const [bLine] = await lines(b);
       const inA = <T>(sql: (db: ReturnType<typeof tenantClient>) => Promise<T>) =>
         c.h.db.transaction(a, (tx) => sql(tenantClient(tx)));
@@ -803,7 +836,11 @@ describe('subscriptions: single writer, CSV import, coverage, account merge', ()
         ),
       ).rejects.toThrow(/row-level security/);
       // Re-homing an own row to another tenant is refused.
-      await c.h.subscriptions.ingest(a, present('I2', aCompany, 'core'), meta());
+      await c.h.subscriptions.ingest(
+        await authz(a, 'canonical.source_sync'),
+        present('I2', aCompany, 'core'),
+        meta(),
+      );
       await expect(
         inA(
           (db) =>

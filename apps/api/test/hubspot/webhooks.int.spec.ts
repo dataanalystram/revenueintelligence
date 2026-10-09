@@ -23,6 +23,7 @@ import {
 import { ALL_READ_SCOPES, FakeHubSpot, sampleData } from '../support/fake-hubspot';
 import { legacyHeaders, signedHeaders, webhookEvent } from '../support/hubspot-webhooks';
 import { provisionTenant, startTenancy, type TenancyHarness } from '../support/tenancy';
+import { authz, platformAuthz } from '../support/security';
 
 /**
  * POST /webhooks/hubspot through the real API process (raw-body middleware,
@@ -59,7 +60,7 @@ describe('HubSpot webhook intake (API process)', () => {
 
   async function installed(prefix: string, portalId: number): Promise<TenantContext> {
     const t = await provisionTenant(h, prefix);
-    await h.config.configureIntegration(t, 'hubspot', {
+    await h.config.configureIntegration(await authz(t, 'config.integration'), 'hubspot', {
       access: 'read_only',
       settings: { portalId: String(portalId), auth: 'oauth' },
     });
@@ -156,19 +157,23 @@ describe('HubSpot webhook intake (API process)', () => {
 
     ok = await installed('whok', 5005);
     staticTenant = await provisionTenant(h, 'whstatic');
-    await h.config.configureIntegration(staticTenant, 'hubspot', {
-      access: 'read_only',
-      settings: { portalId: '5005' },
-    });
+    await h.config.configureIntegration(
+      await authz(staticTenant, 'config.integration'),
+      'hubspot',
+      {
+        access: 'read_only',
+        settings: { portalId: '5005' },
+      },
+    );
     amb1 = await installed('whamba', 6006);
     amb2 = await installed('whambb', 6006);
     disabled = await installed('whdis', 8008);
-    await h.config.configureIntegration(disabled, 'hubspot', {
+    await h.config.configureIntegration(await authz(disabled, 'config.integration'), 'hubspot', {
       access: 'disabled',
       settings: { portalId: '8008', auth: 'oauth' },
     });
     suspended = await installed('whsusp', 9009);
-    await h.registry.suspend(suspended.tenantId);
+    await h.registry.suspend(platformAuthz('config.tenant.status'), suspended.tenantId);
   });
 
   afterAll(async () => {

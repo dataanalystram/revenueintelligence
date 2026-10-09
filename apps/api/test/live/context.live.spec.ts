@@ -5,6 +5,7 @@ import type { TenantContext } from '../../src/modules/tenancy';
 import { EnvSecretProvider } from '../../src/platform/secrets';
 import { startInfrastructure, withAdmin, type TestInfrastructure } from '../support/containers';
 import { provisionTenant, startTenancy, type TenancyHarness } from '../support/tenancy';
+import { authz } from '../support/security';
 
 /**
  * M6 against the live developer test account (read-only): backfill and
@@ -65,11 +66,15 @@ if (missing.length > 0) {
       infra = await startInfrastructure();
       h = await startTenancy(infra.config);
       tenant = await provisionTenant(h, 'ctxlive');
-      await h.config.configureIntegration(tenant, 'hubspot', {
+      await h.config.configureIntegration(await authz(tenant, 'config.integration'), 'hubspot', {
         access: 'read_only',
         settings: { portalId: process.env[PORTAL_VAR]!, auth: 'static_token' },
       });
-      await h.credentials.register(tenant, 'hubspot', 'access_token');
+      await h.credentials.register(
+        await authz(tenant, 'config.integration'),
+        'hubspot',
+        'access_token',
+      );
       const own = EnvSecretProvider.toEnvName(`tenant.${tenant.tenantSlug}.hubspot.access_token`);
       process.env[own] = process.env[SOURCE_VAR];
       created.push(own);
@@ -87,7 +92,7 @@ if (missing.length > 0) {
     let firstHash: string;
 
     it('backfill loads companies and contacts through the worker; a rerun leaves the state hash unchanged', async () => {
-      await bulk.startBackfill(tenant, ['company', 'person'], {
+      await bulk.startBackfill(await authz(tenant, 'data.sync.run'), ['company', 'person'], {
         pageSize: 100,
         maxRecords: MAX_RECORDS,
         correlationId: randomUUID(),
@@ -113,7 +118,7 @@ if (missing.length > 0) {
       expect(first.rows.companies).toBeGreaterThan(0);
       firstHash = first.hash;
 
-      await bulk.startBackfill(tenant, ['company', 'person'], {
+      await bulk.startBackfill(await authz(tenant, 'data.sync.run'), ['company', 'person'], {
         pageSize: 100,
         maxRecords: MAX_RECORDS,
         correlationId: randomUUID(),
@@ -126,7 +131,7 @@ if (missing.length > 0) {
       // The completed backfills may already have started their own reconciliations.
       await waitForRuns('reconcile', 0);
       for (const kind of ['company', 'person'] as const) {
-        const run = await bulk.startReconcile(tenant, kind, {
+        const run = await bulk.startReconcile(await authz(tenant, 'data.sync.run'), kind, {
           since: new Date('2020-01-01T00:00:00Z'),
           correlationId: randomUUID(),
         });

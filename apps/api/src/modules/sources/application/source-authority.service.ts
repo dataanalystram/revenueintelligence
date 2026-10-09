@@ -10,7 +10,14 @@ import {
   type AuthorityDocument,
   type AuthorityFact,
 } from '../../domain';
-import { tenantAdvisoryLock, TenantDatabase, type TenantContext } from '../../tenancy';
+import {
+  assertAuthorized,
+  AuditTrail,
+  tenantAdvisoryLock,
+  TenantDatabase,
+  type AuthorizedContext,
+  type TenantContext,
+} from '../../tenancy';
 import {
   AuthorityInvalidError,
   ConcurrentSourcePublishError,
@@ -39,6 +46,7 @@ export class SourceAuthorityService {
   constructor(
     private readonly db: TenantDatabase,
     private readonly repo: SourcesRepository,
+    private readonly audit: AuditTrail,
   ) {}
 
   show(ctx: TenantContext): Promise<StoredAuthorityVersion | undefined> {
@@ -46,11 +54,10 @@ export class SourceAuthorityService {
   }
 
   async publish(
-    ctx: TenantContext,
+    actx: AuthorizedContext<'config.authority.publish'>,
     raw: unknown,
     options: {
       expectedBaseVersion: number;
-      actor: string;
       /**
        * M9A (§11.4): accept an adapter-declared stable full-read proof for a
        * versioned connection. Only `stable_snapshot` can be accepted.
@@ -58,11 +65,14 @@ export class SourceAuthorityService {
       proofAcceptances?: ReadonlyArray<{ connectionId: string; reason: string }>;
     },
   ): Promise<StoredAuthorityVersion> {
+    assertAuthorized(actx, 'config.authority.publish');
+    const ctx = actx.tenant;
+    const actor = actx.actor.id;
     const base = (options as { expectedBaseVersion?: number }).expectedBaseVersion;
     if (base === undefined || !Number.isInteger(base) || base < 0) {
       throw new PublishBaseVersionRequiredError('an authority declaration');
     }
-    if (!/^[A-Za-z0-9_.:@-]{1,128}$/.test(options.actor)) {
+    if (!/^[A-Za-z0-9_.:@-]{1,128}$/.test(actor)) {
       throw new SourcesError('invalid_actor', 'Invalid actor');
     }
     const parsed = AuthorityDocumentSchema.safeParse(raw);
@@ -145,7 +155,7 @@ export class SourceAuthorityService {
           connectionId: a.connectionId,
           tier: 'stable_snapshot',
           reason: a.reason,
-          actor: options.actor,
+          actor,
           at,
         });
         const connection = parsed.success
@@ -170,14 +180,25 @@ export class SourceAuthorityService {
         acceptances.push(parsed.data);
       }
       if (issues.length > 0) throw new AuthorityInvalidError(issues);
-      return this.repo.insertAuthority(tx, {
+      const stored = await this.repo.insertAuthority(tx, {
         version: latestVersion + 1,
         document: doc,
         // Unchanged from M8 while there are no acceptances (hash parity).
         contentHash: authorityContentHashWith(doc, acceptances),
-        publishedBy: options.actor,
+        publishedBy: actor,
         proofAcceptances: acceptances,
       });
+      await this.audit.record(tx, actx, {
+        action: 'authority.publish',
+        targetKind: 'authority',
+        targetRef: `v${stored.version}`,
+        details: {
+          version: stored.version,
+          baseVersion: latestVersion,
+          proofAcceptances: acceptances.length,
+        },
+      });
+      return stored;
     });
   }
 }

@@ -17,6 +17,7 @@ import {
   withSnapshot,
   type SourcesFixture,
 } from '../support/sources';
+import { authz, platformAuthz } from '../support/security';
 
 /**
  * M9B live gate (plan §22): the whole platform pipeline against the Chargebee
@@ -70,14 +71,17 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
     config: E,
   ): Promise<SourcesFixture & { legacy: string[] }> {
     const s = sourcesServices(c);
-    const t = await c.h.registry.provision({ slug, name: `Live ${slug}` });
+    const t = await c.h.registry.provision(platformAuthz('config.tenant.provision'), {
+      slug,
+      name: `Live ${slug}`,
+    });
     const ctx = await c.h.contexts.forTenantId(t.id);
     // In-process only: the tenant's credential name resolves to the given key.
     process.env[`TENANT_${slug.toUpperCase()}_CHARGEBEE_CHARGEBEE_API`] = process.env[keyEnv];
     const items = (await raw('/items')).map((e) => e.item as E);
     const legacy = items.filter((i) => /legacy/i.test(String(i.name))).map((i) => String(i.id));
     await c.h.catalogue.publish(
-      ctx,
+      await authz(ctx, 'config.product_model.publish'),
       {
         products: items
           .filter((i) => !legacy.includes(String(i.id)))
@@ -88,11 +92,15 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
           })),
         relationships: [],
       },
-      { actor: 'live-test', basedOnVersion: 0 },
+      { basedOnVersion: 0 },
     );
     report.productModel = { modelled: items.length - legacy.length, ignoredLegacy: legacy.length };
-    await c.h.credentials.register(ctx, 'chargebee', 'chargebee_api');
-    const connection = await s.connections.configure(ctx, {
+    await c.h.credentials.register(
+      await authz(ctx, 'config.integration'),
+      'chargebee',
+      'chargebee_api',
+    );
+    const connection = await s.connections.configure(await authz(ctx, 'config.source.connection'), {
       kind: 'chargebee',
       label: 'Chargebee (live test site)',
       config: {
@@ -105,7 +113,11 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
       },
       credentialName: 'chargebee_api',
     });
-    await s.connections.setStatus(ctx, connection.id, 'enabled');
+    await s.connections.setStatus(
+      await authz(ctx, 'config.source.connection'),
+      connection.id,
+      'enabled',
+    );
     const f = {
       ctx,
       connectionId: connection.id,
@@ -116,7 +128,10 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
 
   async function publish(f: SourcesFixture & { legacy: string[] }, accept: boolean, key: string) {
     const s = sourcesServices(c);
-    const captured = await s.snapshots.capture(f.ctx, f.connectionId, 'live-test');
+    const captured = await s.snapshots.capture(
+      await authz(f.ctx, 'config.source.schema'),
+      f.connectionId,
+    );
     const latest = await s.snapshots.latest(f.ctx, f.connectionId);
     report[`${key}Schema`] = {
       sourceVersion: latest!.schema.sourceVersion,
@@ -149,14 +164,13 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
       errors: [...new Set(r1.errors.map((e) => e.code))],
       warnings: [...new Set(r1.warnings.map((w) => w.code))],
     };
-    await s.mappings.publish(f.ctx, f.connectionId, v1, {
+    await s.mappings.publish(await authz(f.ctx, 'config.mapping.publish'), f.connectionId, v1, {
       expectedBaseVersion: 0,
-      actor: 'live-test',
       acknowledgements: acknowledgementsFor(r1),
     });
     const current = await s.authority.show(f.ctx);
     await s.authority.publish(
-      f.ctx,
+      await authz(f.ctx, 'config.authority.publish'),
       {
         facts: {
           account_profile: null,
@@ -168,7 +182,6 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
       },
       {
         expectedBaseVersion: current!.version,
-        actor: 'live-test',
         ...(accept
           ? { proofAcceptances: [{ connectionId: f.connectionId, reason: 'live test site' }] }
           : {}),
@@ -180,11 +193,15 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
       errors: [...new Set(r2.errors.map((e) => e.code))],
       warnings: [...new Set(r2.warnings.map((w) => w.code))],
     };
-    await s.mappings.publish(f.ctx, f.connectionId, mapping, {
-      expectedBaseVersion: 1,
-      actor: 'live-test',
-      acknowledgements: acknowledgementsFor(r2),
-    });
+    await s.mappings.publish(
+      await authz(f.ctx, 'config.mapping.publish'),
+      f.connectionId,
+      mapping,
+      {
+        expectedBaseVersion: 1,
+        acknowledgements: acknowledgementsFor(r2),
+      },
+    );
   }
 
   const linesOf = (ctx: TenantContext) =>
@@ -206,7 +223,10 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
   it('Key A: connection, schema, profile, publication and a stable full run', async () => {
     const s = sourcesServices(c);
     const f = await tenant('cblive', KEY_A, {});
-    report.keyATest = await s.connections.test(f.ctx, f.connectionId);
+    report.keyATest = await s.connections.test(
+      await authz(f.ctx, 'config.source.connection'),
+      f.connectionId,
+    );
     await publish(f, true, 'keyA');
     const run = await runSync(c, f, 'full');
     report.keyAFull = run;
@@ -357,9 +377,13 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
     }
 
     // Key B on the same connection: credential swapped (Key B's own env variable).
-    await c.h.credentials.register(f.ctx, 'chargebee', 'chargebee_nocatalog');
+    await c.h.credentials.register(
+      await authz(f.ctx, 'config.integration'),
+      'chargebee',
+      'chargebee_nocatalog',
+    );
     const conn = await s.connections.get(f.ctx, f.connectionId);
-    await s.connections.configure(f.ctx, {
+    await s.connections.configure(await authz(f.ctx, 'config.source.connection'), {
       kind: 'chargebee',
       label: conn.label,
       config: conn.config,
@@ -374,7 +398,10 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
       );
     const linesBeforeB = await snapshotLines();
     const covBefore = await c.h.db.transaction(f.ctx, (tx) => runs.coverage(tx));
-    report.keyBTest = await s.connections.test(f.ctx, f.connectionId);
+    report.keyBTest = await s.connections.test(
+      await authz(f.ctx, 'config.source.connection'),
+      f.connectionId,
+    );
     const runB = await runSync(c, f, 'full');
     report.keyBFull = {
       status: runB.status,
@@ -402,7 +429,10 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
       )[0]!.records_changed,
     };
     const incr = await s.sync
-      .start(f.ctx, f.connectionId, 'incremental', { enqueue: false, correlationId: randomUUID() })
+      .start(await authz(f.ctx, 'data.sync.run'), f.connectionId, 'incremental', {
+        enqueue: false,
+        correlationId: randomUUID(),
+      })
       .then(() => 'started')
       .catch((e: { code?: string }) => e.code ?? 'error');
     report.incrementalStart = incr;
@@ -947,9 +977,8 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
       };
       // 3. Acceptance published; accepted full run, with S03 structurally rejected in the same run.
       const current = await s.authority.show(f.ctx);
-      await s.authority.publish(f.ctx, current!.document, {
+      await s.authority.publish(await authz(f.ctx, 'config.authority.publish'), current!.document, {
         expectedBaseVersion: current!.version,
-        actor: 'live-test',
         proofAcceptances: [{ connectionId: f.connectionId, reason: 'live test site' }],
       });
       const r3 = await run({ inject04: false, reject03: true });
@@ -1233,9 +1262,8 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
       };
       // 3. Acceptance published; accepted full run, with S03 structurally rejected in the same run.
       const current = await s.authority.show(f.ctx);
-      await s.authority.publish(f.ctx, current!.document, {
+      await s.authority.publish(await authz(f.ctx, 'config.authority.publish'), current!.document, {
         expectedBaseVersion: current!.version,
-        actor: 'live-test',
         proofAcceptances: [{ connectionId: f.connectionId, reason: 'live test site' }],
       });
       const r3 = await run({ inject04: false, reject03: true });
