@@ -999,4 +999,241 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
     },
     900_000,
   );
+
+  const m08 = process.env.CHARGEBEE_M08_CUSTOMER ? it : it.skip;
+  m08(
+    'M08: deleted customer + cascaded S09: lines retired only by the next accepted full run',
+    async () => {
+      const customer08 = process.env.CHARGEBEE_M08_CUSTOMER!;
+      const s = sourcesServices(c);
+      const f = await tenant('cblivem08', KEY_A, {});
+      await publish(f, false, 'm08');
+      const all = (await raw('/subscriptions?include_deleted=true')).map(
+        (e) => e.subscription as E,
+      );
+      const deleted04 = all.filter((x) => String(x.id).endsWith('_s09') && x.deleted === true);
+      const live04 = all.filter((x) => String(x.id).endsWith('_s09') && x.deleted !== true);
+      const id04 = String(deleted04[0]?.id ?? '');
+      const auth = `Basic ${Buffer.from(`${process.env[KEY_A]}:`).toString('base64')}`;
+      const get404 = async (q: string) =>
+        (
+          await fetch(
+            `https://${SITE}.chargebee.com/api/v2/subscriptions/${encodeURIComponent(id04)}${q}`,
+            {
+              headers: { authorization: auth },
+            },
+          )
+        ).status;
+      const out: E = {
+        source: {
+          deletedRowsInIncludeDeletedList: deleted04.length,
+          liveRecordsWithSameId: live04.length,
+          absentFromNormalList: !(await raw('/subscriptions')).some(
+            (e) => (e.subscription as E).id === id04,
+          ),
+          singleGet: await get404(''),
+          singleGetIncludeDeleted: await get404('?include_deleted=true'),
+          deletedRowStatus: deleted04[0]?.status ?? null,
+          deletedRowItems: ((deleted04[0]?.subscription_items as E[]) ?? []).length,
+        },
+      };
+      const replay04: E = { ...structuredClone(deleted04[0]!), deleted: false };
+      const customersAll = (await raw('/customers?include_deleted=true')).map(
+        (e) => e.customer as E,
+      );
+      const deletedCustomer = customersAll.filter((x) => x.id === customer08 && x.deleted === true);
+      out.source.customerDeletedRows = deletedCustomer.length;
+      out.source.customerLiveRecords = customersAll.filter(
+        (x) => x.id === customer08 && x.deleted !== true,
+      ).length;
+      out.source.customerAbsentFromNormalList = !(await raw('/customers')).some(
+        (e) => (e.customer as E).id === customer08,
+      );
+      out.source.customerSingleGet = (
+        await fetch(
+          `https://${SITE}.chargebee.com/api/v2/customers/${encodeURIComponent(customer08)}`,
+          {
+            headers: { authorization: auth },
+          },
+        )
+      ).status;
+      out.source.subscriptionCustomerIsTarget = replay04.customer_id === customer08;
+      out.source.deletionTimesAlignedSeconds = Math.abs(
+        Number(deletedCustomer[0]?.updated_at) - Number(deleted04[0]?.updated_at),
+      );
+      const replayCustomer: E = { ...structuredClone(deletedCustomer[0]!), deleted: false };
+      const s03 = all.find((x) => String(x.id).endsWith('_s03') && x.deleted !== true)!;
+      const queries: string[] = [];
+      const original = globalThis.fetch;
+      const patch = (opts: { inject04: boolean; reject03: boolean }) => {
+        globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+          const url = new URL(
+            typeof input === 'string' ? input : input instanceof URL ? input.href : input.url,
+          );
+          if (url.hostname.endsWith('chargebee.com')) queries.push(url.search);
+          const res = await original(input, init);
+          if (url.pathname.endsWith('/api/v2/customers') && res.ok && opts.inject04) {
+            const cb = (await res.json()) as E;
+            let cl = cb.list as E[];
+            if (
+              !cb.next_offset &&
+              !url.searchParams.has('offset') &&
+              !url.searchParams.has('id[in]')
+            ) {
+              cl = [...cl, { customer: replayCustomer }].sort(
+                (x, y) => Number(x.customer.created_at) - Number(y.customer.created_at),
+              );
+            }
+            return new Response(JSON.stringify({ ...cb, list: cl }), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          }
+          if (!url.pathname.endsWith('/api/v2/subscriptions') || !res.ok) return res;
+          const body = (await res.json()) as E;
+          let list = body.list as E[];
+          if (opts.reject03) {
+            list = list.map((e) =>
+              e.subscription?.id === s03.id
+                ? { ...e, subscription: { ...e.subscription, customer_id: undefined } }
+                : e,
+            );
+          }
+          if (opts.inject04 && !body.next_offset && !url.searchParams.has('offset')) {
+            // Single-page reads (page size 100): insert in created_at order.
+            list = [...list, { subscription: replay04, customer: null }].sort(
+              (a, b) => Number(a.subscription.created_at) - Number(b.subscription.created_at),
+            );
+          }
+          return new Response(JSON.stringify({ ...body, list }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        };
+      };
+      const run = async (opts: { inject04: boolean; reject03: boolean }) => {
+        patch(opts);
+        try {
+          return await runSync(c, f, 'full');
+        } finally {
+          globalThis.fetch = original;
+        }
+      };
+      const customerRef = async () =>
+        (
+          await c.sql<{ deleted_at: Date | null }>(
+            `SELECT deleted_at FROM company_external_refs WHERE tenant_id = $1 AND system = 'chargebee' AND object_type = 'Customers' AND external_id = $2`,
+            [f.ctx.tenantId, customer08],
+          )
+        ).map((x) => ({ present: true, retired: x.deleted_at !== null }))[0] ?? { present: false };
+      const companyRows = async () =>
+        (
+          await c.sql<{ n: number }>(
+            `SELECT count(*)::int AS n FROM companies co JOIN company_external_refs x ON x.tenant_id = co.tenant_id AND x.company_id = co.id WHERE x.tenant_id = $1 AND x.system = 'chargebee' AND x.external_id = $2`,
+            [f.ctx.tenantId, customer08],
+          )
+        )[0]!.n;
+      const snapshot = async () =>
+        new Map(
+          (await linesOf(f.ctx)).map((l) => [
+            l.source_record_id,
+            `${l.record_state}:${l.state}:${l.quantity}:${l.product_key}`,
+          ]),
+        );
+      const s04Lines = async () =>
+        (await linesOf(f.ctx))
+          .filter((l) => l.source_record_id.startsWith(`${id04}:`))
+          .map((l) => ({
+            keyFp: fp(l.source_record_id),
+            state: l.state,
+            recordState: l.record_state,
+            quantity: l.quantity,
+          }));
+      const diff = (a: Map<string, string>, b: Map<string, string>) =>
+        [...new Set([...a.keys(), ...b.keys()])]
+          .filter((k) => a.get(k) !== b.get(k))
+          .map((k) => ({
+            keyFp: fp(k),
+            s04: k.startsWith(`${id04}:`),
+            s03: k.startsWith(`${String(s03.id)}:`),
+            before: a.get(k) ?? null,
+            after: b.get(k) ?? null,
+          }));
+      const runs = c.app.get(SubscriptionRunsStore);
+      const coverage = async () => {
+        const cov = await c.h.db.transaction(f.ctx, (tx) => runs.coverage(tx));
+        return cov.known ? { tier: cov.coverageTier, method: cov.proof.method } : cov;
+      };
+      // 1. Pre-M07 state (replayed S04).
+      const r1 = await run({ inject04: true, reject03: false });
+      const p1 = await snapshot();
+      out.run1ReplayCustomer = { ref: await customerRef(), companyRows: await companyRows() };
+      out.run1Replay = { status: r1.status, quality: r1.quality, s04: await s04Lines() };
+      // 2. Live read without acceptance: absence alone must not retire.
+      const r2 = await run({ inject04: false, reject03: false });
+      const p2 = await snapshot();
+      out.run2NoAcceptanceCustomer = { ref: await customerRef(), companyRows: await companyRows() };
+      out.run2NoAcceptance = {
+        status: r2.status,
+        quality: r2.quality,
+        s04: await s04Lines(),
+        changed: diff(p1, p2),
+        coverage: await coverage(),
+      };
+      // 3. Acceptance published; accepted full run, with S03 structurally rejected in the same run.
+      const current = await s.authority.show(f.ctx);
+      await s.authority.publish(f.ctx, current!.document, {
+        expectedBaseVersion: current!.version,
+        actor: 'live-test',
+        proofAcceptances: [{ connectionId: f.connectionId, reason: 'live test site' }],
+      });
+      const r3 = await run({ inject04: false, reject03: true });
+      const p3 = await snapshot();
+      const gaps3 = await c.sql<{ reason: string; n: number }>(
+        `SELECT reason, count(*)::int AS n FROM tenant_ownership_gaps WHERE tenant_id = $1 GROUP BY reason`,
+        [f.ctx.tenantId],
+      );
+      out.run3AcceptedCustomer = { ref: await customerRef(), companyRows: await companyRows() };
+      out.run3Accepted = {
+        status: r3.status,
+        quality: r3.quality,
+        s04: await s04Lines(),
+        changed: diff(p2, p3),
+        gaps: Object.fromEntries(gaps3.map((g) => [g.reason, g.n])),
+        coverage: await coverage(),
+      };
+      // 4. Clean accepted rerun: nothing further retired (exactly once), S03 normal again.
+      const r4 = await run({ inject04: false, reject03: false });
+      const p4 = await snapshot();
+      const gaps4 = await c.sql<{ reason: string; n: number }>(
+        `SELECT reason, count(*)::int AS n FROM tenant_ownership_gaps WHERE tenant_id = $1 GROUP BY reason`,
+        [f.ctx.tenantId],
+      );
+      out.run4RerunCustomer = { ref: await customerRef(), companyRows: await companyRows() };
+      out.run4Rerun = {
+        status: r4.status,
+        quality: r4.quality,
+        changed: diff(p3, p4),
+        gaps: Object.fromEntries(gaps4.map((g) => [g.reason, g.n])),
+        coverage: await coverage(),
+      };
+      out.connectorNeverSentIncludeDeleted = !queries.some((q) => q.includes('include_deleted'));
+      out.connectorRequests = queries.length;
+      const company = (
+        await c.sql<{ company_id: string }>(
+          `SELECT company_id FROM company_external_refs WHERE tenant_id = $1 AND system = 'chargebee' AND object_type = 'Customers' AND external_id = $2`,
+          [f.ctx.tenantId, replay04.customer_id],
+        )
+      )[0]?.company_id;
+      if (company) {
+        const ws = await c.app.get(EligibilityService).whitespace(f.ctx, company);
+        out.whitespaceS04Account = {
+          owned: ws.categories.owned.map((x) => x.productKey),
+          eligibleWhitespace: ws.categories.eligible_whitespace.length,
+        };
+      }
+      report.m08 = out;
+    },
+    900_000,
+  );
 });

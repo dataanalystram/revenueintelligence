@@ -551,6 +551,48 @@ never read).
 retention of deleted list rows is undocumented and not depended on; deleted/live id reuse is possible (S02). The approved
 live-records-only design (absence retired only by an accepted full run) is confirmed correct.
 
+## Live mutation M08 — customer 08 deleted with its subscription S09 (2026-10-09)
+
+**Source side (owner's setup agent):** customer 08 deleted; Chargebee cascaded the deletion to its only subscription S09
+(`paused`, one item, mapped to canonical `unknown`). Read here after it settled: normal LIST → customer and S09 both
+absent; single-record GET → 404 for both (S09 also with `include_deleted=true`); LIST with `include_deleted=true` → one
+deleted customer row and one deleted S09 row (status still `paused`, 1 item), S09's customer is customer 08, no live
+record reuses either id; the two deletion timestamps are identical (0 s apart) → **source-level cascade**.
+
+**Connector verification** (live spec test "M08", Key A, tenant `cblivem08`, sanitized). The pre-M08 customer and S09
+records are replayed from the deleted list rows as **test replay data only** (`deleted` forced false); every request the
+connector sent was intercepted. (The report reuses the M07 field name `s04` for the target line; here it is S09's line.)
+
+| Step                                                                                                                           | Observed                                                                                                                                                                                                                                                                                                                                                                    |
+| ------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Run 1 — replayed pre-M08 state, **no acceptance**                                                                              | completed, proof passed; customer reference present (not retired), 1 company row; S09 line active, state `unknown`, qty 1                                                                                                                                                                                                                                                   |
+| Run 2 — live read, **no acceptance**                                                                                           | completed, proof passed; customer and S09 absent from the read; **nothing changed** (S09 line still active, customer reference and company unchanged); `tombstones_not_accepted: 1`; coverage `proof_not_accepted`                                                                                                                                                          |
+| Run 3 — acceptance published; **accepted** full run (double enumeration passed); S03 made structurally invalid in the same run | S09 line → `record_state = deleted`, state **left `unknown`** (not `cancelled`); quality `tombstoned: 1`, **no `child_retired`**; S03: `record_rejected: 1`, `seen_but_rejected: 1`, `tombstones_suppressed: 1`, gap `observation_rejected`, S03's line **unchanged** (protected); changed keys: **only** the S09 line                                                      |
+| Run 4 — clean accepted rerun                                                                                                   | no change (S09 retired **exactly once**); gaps cleared; coverage `stable_snapshot` / `double_enumeration`                                                                                                                                                                                                                                                                   |
+| Customer 08 reference, runs 1–4                                                                                                | present and **not retired** in every run; company rows 1 throughout (no physical deletion, no inferred account deletion)                                                                                                                                                                                                                                                    |
+| Connector requests (24)                                                                                                        | **none** carried `include_deleted`                                                                                                                                                                                                                                                                                                                                          |
+| Whitespace (customer 08 account)                                                                                               | owned products none after retirement; eligible whitespace 0 (absence stays `unknown`)                                                                                                                                                                                                                                                                                       |
+| Whole tenant (normal live spec run)                                                                                            | 18 live subscriptions, 21 active lines (was 22 after M07): the diff against the post-M07 fingerprints is exactly the S09 line removed, nothing added or changed; page size 10 proof passed (twice); coverage `stable_snapshot`, gaps none; Key B `forbidden` / `source_forbidden`, 21 → 21 active lines, no change; incremental start refused (`incremental_not_supported`) |
+
+**Classification.**
+
+- **Subscription retirement path:** the accepted **full-run absence (tombstone) pass** (`tombstoned`), gated by a passed
+  double enumeration **and** an operator acceptance — not child reconciliation (S09 was not observed, so no child set
+  existed; no `child_retired`), not status inference (state stayed `unknown`; a `paused` subscription is not treated as
+  cancelled), not explicit `deleted=true` processing (never requested, never read).
+- **Customer retirement path:** **none, by approved design.** The live-records-only correction infers no account
+  deletion from absence (tech-debt #57 superseded); the customer reference stays as the record of the source identity
+  and the company row is preserved.
+- **Source-level cascade:** Chargebee deleted the subscription with its customer (aligned deletion times). The platform
+  does not cascade: S09's line is retired on its own evidence (absent from an accepted full read), not because its
+  customer disappeared.
+- **History preservation:** the S09 line row remains (`record_state = deleted`, product and quantity kept); the customer
+  reference and company remain; nothing was physically deleted.
+
+**Design note for the owner:** the M08 request expected the customer reference to be "retired safely". Under the
+approved design it is retained, not retired. Retiring account references on accepted full-run absence would be a new,
+governed change (code, tests, mutation proof, ADR amendment) and needs explicit approval; it is not implemented.
+
 ## V12 final decision and incremental-sync assessment
 
 **V12: LIVE CONFIRMED for API-driven subscription-item changes** — quantity change (M01), item removal (M02), price
