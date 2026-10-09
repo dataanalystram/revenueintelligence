@@ -1,7 +1,8 @@
-import { createCipheriv, hkdfSync, randomBytes } from 'node:crypto';
+import { createCipheriv, createHash, hkdfSync, randomBytes } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { authorizeOperator, OperatorIdRequiredError } from '../../src/cli/operator';
-import { operatorActor } from '../../src/modules/domain';
+import { auditCanonicalPayload, operatorActor } from '../../src/modules/domain';
+import { toStored } from '../../src/modules/tenancy/security/audit-trail';
 import {
   AuditPurgeDisabledError,
   AuditTrail,
@@ -212,6 +213,16 @@ describe('M10A1 security operations', () => {
       expect(rows.map((r) => r.seq)).toEqual(rows.map((_, i) => i + 1));
       expect(new Set(rows.map((r) => r.prev_hash)).size).toBe(rows.length);
       for (let i = 1; i < rows.length; i++) expect(rows[i]!.prev_hash).toBe(rows[i - 1]!.hash);
+      // Independent recomputation: hash = sha256(prev_hash "\n" canonical payload) for every row.
+      const stored = await h.db.transaction(t, (tx) =>
+        tenantClient(tx).tenantAuditEvent.findMany({ orderBy: { seq: 'asc' } }),
+      );
+      for (const r of stored) {
+        const expected = createHash('sha256')
+          .update(`${r.prevHash}\n${auditCanonicalPayload(toStored(r))}`)
+          .digest('hex');
+        expect(r.hash, `seq ${r.seq}`).toBe(expected);
+      }
       await expect(trail.verify(t)).resolves.toMatchObject({ ok: true, events: rows.length });
       const verdict = await ops().verifyChain(await authz(t, 'security.audit.read'));
       expect(verdict).toMatchObject({ ok: true });

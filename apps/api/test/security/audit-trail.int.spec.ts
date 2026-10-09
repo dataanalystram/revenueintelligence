@@ -183,7 +183,11 @@ describe('M10A1 audit trail behaviour', () => {
       const t = await provisionTenant(h, 'failclosed');
       const before = await events(t);
       const integrations = await h.config.listIntegrations(t);
-      vi.spyOn(AuditTrail.prototype, 'record').mockRejectedValue(new Error('audit store down'));
+      // The insert itself fails (below `record`), so swallowing it anywhere would be caught.
+      vi.spyOn(
+        AuditTrail.prototype as unknown as { append: () => Promise<void> },
+        'append',
+      ).mockRejectedValue(new Error('audit store down'));
       await expect(
         h.config.configureIntegration(await authz(t, 'config.integration'), 'hubspot', {
           access: 'read_only',
