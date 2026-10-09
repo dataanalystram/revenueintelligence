@@ -122,7 +122,7 @@ export class EligibilityService {
    * evaluation needs only a tenant context.
    */
   // Only a recording evaluation is a write; a plain evaluation is a read.
-  @AuditFailures('eligibility.record', 'eligibility_snapshot', (args) =>
+  @AuditFailures('eligibility.record', 'eligibility_snapshot', (args: readonly unknown[]) =>
     Boolean((args[3] as { record?: unknown } | undefined)?.record),
   )
   async evaluate(
