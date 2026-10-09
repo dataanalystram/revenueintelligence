@@ -1,9 +1,9 @@
 # Milestone 9B — Chargebee reference adapter (implementation record)
 
-- Status: **APPROVED FOR CLOSURE — final independent review `PASS — M9B APPROVED FOR CLOSURE`** (no blocking
-  defects). Approved code SHA **`1502da2de0588ed10c470dc1d1e917e00faa362a`**; later commits on the branch are
-  documentation/evidence only. See [Final independent review](#final-independent-review). Merge and closure are
-  recorded in [Closure](#closure) once done.
+- Status: **M9B CLOSED — merged to `main`** (PR [#16](https://github.com/laxmanprasadsomaraju/Garethtasktest/pull/16),
+  merge commit `eb925803762b68d78969451539bbfadf2bd39834`). Final independent review:
+  `PASS — M9B APPROVED FOR CLOSURE` (no blocking defects). Approved code SHA
+  `1502da2de0588ed10c470dc1d1e917e00faa362a`. See [Closure](#closure).
 - Live TEST-site verification recorded: baseline, V8 (Key B), mutations M01–M08 and the governed customer
   source-reference retirement. **Not run:** mutations M09 (Legacy archive) and M10 (Temp deletion/archive); V6, V9,
   V10 and V11 remain as recorded in [V2–V12](#v2v12-live-gate) (open; not resolved by this closure). Incremental
@@ -746,6 +746,29 @@ documentation commits change no code).
      regression test, `pnpm verify` and the unchanged Sugar suite);
   2. the recapture/republish behaviour of an old Chargebee mapping (published before `referenceRetirement`) was not
      independently reproduced with a legacy fixture.
+
+## Closure
+
+- PR: [#16](https://github.com/laxmanprasadsomaraju/Garethtasktest/pull/16) from `claude/blissful-mendel-urbh4r`
+  (head `88120d839b4b604de14219d2ec98b8809b1836bf` = approved code `1502da2` plus documentation/evidence commits
+  `c68b7f9` and `88120d8`; `git diff 1502da2 88120d8 -- apps` empty), merged into `main` (base
+  `a8c61ee49d74472523a23e9419fc5d18b75668e9`, verified undrifted immediately before merging; merge pinned to the
+  expected head SHA) with a merge commit: **`eb925803762b68d78969451539bbfadf2bd39834`**.
+- CI on the PR head (run 54, attempt 1, `ubuntu-latest`, native Linux, every job green):
+
+  | Job                                                                                       | Result                                                                           |
+  | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+  | Lint, typecheck, boundaries, unit tests                                                   | format, lint, typecheck, dependency-cruiser pass; unit **880 passed (61 files)** |
+  | Integration tests (Testcontainers)                                                        | **464 passed (25 files)**                                                        |
+  | Runtime verification                                                                      | `== Summary: 163 passed, 0 failed`                                               |
+  | Docker images build and start (repository Dockerfile, no sandbox CA, no `--network host`) | `== Summary: 27 passed, 0 failed`; cleanup verified                              |
+
+- The reviewer's Docker 26/1 result is a Docker Desktop host-network limitation of that environment; Docker passed
+  27/0 in CI and in the native-Linux fresh clone. Not an application defect.
+- Non-blocking follow-ups tracked: technical debt **#63** (Sugar unchanged — end-to-end spot check) and **#64** (old
+  Chargebee mapping recapture/republish with a legacy fixture). Still open as recorded: live mutations M09/M10 not
+  run; V6, V9, V10, V11 open; incremental sync disabled; LIVE SUGAR VERIFICATION PENDING.
+- **M9B is CLOSED.** M9C has not started; it requires its own plan and the owner's approval.
 
 ## V12 final decision and incremental-sync assessment
 
