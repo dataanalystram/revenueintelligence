@@ -178,7 +178,8 @@ FACT → DERIVED SIGNAL → OPPORTUNITY → DECISION → ACTION → OUTCOME
 Where applicable, facts and signals record: tenant, source system, source
 record id, source timestamp, ingestion timestamp, signal/fact type,
 derivation status, derivation method/provider, derivation version and an
-evidence reference. The exact schema is designed at the start of M10.
+evidence reference. The schema was designed in M9E (Canonical Architecture v1 Candidate) and is
+implemented in M10.
 
 ## 9. Opportunity intelligence
 
@@ -345,12 +346,12 @@ The questions raised with the proposal were decided on 2026-10-01
 | Question                          | Decision                                                                                       |
 | --------------------------------- | ---------------------------------------------------------------------------------------------- |
 | Source of truth for subscriptions | not assumed; decided by the pre-M8 Subscription Source Discovery gate                          |
-| Opportunity-centric domain        | Account × Product, Person optional; schema evolution in M11 with its own ADR                   |
+| Opportunity-centric domain        | Account × Product, Person optional; model built in M10 (M10H), generation in M12               |
 | Vendor names in canonical enums   | generalise only when a real new system or tenant requires it                                   |
 | Eligibility rules representation  | declarative, versioned per-tenant rules; pure deterministic evaluator; no generic rules engine |
 | Event processing infrastructure   | BullMQ on Redis; no PostgreSQL job system without a concrete need                              |
 | Jev                               | rules-first; Jev/hybrid later behind the existing provider interface                           |
-| Operator interface timing         | minimal workspace in M14, before any write in M15                                              |
+| Operator interface timing         | minimal workspace in M15, before any write in M16                                              |
 | Repository naming                 | deferred                                                                                       |
 
 Still open (each answered in the milestone that needs it):

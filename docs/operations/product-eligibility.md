@@ -132,7 +132,7 @@ pnpm eligibility:replay     --tenant <slug> --snapshot <id>
   never alter a snapshot.
 - Whitespace groups every catalogue product: `owned`, `eligible_whitespace`,
   `ineligible_whitespace`, `unknown`. "Currently being pursued" is not
-  considered until M11.
+  considered until M12 (opportunity candidate generation; renumbered 2026-10-09).
 
 ## 5. Health and invariants
 

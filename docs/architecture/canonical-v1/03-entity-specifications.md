@@ -270,7 +270,7 @@ time**, plus Contract → Contract links (`renews`, `amends`, `parent`). No line
 - **Mapping:**
   - source-provided signals: a mapping entity `signal` with value maps to signal types (for example Staircase or
     Gainsight scores and alerts);
-  - derived signals: produced by signal definitions (M10), never by mappings.
+  - derived signals: produced by signal definitions (engine: M11), never by mappings.
 
 ## 7. Opportunity — Core (owner decision 7)
 
@@ -358,7 +358,7 @@ time**, plus Contract → Contract links (`renews`, `amends`, `parent`). No line
 
 ## 9. Action and ActionOutcome — Module "Action & Outcome"
 
-- **Status:** `PROPOSED FOR V1 CANDIDATE` (specification only). Implemented with M15/M16.
+- **Status:** `PROPOSED FOR V1 CANDIDATE` (specification only). Records built in M10 (M10I); execution in M16, measurement in M17.
 - **Action:** an execution of an accepted recommendation, or a human action (task created, email sent, CRM write
   under approval).
   - Fields: type, target, executor, `status` (`pending` / `succeeded` / `failed` / `cancelled`), external reference
@@ -368,7 +368,7 @@ time**, plus Contract → Contract links (`renews`, `amends`, `parent`). No line
   - Fields: subject (opportunity / recommendation / action), `outcome_type` (ADR 0012 vocabulary: accepted, worked,
     ignored, rejected/disqualified, converted, won, lost, expired, superseded), value (money), time, source reference
     or human entry.
-  - Feeds learning (measurement, M16).
+  - Feeds learning (measurement, M17).
 
 ### 9.1 Two different kinds of "outcome" (terminology)
 

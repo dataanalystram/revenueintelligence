@@ -16,7 +16,7 @@
   references, provenance), [0016](../adr/0016-product-model-versioning.md)–[0018](../adr/0018-eligibility-and-whitespace.md)
   (product model, subscriptions, eligibility), the
   [roadmap](../product/roadmap.md) (Subscription Source Discovery gate, M8,
-  M14) and technical debt #15, #17, #23, #26.
+  M15) and technical debt #15, #17, #23, #26.
 
 ## Summary of the recommendation
 
@@ -49,7 +49,7 @@ expression language, scripting, generic EAV or ETL.
 | Person                       | platform id, emails, names, job title, primary company, roles, external references                                              |
 | Product                      | key, name, description, family, status, availability window, external references (ADR 0016)                                     |
 | Subscription                 | id, account, product key, `state`, `startsAt`, `endsAt`, `quantity`, source reference, tombstone and ordering fields (ADR 0017) |
-| Signal, Opportunity, Outcome | defined by their milestones (M10–M13, ADR 0012), with the same rule                                                             |
+| Signal, Opportunity, Outcome | data model built in M10 (canonical v1 candidate), engines in M11–M14 (ADR 0012); same rule                                      |
 | Everywhere                   | provenance, source references, tenant id, timestamps                                                                            |
 
 ### What is a tenant extension attribute
@@ -142,7 +142,7 @@ deliberate: a tenant needing more is building a data warehouse.
 | Type safety      | none (text)         | application-only; DB sees `jsonb`                   | typed columns + CHECK "exactly one column for the definition's type"; FK to the definition |
 | Indexes          | poor                | expression index per key (DDL per tenant attribute) | one composite index per typed column; no per-attribute DDL                                 |
 | RLS              | easy                | inherited from the entity                           | easy: tenant-owned table, forced RLS, tenant keys                                          |
-| Queryability     | joins on strings    | good per entity, poor across entities               | good for "accounts where X" and for batch loading (M11)                                    |
+| Queryability     | joins on strings    | good per entity, poor across entities               | good for "accounts where X" and for batch loading (M12)                                    |
 | Eligibility      | parse at read       | one read per entity                                 | one read per account (or per page of accounts): `WHERE company_id = ANY(...)`              |
 | Schema evolution | free (too free)     | free; old keys linger silently                      | governed by registry versions; FK prevents orphans                                         |
 | Auditability     | weak                | whole-blob updates hide which key changed           | per-value provenance rows (M6 `tenant_context_changes`), per-value source ref              |
@@ -312,7 +312,7 @@ schema snapshot.
   mapping versions. M8 migrates its rows (status `tbc` → no entry; `proposed`
   → a draft; `confirmed` → none exist) and drops the table, with the same
   count-checked approach as the M7 legacy migration. Its outbound direction
-  belongs to the write milestone (M15) and is not carried over now.
+  belongs to the write milestone (M16) and is not carried over now.
 - `tenant_lead_source_mappings` (M2) stays: it is lead-channel classification,
   a different concern. It may later become a value map, but not now.
 - Product `externalRefs` (M7) remain the product identity mapping;
@@ -344,7 +344,7 @@ adapter (code, tests, review), not in tenant configuration.
 ## 9. Mapping versioning
 
 ```
-draft (file now; stored draft in M14)
+draft (file now; stored draft in M10A2)
   → validate  (structure, catalogues, registry, schema snapshot, authority, identity safeguards)
   → preview   (dry run: counts, data-quality report, a few masked sample transformations; nothing written)
   → publish   (atomic, with expectedBaseVersion; immutable version)
@@ -387,7 +387,7 @@ A closed code catalogue of facts the platform consumes, e.g.:
 - `account_customer_status`;
 - `account_attribute:<key>` (one per registered attribute);
 - later: `financial_validation`, `product_usage`, `marketing_engagement`
-  (inputs to signals, M10).
+  (inputs to signals, M11).
 
 Per tenant, a versioned **authority declaration** (part of the same document
 family, mandatory base version) assigns each consumed fact exactly **one
@@ -459,7 +459,7 @@ milestone (not M8) adds one condition type:
   instant). No paths, no expressions.
 - **Evaluation**: the account facts gain `attributes: { key: typed value |
 empty }` loaded in the same repeatable-read transaction (one query; batched
-  for M11). No row → `unknown` (`attribute_missing`); `empty` → `unknown`
+  for M12). No row → `unknown` (`attribute_missing`); `empty` → `unknown`
   too unless the condition says otherwise later. Precedence stays
   fail > unknown > eligible.
 - **Retirement**: a registry version cannot retire an attribute (or an enum
@@ -479,16 +479,16 @@ empty }` loaded in the same repeatable-read transaction (one query; batched
 ## 14. Facts, signals, opportunities
 
 An attribute is a **fact about an account**. It is never a signal by being
-mapped. A signal (M10) is a **derived, time-stamped observation** produced by a
+mapped. A signal (M11) is a **derived, time-stamped observation** produced by a
 signal definition from facts and events (e.g. "contract tier changed to gold
-this week"). Opportunities (M11) combine eligibility, signals and suppression.
+this week"). Opportunities (M12) combine eligibility, signals and suppression.
 The registry's `allowedUses: signal_input` is the only bridge: a signal
 definition may read an attribute only if that use is allowed.
 
 ```
 FACT (canonical field or registered attribute)
-  → DERIVED SIGNAL (M10 definition, versioned)
-    → OPPORTUNITY (M11, cites eligibility snapshot + signals)
+  → DERIVED SIGNAL (M11 definition, versioned)
+    → OPPORTUNITY (M12, cites eligibility snapshot + signals)
 ```
 
 ---
@@ -506,7 +506,7 @@ values. Safeguards at validation and preview:
    maps or parsing (identity must be preserved exactly).
 3. Descriptive fields (name, domain, email, phone) are refused as identity
    for accounts; cross-system matching on them belongs to identity resolution
-   (M11), which records conflicts and never auto-merges across systems (M6
+   (M12), which records conflicts and never auto-merges across systems (M6
    rule).
 4. Changing the identity field of an object in a new mapping version requires
    an explicit `identityChange` acknowledgement, a preview of how many
@@ -542,7 +542,7 @@ anomaly detection or profiling.
 
 ## 17. Future self-service UI readiness
 
-Backend contracts (services, not HTTP yet) the M14 workspace can call
+Backend contracts (services, not HTTP yet) the M15 workspace can call
 directly, each returning structured results:
 
 | UI step                         | Contract                                                                  |
@@ -559,7 +559,7 @@ directly, each returning structured results:
 | observe coverage/errors         | run checkpoints, data-quality counts, coverage per fact                   |
 
 Every result is a typed structure with codes and paths; nothing needs to be
-reconstructed from logs. Stored drafts and per-user editing are M14.
+reconstructed from logs. Stored drafts are M10A2; per-user editing is M15.
 
 ---
 
@@ -593,10 +593,10 @@ suggestion is never applied automatically.
   segmentation or signals until a privacy ADR (tech debt #15) defines lawful
   use and erasure; their values are excluded from snapshots' human-readable
   output.
-- **Permissions** (enforced when M14 adds user identity; CLI operator until
+- **Permissions** (enforced when M15 adds user identity; CLI operator until
   then): view mappings; edit drafts; publish (separate permission). A
   publisher cannot approve their own identity/authority confirmations once
-  roles exist (four-eyes for consequential entries; deferred to M14).
+  roles exist (four-eyes for consequential entries; deferred to M15).
 - **Audit**: immutable versions with publisher, hash and base version;
   per-value provenance; no deletion paths (retention via the privacy and
   data-retention work, tech debt #15, #17, #23).
@@ -629,8 +629,8 @@ change Customer B could not be onboarded, so it is a required M8 change.
 
 | Risk             | Why we are not building it                                                                                                                    |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| MDM platform     | No golden-record survivorship across sources: one authoritative source per fact; identity resolution stays M11 with conflicts, not auto-merge |
-| iPaaS            | No arbitrary flows, triggers or destinations; read-only ingestion into a fixed canonical model; writes are M15 and per-target                 |
+| MDM platform     | No golden-record survivorship across sources: one authoritative source per fact; identity resolution stays M12 with conflicts, not auto-merge |
+| iPaaS            | No arbitrary flows, triggers or destinations; read-only ingestion into a fixed canonical model; writes are M16 and per-target                 |
 | Generic ETL      | Closed transform set; no joins, expressions or scripting in configuration; complex shaping lives in adapters                                  |
 | Ontology engine  | The canonical model is code; the registry holds scalar account (later person) attributes only, no classes, inheritance or relations           |
 | Rules engine     | Eligibility gains one typed condition; signals have their own versioned definitions; no general predicate language                            |
@@ -654,7 +654,7 @@ If a requirement pushes past any of these lines, it needs an ADR.
 | Eligibility and snapshots (M7)           | Extended later (§13); frozen inputs make old snapshots immune                                                                                                                                                                     |
 | Tenancy and config (M2)                  | `tenant_field_mappings` superseded and migrated in M8 (§7); template stays free of mappings and attributes (`tbc`)                                                                                                                |
 | CSV import (M7)                          | Remains the fixture/operator path; a CSV "connection" can later use the same mapping model instead of fixed columns                                                                                                               |
-| Signals/opportunities (M10–M13)          | Read attributes only via `allowedUses`; never via mappings                                                                                                                                                                        |
+| Signals/opportunities (M11–M14)          | Read attributes only via `allowedUses`; never via mappings                                                                                                                                                                        |
 
 No competing concept is introduced: there is one identity mechanism
 (references), one provenance table, one writer per entity, one versioning
@@ -670,7 +670,7 @@ pattern.
 | **Implemented in M8**                                                                                       | Connector-kind catalogue replacing the closed enums, and source connections; the generic connector port (`testConnection`, `describeSchema`, `readRecords`, `readRecord`, `capabilities`) with the M8 adapter (mock first); schema snapshots; mapping versions (file drafts, validate, preview, publish with **required** base version) limited to the entry kinds M8 needs (`identity`, `core`, `relationship`, `ignored`) for `account`, `subscription` and `product_reference`; the closed transform set; authority declaration for `subscription_ownership` (single source); mapping version in provenance; migration retiring `tenant_field_mappings`; base version required for product model publish too |
 | **Deferred to the first real attribute** (when discovery or a tenant shows a needed attribute; earliest M9) | Attribute registry, `tenant_attribute_values`, `attribute` mapping entries, merge participant for values, field annotations beyond what M8 needs                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | **Deferred to the eligibility extension** (with the first attribute-based rule)                             | `registered_attribute` condition, evaluator version bump, snapshot inclusion of attributes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| **Deferred to M14**                                                                                         | Stored drafts, per-user editing, roles and four-eyes confirmation, UI flows, masked preview in the UI                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| **Deferred to M15** (stored drafts: M10A2)                                                                  | Stored drafts, per-user editing, roles and four-eyes confirmation, UI flows, masked preview in the UI                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | **Deferred to multi-customer evidence**                                                                     | Several connections of the same kind; field-level precedence for one fact across sources; promotion of any attribute to canonical; mapping suggestions/AI; per-source or per-account coverage                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 
 This keeps M8 focused on the subscription source while laying the
@@ -703,7 +703,7 @@ exists.
 4. Whether a warehouse source counts as a connection (same model) or as a
    bulk import path (CSV-like); assumed the former.
 5. The privacy ADR's rules for `personal` attributes (tech debt #15).
-6. Whether four-eyes publishing is required by the customer before M14.
+6. Whether four-eyes publishing is required by the customer before M15.
 
 ## Confirmation
 

@@ -51,8 +51,8 @@ flowchart TD
   SG["Signals (vendor-neutral) [PROPOSED FOR V1 CANDIDATE]"]
   O["Opportunities [PROPOSED FOR V1 CANDIDATE]"]
   R["Recommendations + decision events [PROPOSED FOR V1 CANDIDATE]"]
-  A["Actions [PROPOSED FOR V1 CANDIDATE, M15]"]
-  OU["ActionOutcomes → learning [PROPOSED FOR V1 CANDIDATE, M16]"]
+  A["Actions [PROPOSED FOR V1 CANDIDATE, records M10I, execution M16]"]
+  OU["ActionOutcomes → learning [PROPOSED FOR V1 CANDIDATE, records M10I, measurement M17]"]
   S --> C --> D --> P --> H --> M --> W --> K
   K --> SG --> O --> R --> A --> OU
   K -.->|"eligibility / whitespace [IMPLEMENTED TODAY]"| O

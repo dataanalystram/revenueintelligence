@@ -52,7 +52,7 @@ A durable record per rejected field or record (`PROPOSED FOR V1 CANDIDATE`). Its
 | Resolution state                 | `open` → `resolved_by_reprocess` (fixed at source / mapping changed and reread succeeded) / `accepted_candidate` (human accepted the normalized candidate) / `ignored` (reason) / `expired` (retention) | always; every transition is a change record with actor                                                                                                                                                                                                                                                                          |
 
 - Rejected observations are tenant-scoped, forced RLS, retention-bounded and visible in the future Data Intelligence
-  Console (M10).
+  Console (data built in M10L; console views in M15).
 - A rejected **record** is protected: no tombstone and no reference retirement (`IMPLEMENTED TODAY` semantics).
 - Accepting a candidate writes through the entity's single writer, with `origin = human`.
 

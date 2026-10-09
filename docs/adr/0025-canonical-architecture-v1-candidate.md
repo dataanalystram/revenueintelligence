@@ -116,13 +116,13 @@ context, value, engagement or commercial concepts (M9E discovery report).
   - `agreement_ref` on lines (an opaque source grouping key, distinct from SourceReference and from canonical
     Contract identity) and line → Contract as 0..1 at a time with history;
   - the Support case specification.
-- **No implementation in M9E.** Each entity is built by the milestone that needs it, with its own plan, ADR revision
-  and tests:
-  - M10 Signal, provenance widening, field intelligence;
-  - M11 Opportunity;
-  - M12–M13 Recommendation;
-  - M15–M16 Action & Outcome;
-  - extension layer and modules when the first tenant needs them.
+- **No implementation in M9E.** Implementation order (updated 2026-10-09 by the roadmap renumbering, owner decision
+  D4):
+  - the canonical structures, including extension layer, modules, provenance and field intelligence, are built
+    in **M10 — Canonical Architecture + Security/Data Governance Implementation** (sub-milestones M10A1–M10M), each
+    with its own plan approval and tests;
+  - the engines that use them come later: signal derivation (M11), opportunity generation (M12), qualification
+    (M13), routing (M14), action execution (M16) and measurement (M17).
 - **Proven guarantees from M7–M9B are unchanged:**
   - product key identity;
   - line identity;
