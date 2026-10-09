@@ -713,6 +713,21 @@ runtime check ran (880/880 unit tests had passed). The same official images were
 Docker Hub mirror (`mirror.gcr.io/library/…`) and tagged locally under their usual names; no code, Dockerfile or
 compose file was changed for this.
 
+**Verification of the governed correction — fresh clone at `1502da2de0588ed10c470dc1d1e917e00faa362a`**
+(`git clone` of `claude/blissful-mendel-urbh4r`, checkout of that SHA, `pnpm install --frozen-lockfile`):
+
+| Gate                                                                                                                    | Result                                                                                      |
+| ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `pnpm verify` (format, lint, typecheck, boundaries, unit, integration)                                                  | exit 0 — unit **880/880** (61 files), integration **464/464** (25 files)                    |
+| `pnpm verify:runtime`                                                                                                   | exit 0 — **163 passed, 0 failed**                                                           |
+| `LIP_DOCKERFILE=… LIP_DOCKER_BUILD_ARGS="--network host --build-context ca=/root/.ccr" pnpm verify:docker` (sandbox CA) | exit 0 — **27 passed, 0 failed**; cleanup verified                                          |
+| Working tree after all gates                                                                                            | clean (`git status --porcelain` empty)                                                      |
+| Mutation proofs of the correction                                                                                       | C23–C31 all killed and restored green; earlier C4–C8, C17 re-run against the change: killed |
+| Live M08 re-run (Key A, sanitized)                                                                                      | 3 passed / 3 skipped (exit 0); reference active → retired by the accepted run; company kept |
+
+Earlier attempts of these gates that failed for infrastructure reasons are recorded above (Docker Hub 429; a missing
+sandbox CA on the first Docker build; one disk-full Docker build). None was an application failure.
+
 ## V12 final decision and incremental-sync assessment
 
 **V12: LIVE CONFIRMED for API-driven subscription-item changes** — quantity change (M01), item removal (M02), price
