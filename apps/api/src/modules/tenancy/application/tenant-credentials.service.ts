@@ -15,6 +15,7 @@ import type { TenantContext } from '../tenant-context';
 import { AuditTrail } from '../security/audit-trail';
 import { assertAuthorizedFor, type AuthorizedContext } from '../security/authorized-context';
 import { SecurityEventsService } from '../security/security-events.service';
+import { AuditFailures } from '../security/audit-failures';
 
 /** Registering a credential reference is integration configuration, also done by source-connection setup. */
 type CredentialConfigContext = AuthorizedContext<'config.integration' | 'config.source.connection'>;
@@ -36,6 +37,7 @@ export class TenantCredentialsService {
   ) {}
 
   /** Registers (idempotently) that `system`/`name` is a credential of this tenant. */
+  @AuditFailures('credential_ref.save', 'credential_ref')
   async register(
     actx: CredentialConfigContext,
     system: IntegrationSystem,
@@ -68,6 +70,7 @@ export class TenantCredentialsService {
     return await this.db.transaction(ctx, (tx) => this.repo.listCredentialRefs(tx));
   }
 
+  @AuditFailures('credential_ref.delete', 'credential_ref')
   async remove(
     actx: CredentialConfigContext,
     system: IntegrationSystem,

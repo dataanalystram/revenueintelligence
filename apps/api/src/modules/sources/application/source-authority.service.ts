@@ -29,6 +29,7 @@ import {
   SourcesRepository,
   type StoredAuthorityVersion,
 } from '../infrastructure/sources.repository';
+import { AuditFailures } from '../../tenancy';
 
 /** Which connection kinds can carry which facts (code-mapped kinds have fixed abilities). */
 const CODE_KIND_FACTS: Record<string, readonly AuthorityFact[]> = {
@@ -55,6 +56,7 @@ export class SourceAuthorityService {
     return this.db.transaction(ctx, (tx) => this.repo.latestAuthority(tx));
   }
 
+  @AuditFailures('authority.publish', 'authority')
   async publish(
     actx: AuthorizedContext<'config.authority.publish'>,
     raw: unknown,

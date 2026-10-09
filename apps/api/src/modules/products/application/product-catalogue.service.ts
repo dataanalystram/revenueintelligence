@@ -17,6 +17,7 @@ import {
   type TenantTransaction,
 } from '../../tenancy';
 import { ProductModelStore, type StoredModelVersion } from '../infrastructure/product-model.store';
+import { AuditFailures, WriteAuthorizer } from '../../tenancy';
 
 export class ProductModelInvalidError extends Error {
   constructor(
@@ -96,6 +97,7 @@ export class ProductCatalogueService {
     private readonly db: TenantDatabase,
     private readonly store: ProductModelStore,
     private readonly audit: AuditTrail,
+    private readonly authorizer: WriteAuthorizer,
   ) {}
 
   /** Dry run: full validation against the latest version, nothing written. */
@@ -127,12 +129,19 @@ export class ProductCatalogueService {
    * immutable version, update the projection, commit. Any failure leaves no
    * version and no projection change.
    */
+  @AuditFailures('product_model.publish', 'product_model')
   async publish(
     actx: AuthorizedContext<'config.product_model.publish'>,
     document: unknown,
     options: PublishOptions,
   ): Promise<PublishedVersion> {
     assertAuthorized(actx, 'config.product_model.publish');
+    // Plan §11: product names and descriptions are stored free text.
+    await this.authorizer.refuseSecretLike(
+      actx,
+      { action: 'product_model.publish', targetKind: 'product_model' },
+      { 'product model': document },
+    );
     return this.db.transaction(actx.tenant, async (tx) => {
       await this.store.lockPublication(tx);
       const now = options.now ?? new Date();

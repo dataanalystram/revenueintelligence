@@ -423,6 +423,16 @@ describe('Chargebee reference adapter (fake Chargebee, CB01–CB36)', () => {
         });
         expect(run.quality).toMatchObject({ references_retired: 1 });
         expect(await companyRow(company)).toMatchObject({ record_state: 'active' });
+        // M10A1: the retirement change record carries the source-sync actor of the run.
+        expect(
+          await c.sql(
+            `SELECT actor_kind, actor_id, actor_assurance FROM tenant_context_changes
+              WHERE tenant_id = $1 AND checkpoint_id = $2 AND changed_fields = '{refState}'`,
+            [f.ctx.tenantId, run.runId],
+          ),
+        ).toEqual([
+          { actor_kind: 'source_sync', actor_id: `run:${run.runId}`, actor_assurance: 'system' },
+        ]);
       });
     });
 

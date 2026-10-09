@@ -28,6 +28,7 @@ import {
   type DeadLetterRow,
 } from '../infrastructure/processing-records.repository';
 import { ContextJobs } from './context-runtime';
+import { AuditFailures } from '../../tenancy';
 
 export interface ReceiptProcessingPlan {
   readonly dryRun: boolean;
@@ -60,6 +61,7 @@ export class ContextOperationsService {
    * (historical M5 receipts included). Finished receipts are skipped unless
    * `includeFinished`, in which case they are reset and replayed (idempotent).
    */
+  @AuditFailures('context.receipts.process', 'context')
   async processReceipts(
     target: TenantContext | AuthorizedContext<'data.sync.run'>,
     filter: {
@@ -150,6 +152,7 @@ export class ContextOperationsService {
   }
 
   /** Replays open dead letters (receipt or subject jobs) and marks them replayed. */
+  @AuditFailures('dead_letter.replay', 'dead_letter')
   async replayDeadLetters(
     target: TenantContext | AuthorizedContext<'processing.dead_letter.resolve'>,
     filter: {
@@ -199,6 +202,7 @@ export class ContextOperationsService {
     return { dryRun: false, matched: letters.length, replayed, unsupported };
   }
 
+  @AuditFailures('dead_letter.discard', 'dead_letter')
   async discardDeadLetters(
     actx: AuthorizedContext<'processing.dead_letter.resolve'>,
     ids: readonly string[],
@@ -231,6 +235,7 @@ export class ContextOperationsService {
   }
 
   /** Re-reads one record from the source and ingests it. */
+  @AuditFailures('context.resync', 'context')
   async resync(
     actx: AuthorizedContext<'data.sync.run'>,
     system: ExternalSystem,

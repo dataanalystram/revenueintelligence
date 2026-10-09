@@ -260,3 +260,19 @@ describe('audit events and chain (S6, S8 unit)', () => {
     expect(verifyAuditChain(kept)).toMatchObject({ ok: false });
   });
 });
+
+describe('secret-like keys (M10A1 review m5)', () => {
+  it('a secret-shaped key is found, and never appears in the reported path', () => {
+    const key = ['sk', 'live', 'k'.repeat(20)].join('_');
+    const hits = findSecretLikeInJson({ settings: { [key]: 'plain' } });
+    expect(hits).toEqual([{ path: '$.settings.[key]', code: 'stripe_key' }]);
+    expect(JSON.stringify(hits)).not.toContain(key);
+  });
+});
+
+describe('audit detail keys mirror the database secret-key rule', () => {
+  it('refuses keys the database CHECK would refuse', () => {
+    expect(AuditDetailsSchema.safeParse({ refreshTokenRotated: true }).success).toBe(false);
+    expect(AuditDetailsSchema.safeParse({ rotated: true }).success).toBe(true);
+  });
+});

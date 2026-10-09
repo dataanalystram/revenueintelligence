@@ -37,6 +37,7 @@ import type { TenantContext } from '../tenant-context';
 import { AuditTrail } from '../security/audit-trail';
 import { assertAuthorized, type AuthorizedContext } from '../security/authorized-context';
 import { WriteAuthorizer } from '../security/write-authorizer.service';
+import { AuditFailures } from '../security/audit-failures';
 
 /**
  * Configuration changes that validate across settings take the per-tenant
@@ -94,6 +95,7 @@ export class TenantConfigService {
    * the qualification mode uses it. Serialised per tenant (see
    * lockTenantConfiguration) so concurrent requests cannot break these rules.
    */
+  @AuditFailures('integration.configure', 'integration')
   async configureIntegration<S extends IntegrationSystem>(
     actx: AuthorizedContext<'config.integration'>,
     system: S,
@@ -156,6 +158,7 @@ export class TenantConfigService {
   }
 
   /** Sets a flow's mode (off / shadow / coexist / active) after checking integration access. */
+  @AuditFailures('flow.set', 'flow')
   async setFlowMode(
     actx: AuthorizedContext<'config.integration'>,
     flow: Flow,
@@ -190,6 +193,7 @@ export class TenantConfigService {
   }
 
   /** Optimistic concurrency: `expectedVersion` must match the stored version. */
+  @AuditFailures('qualification.update', 'policy')
   async updateQualificationConfig(
     actx: AuthorizedContext<'config.policy'>,
     input: QualificationConfigInput,
@@ -246,6 +250,7 @@ export class TenantConfigService {
     return await this.db.transaction(ctx, (tx) => this.repo.listLeadSourceMappings(tx, system));
   }
 
+  @AuditFailures('lead_source_mapping.save', 'lead_source_mapping')
   async saveLeadSourceMapping(
     actx: AuthorizedContext<'config.integration'>,
     input: LeadSourceMappingInput,
@@ -268,6 +273,7 @@ export class TenantConfigService {
     });
   }
 
+  @AuditFailures('lead_source_mapping.delete', 'lead_source_mapping')
   async deleteLeadSourceMapping(
     actx: AuthorizedContext<'config.integration'>,
     id: string,
@@ -295,6 +301,7 @@ export class TenantConfigService {
   }
 
   /** Creates the policy when `expectedVersion` is omitted; otherwise replaces that version. */
+  @AuditFailures('policy.save', 'policy')
   async savePolicy<K extends PolicyKind>(
     actx: AuthorizedContext<'config.policy'>,
     kind: K,

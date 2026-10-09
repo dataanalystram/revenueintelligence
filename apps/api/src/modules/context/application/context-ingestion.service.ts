@@ -186,10 +186,17 @@ export class ContextIngestionService {
    * records the run. A later observation reactivates the reference.
    */
   async retireAbsentWithin(
+    actx: AuthorizedContext<'canonical.source_sync'>,
     tx: TenantTransaction,
     input: RetireAbsentInput,
     meta: IngestMeta,
   ): Promise<number> {
+    assertAuthorized(actx, 'canonical.source_sync');
+    if (actx.tenant.tenantId !== tx.tenantId) {
+      throw new Error('retirement tenant does not match the transaction tenant');
+    }
+    // M10A1: the retirement change records carry the authorized actor.
+    meta = { ...meta, actor: actx.actor };
     let retired = 0;
     const candidates = await this.store.activeCompanyRefsOf(
       tx,

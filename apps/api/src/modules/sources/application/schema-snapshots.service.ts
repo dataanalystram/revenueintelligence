@@ -18,6 +18,7 @@ import {
 import { SourcesError } from '../errors';
 import { SourcesRepository } from '../infrastructure/sources.repository';
 import { SourceConnectionsService } from './source-connections.service';
+import { AuditFailures } from '../../tenancy';
 
 export interface CapturedSnapshot {
   readonly hash: string;
@@ -37,6 +38,7 @@ export class SchemaSnapshotsService {
   ) {}
 
   /** Reads the source's metadata (never records) and stores it if new. */
+  @AuditFailures('source_schema.capture', 'source_connection')
   async capture(
     actx: AuthorizedContext<'config.source.schema'>,
     connectionId: string,

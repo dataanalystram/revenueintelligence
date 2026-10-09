@@ -63,8 +63,17 @@ const SERVICES: readonly ServiceSpec[] = [
     file: 'hubspot/application/hubspot-oauth.service.ts',
     className: 'HubSpotOAuthService',
     writes: ['installUrl', 'expireStoredAccessToken'],
-    reads: ['accessToken', 'invalidate', 'refreshOutcomes', 'clearCache'],
-    authorizeInside: ['completeInstall'],
+    reads: ['invalidate', 'refreshOutcomes', 'clearCache'],
+    // accessToken may refresh (config.oauth.grant, system actor), completeInstall stores the grant.
+    authorizeInside: ['completeInstall', 'accessToken'],
+  },
+  {
+    file: 'hubspot/application/hubspot-webhook.service.ts',
+    className: 'HubSpotWebhookService',
+    writes: [],
+    reads: [],
+    // processing.receipt for the intake's system actor, per tenant batch.
+    authorizeInside: ['receive'],
   },
   {
     file: 'sources/application/source-connections.service.ts',
@@ -145,9 +154,8 @@ const SERVICES: readonly ServiceSpec[] = [
   {
     file: 'context/application/context-ingestion.service.ts',
     className: 'ContextIngestionService',
-    writes: ['ingest', 'ingestMerge'],
-    // Runs inside the caller's (authorized) transaction only.
-    reads: ['retireAbsentWithin'],
+    writes: ['ingest', 'ingestMerge', 'retireAbsentWithin'],
+    reads: [],
   },
   {
     file: 'context/application/context-operations.service.ts',

@@ -211,6 +211,31 @@ describe('HubSpot webhook intake (API process)', () => {
       expect(res.headers['cache-control']).toBe('no-store');
       const rows = await receipts(ok);
       expect(rows).toHaveLength(3);
+      // M10A1: one audit event per tenant batch, by the intake's system actor (counts only).
+      const audit = await withAdmin(
+        infra.adminUrl,
+        async (db) =>
+          (
+            await db.query<{
+              actor_kind: string;
+              actor_id: string;
+              capability: string;
+              details: unknown;
+            }>(
+              `SELECT actor_kind, actor_id, capability, details FROM tenant_audit_events
+              WHERE tenant_id = $1 AND action = 'webhook.receipts.store' ORDER BY seq DESC LIMIT 1`,
+              [ok.tenantId],
+            )
+          ).rows,
+      );
+      expect(audit).toEqual([
+        {
+          actor_kind: 'system',
+          actor_id: 'api:webhook-intake',
+          capability: 'processing.receipt',
+          details: { events: 3, stored: 3, duplicates: 0 },
+        },
+      ]);
       expect(rows.map((r) => [r.subscription_type, r.object_type_id])).toEqual([
         ['object.creation', '0-1'],
         ['object.propertyChange', '0-2'],

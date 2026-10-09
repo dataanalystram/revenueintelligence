@@ -31,6 +31,7 @@ import {
 } from '../errors';
 import { ProfilesRepository } from '../infrastructure/profiles.repository';
 import { SourcesRepository, type StoredMappingVersion } from '../infrastructure/sources.repository';
+import { AuditFailures } from '../../tenancy';
 
 export interface PublishMappingOptions {
   /** The version the document was edited from: required (0 for the first). */
@@ -107,6 +108,7 @@ export class SourceMappingsService {
    * stale base is refused (`concurrent_publish`), so an edit made from version
    * N can never silently replace a version N+1 published meanwhile.
    */
+  @AuditFailures('mapping.publish', 'source_connection')
   async publish(
     actx: AuthorizedContext<'config.mapping.publish'>,
     connectionId: string,

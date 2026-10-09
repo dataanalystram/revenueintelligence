@@ -535,6 +535,27 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
         await oauth().accessToken(t, '3003');
         const newRefresh = (await grants().get(t, 'hubspot'))!.refreshToken.reveal();
         expect(newRefresh).not.toBe(oldRefresh);
+        // M10A1: the refresh is authorized for the system actor and audited (facts only).
+        const audit = await withAdmin(
+          infra.adminUrl,
+          async (db) =>
+            (
+              await db.query<{ actor_kind: string; actor_id: string; details: unknown; d: string }>(
+                `SELECT actor_kind, actor_id, details, row_to_json(e)::text AS d FROM tenant_audit_events e
+                WHERE tenant_id = $1 AND action = 'oauth.grant.refresh'`,
+                [t.tenantId],
+              )
+            ).rows,
+        );
+        expect(audit.map(({ d: _d, ...r }) => r)).toEqual([
+          {
+            actor_kind: 'system',
+            actor_id: 'oauth-refresh',
+            details: { rotated: true },
+          },
+        ]);
+        expect(audit[0]!.d).not.toContain(newRefresh);
+        expect(audit[0]!.d).not.toContain(oldRefresh);
         await expireAccessToken(t);
         await expect(oauth().accessToken(t, '3003')).resolves.toBeInstanceOf(Secret); // the new one works
       } finally {

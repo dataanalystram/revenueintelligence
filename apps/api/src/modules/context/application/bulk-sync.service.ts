@@ -34,6 +34,7 @@ import {
 import { ContextIngestionService } from './context-ingestion.service';
 import { ContextJobs, ContextReaders } from './context-runtime';
 import { companyLinks, companyObservation, personObservation } from './observe';
+import { AuditFailures } from '../../tenancy';
 
 const PAGE_TX_TIMEOUT_MS = 90_000;
 export const CONTEXT_KINDS: readonly ContextKind[] = ['company', 'person'];
@@ -73,6 +74,7 @@ export class BulkSyncService {
   ) {}
 
   /** Starts (or resumes) a backfill per kind; one active run per kind. */
+  @AuditFailures('context.backfill.start', 'context')
   async startBackfill(
     actx: AuthorizedContext<'data.sync.run'>,
     kinds: readonly ContextKind[],
@@ -112,6 +114,7 @@ export class BulkSyncService {
    * Starts a reconciliation from the last watermark (source time) minus the
    * lookback. Needs a baseline: a completed reconciliation or backfill.
    */
+  @AuditFailures('context.reconcile.start', 'context')
   async startReconcile(
     actx: AuthorizedContext<'data.sync.run'>,
     kind: ContextKind,
@@ -179,6 +182,7 @@ export class BulkSyncService {
   }
 
   /** Re-opens a failed run at its stored cursor (operator command). */
+  @AuditFailures('context.backfill.start', 'context')
   async resume(
     actx: AuthorizedContext<'data.sync.run'>,
     checkpointId: string,

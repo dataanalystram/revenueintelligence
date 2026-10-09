@@ -1,3 +1,4 @@
+import { sourceSyncActor } from '../../src/modules/domain';
 import { randomUUID } from 'node:crypto';
 import type { MappingDocument } from '../../src/modules/domain';
 import {
@@ -274,5 +275,9 @@ export async function runSync(
     enqueue: false,
     correlationId: randomUUID(),
   });
-  return s.sync.execute(await authz(f.ctx, 'canonical.source_sync'), started.runId);
+  // As the worker does (SourceSyncProcessor): the run's own source-sync actor.
+  return s.sync.execute(
+    await authz(f.ctx, 'canonical.source_sync', sourceSyncActor(`run:${started.runId}`)),
+    started.runId,
+  );
 }

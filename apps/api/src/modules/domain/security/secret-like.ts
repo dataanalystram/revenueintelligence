@@ -58,7 +58,15 @@ export function findSecretLikeInJson(
     return value.flatMap((v, i) => findSecretLikeInJson(v, `${path}[${i}]`));
   }
   if (value !== null && typeof value === 'object') {
-    return Object.entries(value).flatMap(([k, v]) => findSecretLikeInJson(v, `${path}.${k}`));
+    return Object.entries(value).flatMap(([k, v]) => {
+      // Keys are scanned too; a secret-shaped key never appears in a path.
+      const keyCode = findSecretLike(k);
+      const segment = keyCode === undefined ? `${path}.${k}` : `${path}.[key]`;
+      return [
+        ...(keyCode === undefined ? [] : [{ path: segment, code: keyCode }]),
+        ...findSecretLikeInJson(v, segment),
+      ];
+    });
   }
   return [];
 }

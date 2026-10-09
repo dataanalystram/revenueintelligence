@@ -12,6 +12,7 @@ import {
   PurgeRefusedError,
   type PurgeResult,
 } from '../infrastructure/profile-purge.store';
+import { AuditFailures } from '../../tenancy';
 
 /**
  * Privileged profile retention (M9A §2.4, D3: keep the last N per connection,
@@ -28,6 +29,7 @@ export class ProfilePurgeService {
     private readonly audit: AuditTrail,
   ) {}
 
+  @AuditFailures('profile.purge', 'source_connection')
   async purge(
     target: TenantContext | AuthorizedContext<'data.purge'>,
     connectionId: string,

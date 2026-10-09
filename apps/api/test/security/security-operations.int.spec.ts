@@ -362,6 +362,37 @@ describe('M10A1 security operations', () => {
       }
     });
 
+    it('a broken chain is never purged into an anchor (verified first)', async () => {
+      const t = await provisionTenant(h, 'purgebroken');
+      await withAdmin(infra.adminUrl, async (db) => {
+        await db.query('BEGIN');
+        await db.query('ALTER TABLE tenant_audit_events DISABLE TRIGGER USER');
+        await db.query(`UPDATE tenant_audit_events SET actor_id = 'forged' WHERE tenant_id = $1`, [
+          t.tenantId,
+        ]);
+        await db.query('ALTER TABLE tenant_audit_events ENABLE TRIGGER USER');
+        await db.query('COMMIT');
+      });
+      const before = await auditRows(t);
+      await expect(
+        ops().purge(await authz(t, 'data.purge'), {
+          execute: true,
+          unapprovedExecutionForTests: true,
+          now: later(),
+          ownerDatabaseUrl: infra.adminUrl,
+        }),
+      ).rejects.toThrow(/does not verify/);
+      // Nothing deleted, no anchor; the refused attempt itself is recorded as failed.
+      const after = await auditRows(t);
+      expect(after.slice(0, before.length)).toEqual(before);
+      expect(after.slice(before.length).map((r) => [r.action, r.outcome])).toEqual([
+        ['security.audit.purge', 'failed'],
+      ]);
+      expect(
+        await admin('SELECT 1 FROM tenant_audit_anchors WHERE tenant_id = $1', [t.tenantId]),
+      ).toEqual([]);
+    });
+
     it('the execution path (test override): owner only, anchors the chain, audits itself, chain verifies', async () => {
       const t = await provisionTenant(h, 'purgex');
       const trail = h.app.get(AuditTrail, { strict: false });
@@ -371,8 +402,7 @@ describe('M10A1 security operations', () => {
           trail.record(tx, actx, { action: 'policy.save', details: { i } }),
         );
       }
-      const before = await auditRows(t);
-      // The app role's credentials are refused.
+      // The app role's credentials are refused (and the refused attempt is recorded as failed).
       await expect(
         ops().purge(await authz(t, 'data.purge'), {
           execute: true,
@@ -381,6 +411,8 @@ describe('M10A1 security operations', () => {
           ownerDatabaseUrl: infra.config.databaseUrl,
         }),
       ).rejects.toThrow(/schema owner credentials/);
+      const before = await auditRows(t);
+      expect(before.at(-1)).toMatchObject({ action: 'security.audit.purge', outcome: 'failed' });
       const result = await ops().purge(await authz(t, 'data.purge'), {
         execute: true,
         unapprovedExecutionForTests: true,

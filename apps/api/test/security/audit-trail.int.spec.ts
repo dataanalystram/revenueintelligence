@@ -390,4 +390,73 @@ describe('M10A1 audit trail behaviour', () => {
       await expect(check.run()).resolves.toEqual([]);
     });
   });
+
+  describe('review fixes: failed events (plan §6) and secret-like refusal on product models and provisioning', () => {
+    it('an authorized write that fails after authorization leaves a failed event (reason code only)', async () => {
+      const t = await provisionTenant(h, 'failed');
+      await h.config.savePolicy(await authz(t, 'config.policy'), 'routing', { placeholder: true });
+      const before = await events(t);
+      // A stale expected version: the business transaction rolls back.
+      await expect(
+        h.config.savePolicy(await authz(t, 'config.policy'), 'routing', { placeholder: true }, 99),
+      ).rejects.toThrow();
+      const added = (await events(t)).slice(before.length);
+      expect(added).toEqual([
+        expect.objectContaining({
+          action: 'policy.save',
+          outcome: 'failed',
+          reason_code: expect.stringMatching(
+            /^(stale_base_version|validation_failed|operation_failed)$/,
+          ),
+          details: {},
+        }),
+      ]);
+      // A refused (denied) write is not also recorded as failed.
+      const beforeDeny = (await events(t)).length;
+      await expect(
+        h.config.savePolicy(await authz(t, 'config.policy'), 'routing', {
+          placeholder: true,
+          notes: ['sk', 'live', 'z'.repeat(24)].join('_'),
+        }),
+      ).rejects.toBeInstanceOf(SecretLikeValueError);
+      expect((await events(t)).slice(beforeDeny).map((e) => e.outcome)).toEqual(['denied']);
+    });
+
+    it('a product model carrying a secret-like value is refused and audited as denied', async () => {
+      const t = await provisionTenant(h, 'prodsecret');
+      const shaped = ['sk', 'live', 'q'.repeat(24)].join('_');
+      await expect(
+        h.catalogue.publish(
+          await authz(t, 'config.product_model.publish'),
+          { products: [{ key: 'core', name: 'Core', description: `token ${shaped}` }] },
+          { basedOnVersion: 0 },
+        ),
+      ).rejects.toBeInstanceOf(SecretLikeValueError);
+      expect((await events(t)).at(-1)).toMatchObject({
+        action: 'product_model.publish',
+        outcome: 'denied',
+        reason_code: 'secret_like_value',
+      });
+      const stored = JSON.stringify(
+        await admin('SELECT * FROM tenant_products WHERE tenant_id = $1', [t.tenantId]),
+      );
+      expect(stored).not.toContain(shaped);
+    });
+
+    it('provisioning with a secret-like tenant name or template value is refused before anything is created', async () => {
+      const shaped = ['sk', 'live', 'p'.repeat(24)].join('_');
+      const emitted = securityEvents();
+      await expect(
+        h.registry.provision(platformAuthz('config.tenant.provision'), {
+          slug: 'secretname',
+          name: `Name ${shaped}`,
+        }),
+      ).rejects.toBeInstanceOf(SecretLikeValueError);
+      expect(await admin(`SELECT 1 FROM tenants WHERE slug = 'secretname'`)).toEqual([]);
+      expect(emitted).toEqual([
+        expect.objectContaining({ event: 'secret_like_refused', reasonCode: 'secret_like_value' }),
+      ]);
+      expect(JSON.stringify(emitted)).not.toContain(shaped);
+    });
+  });
 });

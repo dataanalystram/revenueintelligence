@@ -26,6 +26,7 @@ import {
 import type { TenantContext } from '../tenant-context';
 import {
   assertAuthorizedFor,
+  assertPlatformAuthorized,
   type AuthorizedContext,
   type PlatformAuthorization,
 } from './authorized-context';
@@ -65,12 +66,16 @@ export const CHAIN_LOCK_SCOPE = 'audit-chain';
 export class AuditTrail {
   constructor(private readonly db: TenantDatabase) {}
 
-  /** An allowed (or completed) privileged operation, inside its own transaction. */
+  /**
+   * An allowed, completed or (for a multi-transaction run whose failure is itself
+   * committed) failed operation, inside the transaction of the change it describes.
+   */
   async record(
     tx: TenantTransaction,
     actx: AuthorizedContext,
     entry: AuditEntry,
-    outcome: Extract<AuditOutcome, 'allowed' | 'completed'> = 'allowed',
+    outcome: Extract<AuditOutcome, 'allowed' | 'completed' | 'failed'> = 'allowed',
+    reason?: AuditReasonCode,
   ): Promise<void> {
     assertAuthorizedFor(actx, [actx.capability]);
     if (actx.tenant.tenantId !== tx.tenantId) {
@@ -83,7 +88,7 @@ export class AuditTrail {
       capability: actx.capability,
       action: entry.action,
       outcome,
-      reasonCode: null,
+      reasonCode: outcome === 'failed' ? (reason ?? 'operation_failed') : null,
       targetKind: entry.targetKind ?? null,
       targetRef: entry.targetRef ?? null,
       correlationId: actx.correlationId,
@@ -98,6 +103,7 @@ export class AuditTrail {
     auth: PlatformAuthorization,
     entry: AuditEntry,
   ): Promise<void> {
+    assertPlatformAuthorized(auth, auth.capability);
     await this.append(tx, {
       actorKind: auth.actor.kind,
       actorId: auth.actor.id,

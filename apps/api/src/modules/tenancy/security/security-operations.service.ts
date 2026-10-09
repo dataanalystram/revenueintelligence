@@ -14,6 +14,7 @@ import type { TenantContext } from '../tenant-context';
 import { AuditTrail, CHAIN_LOCK_SCOPE, chainedAuditEvent } from './audit-trail';
 import { assertAuthorized, AuthorizedContext } from './authorized-context';
 import { SecurityEventsService } from './security-events.service';
+import { AuditFailures } from './audit-failures';
 
 /** Executing an audit purge is refused until the retention policy is approved (Q3). */
 export class AuditPurgeDisabledError extends TenancyError {
@@ -25,14 +26,22 @@ export class AuditPurgeDisabledError extends TenancyError {
   }
 }
 
+const PURGE_REFUSALS = {
+  purge_requires_owner_credentials:
+    'The audit purge runs only with the schema owner credentials (MIGRATION_DATABASE_URL)',
+  audit_purge_test_override_refused: 'The test-only audit purge override is refused in production',
+  audit_chain_broken:
+    'The audit chain does not verify: purging would turn a forged prefix into the trusted anchor',
+} as const;
+
 export class AuditPurgeRefusedError extends TenancyError {
-  constructor(code: 'purge_requires_owner_credentials' | 'audit_purge_test_override_refused') {
-    super(
-      code,
-      code === 'purge_requires_owner_credentials'
-        ? 'The audit purge runs only with the schema owner credentials (MIGRATION_DATABASE_URL)'
-        : 'The test-only audit purge override is refused in production',
-    );
+  constructor(
+    code:
+      | 'purge_requires_owner_credentials'
+      | 'audit_purge_test_override_refused'
+      | 'audit_chain_broken',
+  ) {
+    super(code, PURGE_REFUSALS[code]);
   }
 }
 
@@ -78,6 +87,7 @@ export class SecurityOperationsService {
    * authorized for `security.key.rotate`): re-encrypts under the current key and
    * audits the counts in the same transaction.
    */
+  @AuditFailures('security.rekey', 'key')
   async rekey(
     target: TenantContext | AuthorizedContext<'security.key.rotate'>,
     options: { execute: boolean },
@@ -160,6 +170,7 @@ export class SecurityOperationsService {
    * purged event as the chain anchor and appends one audit event, all in one
    * transaction under the chain lock.
    */
+  @AuditFailures('security.audit.purge', 'audit')
   async purge(
     target: TenantContext | AuthorizedContext<'data.purge'>,
     options: {
@@ -218,6 +229,10 @@ export class SecurityOperationsService {
     }
     if (!options.ownerDatabaseUrl)
       throw new AuditPurgeRefusedError('purge_requires_owner_credentials');
+    // A broken chain is evidence: never purge it into an anchor (verify first).
+    if (!(await this.audit.verify(actx.tenant)).ok) {
+      throw new AuditPurgeRefusedError('audit_chain_broken');
+    }
     return this.executePurge(actx, options.ownerDatabaseUrl, cutoff, retentionDays);
   }
 

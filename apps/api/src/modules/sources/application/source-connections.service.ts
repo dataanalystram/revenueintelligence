@@ -21,6 +21,7 @@ import {
 import { ConnectionNotFoundError, SourcesError } from '../errors';
 import { SourceAdapterRegistry } from '../source-adapters';
 import { SourcesRepository, type SourceConnection } from '../infrastructure/sources.repository';
+import { AuditFailures } from '../../tenancy';
 
 /**
  * Platform-level synchronisation settings kept with the connection (not the
@@ -93,6 +94,7 @@ export class SourceConnectionsService {
    * configuration is validated by the adapter; credentials are names only.
    * A new connection starts disabled.
    */
+  @AuditFailures('source_connection.configure', 'source_connection')
   async configure(
     actx: AuthorizedContext<'config.source.connection'>,
     input: ConfigureConnectionInput,
@@ -174,6 +176,7 @@ export class SourceConnectionsService {
     });
   }
 
+  @AuditFailures('source_connection.status', 'source_connection')
   async setStatus(
     actx: AuthorizedContext<'config.source.connection'>,
     id: string,
@@ -194,6 +197,7 @@ export class SourceConnectionsService {
   }
 
   /** Runs the adapter's connection test and records the outcome code (no payload). */
+  @AuditFailures('source_connection.test', 'source_connection')
   async test(
     actx: AuthorizedContext<'config.source.connection'>,
     id: string,

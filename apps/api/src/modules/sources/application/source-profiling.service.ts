@@ -43,6 +43,7 @@ import {
 import { SourcesRepository } from '../infrastructure/sources.repository';
 import { SOURCE_PROFILE_JOB, SOURCES_QUEUE, sourceProfileJobId } from '../jobs';
 import { SourceConnectionsService } from './source-connections.service';
+import { AuditFailures } from '../../tenancy';
 
 const MAX_PAGES = 100_000;
 const DEFAULT_PAGE_SIZE = 200;
@@ -91,6 +92,7 @@ export class SourceProfilingService {
   ) {}
 
   /** Validates a request (dry run) or creates the run and queues `source.profile`. */
+  @AuditFailures('profile.start', 'profile_run')
   async request(
     target: TenantContext | AuthorizedContext<'data.profile.run'>,
     connectionId: string,
@@ -279,7 +281,8 @@ export class SourceProfilingService {
               targetRef: run.id,
               details: { status: 'failed', code },
             },
-            'completed',
+            'failed',
+            'operation_failed',
           );
         }
       });
@@ -293,6 +296,7 @@ export class SourceProfilingService {
   }
 
   /** Marks a run failed after its job exhausted its retries (dead-lettered). */
+  @AuditFailures('profile.abandon', 'profile_run')
   async abandon(
     actx: AuthorizedContext<'data.profile.run'>,
     runId: string,

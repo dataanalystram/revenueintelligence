@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import type { StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CONNECTOR_KIND_CATALOGUE } from '../../src/modules/domain/connector-kinds';
+import { AUDIT_ACTIONS, CAPABILITIES } from '../../src/modules/domain/security';
 import { authorityContentHash } from '../../src/modules/domain/source-authority';
 import {
   CLASSIFICATION_MANIFEST,
@@ -432,6 +433,21 @@ describe('database migrations and schema guard', () => {
         ),
       );
       expect(tables.rows[0]!.n).toBe(0);
+    });
+
+    it('M10A1: the audit capability and action CHECKs equal the code catalogues (closed sets)', async () => {
+      const { rows } = await withAdmin(cleanUrl, (db) =>
+        db.query<{ name: string; def: string }>(
+          `SELECT conname AS name, pg_get_constraintdef(oid) AS def FROM pg_constraint
+            WHERE conname IN ('tenant_audit_events_capability_valid', 'tenant_audit_events_action_valid')`,
+        ),
+      );
+      const values = (name: string) =>
+        [...rows.find((r) => r.name === name)!.def.matchAll(/'([a-z_.]+)'::text/g)]
+          .map((m) => m[1]!)
+          .sort();
+      expect(values('tenant_audit_events_capability_valid')).toEqual([...CAPABILITIES].sort());
+      expect(values('tenant_audit_events_action_valid')).toEqual([...AUDIT_ACTIONS].sort());
     });
 
     it('M10A1: SECURITY DEFINER functions are exactly the allow-list', async () => {

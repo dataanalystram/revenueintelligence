@@ -1,3 +1,4 @@
+import { systemActor } from '../../domain';
 import { randomUUID } from 'node:crypto';
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { RECEIPTS_STORED_LISTENER, type ReceiptsStoredListener } from '../../crm';
@@ -8,6 +9,8 @@ import {
   TenantConfigService,
   isEnabled,
   SecurityEventsService,
+  AuditTrail,
+  WriteAuthorizer,
   type TenantContext,
 } from '../../tenancy';
 import { HUBSPOT_CONFIG, type HubSpotConfig } from '../hubspot.config';
@@ -69,6 +72,8 @@ export class HubSpotWebhookService {
     private readonly router: OAuthAccountRouter,
     private readonly tenantConfig: TenantConfigService,
     private readonly receipts: WebhookReceiptRepository,
+    private readonly authorizer: WriteAuthorizer,
+    private readonly audit: AuditTrail,
     /** M6: queues new receipts for processing; absent in contexts that only record. */
     @Optional()
     @Inject(RECEIPTS_STORED_LISTENER)
@@ -145,7 +150,26 @@ export class HubSpotWebhookService {
         });
         continue;
       }
-      const recorded = await this.receipts.record(target.ctx, events, new Date(now), correlationId);
+      // M10A1 (plan §4, §5): the intake's system actor is authorized for
+      // processing.receipt; one audit event per tenant batch, in the same transaction.
+      const actx = await this.authorizer.authorize(
+        target.ctx,
+        systemActor('api:webhook-intake'),
+        'processing.receipt',
+        { action: 'webhook.receipts.store', targetKind: 'context', correlationId },
+      );
+      const recorded = await this.receipts.record(
+        target.ctx,
+        events,
+        new Date(now),
+        correlationId,
+        (tx, r) =>
+          this.audit.record(tx, actx, {
+            action: 'webhook.receipts.store',
+            targetKind: 'context',
+            details: { events: events.length, stored: r.stored, duplicates: r.duplicates },
+          }),
+      );
       if (recorded.storedKeys.length > 0 && this.listener) {
         // Best effort after commit: a failure leaves the receipts pending for the sweep.
         await this.listener

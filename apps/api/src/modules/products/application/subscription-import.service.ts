@@ -15,6 +15,7 @@ import {
   SubscriptionIngestionService,
   type SubscriptionIngestOutcome,
 } from './subscription-ingestion.service';
+import { AuditFailures } from '../../tenancy';
 
 export const CSV_IMPORT_ADAPTER = 'csv_import';
 export const CSV_IMPORT_ADAPTER_VERSION = 'm7.0';
@@ -83,6 +84,7 @@ export class SubscriptionImportService {
    * A dry run needs only a tenant context; executing writes subscription lines
    * and needs an operator authorized for `canonical.import` (M10A1).
    */
+  @AuditFailures('subscription_import.run', 'subscription_import')
   async import(
     target: TenantContext | AuthorizedContext<'canonical.import'>,
     file: Uint8Array,
@@ -118,6 +120,7 @@ export class SubscriptionImportService {
   }
 
   /** Marks a run that was killed midway as cancelled (coverage stays as it was). */
+  @AuditFailures('subscription_import.cancel', 'subscription_import')
   async cancel(
     actx: AuthorizedContext<'canonical.import'>,
     checkpointId: string,

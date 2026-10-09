@@ -33,6 +33,7 @@ import {
 import { SubscriptionRunsStore } from '../infrastructure/subscription-runs.store';
 import { SubscriptionQueries } from '../infrastructure/subscription.queries';
 import { NoProductModelError, ProductCatalogueService } from './product-catalogue.service';
+import { AuditFailures } from '../../tenancy';
 
 export class UnknownCompanyError extends Error {
   constructor(readonly companyId: string) {
@@ -120,6 +121,7 @@ export class EligibilityService {
    * an operator authorized for `data.eligibility.record` (M10A1); a plain
    * evaluation needs only a tenant context.
    */
+  @AuditFailures('eligibility.record', 'eligibility_snapshot')
   async evaluate(
     target: TenantContext | AuthorizedContext<'data.eligibility.record'>,
     companyId: string,

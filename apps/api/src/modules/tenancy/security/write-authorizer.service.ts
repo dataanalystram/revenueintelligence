@@ -166,6 +166,12 @@ export class WriteAuthorizer {
       '|',
     );
     const now = Date.now();
+    // Bounded: entries older than the window carry nothing worth keeping.
+    if (this.recentDenials.size > 1000) {
+      for (const [k, v] of this.recentDenials) {
+        if (now - v.at >= DENIAL_COALESCE_MS) this.recentDenials.delete(k);
+      }
+    }
     const recent = this.recentDenials.get(key);
     if (recent && now - recent.at < DENIAL_COALESCE_MS) {
       recent.suppressed += 1;

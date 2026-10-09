@@ -1,6 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { z } from 'zod';
-import type { TenantId } from '../../domain';
+import { findSecretLikeInJson, SecretLikeValueError, type TenantId } from '../../domain';
 import { FlowSchema } from '../config/flows';
 import { IntegrationSystemSchema } from '../config/integrations';
 import {
@@ -21,6 +21,7 @@ import { PrismaTenantRegistryRepository } from '../infrastructure/prisma-tenant-
 import { TenantDatabase } from '../infrastructure/tenant-database';
 import { TenantSlugSchema, type Tenant, type TenantStatus } from '../tenant';
 import { AuditTrail } from '../security/audit-trail';
+import { SecurityEventsService } from '../security/security-events.service';
 import {
   assertPlatformAuthorized,
   type PlatformAuthorization,
@@ -54,6 +55,7 @@ export class TenantRegistryService {
     private readonly registry: PrismaTenantRegistryRepository,
     private readonly config: PrismaTenantConfigRepository,
     private readonly audit: AuditTrail,
+    @Optional() private readonly events?: SecurityEventsService,
   ) {}
 
   /**
@@ -74,6 +76,21 @@ export class TenantRegistryService {
       );
     }
     const { slug, name, template } = parsed.data;
+    // Plan §11: the tenant name and the template documents are stored free text and
+    // JSON. There is no tenant trail yet: a security event only, then the refusal.
+    const hit = findSecretLikeInJson({ name, template: template ?? null })[0];
+    if (hit) {
+      this.events?.emit({
+        event: 'secret_like_refused',
+        outcome: 'refused',
+        actorKind: auth.actor.kind,
+        capability: auth.capability,
+        reasonCode: 'secret_like_value',
+        correlationId: auth.correlationId,
+        coordinates: { field: `provisioning ${hit.path}`, pattern: hit.code },
+      });
+      throw new SecretLikeValueError(`provisioning ${hit.path}`, hit.code);
+    }
     try {
       const { tenant } = await this.db.provision({ slug, name }, async (tx) => {
         for (const system of IntegrationSystemSchema.options) {

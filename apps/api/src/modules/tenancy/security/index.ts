@@ -30,3 +30,4 @@ export {
   type TablePrivilege,
 } from './privilege-manifest';
 export { PrivilegeManifestCheck } from '../infrastructure/privilege-check';
+export { AuditFailures, failureReason } from './audit-failures';

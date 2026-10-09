@@ -23,6 +23,8 @@ export const AUDIT_ACTIONS = [
   'oauth.install_state.issue',
   'oauth.grant.store',
   'oauth.grant.delete',
+  'oauth.grant.refresh',
+  'webhook.receipts.store',
   'product_model.publish',
   'subscription_import.run',
   'subscription_import.cancel',
@@ -99,6 +101,12 @@ export type AuditTargetKind = (typeof AUDIT_TARGET_KINDS)[number];
 
 /** Details: a flat object of identifiers, codes, counts, booleans and hashes. */
 const DETAIL_KEY = /^[a-z][a-zA-Z0-9_]{0,63}$/;
+/** Mirrors the database's app_jsonb_has_secret_like_key (M8): such keys are refused early. */
+const SECRET_LIKE_KEY =
+  /(secret|password|passwd|passphrase|token|apikey|privatekey|accesskey|credential|bearer|authorization|cookie)/;
+export function isSecretLikeKey(key: string): boolean {
+  return SECRET_LIKE_KEY.test(key.toLowerCase().replace(/[^a-z0-9]/g, ''));
+}
 const DETAIL_STRING = /^[A-Za-z0-9_.:@/+=-]{0,200}$/;
 export const AUDIT_DETAILS_MAX_BYTES = 4096;
 
@@ -114,6 +122,9 @@ export const AuditDetailsSchema = z
     ]),
   )
   .superRefine((details, ctx) => {
+    for (const key of Object.keys(details)) {
+      if (isSecretLikeKey(key)) ctx.addIssue({ code: 'custom', message: 'secret-like detail key' });
+    }
     if (new TextEncoder().encode(JSON.stringify(details)).length > AUDIT_DETAILS_MAX_BYTES) {
       ctx.addIssue({ code: 'custom', message: 'audit details exceed 4 KB' });
     }

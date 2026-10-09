@@ -67,6 +67,7 @@ import {
 } from '../infrastructure/sources.repository';
 import { SOURCE_SYNC_JOB, SOURCES_QUEUE, sourceSyncJobId } from '../jobs';
 import { SourceConnectionsService } from './source-connections.service';
+import { AuditFailures } from '../../tenancy';
 
 export type SyncMode = 'full' | 'incremental';
 
@@ -230,6 +231,7 @@ export class SourceSyncService {
    * Starts a run (pre-flight checks first) and, unless `enqueue` is false,
    * queues it for the worker. A connection has at most one active run.
    */
+  @AuditFailures('sync.start', 'sync_run')
   async start(
     actx: AuthorizedContext<'data.sync.run'>,
     connectionId: string,
@@ -420,7 +422,8 @@ export class SourceSyncService {
             targetRef: runId,
             details: { status: 'failed', code },
           },
-          'completed',
+          'failed',
+          'operation_failed',
         );
       });
       this.metrics?.increment('lip_source_runs', {
@@ -435,6 +438,7 @@ export class SourceSyncService {
   }
 
   /** Marks a run failed (dead-lettered job); nothing else changes. */
+  @AuditFailures('sync.abandon', 'sync_run')
   async abandon(
     actx: AuthorizedContext<'data.sync.run'>,
     runId: string,
@@ -622,6 +626,7 @@ export class SourceSyncService {
       retired = 0;
       for (const [object, r] of retire) {
         retired += await this.context.retireAbsentWithin(
+          rc.actx,
           tx,
           {
             system: rc.kind,
@@ -1565,6 +1570,7 @@ export class SourceSyncService {
       checkpointId: rc.run.id,
       adapterVersion: rc.connector.capabilities().adapterVersion,
       mappingVersion: rc.mappingVersion,
+      actor: rc.actx.actor,
     };
   }
 }
