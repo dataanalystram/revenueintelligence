@@ -30,7 +30,8 @@ key identifier, so a key could not be rotated without downtime.
    chain (`sha256(prev_hash ‖ canonical payload)`), appended under a per-tenant advisory lock in the same
    READ COMMITTED transaction as the change; unique `(tenant_id, seq)`, `(tenant_id, prev_hash)` and
    `(tenant_id, hash)` make a fork impossible even if the lock were bypassed (Q2). Denials are written in their
-   own transaction (coalesced within a minute); an audit failure fails the operation (fail closed).
+   own transaction (coalesced within a minute); a failure after authorization is written as `failed` in its
+   own transaction (reason code only); an audit failure fails the operation (fail closed).
    `security audit-verify` recomputes the chain.
 4. **Append-only tables.** `lip_app` holds INSERT/SELECT only on the audit, change-record (Q4: inspection found
    no update/delete path) and immutable version/snapshot tables; triggers remain behind the privileges. The
