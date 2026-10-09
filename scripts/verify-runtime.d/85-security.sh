@@ -13,7 +13,9 @@
 SE_TENANT="rtsecurity"
 SE_TAMPER="rtsectamper"
 SE_OUT="$WORK/security"
-mkdir -p "$SE_OUT"
+# The input holding the secret-shaped value lives apart from the outputs the scans read.
+SE_IN="$WORK/security-input"
+mkdir -p "$SE_OUT" "$SE_IN"
 SE_ENV=(DATABASE_URL="$APP_DB_URL" MIGRATION_DATABASE_URL="$OWNER_DB_URL")
 se_cli() { (cd "$API_DIR" && env "${SE_ENV[@]}" node "dist/cli/$1.js" "${@:2}"); }
 # The same command with no operator id at all (neither --actor nor LIP_OPERATOR_ID).
@@ -59,8 +61,8 @@ check "allowed publish → one audit event with the asserted operator" se_allowe
 
 se_secret() {
   local code=0
-  node -e 'process.stdout.write(JSON.stringify({ site: "synthetic-test", note: process.argv[1] }))' "$SE_SECRET" >"$SE_OUT/secret-config.json"
-  se_cli sources configure --tenant "$SE_TENANT" --kind chargebee --label 'Billing' --file "$SE_OUT/secret-config.json" \
+  node -e 'process.stdout.write(JSON.stringify({ site: "synthetic-test", note: process.argv[1] }))' "$SE_SECRET" >"$SE_IN/secret-config.json"
+  se_cli sources configure --tenant "$SE_TENANT" --kind chargebee --label 'Billing' --file "$SE_IN/secret-config.json" \
     --credential chargebee_api --execute >"$SE_OUT/secret.json" 2>"$SE_OUT/secret.err" || code=$?
   [ "$code" -ne 0 ] && grep -q 'looks like a credential (stripe_key)' "$SE_OUT/secret.err" || return 1
   # The security event is logged (warn, structured) by the CLI process: code and field path only.
