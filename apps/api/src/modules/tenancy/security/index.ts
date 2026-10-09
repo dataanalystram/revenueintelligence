@@ -18,3 +18,14 @@ export {
   type AuditPurgeReport,
   type KeyUsage,
 } from './security-operations.service';
+export {
+  CLASSIFICATION_MANIFEST,
+  dataSubjectMap,
+  type DataSubjectLink,
+} from './classification-manifest';
+export {
+  PRIVILEGE_MANIFEST,
+  SECURITY_DEFINER_FUNCTIONS,
+  TABLE_PRIVILEGES,
+  type TablePrivilege,
+} from './privilege-manifest';

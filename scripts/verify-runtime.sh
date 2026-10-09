@@ -95,6 +95,9 @@ log "1. Install and build"
 
 # The application processes below run exactly as in production.
 export NODE_ENV=production LOG_LEVEL=info
+# M10A1 (Q1): writing CLI commands need an operator id (recorded as asserted).
+# 85-security.sh proves the refusal without it.
+export LIP_OPERATOR_ID=runtime-operator
 
 log "2. Start PostgreSQL and Redis (compose project $PROJECT, ports $LIP_POSTGRES_PORT/$LIP_REDIS_PORT)"
 compose up -d --wait postgres redis >"$WORK/compose.log" 2>&1 && pass "postgres and redis healthy" || { fail "dependencies"; exit 1; }

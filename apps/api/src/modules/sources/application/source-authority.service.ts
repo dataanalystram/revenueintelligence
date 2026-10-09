@@ -13,6 +13,7 @@ import {
 import {
   assertAuthorized,
   AuditTrail,
+  WriteAuthorizer,
   tenantAdvisoryLock,
   TenantDatabase,
   type AuthorizedContext,
@@ -47,6 +48,7 @@ export class SourceAuthorityService {
     private readonly db: TenantDatabase,
     private readonly repo: SourcesRepository,
     private readonly audit: AuditTrail,
+    private readonly authorizer: WriteAuthorizer,
   ) {}
 
   show(ctx: TenantContext): Promise<StoredAuthorityVersion | undefined> {
@@ -75,6 +77,12 @@ export class SourceAuthorityService {
     if (!/^[A-Za-z0-9_.:@-]{1,128}$/.test(actor)) {
       throw new SourcesError('invalid_actor', 'Invalid actor');
     }
+    // Plan §11: proof-acceptance reasons are stored free text.
+    await this.authorizer.refuseSecretLike(
+      actx,
+      { action: 'authority.publish', targetKind: 'authority' },
+      { authority: raw, 'proof acceptances': options.proofAcceptances ?? [] },
+    );
     const parsed = AuthorityDocumentSchema.safeParse(raw);
     if (!parsed.success) {
       throw new AuthorityInvalidError(

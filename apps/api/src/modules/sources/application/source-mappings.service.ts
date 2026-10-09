@@ -15,6 +15,7 @@ import {
 import {
   assertAuthorized,
   AuditTrail,
+  WriteAuthorizer,
   tenantAdvisoryLock,
   TenantDatabase,
   type AuthorizedContext,
@@ -82,6 +83,7 @@ export class SourceMappingsService {
     private readonly repo: SourcesRepository,
     private readonly profiles: ProfilesRepository,
     private readonly audit: AuditTrail,
+    private readonly authorizer: WriteAuthorizer,
     @Optional() @Inject(MetricsService) private readonly metrics?: MetricsService,
   ) {}
 
@@ -119,6 +121,12 @@ export class SourceMappingsService {
       throw new PublishBaseVersionRequiredError('a mapping');
     }
     if (!ACTOR.test(actor)) throw new SourcesError('invalid_actor', 'Invalid actor');
+    // Plan §11: reasons and confirmations are stored free text.
+    await this.authorizer.refuseSecretLike(
+      actx,
+      { action: 'mapping.publish', targetKind: 'source_connection', targetRef: connectionId },
+      { mapping: raw, options },
+    );
     // An override attempt is audited as refused before anything else happens.
     this.auditOverride(ctx, connectionId, options, actor);
     return this.db.transaction(ctx, async (tx) => {

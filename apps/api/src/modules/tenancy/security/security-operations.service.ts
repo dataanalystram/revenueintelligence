@@ -179,8 +179,13 @@ export class SecurityOperationsService {
       return this.db.transaction(ctx, async (tx) => {
         const client = tenantClient(tx);
         const totalEvents = await client.tenantAuditEvent.count();
+        const firstKept = await client.tenantAuditEvent.findFirst({
+          where: { occurredAt: { gte: cutoff } },
+          orderBy: { seq: 'asc' },
+          select: { seq: true },
+        });
         const eligible = await client.tenantAuditEvent.aggregate({
-          where: { occurredAt: { lt: cutoff } },
+          where: firstKept ? { seq: { lt: firstKept.seq } } : {},
           _count: { _all: true },
           _max: { seq: true },
         });
@@ -241,11 +246,18 @@ export class SecurityOperationsService {
           'SELECT count(*)::int AS n FROM tenant_audit_events WHERE tenant_id = $1',
           [tenantId],
         );
-        const last = await client.query<{ seq: number; hash: string; n: number }>(
-          `SELECT max(seq) AS seq, count(*)::int AS n,
-                  (SELECT hash FROM tenant_audit_events
-                    WHERE tenant_id = $1 AND occurred_at < $2 ORDER BY seq DESC LIMIT 1) AS hash
-             FROM tenant_audit_events WHERE tenant_id = $1 AND occurred_at < $2`,
+        // Only a contiguous prefix of the chain, every event of it older than the
+        // cut-off: everything before the first event at or after the cut-off.
+        const last = await client.query<{ seq: number | null; hash: string | null; n: number }>(
+          `WITH bound AS (
+             SELECT coalesce(min(seq), 2147483647) AS first_kept FROM tenant_audit_events
+              WHERE tenant_id = $1 AND occurred_at >= $2
+           )
+           SELECT max(e.seq) AS seq, count(*)::int AS n,
+                  (SELECT hash FROM tenant_audit_events x, bound b
+                    WHERE x.tenant_id = $1 AND x.seq < b.first_kept ORDER BY x.seq DESC LIMIT 1) AS hash
+             FROM tenant_audit_events e, bound b
+            WHERE e.tenant_id = $1 AND e.seq < b.first_kept`,
           [tenantId, cutoff],
         );
         const eligible = last.rows[0]!;

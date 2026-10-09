@@ -1,7 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { MetricsService } from '../../../platform/metrics';
-import { decide, type AuditReasonCode, type Capability, type SecurityActor } from '../../domain';
+import {
+  decide,
+  findSecretLikeInJson,
+  SecretLikeValueError,
+  type AuditReasonCode,
+  type Capability,
+  type SecurityActor,
+} from '../../domain';
 import type { TenantContext } from '../tenant-context';
 import { AuditTrail, type AuditEntry } from './audit-trail';
 import {
@@ -87,6 +94,56 @@ export class WriteAuthorizer {
       ...attempt,
       correlationId: attempt.correlationId ?? randomUUID(),
     });
+  }
+
+  /**
+   * Plan §11: an authorized write whose stored JSON or free text carries a
+   * secret-like value is refused before anything is written, recorded as a
+   * `denied` audit event (`secret_like_value`, pattern code only) and emitted
+   * as `secret_like_refused` (field path and pattern code, never the value).
+   */
+  async refuseSecretLike(
+    actx: AuthorizedContext,
+    entry: AuditEntry,
+    values: Readonly<Record<string, unknown>>,
+  ): Promise<void> {
+    const hit = Object.entries(values)
+      .flatMap(([what, value]) => findSecretLikeInJson(value).map((h) => ({ ...h, what })))
+      .at(0);
+    if (!hit) return;
+    const field = `${hit.what} ${hit.path}`;
+    this.events.emit({
+      event: 'secret_like_refused',
+      outcome: 'refused',
+      tenant: actx.tenant.tenantSlug,
+      actorKind: actx.actor.kind,
+      capability: actx.capability,
+      reasonCode: 'secret_like_value',
+      correlationId: actx.correlationId,
+      coordinates: { field, pattern: hit.code },
+    });
+    try {
+      await this.audit.recordDenied(actx.tenant, {
+        actor: actx.actor,
+        capability: actx.capability,
+        reason: 'secret_like_value',
+        correlationId: actx.correlationId,
+        action: entry.action,
+        ...(entry.targetKind ? { targetKind: entry.targetKind } : {}),
+        ...(entry.targetRef ? { targetRef: entry.targetRef } : {}),
+        details: { pattern: hit.code },
+      });
+    } catch {
+      this.events.emit({
+        event: 'audit_write_failed',
+        outcome: 'failed',
+        tenant: actx.tenant.tenantSlug,
+        capability: actx.capability,
+        reasonCode: 'denial_not_recorded',
+        correlationId: actx.correlationId,
+      });
+    }
+    throw new SecretLikeValueError(field, hit.code);
   }
 
   private async deny(

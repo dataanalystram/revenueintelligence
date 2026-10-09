@@ -30,13 +30,13 @@ import {
   type QualificationConfig,
   type QualificationConfigInput,
 } from '../config/qualification';
-import { findSecretLikeInJson, SecretLikeValueError } from '../../domain';
 import { TenantConfigError } from '../errors';
 import { PrismaTenantConfigRepository } from '../infrastructure/prisma-tenant-config.repository';
 import { TenantDatabase, type TenantTransaction } from '../infrastructure/tenant-database';
 import type { TenantContext } from '../tenant-context';
 import { AuditTrail } from '../security/audit-trail';
 import { assertAuthorized, type AuthorizedContext } from '../security/authorized-context';
+import { WriteAuthorizer } from '../security/write-authorizer.service';
 
 /**
  * Configuration changes that validate across settings take the per-tenant
@@ -48,11 +48,6 @@ import { assertAuthorized, type AuthorizedContext } from '../security/authorized
 const CONFIG_CHANGE_TX = { isolationLevel: 'ReadCommitted' } as const;
 
 /** Plan §11: configuration documents never carry secret-like values (codes only in the error). */
-function assertNotSecretLikeJson(what: string, value: unknown): void {
-  const hit = findSecretLikeInJson(value)[0];
-  if (hit) throw new SecretLikeValueError(`${what} ${hit.path}`, hit.code);
-}
-
 function validate<S extends z.ZodType>(schema: S, value: unknown, what: string): z.infer<S> {
   const result = schema.safeParse(value);
   if (!result.success) {
@@ -76,6 +71,7 @@ export class TenantConfigService {
     private readonly db: TenantDatabase,
     private readonly repo: PrismaTenantConfigRepository,
     private readonly audit: AuditTrail,
+    private readonly authorizer: WriteAuthorizer,
   ) {}
 
   // --- Integrations & flows ---------------------------------------------------
@@ -106,6 +102,11 @@ export class TenantConfigService {
     assertAuthorized(actx, 'config.integration');
     const s = validate(IntegrationSystemSchema, system, 'integration system') as S;
     const access = validate(IntegrationAccessSchema, change.access, 'integration access');
+    await this.authorizer.refuseSecretLike(
+      actx,
+      { action: 'integration.configure', targetKind: 'integration', targetRef: s },
+      { 'integration settings': change.settings },
+    );
     return await this.db.transaction(
       actx.tenant,
       async (tx) => {
@@ -196,6 +197,11 @@ export class TenantConfigService {
   ): Promise<QualificationConfig> {
     assertAuthorized(actx, 'config.policy');
     const config = validate(QualificationConfigInputSchema, input, 'qualification config');
+    await this.authorizer.refuseSecretLike(
+      actx,
+      { action: 'qualification.update', targetKind: 'policy', targetRef: 'qualification' },
+      { 'qualification config': config },
+    );
     return await this.db.transaction(
       actx.tenant,
       async (tx) => {
@@ -246,7 +252,11 @@ export class TenantConfigService {
   ): Promise<LeadSourceMapping & { id: string }> {
     assertAuthorized(actx, 'config.integration');
     const mapping = validate(LeadSourceMappingSchema, input, 'lead source mapping');
-    assertNotSecretLikeJson('lead source mapping', mapping);
+    await this.authorizer.refuseSecretLike(
+      actx,
+      { action: 'lead_source_mapping.save', targetKind: 'lead_source_mapping' },
+      { 'lead source mapping': mapping },
+    );
     return await this.db.transaction(actx.tenant, async (tx) => {
       const saved = await this.repo.saveLeadSourceMapping(tx, mapping);
       await this.audit.record(tx, actx, {
@@ -293,7 +303,11 @@ export class TenantConfigService {
   ): Promise<Policy<K>> {
     assertAuthorized(actx, 'config.policy');
     const doc = validate(PolicySchemas[kind], document, `${kind} policy`);
-    assertNotSecretLikeJson(`${kind} policy`, doc);
+    await this.authorizer.refuseSecretLike(
+      actx,
+      { action: 'policy.save', targetKind: 'policy', targetRef: kind },
+      { [`${kind} policy`]: doc },
+    );
     return await this.db.transaction(actx.tenant, async (tx) => {
       const saved = await this.repo.savePolicy(tx, kind, doc as never, expectedVersion);
       await this.audit.record(tx, actx, {

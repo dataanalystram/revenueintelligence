@@ -1,11 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { z } from 'zod';
 import {
-  assertNotSecretLike,
   ConnectorKindSchema,
   connectorKindEntry,
-  findSecretLikeInJson,
-  SecretLikeValueError,
   PROFILE_LIMITS,
   SourceProfileSettingsSchema,
   type ConnectionTestResult,
@@ -14,6 +11,7 @@ import {
 import {
   assertAuthorized,
   AuditTrail,
+  WriteAuthorizer,
   TenantCredentialsService,
   TenantDatabase,
   type AuthorizedContext,
@@ -66,6 +64,7 @@ export class SourceConnectionsService {
     private readonly registry: SourceAdapterRegistry,
     private readonly credentials: TenantCredentialsService,
     private readonly audit: AuditTrail,
+    private readonly authorizer: WriteAuthorizer,
   ) {}
 
   list(ctx: TenantContext): Promise<SourceConnection[]> {
@@ -111,10 +110,11 @@ export class SourceConnectionsService {
     const label = Label.safeParse(input.label);
     if (!label.success) throw new SourcesError('invalid_label', 'Invalid connection label');
     // Plan §11: no secret-like values in the label or the (non-secret) configuration.
-    assertNotSecretLike('connection label', label.data);
-    const secretHit = findSecretLikeInJson(input.config)[0];
-    if (secretHit)
-      throw new SecretLikeValueError(`connection config ${secretHit.path}`, secretHit.code);
+    await this.authorizer.refuseSecretLike(
+      actx,
+      { action: 'source_connection.configure', targetKind: 'source_connection' },
+      { 'connection label': label.data, 'connection config': input.config },
+    );
     if (
       input.credentialName !== undefined &&
       !CredentialName.safeParse(input.credentialName).success
