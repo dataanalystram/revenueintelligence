@@ -1,6 +1,9 @@
 # Milestone 10A1 — Security Foundation: implementation plan
 
-- Status: **PLAN — FOR OWNER REVIEW.** No schema, migration or code change is made until this plan is approved.
+- Status: **APPROVED PLAN (2026-10-09)**, with the owner's decisions Q1–Q6 and two amendments applied (§21).
+  Implementation follows `BUILD → TEST → VERIFY → MUTATION PROOF → FRESH CLONE → RUNTIME → DOCKER → INDEPENDENT REVIEW
+→ USER APPROVAL → MERGE` on a fresh branch from `main`. M10A2 does not start until M10A1 is independently reviewed,
+  merged and closed.
 - Parent: [M10 plan](M10-canonical-architecture-implementation-plan.md) (approved, revision 3). M10A1 is the first
   sub-milestone (F1). No canonical writer for a new entity is created before these primitives exist.
 - Base: `main` after the merge of the approved M10 plan.
@@ -67,8 +70,10 @@ events; any new canonical entity.
 
 - **Honesty rule:** audit events and change records store `assurance`. An `asserted` operator id is never presented
   as authenticated.
-- **CLI operator id:** `--actor <id>` or `LIP_OPERATOR_ID`. Decision Q1 (§21): whether `--execute` requires an
-  explicit operator id (recommended) or keeps the current default `cli`.
+- **CLI operator id (Q1, approved):** every CLI operation with `--execute` requires `--actor <id>` or
+  `LIP_OPERATOR_ID`; without one it is refused (`operator_id_required`) before any write. Dry runs are exempt. Until
+  authenticated operator identity exists (M15), the assurance is stored as `asserted`, never `authenticated`. The
+  runtime scripts and docs are updated to pass `--actor`.
 - **Where it is recorded:** every audit event; the change record (`actor_kind`, `actor_id`, `actor_assurance`,
   nullable for pre-M10A1 rows); the existing `published_by` / `captured_by` / `requested_by` / purge `actor` columns
   keep receiving the same id (no column change).
@@ -147,7 +152,7 @@ events; any new canonical entity.
   | `correlation_id`                            | uuid linking the audit event with the change records and run records of the same operation                                                                            |
   | `policy_version`                            | integer                                                                                                                                                               |
   | `details`                                   | jsonb; validated by a closed per-action Zod schema (identifiers, codes, counts, hashes only); DB CHECKs: size ≤ 4 KB and `NOT app_jsonb_has_secret_like_key(details)` |
-  | `prev_hash`, `hash`                         | tamper-evidence chain per tenant: `hash = sha256(prev_hash ‖ canonical(row))` (decision Q2)                                                                           |
+  | `prev_hash`, `hash`                         | tamper-evidence chain per tenant (Q2, §5.1); unique `(tenant_id, prev_hash)` and unique `(tenant_id, hash)`                                                           |
 
 - **What is audited:** every operation that requires a capability in §4 except per-record ingestion (`canonical.source_sync`
   and `processing.receipt` are audited **per run / per receipt batch** via run start and finish, because each record
@@ -159,6 +164,26 @@ events; any new canonical entity.
   `failed` event at finish, linked by `correlation_id`.
 - **No values:** `details` never carries source values, names, emails or secrets. The details schema per action is
   part of the code and reviewed.
+
+### 5.1 Audit hash chain (Q2, approved; deliberately simple)
+
+- **One linkage per tenant:** each event stores `prev_hash` (the previous event's `hash`, or the tenant's genesis
+  value `0…0` (64 hex zeros) for the first event, or the purge anchor after a purge) and its own `hash`.
+- **Deterministic canonical payload:** `hash = sha256_hex(prev_hash ‖ "\n" ‖ canonical_json(payload))`, where
+  `payload` is the fixed field list (`tenant_id`, `id`, `seq`, `occurred_at` in UTC ISO-8601 with milliseconds,
+  `actor_kind`, `actor_id`, `actor_assurance`, `capability`, `action`, `outcome`, `reason_code`, `target_kind`,
+  `target_ref`, `correlation_id`, `policy_version`, `details`) and `canonical_json` sorts object keys recursively,
+  uses no insignificant whitespace and represents absent values as `null`. `occurred_at` is set by the writer (not a DB
+  default) so the hashed value equals the stored value.
+- **Same transaction:** the writer takes `pg_advisory_xact_lock` on the tenant's audit scope, reads the latest
+  `(seq, hash)`, computes the new event and inserts it, all inside the transaction that writes the audited change (or
+  the denial transaction).
+- **No fork possible, even if the lock were bypassed:** unique `(tenant_id, prev_hash)` means two events can never
+  extend the same predecessor; unique `(tenant_id, seq)` keeps the order dense. A concurrent writer that loses the
+  race waits on the lock; without the lock it would fail on the unique constraint rather than fork.
+- **Verification:** `security audit-verify --tenant <slug>` (read-only) walks the chain from the genesis or anchor,
+  recomputes every hash and reports the first broken link (codes and ids only).
+- **No blockchain or ledger complexity:** no external anchoring, no Merkle trees, no signatures in M10A1.
 
 ## 6. Denied-attempt auditing
 
@@ -181,20 +206,35 @@ Every append-only table gets **both**:
 2. **trigger:** `app_refuse_change` on UPDATE/DELETE, which also stops the owner by accident (purge paths use an
    explicit, audited owner-only switch, as M9A does).
 
-| Table                              | Today                  | M10A1                                                                                                                                                                                |
-| ---------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `tenant_audit_events` (new)        | —                      | INSERT/SELECT; trigger; purge only through the owner path with `lip.audit_purge = 'on'` and not in the app role (mirrors M9A)                                                        |
-| `tenant_product_models`            | trigger                | + REVOKE UPDATE/DELETE/TRUNCATE                                                                                                                                                      |
-| `tenant_eligibility_snapshots`     | trigger                | + REVOKE UPDATE/DELETE/TRUNCATE                                                                                                                                                      |
-| `tenant_source_schema_snapshots`   | trigger                | + REVOKE UPDATE/DELETE/TRUNCATE                                                                                                                                                      |
-| `tenant_source_mapping_versions`   | trigger                | + REVOKE UPDATE/DELETE/TRUNCATE                                                                                                                                                      |
-| `tenant_source_authority_versions` | trigger                | + REVOKE UPDATE/DELETE/TRUNCATE                                                                                                                                                      |
-| `tenant_products`                  | delete-refusal trigger | + REVOKE DELETE/TRUNCATE                                                                                                                                                             |
-| `tenant_context_changes`           | no protection          | candidate: INSERT/SELECT + trigger, **only if** inspection and the full suites confirm no code path updates or deletes change records (merge, retirement, down-scripts run as owner) |
-| M9A profile tables, purge table    | REVOKEs + triggers     | unchanged                                                                                                                                                                            |
+| Table                              | Today                  | M10A1                                                                                                                         |
+| ---------------------------------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `tenant_audit_events` (new)        | —                      | INSERT/SELECT; trigger; purge only through the owner path with `lip.audit_purge = 'on'` and not in the app role (mirrors M9A) |
+| `tenant_product_models`            | trigger                | + REVOKE UPDATE/DELETE/TRUNCATE                                                                                               |
+| `tenant_eligibility_snapshots`     | trigger                | + REVOKE UPDATE/DELETE/TRUNCATE                                                                                               |
+| `tenant_source_schema_snapshots`   | trigger                | + REVOKE UPDATE/DELETE/TRUNCATE                                                                                               |
+| `tenant_source_mapping_versions`   | trigger                | + REVOKE UPDATE/DELETE/TRUNCATE                                                                                               |
+| `tenant_source_authority_versions` | trigger                | + REVOKE UPDATE/DELETE/TRUNCATE                                                                                               |
+| `tenant_products`                  | delete-refusal trigger | + REVOKE DELETE/TRUNCATE                                                                                                      |
+| `tenant_context_changes`           | no protection          | INSERT/SELECT + trigger (Q4; inspection result below)                                                                         |
+| M9A profile tables, purge table    | REVOKEs + triggers     | unchanged                                                                                                                     |
 
 Each REVOKE is applied only after a code inspection shows no update/delete path for the app role, and is proved by
 the full suites passing.
+
+**Q4 inspection result for `tenant_context_changes` (2026-10-09, on `main` `d2285df`):**
+
+- Application code: the only writes are inserts (`ContextStore.insertChange` in
+  `context/infrastructure/context-store.ts`, `SubscriptionStore.insertChange` in
+  `products/infrastructure/subscription.store.ts`). No service, merge participant, retirement or CLI path updates
+  or deletes change records. Reads: `context-read-model.ts` (groupBy) and tests.
+- Owner-only, dev/staging rollback paths (not application paths):
+  - the M7 down-script deletes subscription change records while rolling M7 back;
+  - one M8 rollback test sets up a refusal scenario with an owner `UPDATE … SET source_connection_id`.
+  - Both run with the owner role and **after** the M10A1 down-script (down-scripts run newest first), which removes
+    the trigger and restores the privileges first, so they are unaffected. The M8 test setup is adjusted only in its
+    ordering (apply the M10A1 down-script before its setup statement); its assertion is unchanged.
+- Conclusion: no legitimate update/delete path exists, so append-only semantics apply. If implementation finds one
+  (for example a failing suite), work stops and it is reported instead of forcing append-only.
 
 ## 8. Database role and privilege matrix
 
@@ -223,10 +263,12 @@ the full suites passing.
     `hash`; drives where secret detection applies (§11);
   - `historyPolicy`: `full` / `value_free` / `none` (used from A2);
   - `subjectLink`: for control 17 (§14);
-  - explicit `tbc` allowed for a column whose classification needs the owner, treated as `restricted`, and listed in the
-    milestone record.
+  - **`tbc` (Q6, approved):** a small explicit list is allowed. A `tbc` entry is treated operationally as
+    `restricted`, and must carry a `reason` and an `owner` (who classifies it); the record lists every `tbc` entry. No
+    unlisted column is allowed: a column with no manifest entry at all fails the guard.
 - **Guard test:** reads `information_schema.columns` for all tables and asserts the manifest covers exactly the same
-  columns (no missing, no stale entries) and respects the floors (a `personal` column below `confidential` fails).
+  columns (no missing, no stale entries), respects the floors (a `personal` column below `confidential` fails), and
+  that every `tbc` entry has a reason and an owner.
 - **Candidate revision:** E4 §2 sensitivity list updated to sensitivity + categories (documented candidate revision;
   stricter, not weaker).
 - **Use in M10A1:** documentation, guard, secret-detection scope, retention class metadata, data-subject map. No read
@@ -237,24 +279,32 @@ the full suites passing.
 - **Retention classes** (code catalogue, `security/retention.ts`), each with a product default and an enforcement
   status:
 
-  | Class                       | Product default                     | Enforced in M10A1                          |
-  | --------------------------- | ----------------------------------- | ------------------------------------------ |
-  | `security_audit`            | 365 days                            | **yes**: audit purge (owner path, audited) |
-  | `operational_diagnostics`   | 90 days                             | metadata only; purge jobs per table later  |
-  | `rejected_candidate`        | ≤ 30 days                           | metadata only (table arrives in M10L)      |
-  | `raw_rejected_value`        | disabled                            | structural: no column exists               |
-  | `raw_communication_content` | disabled                            | structural: no column exists               |
-  | `sensitive_value_history`   | disabled unless an approved policy  | metadata (value history arrives in M10A2)  |
-  | `canonical_lifecycle`       | entity lifecycle and history policy | not a TTL; records follow their lifecycle  |
-  | `profile_statistics`        | existing M9A retention              | unchanged (M9A purge)                      |
-  | `configuration_version`     | kept while referenced               | not purged (immutable versions)            |
+  | Class                       | Product default                     | Enforced in M10A1                                                     |
+  | --------------------------- | ----------------------------------- | --------------------------------------------------------------------- |
+  | `security_audit`            | 365 days                            | class + purge mechanism built and tested; **execution disabled** (Q3) |
+  | `operational_diagnostics`   | 90 days                             | metadata only; purge jobs per table later                             |
+  | `rejected_candidate`        | ≤ 30 days                           | metadata only (table arrives in M10L)                                 |
+  | `raw_rejected_value`        | disabled                            | structural: no column exists                                          |
+  | `raw_communication_content` | disabled                            | structural: no column exists                                          |
+  | `sensitive_value_history`   | disabled unless an approved policy  | metadata (value history arrives in M10A2)                             |
+  | `canonical_lifecycle`       | entity lifecycle and history policy | not a TTL; records follow their lifecycle                             |
+  | `profile_statistics`        | existing M9A retention              | unchanged (M9A purge)                                                 |
+  | `configuration_version`     | kept while referenced               | not purged (immutable versions)                                       |
 
 - `RetentionPolicyProvider` port returns platform defaults in M10A1; A2 makes it read the tenant data policy.
 - The defaults are **product defaults, not SOC 2, GDPR, HIPAA or legal-retention claims.**
-- **Audit purge:** CLI `security audit-purge --tenant <slug> [--execute] --actor <id>`; owner credentials
-  (`MIGRATION_DATABASE_URL`), refuses inside `lip_app`; deletes events older than the class default; keeps the chain
-  verifiable by recording the last purged `hash` as the new anchor; writes one audit event (`audit.purge`, counts only)
-  after the purge.
+- **Audit purge (Q3, partial yes):**
+  - the `security_audit` retention class (365-day product default) and the purge mechanism are implemented and tested;
+  - **dry-run / report mode first:** `security audit-purge --tenant <slug>` (no `--execute`) reports how many events
+    are older than the class period and the anchor that would result, and changes nothing;
+  - **execution is disabled:** `--execute` is refused (`audit_purge_disabled`) unless the code-level switch
+    `AUDIT_PURGE_EXECUTION_APPROVED` is true; it is `false` and stays `false` until the formal privacy/retention policy is
+    approved (tech debt #15). Tests exercise the execution path through an explicit test-only override that the
+    production configuration cannot set (refused when `NODE_ENV=production`);
+  - no scheduled or automatic purge exists;
+  - when enabled later: owner credentials (`MIGRATION_DATABASE_URL`), refused inside `lip_app`, deletes only events
+    older than the class period, records the last purged `hash` as the new chain anchor, and writes one audit event
+    (`audit.purge`, counts only).
 
 ## 11. Secret detection and refusal boundaries
 
@@ -277,8 +327,15 @@ the full suites passing.
   or opaque by design).
 - **Behaviour on a hit:**
   - operator/config writes: the operation is refused (`secret_like_value`), audited as `denied`, no value logged;
-  - source ingestion: the field is rejected (record kept without that value), counted, and a security event is
-    emitted (E7 disposition `reject the field`); never last-write-wins with the secret.
+  - source ingestion (amendment, approved): **never silently dropped**:
+    - the affected **field** is rejected and held: the canonical value is not overwritten (the previous accepted
+      value, if any, stays), and the rejection is recorded; if the field is required or identity-bearing, the
+      **record** is rejected through the existing seen-but-rejected path (no tombstone, no reference retirement);
+    - a safe reason code `secret_like_value` is recorded in the run's quality counters and rejection list, and a
+      `secret_like_refused` security event is emitted;
+    - source coordinates and identity are preserved (connection, object type, record id, field path);
+    - the raw value is never persisted, and never appears in logs, metrics, audit details or diagnostics;
+    - test S22 proves this end to end.
 - **Tests never contain real secrets:** test fixtures build pattern-shaped strings at runtime (so repository secret
   scanners are not triggered and nothing real is ever used).
 
@@ -384,47 +441,56 @@ One forward migration, `m10a1_security_foundation`:
 
 Tests (unit, integration with Testcontainers as the app role, runtime):
 
-| #   | Test                                                                                                                                       | Level                      |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------- |
-| S1  | policy: every capability × actor kind decision matches the table in §4                                                                     | unit (exhaustive)          |
-| S2  | every public write method of the listed services takes an `AuthorizedContext` (static)                                                     | unit (static)              |
-| S3  | allowed operation writes one audit event in the same transaction; rollback removes both                                                    | integration                |
-| S4  | denied operation writes one `denied` event and no business change; CLI exit code and reason                                                | integration                |
-| S5  | audit write failure makes the operation fail (fail closed)                                                                                 | integration                |
-| S6  | audit `details` schema refuses values; DB CHECK refuses secret-like keys and > 4 KB                                                        | unit + integration         |
-| S7  | audit append-only: app role UPDATE/DELETE/TRUNCATE → permission denied; owner UPDATE → trigger refusal                                     | integration                |
-| S8  | hash chain verifies; a tampered row (owner, test DB) is detected                                                                           | integration                |
-| S9  | exact privilege matrix equals the manifest                                                                                                 | integration (schema guard) |
-| S10 | classification manifest covers exactly all columns; floors hold                                                                            | integration (schema guard) |
-| S11 | secret-like detector: positive and negative corpora (identifiers, long ids, emails are not secrets)                                        | unit (property)            |
-| S12 | secret-like refusal on config writes and stored CLI arguments; field rejection on ingestion                                                | integration                |
-| S13 | no secret or value in logs, errors, audit details, metrics (extends existing assertions)                                                   | unit + runtime             |
-| S14 | token cipher v1 read, v2 write, unknown kid refusal, rotation + rekey + key-usage                                                          | unit + integration         |
-| S15 | OAuth state signed with the new key verifies; old-key state verifies during overlap                                                        | unit                       |
-| S16 | audit tenant isolation (read/insert/purge across tenants)                                                                                  | integration (adversarial)  |
-| S17 | audit purge: refuses in app role; removes only older than the class; anchor kept; purge audited                                            | integration                |
-| S18 | data-subject map covers every table with `personal` columns                                                                                | unit                       |
-| S19 | regression: identical canonical results on the fakes; M6–M9B suites unchanged                                                              | integration                |
-| S20 | migration up / rerun / down-refusal / exact restore / re-apply                                                                             | integration                |
-| S21 | runtime script `85-security.sh`: CLI denial → audit row, allowed publish → audit row, key rotation, security events in logs without values | runtime                    |
+| #   | Test                                                                                                                                                                                                                                                                                                                                                                 | Level                      |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| S1  | policy: every capability × actor kind decision matches the table in §4                                                                                                                                                                                                                                                                                               | unit (exhaustive)          |
+| S2  | every public write method of the listed services takes an `AuthorizedContext` (static)                                                                                                                                                                                                                                                                               | unit (static)              |
+| S3  | allowed operation writes one audit event in the same transaction; rollback removes both                                                                                                                                                                                                                                                                              | integration                |
+| S4  | denied operation writes one `denied` event and no business change; CLI exit code and reason                                                                                                                                                                                                                                                                          | integration                |
+| S5  | audit write failure makes the operation fail (fail closed)                                                                                                                                                                                                                                                                                                           | integration                |
+| S6  | audit `details` schema refuses values; DB CHECK refuses secret-like keys and > 4 KB                                                                                                                                                                                                                                                                                  | unit + integration         |
+| S7  | audit append-only: app role UPDATE/DELETE/TRUNCATE → permission denied; owner UPDATE → trigger refusal                                                                                                                                                                                                                                                               | integration                |
+| S8  | hash chain verifies; a tampered row (owner, test DB) is detected                                                                                                                                                                                                                                                                                                     | integration                |
+| S9  | exact privilege matrix equals the manifest                                                                                                                                                                                                                                                                                                                           | integration (schema guard) |
+| S10 | classification manifest covers exactly all columns; floors hold                                                                                                                                                                                                                                                                                                      | integration (schema guard) |
+| S11 | secret-like detector: positive and negative corpora (identifiers, long ids, emails are not secrets)                                                                                                                                                                                                                                                                  | unit (property)            |
+| S12 | secret-like refusal on config writes and stored CLI arguments; field rejection on ingestion                                                                                                                                                                                                                                                                          | integration                |
+| S13 | no secret or value in logs, errors, audit details, metrics (extends existing assertions)                                                                                                                                                                                                                                                                             | unit + runtime             |
+| S14 | token cipher v1 read, v2 write, unknown kid refusal, rotation + rekey + key-usage                                                                                                                                                                                                                                                                                    | unit + integration         |
+| S15 | OAuth state signed with the new key verifies; old-key state verifies during overlap                                                                                                                                                                                                                                                                                  | unit                       |
+| S16 | audit tenant isolation (read/insert/purge across tenants)                                                                                                                                                                                                                                                                                                            | integration (adversarial)  |
+| S17 | audit purge: refuses in app role; removes only older than the class; anchor kept; purge audited                                                                                                                                                                                                                                                                      | integration                |
+| S18 | data-subject map covers every table with `personal` columns                                                                                                                                                                                                                                                                                                          | unit                       |
+| S19 | regression: identical canonical results on the fakes; M6–M9B suites unchanged                                                                                                                                                                                                                                                                                        | integration                |
+| S20 | migration up / rerun / down-refusal / exact restore / re-apply                                                                                                                                                                                                                                                                                                       | integration                |
+| S21 | runtime script `85-security.sh`: CLI denial → audit row, allowed publish → audit row, key rotation, security events in logs without values                                                                                                                                                                                                                           | runtime                    |
+| S22 | ingestion of a secret-shaped field value (Sugar fake and Chargebee fake): field rejected and held (previous value kept), required field → record rejected via seen-but-rejected, reason code and source coordinates recorded, security event emitted, and a scan of every table, log line, metric label, audit detail and run diagnostic finds no trace of the value | integration                |
+| S23 | audit hash chain concurrency: two simultaneous audited writes for the same tenant (two connections, released together) both succeed (serialized), `seq` is dense, the chain validates end to end with no fork; repeated 20 times                                                                                                                                     | integration                |
+| S24 | `--execute` without `--actor` / `LIP_OPERATOR_ID` refused before any write; dry run without actor allowed; stored assurance is `asserted`                                                                                                                                                                                                                            | integration                |
+| S25 | audit purge: report mode changes nothing; `--execute` refused while execution is not approved, including in production configuration                                                                                                                                                                                                                                 | integration                |
 
 Mutation proofs (break → the named test fails for that reason → restore → green):
 
-| #    | Mutation                                                                    | Must fail          |
-| ---- | --------------------------------------------------------------------------- | ------------------ |
-| SM1  | grant `canonical.import` to `source_sync` in the policy                     | S1                 |
-| SM2  | a service write method takes `TenantContext` instead of `AuthorizedContext` | S2 (and typecheck) |
-| SM3  | skip the audit insert on an allowed operation                               | S3                 |
-| SM4  | write the denial in the business transaction (rolled back)                  | S4                 |
-| SM5  | swallow the audit insert error                                              | S5                 |
-| SM6  | drop the audit immutability trigger                                         | S7                 |
-| SM7  | `GRANT UPDATE ON tenant_audit_events TO lip_app`                            | S7, S9             |
-| SM8  | add an unclassified column / lower a `personal` column to `internal`        | S10                |
-| SM9  | disable one detector pattern (e.g. PEM)                                     | S11, S12           |
-| SM10 | decrypt ignoring the `kid` (always current key)                             | S14                |
-| SM11 | omit the hash of the previous event                                         | S8                 |
-| SM12 | purge without the app-role refusal                                          | S17                |
-| SM13 | policy RLS on audit table relaxed to `true`                                 | S16                |
+| #    | Mutation                                                                    | Must fail                                                |
+| ---- | --------------------------------------------------------------------------- | -------------------------------------------------------- |
+| SM1  | grant `canonical.import` to `source_sync` in the policy                     | S1                                                       |
+| SM2  | a service write method takes `TenantContext` instead of `AuthorizedContext` | S2 (and typecheck)                                       |
+| SM3  | skip the audit insert on an allowed operation                               | S3                                                       |
+| SM4  | write the denial in the business transaction (rolled back)                  | S4                                                       |
+| SM5  | swallow the audit insert error                                              | S5                                                       |
+| SM6  | drop the audit immutability trigger                                         | S7                                                       |
+| SM7  | `GRANT UPDATE ON tenant_audit_events TO lip_app`                            | S7, S9                                                   |
+| SM8  | add an unclassified column / lower a `personal` column to `internal`        | S10                                                      |
+| SM9  | disable one detector pattern (e.g. PEM)                                     | S11, S12                                                 |
+| SM10 | decrypt ignoring the `kid` (always current key)                             | S14                                                      |
+| SM11 | omit the hash of the previous event                                         | S8                                                       |
+| SM12 | purge without the app-role refusal                                          | S17                                                      |
+| SM13 | policy RLS on audit table relaxed to `true`                                 | S16                                                      |
+| SM14 | remove the per-tenant advisory lock from the audit writer                   | S23 (a concurrent insert fails on the unique constraint) |
+| SM15 | remove the lock **and** the unique `(tenant_id, prev_hash)` constraint      | S23 (fork) and S8 (verifier reports the broken link)     |
+| SM16 | ingestion writes the secret-shaped value instead of rejecting it            | S22                                                      |
+| SM17 | accept `--execute` without an operator id                                   | S24                                                      |
+| SM18 | set the purge execution switch to `true` in production configuration        | S25                                                      |
 
 ## 20. Verification gates
 
@@ -433,24 +499,24 @@ Mutation proofs (break → the named test fails for that reason → restore → 
 - `pnpm verify:docker` (images unchanged apart from code; new env vars optional; no secrets baked in).
 - Live: Chargebee TEST-site read-only regression with the two approved secrets, if available; otherwise recorded as not
   run. Live Sugar stays pending.
-- Mutation proofs SM1–SM13 recorded with the failing test output.
+- Mutation proofs SM1–SM18 recorded with the failing test output.
 - **Fresh-clone run** before reporting completion.
 - Independent review (`review-milestone`), then PR, CI green, merge only on approval.
 - Record `docs/milestones/M10A1-security-foundation.md` with evidence; ADR 0026 (security foundation: actors,
   capabilities, audit, classification, key ids).
 
-## 21. Decisions requested before implementation
+## 21. Owner decisions (2026-10-09)
 
-1. **Q1 — operator id on `--execute`:** require an explicit `--actor` or `LIP_OPERATOR_ID` for every executing CLI
-   command (recommended; dry runs unaffected; runtime scripts updated), or keep the default `cli`.
-2. **Q2 — audit hash chain:** per-tenant `prev_hash`/`hash` chain for tamper evidence beyond privileges (recommended;
-   low volume, one advisory lock per tenant).
-3. **Q3 — audit purge in M10A1:** implement the 365-day owner-path purge now (recommended), or ship the metadata only.
-4. **Q4 — `tenant_context_changes` append-only:** apply INSERT/SELECT + trigger if inspection confirms no update path
-   (recommended), or leave until A2 widens the table.
-5. **Q5 — secret detection:** explicit patterns only for refusal (recommended); no entropy-based refusal.
-6. **Q6 — classification `tbc` columns:** accept a short list of `tbc` columns (treated as `restricted`) for owner
-   classification after M10A1, or block M10A1 until every column is classified.
+| #   | Decision                                                                                                                                                                                                            | Applied in                |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| Q1  | YES: `--actor` or `LIP_OPERATOR_ID` required for every CLI `--execute`; dry runs exempt; assurance stored as `asserted`, never `authenticated`, until authenticated operator identity exists                        | §2, S24, SM17             |
+| Q2  | YES: per-tenant audit hash chain, deliberately simple (one previous-hash linkage, deterministic canonical payload, same transaction, no ledger complexity), with proof that concurrent writes cannot fork           | §5.1, S8, S23, SM14, SM15 |
+| Q3  | PARTIAL YES: retention class and purge mechanism implemented and tested, 365-day default supported, dry-run/report first; **execution disabled** until the formal privacy/retention policy is approved              | §10, S17, S25, SM18       |
+| Q4  | YES, conditional on inspection: append-only via privilege restriction and trigger; stop and report if a legitimate update path exists. Inspection found none (§7)                                                   | §7                        |
+| Q5  | YES: explicit secret patterns only; no entropy-based refusal                                                                                                                                                        | §11                       |
+| Q6  | small `tbc` list allowed: treated as `restricted`; each entry has a reason and an owner; no unlisted column; the guard fails on a truly missing classification                                                      | §9, S10                   |
+| A1  | Amendment: secret-looking ingestion values are never silently dropped; field/record rejected or held with a safe reason code and security event, source coordinates preserved, raw value never persisted or emitted | §11, S22, SM16            |
+| A2  | Amendment: concurrency test for the audit hash chain (two simultaneous writes for one tenant; both succeed or serialize; chain validates with no fork)                                                              | §5.1, S23                 |
 
 ## 22. Open items (unchanged)
 

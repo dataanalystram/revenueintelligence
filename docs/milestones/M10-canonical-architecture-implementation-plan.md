@@ -6,7 +6,7 @@
   - Approved state recorded: CI green on the reviewed head `3e54db0` (all four jobs), documentation-only diff,
     merged to `main` as `d2285df` (PR #20).
   - Each sub-milestone still needs its own detailed plan approved before implementation. The next one is **M10A1 —
-    Security Foundation** ([plan for review](M10A1-security-foundation-plan.md)).
+    Security Foundation** ([plan approved](M10A1-security-foundation-plan.md)).
   - No schema, migration or code change has been made for M10.
 - Input: the approved [Canonical Architecture v1 Candidate](../architecture/canonical-v1/CANDIDATE.md) (M9E, E12 `PASS
 — CANONICAL ARCHITECTURE V1 CANDIDATE APPROVED`) and [ADR 0025](../adr/0025-canonical-architecture-v1-candidate.md).
