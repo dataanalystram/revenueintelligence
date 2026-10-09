@@ -117,13 +117,13 @@ records. Each key alone prevents a fork.
 
 ## Verification evidence
 
-| Gate                  | Command                                                                                                                       | Result                                                                                                                                   |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| Deterministic suite   | `pnpm verify`                                                                                                                 | format, lint, typecheck, dependency-cruiser clean; unit 957/957; integration 497/497 (after the review fixes; re-run in the fresh clone) |
-| Runtime               | `pnpm verify:runtime`                                                                                                         | 175 passed, 0 failed (incl. 12 checks of `85-security.sh`)                                                                               |
-| Docker                | `LIP_DOCKERFILE=<sandbox Dockerfile> LIP_DOCKER_BUILD_ARGS="--network host --build-context ca=/root/.ccr" pnpm verify:docker` | 29 passed, 0 failed (incl. the two M10A1 checks); sandbox Dockerfile differs only by the proxy CA                                        |
-| Live Chargebee (TEST) | `CHARGEBEE_LIVE_SITE=… pnpm --filter @lip/api test:live test/live/chargebee-baseline.live.spec.ts`                            | 2 passed (4 owner-run replays skipped by design); see below                                                                              |
-| Fresh clone           | `git clone` → `pnpm install --frozen-lockfile && pnpm verify && pnpm verify:runtime`                                          | see the PR description (run on the final commit)                                                                                         |
+| Gate                  | Command                                                                                                                       | Result                                                                                                                                                                          |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Deterministic suite   | `pnpm verify`                                                                                                                 | on `5dd1b5e`: format, lint, typecheck, dependency-cruiser clean; unit 959/959; integration 497/497                                                                              |
+| Runtime               | `pnpm verify:runtime`                                                                                                         | on `5dd1b5e` (fresh clone): 175 passed, 0 failed (incl. 12 checks of `85-security.sh`)                                                                                          |
+| Docker                | `LIP_DOCKERFILE=<sandbox Dockerfile> LIP_DOCKER_BUILD_ARGS="--network host --build-context ca=/root/.ccr" pnpm verify:docker` | on `5dd1b5e`: 29 passed, 0 failed (incl. the two M10A1 checks); sandbox Dockerfile differs only by the proxy CA                                                                 |
+| Live Chargebee (TEST) | `CHARGEBEE_LIVE_SITE=… pnpm --filter @lip/api test:live test/live/chargebee-baseline.live.spec.ts`                            | 2 passed (4 owner-run replays skipped by design); see below                                                                                                                     |
+| Fresh clone           | `git clone` → `pnpm install --frozen-lockfile && pnpm verify && pnpm verify:runtime`                                          | **`5dd1b5e`: green** — verify (959 unit, 497 integration, no dependency violations) and runtime 175/175, exit 0. Two earlier fresh-clone runs failed and were fixed (see below) |
 
 Live regression (read-only, approved secrets only, sanitized): Key A connection `ok` (`v2:pc2`); profile
 completed; full run completed with `double_enumeration` → `stable_snapshot` (passed), repeat run 0 changes;
@@ -172,6 +172,12 @@ Re-review (`47d74f9..258cc0e`): **PASS WITH FINDINGS** — M1–M4 confirmed fix
 | m-d plain evaluation recorded as a failed snapshot write                | `evaluate` records failures only with `options.record`; unit test of the condition                                                                                                    |
 | m-e webhook intake now takes the tenant's chain lock per batch          | **accepted, documented**: fail closed by design (an audit failure returns 5xx and HubSpot retries); audit volume grows with webhook batches, latency shares the per-tenant chain lock |
 | m-f purge verifies the chain before taking the lock, in another session | **accepted, documented**: the remaining window can only be used by the schema owner, who could bypass the triggers anyway                                                             |
+
+Fresh-clone findings (why the mandatory run matters): the run on `ed61db1` failed `pnpm lint` (an `any`-typed
+decorator argument; fixed in `aba2674`); the run on `aba2674` failed typecheck because a mutation-proof restore
+(`git checkout` of the mutated file) had discarded uncommitted edits to `audit-failures.ts` before they were
+committed. They were reapplied in `5dd1b5e`, and the mutation harness now refuses to run on a dirty tree. All
+other mutation runs had been on clean, committed trees.
 
 ## Deviations and notes
 
