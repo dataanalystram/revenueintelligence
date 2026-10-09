@@ -534,13 +534,16 @@ export class SourceSyncService {
     state.detail.proof = proof;
     const runQuality = await this.runQualityProfiles(rc, state);
     // 5. Complete: gaps replaced, run-quality profiles stored and the run completed in one transaction.
+    // Counted locally: a rolled-back completion must not report retirements that never happened.
+    let retired = 0;
     await this.db.transaction(rc.ctx, async (tx) => {
       if (lineObjects.length > 0) {
         await this.gaps.replaceWithin(tx, rc.connection.id, [...state.gaps.values()], rc.run.id);
       }
       await this.storeRunQuality(tx, rc, runQuality);
+      retired = 0;
       for (const [object, r] of retire) {
-        const retired = await this.context.retireAbsentWithin(
+        retired += await this.context.retireAbsentWithin(
           tx,
           {
             system: rc.kind,
@@ -551,21 +554,21 @@ export class SourceSyncService {
           },
           this.contextMeta(rc),
         );
-        if (retired > 0) {
-          state.changed += retired;
-          state.count('references_retired', retired);
-        }
       }
       await this.repo.finishRun(tx, rc.run.id, {
         status: 'completed',
         highWatermark: rc.boundary,
-        quality: state.snapshot(),
+        quality: { ...state.snapshot(), ...(retired > 0 ? { references_retired: retired } : {}) },
         seen: state.seen,
-        changed: state.changed,
+        changed: state.changed + retired,
         skipped: state.skipped,
         failed: state.failed,
       });
     });
+    if (retired > 0) {
+      state.changed += retired;
+      state.count('references_retired', retired);
+    }
   }
 
   /** Reads the whole catalogue (ids only), proves it, and classifies product ids. */

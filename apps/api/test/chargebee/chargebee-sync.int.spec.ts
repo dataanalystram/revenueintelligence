@@ -1028,7 +1028,7 @@ describe('Chargebee reference adapter (fake Chargebee, CB01–CB36)', () => {
       });
     });
 
-    it('R7c: no blind cascade — a customer absent from the customer read but referenced by a live subscription is not retired; a removed subscription never retires its customer', async () => {
+    it('R7c: no blind cascade — a customer absent from the customer read but referenced by a live subscription is not retired; a removed subscription leaves its (still listed) customer active', async () => {
       await withFake({ accept: true }, async (fake, f) => {
         await full(f);
         removeCustomer(fake, 'cus-10');

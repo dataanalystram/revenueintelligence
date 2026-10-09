@@ -509,6 +509,8 @@ export class ContextIngestionService {
       await this.store.updateRef(tx, input.kind, ref, {
         state: 'merged',
         mergedIntoExternalId: input.survivor.id,
+        // M9B: `merged` supersedes `retired` (the retirement columns are set only while retired).
+        ...(input.kind === 'company' ? { retiredAt: null, retiredByRunId: null } : {}),
       });
       applied = true;
       const loserId = await this.store.resolveCanonical(tx, input.kind, row.canonicalId);
