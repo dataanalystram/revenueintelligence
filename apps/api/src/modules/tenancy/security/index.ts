@@ -11,3 +11,10 @@ export {
 } from './authorized-context';
 export { SecurityEventsService } from './security-events.service';
 export { WriteAuthorizer } from './write-authorizer.service';
+export {
+  AuditPurgeDisabledError,
+  AuditPurgeRefusedError,
+  SecurityOperationsService,
+  type AuditPurgeReport,
+  type KeyUsage,
+} from './security-operations.service';

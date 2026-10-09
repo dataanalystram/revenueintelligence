@@ -29,8 +29,21 @@ BEGIN
   IF n <> 0 THEN
     RAISE EXCEPTION 'refusing rollback: % change records carry an actor', n;
   END IF;
+  SELECT count(*) INTO n FROM "tenant_oauth_tokens"
+   WHERE "refresh_token_enc" LIKE 'v2:%' OR "access_token_enc" LIKE 'v2:%';
+  IF n <> 0 THEN
+    RAISE EXCEPTION 'refusing rollback: % OAuth grants hold v2 ciphertexts', n;
+  END IF;
 END
 $$;
+
+-- Token ciphertexts: back to the v1-only rule.
+ALTER TABLE "tenant_oauth_tokens"
+  DROP CONSTRAINT "tenant_oauth_tokens_refresh_encrypted",
+  DROP CONSTRAINT "tenant_oauth_tokens_access_encrypted";
+ALTER TABLE "tenant_oauth_tokens"
+  ADD CONSTRAINT "tenant_oauth_tokens_refresh_encrypted" CHECK ("refresh_token_enc" ~ '^v1:[A-Za-z0-9_-]{38,}$'),
+  ADD CONSTRAINT "tenant_oauth_tokens_access_encrypted" CHECK ("access_token_enc" IS NULL OR "access_token_enc" ~ '^v1:[A-Za-z0-9_-]{38,}$');
 
 -- Privileges back to the M9B state (default privileges granted DML).
 GRANT UPDATE, DELETE ON TABLE "tenant_context_changes" TO lip_app;

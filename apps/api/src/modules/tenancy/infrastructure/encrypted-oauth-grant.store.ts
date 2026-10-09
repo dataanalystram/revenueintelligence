@@ -1,5 +1,11 @@
-import { Injectable } from '@nestjs/common';
-import { TokenCipherSource, type TokenCipher } from '../../../platform/crypto';
+import { Injectable, Optional } from '@nestjs/common';
+import {
+  TokenCipher,
+  TokenCipherSource,
+  TokenDecryptionError,
+  TokenKeyError,
+} from '../../../platform/crypto';
+import { SecurityEventsService } from '../security/security-events.service';
 import type { TenantContext } from '../tenant-context';
 import type { OAuthGrant, OAuthSystem, TenantOAuthGrantStore } from '../oauth/oauth-grants';
 import { translateDatabaseError } from './prisma-errors';
@@ -32,6 +38,7 @@ export class EncryptedDatabaseOAuthGrantStore implements TenantOAuthGrantStore {
   constructor(
     private readonly db: TenantDatabase,
     private readonly ciphers: TokenCipherSource,
+    @Optional() private readonly events?: SecurityEventsService,
   ) {}
 
   async get(ctx: TenantContext, system: OAuthSystem): Promise<OAuthGrant | undefined> {
@@ -92,6 +99,93 @@ export class EncryptedDatabaseOAuthGrantStore implements TenantOAuthGrantStore {
     );
   }
 
+  /** Stored ciphertexts per key id (`v1` rows count as `legacy`), counts only. */
+  async keyUsage(
+    ctx: TenantContext,
+  ): Promise<{ currentKeyId: string; byKeyId: Record<string, number>; needingRekey: number }> {
+    const cipher = await this.ciphers.get();
+    const rows = await this.db.transaction(ctx, (tx) =>
+      tenantClient(tx).tenantOAuthToken.findMany({
+        select: { refreshTokenEnc: true, accessTokenEnc: true },
+      }),
+    );
+    const byKeyId: Record<string, number> = {};
+    let needingRekey = 0;
+    for (const payload of rows.flatMap((r) => [r.refreshTokenEnc, r.accessTokenEnc])) {
+      if (!payload) continue;
+      const kid = TokenCipher.keyOf(payload)?.kid ?? 'unrecognised';
+      byKeyId[kid] = (byKeyId[kid] ?? 0) + 1;
+      if (cipher.needsRekey(payload)) needingRekey += 1;
+    }
+    return { currentKeyId: cipher.currentKeyId, byKeyId, needingRekey };
+  }
+
+  /**
+   * Re-encrypts every ciphertext not on the current key (M10A1 plan §13), one
+   * tenant transaction, each grant under its refresh lock (a concurrent refresh
+   * waits, then reads the re-encrypted row). `afterRekey` runs in the same
+   * transaction (the audit event). Counts only.
+   */
+  async rekey(
+    ctx: TenantContext,
+    afterRekey: (
+      tx: TenantTransaction,
+      result: { grants: number; ciphertexts: number; keyId: string },
+    ) => Promise<void>,
+  ): Promise<{ grants: number; ciphertexts: number; keyId: string }> {
+    const cipher = await this.ciphers.get();
+    return await this.db.transaction(
+      ctx,
+      async (tx) => {
+        const client = tenantClient(tx);
+        await client.$queryRaw`SELECT set_config('lock_timeout', ${`${OAUTH_GRANT_LOCK_WAIT_MS}ms`}, true)`;
+        const systems = await client.tenantOAuthToken.findMany({
+          select: { system: true },
+          orderBy: { system: 'asc' },
+        });
+        let grants = 0;
+        let ciphertexts = 0;
+        for (const { system } of systems) {
+          try {
+            await client.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`oauth-grant:${system}:${tx.tenantId}`}, 0))`;
+          } catch (error) {
+            translateDatabaseError(error, 'OAuth token rekey');
+          }
+          const row = await client.tenantOAuthToken.findUnique({
+            where: { tenantId_system: { tenantId: tx.tenantId, system } },
+          });
+          if (!row) continue;
+          const oauth = system as OAuthSystem;
+          const data: { refreshTokenEnc?: string; accessTokenEnc?: string } = {};
+          if (cipher.needsRekey(row.refreshTokenEnc)) {
+            const plain = cipher.decrypt(row.refreshTokenEnc, aad(tx, oauth, 'refresh_token'));
+            data.refreshTokenEnc = cipher.encrypt(plain, aad(tx, oauth, 'refresh_token'));
+          }
+          if (row.accessTokenEnc && cipher.needsRekey(row.accessTokenEnc)) {
+            const plain = cipher.decrypt(row.accessTokenEnc, aad(tx, oauth, 'access_token'));
+            data.accessTokenEnc = cipher.encrypt(plain, aad(tx, oauth, 'access_token'));
+          }
+          const changed = Object.keys(data).length;
+          if (changed === 0) continue;
+          try {
+            await client.tenantOAuthToken.update({
+              where: { tenantId_system: { tenantId: tx.tenantId, system } },
+              data,
+            });
+          } catch (error) {
+            sanitised(error);
+          }
+          grants += 1;
+          ciphertexts += changed;
+        }
+        const result = { grants, ciphertexts, keyId: cipher.currentKeyId };
+        await afterRekey(tx, result);
+        return result;
+      },
+      { timeoutMs: OAUTH_GRANT_LOCKED_TRANSACTION_MS },
+    );
+  }
+
   private async read(
     tx: TenantTransaction,
     cipher: TokenCipher,
@@ -101,13 +195,36 @@ export class EncryptedDatabaseOAuthGrantStore implements TenantOAuthGrantStore {
       where: { tenantId_system: { tenantId: tx.tenantId, system } },
     });
     if (!row) return undefined;
+    const decrypt = (payload: string, column: Column) => {
+      try {
+        return cipher.decrypt(payload, aad(tx, system, column));
+      } catch (error) {
+        // M10A1 §13/§15: identifiers and codes only (never the ciphertext or a key).
+        if (error instanceof TokenKeyError || error instanceof TokenDecryptionError) {
+          const unknown = error instanceof TokenKeyError ? error.unknownKeyId : undefined;
+          this.events?.emit({
+            event: unknown ? 'token_key_unknown' : 'token_decrypt_failed',
+            outcome: 'failed',
+            tenant: tx.tenantSlug,
+            reasonCode: unknown ? 'unknown_key_id' : 'decrypt_failed',
+            coordinates: {
+              table: 'tenant_oauth_tokens',
+              system,
+              column,
+              ...(unknown ? { kid: unknown } : {}),
+            },
+          });
+        }
+        throw error;
+      }
+    };
     return {
       accountId: row.accountId,
-      refreshToken: cipher.decrypt(row.refreshTokenEnc, aad(tx, system, 'refresh_token')),
+      refreshToken: decrypt(row.refreshTokenEnc, 'refresh_token'),
       accessToken:
         row.accessTokenEnc && row.accessTokenExpiresAt
           ? {
-              token: cipher.decrypt(row.accessTokenEnc, aad(tx, system, 'access_token')),
+              token: decrypt(row.accessTokenEnc, 'access_token'),
               expiresAt: row.accessTokenExpiresAt,
             }
           : undefined,

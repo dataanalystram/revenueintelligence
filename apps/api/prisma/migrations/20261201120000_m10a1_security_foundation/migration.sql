@@ -174,3 +174,14 @@ REVOKE UPDATE, DELETE, TRUNCATE ON TABLE "tenant_source_schema_snapshots" FROM l
 REVOKE UPDATE, DELETE, TRUNCATE ON TABLE "tenant_source_mapping_versions" FROM lip_app;
 REVOKE UPDATE, DELETE, TRUNCATE ON TABLE "tenant_source_authority_versions" FROM lip_app;
 REVOKE DELETE, TRUNCATE ON TABLE "tenant_products" FROM lip_app;
+
+-- ---------------------------------------------------------------------------
+-- 6. Token ciphertext format v2 (plan §13): `v2:<kid>:` is written from now
+--    on; `v1:` rows stay readable until rekeyed. Same body rule as before.
+-- ---------------------------------------------------------------------------
+ALTER TABLE "tenant_oauth_tokens"
+  DROP CONSTRAINT "tenant_oauth_tokens_refresh_encrypted",
+  DROP CONSTRAINT "tenant_oauth_tokens_access_encrypted";
+ALTER TABLE "tenant_oauth_tokens"
+  ADD CONSTRAINT "tenant_oauth_tokens_refresh_encrypted" CHECK ("refresh_token_enc" ~ '^(v1|v2:[a-z0-9-]{1,32}):[A-Za-z0-9_-]{38,}$'),
+  ADD CONSTRAINT "tenant_oauth_tokens_access_encrypted" CHECK ("access_token_enc" IS NULL OR "access_token_enc" ~ '^(v1|v2:[a-z0-9-]{1,32}):[A-Za-z0-9_-]{38,}$');

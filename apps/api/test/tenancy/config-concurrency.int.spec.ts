@@ -219,6 +219,20 @@ describe('tenant configuration invariants under concurrent admin requests', () =
     // New connections pick up the role default.
     const rr = await startTenancy(infra.config);
     try {
+      // The environment really is misconfigured: a plain app-role transaction is REPEATABLE READ.
+      const raw = new Client({ connectionString: infra.config.databaseUrl });
+      await raw.connect();
+      try {
+        await raw.query('BEGIN');
+        const { rows } = await raw.query<{ iso: string }>(
+          "SELECT current_setting('transaction_isolation') AS iso",
+        );
+        await raw.query('COMMIT');
+        expect(rows[0]?.iso).toBe('repeatable read');
+      } finally {
+        await raw.end();
+      }
+      // M10A1: tenant transactions state READ COMMITTED explicitly, whatever the default.
       const probe = await provisionTenant(rr, 'isocheck');
       const [row] = await rr.db.transaction(
         probe,
@@ -227,8 +241,7 @@ describe('tenant configuration invariants under concurrent admin requests', () =
             { iso: string }[]
           >`SELECT current_setting('transaction_isolation') AS iso`,
       );
-      const iso = row?.iso;
-      expect(iso).toBe('repeatable read'); // the environment really is misconfigured
+      expect(row?.iso).toBe('read committed');
 
       const ctx = await provisionTenant(rr, 'racerr');
       await rr.config.configureIntegration(await authz(ctx, 'config.integration'), 'hubspot', {

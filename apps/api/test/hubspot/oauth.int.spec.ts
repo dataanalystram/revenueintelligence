@@ -222,14 +222,16 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
       const access = grant.accessToken!.token.reveal();
       expect(refresh).toMatch(/^refresh-/);
       expect(row.account_id).toBe('3003');
-      expect(row.refresh_token_enc).toMatch(/^v1:[A-Za-z0-9_-]{38,}$/);
-      expect(row.access_token_enc).toMatch(/^v1:[A-Za-z0-9_-]{38,}$/);
+      expect(row.refresh_token_enc).toMatch(/^v2:legacy:[A-Za-z0-9_-]{38,}$/);
+      expect(row.access_token_enc).toMatch(/^v2:legacy:[A-Za-z0-9_-]{38,}$/);
       const everything = JSON.stringify(row);
       expect(everything).not.toContain(refresh);
       expect(everything).not.toContain(access);
       // Not merely encoded: the decoded payload does not contain the token either.
       for (const enc of [row.refresh_token_enc, row.access_token_enc!]) {
-        const decoded = Buffer.from(enc.slice(3), 'base64url').toString('latin1');
+        const decoded = Buffer.from(enc.replace(/^v2:[a-z0-9-]+:/, ''), 'base64url').toString(
+          'latin1',
+        );
         expect(decoded).not.toContain(refresh);
         expect(decoded).not.toContain(access);
       }

@@ -1385,7 +1385,10 @@ describe('Chargebee reference adapter (fake Chargebee, CB01–CB36)', () => {
           'example.invalid',
           'Synthetic Co',
           'masked_number',
-          '1111',
+          // The fake card's masked number and last four digits, as JSON values (a bare
+          // '1111' also occurs by chance inside random UUIDs and hashes).
+          '************1111',
+          '"1111"',
         ]) {
           expect(dump).not.toContain(forbidden);
         }

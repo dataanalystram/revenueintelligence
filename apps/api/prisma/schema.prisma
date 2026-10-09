@@ -137,7 +137,7 @@ model TenantCredentialRef {
 }
 
 /// An OAuth grant a tenant gave the platform by installing its app (ADR 0010).
-/// Token columns hold AES-256-GCM ciphertext ("v1:…", bound to tenant, system
+/// Token columns hold AES-256-GCM ciphertext ("v2:<kid>:…", or "v1:…" before M10A1; bound to tenant, system
 /// and column), never a token: a CHECK constraint rejects anything else.
 model TenantOAuthToken {
   tenantId             String    @map("tenant_id") @db.Uuid

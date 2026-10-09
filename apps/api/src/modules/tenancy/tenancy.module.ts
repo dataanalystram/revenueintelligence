@@ -12,6 +12,7 @@ import { TENANT_OAUTH_GRANT_STORE } from './oauth/oauth-grants';
 import { OAuthStateService } from './oauth/oauth-state.service';
 import { AuditTrail } from './security/audit-trail';
 import { SecurityEventsService } from './security/security-events.service';
+import { SecurityOperationsService } from './security/security-operations.service';
 import { WriteAuthorizer } from './security/write-authorizer.service';
 
 @Module({
@@ -25,10 +26,12 @@ import { WriteAuthorizer } from './security/write-authorizer.service';
     TenantCredentialsService,
     OAuthStateService,
     OAuthAccountRouter,
-    { provide: TENANT_OAUTH_GRANT_STORE, useClass: EncryptedDatabaseOAuthGrantStore },
+    EncryptedDatabaseOAuthGrantStore,
+    { provide: TENANT_OAUTH_GRANT_STORE, useExisting: EncryptedDatabaseOAuthGrantStore },
     AuditTrail,
     SecurityEventsService,
     WriteAuthorizer,
+    SecurityOperationsService,
   ],
   exports: [
     TenantDatabase,
@@ -42,6 +45,7 @@ import { WriteAuthorizer } from './security/write-authorizer.service';
     AuditTrail,
     SecurityEventsService,
     WriteAuthorizer,
+    SecurityOperationsService,
   ],
 })
 export class TenancyModule {}

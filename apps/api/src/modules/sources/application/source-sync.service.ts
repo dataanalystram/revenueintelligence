@@ -122,6 +122,15 @@ interface ChildSet {
   deleted: boolean;
 }
 
+/** Coordinates of a held (secret-like) field value; never the value. */
+interface HeldCoordinate {
+  readonly object: string;
+  readonly recordId: string;
+  readonly field: string;
+  readonly pattern: string;
+}
+const MAX_HELD_LISTED = 100;
+
 /** Mutable run counters: counts and codes only, never values. */
 class RunState {
   seen = 0;
@@ -167,6 +176,17 @@ class RunState {
 
   count(code: string, by = 1): void {
     this.quality[code] = (this.quality[code] ?? 0) + by;
+  }
+
+  /**
+   * M10A1 amendment A1: a field value refused as secret-like and held. Counted
+   * under `secret_like_value` and listed by coordinates (object, record id,
+   * field, pattern code), bounded; the value itself is never part of the run.
+   */
+  hold(object: string, recordId: string, field: string, pattern: string): void {
+    this.count('secret_like_value');
+    const list = (this.detail.secret_like_held ??= []) as HeldCoordinate[];
+    if (list.length < MAX_HELD_LISTED) list.push({ object, recordId, field, pattern });
   }
 
   snapshot(): Record<string, unknown> {
@@ -791,7 +811,9 @@ export class SourceSyncService {
         continue;
       }
       result.quality.forEach((q) => state.count(q));
-      await this.context.ingest(rc.actx, result.observation, this.contextMeta(rc));
+      const ingested = await this.context.ingest(rc.actx, result.observation, this.contextMeta(rc));
+      for (const h of ingested.held ?? [])
+        state.hold(obj.source, result.observation.ref.id, h.field, h.code);
       if (obj.entity === 'account') state.knownAccounts.add(result.observation.ref.id);
     }
     this.metrics?.increment(

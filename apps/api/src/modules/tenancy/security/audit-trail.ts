@@ -47,7 +47,7 @@ export class AuditIsolationError extends Error {
 }
 
 /** The advisory-lock scope that serialises one tenant's chain (§5.1). */
-const CHAIN_LOCK_SCOPE = 'audit-chain';
+export const CHAIN_LOCK_SCOPE = 'audit-chain';
 
 /**
  * The append-only, hash-chained audit trail (M10A1 plan §5, §5.1, §6).
@@ -205,14 +205,7 @@ export class AuditTrail {
         ? { seq: anchor.anchorSeq, hash: anchor.anchorHash }
         : { seq: 0, hash: AUDIT_GENESIS_HASH };
     }
-    const payload = {
-      ...event,
-      tenantId: tx.tenantId,
-      id: randomUUID(),
-      seq: prev.seq + 1,
-      occurredAt: new Date(),
-    };
-    const hash = auditEventHash(prev.hash, payload);
+    const { payload, hash } = chainedAuditEvent(prev, tx.tenantId, event);
     await client.tenantAuditEvent.create({
       data: {
         tenantId: payload.tenantId,
@@ -236,6 +229,22 @@ export class AuditTrail {
       },
     });
   }
+}
+
+/**
+ * The next event of a tenant's chain: identity, sequence, time and the hash
+ * linking it to `prev` (pure; shared by the app-role writer and the owner-path
+ * purge, so both produce identical chains).
+ */
+export function chainedAuditEvent(
+  prev: { readonly seq: number; readonly hash: string },
+  tenantId: string,
+  input: AuditEventInput,
+  occurredAt: Date = new Date(),
+) {
+  const event = AuditEventInputSchema.parse(input);
+  const payload = { ...event, tenantId, id: randomUUID(), seq: prev.seq + 1, occurredAt };
+  return { payload, hash: auditEventHash(prev.hash, payload) };
 }
 
 type AuditRow = Awaited<
