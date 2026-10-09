@@ -674,6 +674,25 @@ command): 18 live subscriptions, 21 active lines, line fingerprints identical to
 (twice); Key B `forbidden` / `source_forbidden`, 21 → 21 active lines; incremental start refused. The spec now
 asserts the reference states (active → retired by run 3), the company (1 row, `active`) and no `include_deleted`.
 
+**Independent review** (read-only subagent, commit `e22d07a`): no blocking defects; no path found that retires on an
+incremental, failed, unstable or unaccepted run, or retires a seen, rejected or line-referenced customer; resume is
+safe (each attempt rebuilds `seen`; full runs never resume from a cursor). Fixed in `92af9f5`: the retirement count
+is applied to the run state only after the completion transaction commits; a merge of a retired reference clears the
+retirement columns (latent: only HubSpot merges exist); R7c's title now states what it proves.
+
+**Open questions for the owner (not changed without approval):**
+
+1. **Existing connections need a re-captured snapshot.** Retirement is enabled by the capability stored in the
+   published mapping's schema snapshot (drift detection does not compare capabilities). A Chargebee connection
+   published before this change does not retire until its snapshot is re-captured and the mapping republished;
+   removing the capability from the adapter later would not switch it off for already-published snapshots.
+2. **One acceptance covers both.** The existing per-connection stable-snapshot acceptance now authorises customer
+   reference retirement as well as line tombstones. A separate acceptance would be a further change.
+3. **Settle window changes.** Raising `sync.settleMinutes` between runs can make a customer created inside the new
+   window absent from the next full read and retire it until the following run reactivates it (transient).
+4. The `lastSeenAt` candidate filter (a reference read after the run's read began is never a candidate) has no
+   dedicated test or mutation proof yet.
+
 ## V12 final decision and incremental-sync assessment
 
 **V12: LIVE CONFIRMED for API-driven subscription-item changes** — quantity change (M01), item removal (M02), price
