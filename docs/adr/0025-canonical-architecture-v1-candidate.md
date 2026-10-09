@@ -1,6 +1,7 @@
 # ADR 0025: Canonical Architecture v1 Candidate — three layers, promotion rule, extension, provenance, versioning (Milestone 9E)
 
-- Status: **Proposed — v1 candidate.** Not accepted as Canonical Model v1.0. Acceptance as v1.0 happens only after
+- Status: **Proposed — v1 candidate, approved as the candidate by the M9E final review (E12:
+  `PASS — CANONICAL ARCHITECTURE V1 CANDIDATE APPROVED`).** Not accepted as Canonical Model v1.0. Acceptance as v1.0 happens only after
   M9C (file/S3) and M9D (warehouse/table) pressure-test it and the relocated M9 §13.5 freeze gate passes.
 - Date: 2026-10-09
 - Milestone: M9E (design/documentation only; no schema, table or code changed)
