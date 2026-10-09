@@ -191,6 +191,16 @@ describe('S22: secret-shaped source values are held, recorded and never persiste
     );
     expect.soft(stored!.quality).toMatchObject({ secret_like_value: 1 });
 
+    // Change records written by the runs carry the source-sync actor (M10A1).
+    expect
+      .soft(
+        await c.sql<{ actor_kind: string | null; actor_assurance: string | null }>(
+          `SELECT DISTINCT actor_kind, actor_assurance FROM tenant_context_changes WHERE tenant_id = $1`,
+          [f.ctx.tenantId],
+        ),
+      )
+      .toEqual([{ actor_kind: 'source_sync', actor_assurance: 'system' }]);
+
     // Held: the previous accepted value stays.
     expect.soft(await companyName(f, k.system, k.object, recordId)).toBe(before);
 

@@ -13,6 +13,7 @@ import { OAuthStateService } from './oauth/oauth-state.service';
 import { AuditTrail } from './security/audit-trail';
 import { SecurityEventsService } from './security/security-events.service';
 import { SecurityOperationsService } from './security/security-operations.service';
+import { PrivilegeManifestCheck } from './infrastructure/privilege-check';
 import { WriteAuthorizer } from './security/write-authorizer.service';
 
 @Module({
@@ -32,6 +33,7 @@ import { WriteAuthorizer } from './security/write-authorizer.service';
     SecurityEventsService,
     WriteAuthorizer,
     SecurityOperationsService,
+    PrivilegeManifestCheck,
   ],
   exports: [
     TenantDatabase,
@@ -46,6 +48,7 @@ import { WriteAuthorizer } from './security/write-authorizer.service';
     SecurityEventsService,
     WriteAuthorizer,
     SecurityOperationsService,
+    PrivilegeManifestCheck,
   ],
 })
 export class TenancyModule {}

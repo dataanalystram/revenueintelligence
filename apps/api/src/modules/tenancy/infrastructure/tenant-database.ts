@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { Prisma } from '../../../generated/prisma/client';
 import { APP_CONFIG, type AppConfig } from '../../../platform/config';
 import { PrismaService } from '../../../platform/database';
@@ -7,6 +7,7 @@ import type { TenantId } from '../../domain';
 import { InvalidTenantContextError, TenantInactiveError, TenantNotFoundError } from '../errors';
 import { TenantSchema, type Tenant, type TenantSlug } from '../tenant';
 import { assertTenantContext, type TenantContext } from '../tenant-context';
+import { SecurityEventsService } from '../security/security-events.service';
 
 /**
  * A database transaction bound to exactly one tenant. Repositories take one of
@@ -87,6 +88,7 @@ export class TenantDatabase {
   constructor(
     private readonly prisma: PrismaService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
+    @Optional() private readonly events?: SecurityEventsService,
   ) {}
 
   /**
@@ -113,7 +115,15 @@ export class TenantDatabase {
       async (client) => {
         const status = await bindTenant(client, context.tenantId);
         if (status === null) throw new TenantNotFoundError(context.tenantId);
-        if (status !== 'active') throw new TenantInactiveError(context.tenantId, status);
+        if (status !== 'active') {
+          this.events?.emit({
+            event: 'tenant_inactive_access',
+            outcome: 'refused',
+            tenant: context.tenantSlug,
+            reasonCode: `tenant_${status}`,
+          });
+          throw new TenantInactiveError(context.tenantId, status);
+        }
         return runBound(client, { id: context.tenantId, slug: context.tenantSlug }, work);
       },
       {

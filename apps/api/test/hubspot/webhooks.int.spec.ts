@@ -13,6 +13,7 @@ import {
   type TenantContext,
 } from '../../src/modules/tenancy';
 import { WEBHOOK_MAX_BODY_BYTES } from '../../src/platform/http';
+import { MetricsService } from '../../src/platform/metrics';
 import {
   APP_LOGIN,
   startInfrastructure,
@@ -297,6 +298,11 @@ describe('HubSpot webhook intake (API process)', () => {
   describe('signature and freshness', () => {
     it('a wrong signature, secret or body → 401, nothing stored', async () => {
       const before = await totalReceipts();
+      const signals = () =>
+        app.get(MetricsService).total('lip_security_events_total', {
+          event: 'webhook_signature_invalid',
+        });
+      const signalsBefore = signals();
       const body = json([webhookEvent()]);
       const headers = signedHeaders({ secret: 'not-the-secret', uri: TARGET, body });
       const res = await deliver(body, { headers }).expect(401);
@@ -305,6 +311,8 @@ describe('HubSpot webhook intake (API process)', () => {
       await deliver(json([webhookEvent()]), { headers: good }).expect(401); // other body
       await deliver(body, { headers: { 'content-type': 'application/json' } }).expect(401);
       expect(await totalReceipts()).toBe(before);
+      // M10A1: each refusal is a security event (code only).
+      expect(signals() - signalsBefore).toBe(3);
     });
 
     it('stale (> 5 min) and future-dated (> 60 s) timestamps → 401', async () => {

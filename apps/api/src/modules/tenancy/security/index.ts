@@ -29,3 +29,4 @@ export {
   TABLE_PRIVILEGES,
   type TablePrivilege,
 } from './privilege-manifest';
+export { PrivilegeManifestCheck } from '../infrastructure/privilege-check';

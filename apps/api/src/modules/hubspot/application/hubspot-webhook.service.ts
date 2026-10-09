@@ -7,6 +7,7 @@ import {
   RecordNotFoundError,
   TenantConfigService,
   isEnabled,
+  SecurityEventsService,
   type TenantContext,
 } from '../../tenancy';
 import { HUBSPOT_CONFIG, type HubSpotConfig } from '../hubspot.config';
@@ -72,6 +73,8 @@ export class HubSpotWebhookService {
     @Optional()
     @Inject(RECEIPTS_STORED_LISTENER)
     private readonly listener?: ReceiptsStoredListener,
+    /** M10A1: security events (codes only); absent in contexts without the tenancy module. */
+    @Optional() private readonly securityEvents?: SecurityEventsService,
   ) {}
 
   async receive(req: WebhookRequest, now: number = Date.now()): Promise<WebhookOutcome> {
@@ -102,6 +105,11 @@ export class HubSpotWebhookService {
         msg: 'HubSpot webhook refused: signature',
         reason,
         bytes: req.rawBody.length,
+      });
+      this.securityEvents?.emit({
+        event: 'webhook_signature_invalid',
+        outcome: 'refused',
+        reasonCode: reason,
       });
       return fail(401, 'invalid_signature');
     }

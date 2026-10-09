@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   operatorActor,
@@ -8,6 +9,9 @@ import {
 import {
   AuditTrail,
   AuthorizationDeniedError,
+  OAuthStateError,
+  OAuthStateService,
+  PrivilegeManifestCheck,
   SecurityEventsService,
   SecurityOperationsService,
   tenantClient,
@@ -15,8 +19,9 @@ import {
   type TenantContext,
 } from '../../src/modules/tenancy';
 import { startInfrastructure, withAdmin, type TestInfrastructure } from '../support/containers';
-import { authz } from '../support/security';
+import { authz, platformAuthz } from '../support/security';
 import { provisionTenant, startTenancy, type TenancyHarness } from '../support/tenancy';
+import { MetricsService } from '../../src/platform/metrics';
 
 /**
  * M10A1 audit behaviour on real PostgreSQL (app role, forced RLS):
@@ -339,6 +344,50 @@ describe('M10A1 audit trail behaviour', () => {
       ]);
       expect(kept.at(-1)).toMatchObject({ action: 'security.audit.purge', outcome: 'completed' });
       await expect(trail().verify(t)).resolves.toMatchObject({ ok: true, events: kept.length });
+    });
+  });
+
+  describe('security events for existing signals (plan §15)', () => {
+    const counter = (event: string) =>
+      h.app.get(MetricsService, { strict: false }).total('lip_security_events_total', { event });
+
+    it('access to a suspended tenant emits tenant_inactive_access', async () => {
+      const t = await provisionTenant(h, 'inactive');
+      await h.registry.suspend(platformAuthz('config.tenant.status'), t.tenantId);
+      const before = counter('tenant_inactive_access');
+      await expect(h.config.listIntegrations(t)).rejects.toThrow(/suspended|inactive/i);
+      expect(counter('tenant_inactive_access') - before).toBe(1);
+    });
+
+    it('an invalid OAuth state emits oauth_state_invalid with the reason only', async () => {
+      // A synthetic key for this test only (the harness configures none).
+      process.env.PLATFORM_TOKEN_ENCRYPTION_KEY ??= randomBytes(32).toString('base64');
+      const emitted = securityEvents();
+      const states = h.app.get(OAuthStateService, { strict: false });
+      await expect(states.redeem('not-a-state', 'hubspot')).rejects.toBeInstanceOf(OAuthStateError);
+      expect(emitted).toEqual([
+        expect.objectContaining({ event: 'oauth_state_invalid', reasonCode: 'malformed' }),
+      ]);
+    });
+
+    it('the runtime privilege check finds no mismatch, and detects an extra grant (the check can fail)', async () => {
+      const check = h.app.get(PrivilegeManifestCheck, { strict: false });
+      await expect(check.run()).resolves.toEqual([]);
+      const emitted = securityEvents();
+      await admin('GRANT TRUNCATE ON TABLE tenant_audit_events TO lip_app');
+      try {
+        await expect(check.run()).resolves.toEqual(['tenant_audit_events']);
+      } finally {
+        await admin('REVOKE TRUNCATE ON TABLE tenant_audit_events FROM lip_app');
+      }
+      expect(emitted).toEqual([
+        expect.objectContaining({
+          event: 'privilege_manifest_mismatch',
+          outcome: 'detected',
+          coordinates: { table: 'tenant_audit_events', extra: 'TRUNCATE', missing: '' },
+        }),
+      ]);
+      await expect(check.run()).resolves.toEqual([]);
     });
   });
 });
