@@ -1,10 +1,13 @@
 # Milestone 9B — Chargebee reference adapter (implementation record)
 
-- Status: **FAKE IMPLEMENTATION COMPLETE — awaiting independent implementation review.**
-  **LIVE CHARGEBEE VERIFICATION: IN PROGRESS** — baseline read done on the TEST site; **blocked** on the
-  reused-subscription-id contradiction (see [Live baseline](#live-baseline-test-site)) and on Key B. Independent
-  implementation review: **not yet done**.
-  **M9B is NOT closed**: it cannot close on the fake alone (plan §26).
+- Status: **APPROVED FOR CLOSURE — final independent review `PASS — M9B APPROVED FOR CLOSURE`** (no blocking
+  defects). Approved code SHA **`1502da2de0588ed10c470dc1d1e917e00faa362a`**; later commits on the branch are
+  documentation/evidence only. See [Final independent review](#final-independent-review). Merge and closure are
+  recorded in [Closure](#closure) once done.
+- Live TEST-site verification recorded: baseline, V8 (Key B), mutations M01–M08 and the governed customer
+  source-reference retirement. **Not run:** mutations M09 (Legacy archive) and M10 (Temp deletion/archive); V6, V9,
+  V10 and V11 remain as recorded in [V2–V12](#v2v12-live-gate) (open; not resolved by this closure). Incremental
+  sync stays disabled.
 - **LIVE SUGAR VERIFICATION: PENDING** (unchanged).
 - Not started: M9C (S3/files), M9D (warehouse), signals, opportunities, cross-source matching.
 - Plan: [M09B detailed plan](M09B-chargebee-reference-adapter-plan.md), approved at
@@ -727,6 +730,22 @@ compose file was changed for this.
 
 Earlier attempts of these gates that failed for infrastructure reasons are recorded above (Docker Hub 429; a missing
 sandbox CA on the first Docker build; one disk-full Docker build). None was an application failure.
+
+## Final independent review
+
+Result: **`PASS — M9B APPROVED FOR CLOSURE`** — no blocking defects. Reviewed branch `claude/blissful-mendel-urbh4r`,
+approved code SHA `1502da2de0588ed10c470dc1d1e917e00faa362a` (evidence commit `c68b7f9` and closure-preparation
+documentation commits change no code).
+
+- **Docker 26 passed / 1 failed on the reviewer's host:** environment-specific — a Docker Desktop host-network
+  limitation (`--network host` does not behave as on native Linux), **not an application defect**. The same Docker
+  verification passed 27/0 in the fresh clone of the approved SHA on native Linux (sandbox CA, `--network host`;
+  see the verification table above) and is re-checked by CI on the PR.
+- **Non-blocking follow-up / spot-check items** (tracked in [technical debt](../tech-debt.md) #63 and #64):
+  1. "Sugar unchanged" was not reproduced end to end in the independent review (covered here by the Sugar
+     regression test, `pnpm verify` and the unchanged Sugar suite);
+  2. the recapture/republish behaviour of an old Chargebee mapping (published before `referenceRetirement`) was not
+     independently reproduced with a legacy fixture.
 
 ## V12 final decision and incremental-sync assessment
 
