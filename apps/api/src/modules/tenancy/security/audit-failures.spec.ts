@@ -25,6 +25,18 @@ class Fixture {
     if (error) throw error;
     return 'ok';
   }
+
+  /** An audited write that calls another audited write (one operation). */
+  @AuditFailures('source_connection.configure', 'source_connection')
+  async outer(target: unknown, error: Error): Promise<string> {
+    return this.write(target, error);
+  }
+
+  @AuditFailures('eligibility.record', 'eligibility_snapshot', (args) => args[1] === 'record')
+  async maybeWrite(_target: unknown, _mode: string, error: Error): Promise<string> {
+    await Promise.resolve();
+    throw error;
+  }
 }
 
 const actx = () =>
@@ -66,7 +78,33 @@ describe('AuditFailures', () => {
     expect(failureReason(named('ProductModelInvalidError'))).toBe('validation_failed');
     expect(failureReason(named('BaseVersionRequiredError'))).toBe('validation_failed');
     expect(failureReason(named('SourcesError', 'concurrent_publish'))).toBe('stale_base_version');
+    expect(failureReason(named('ConcurrencyConflictError', 'version_conflict'))).toBe(
+      'stale_base_version',
+    );
     expect(failureReason(named('Error'))).toBe('operation_failed');
     expect(failureReason('not an error')).toBe('operation_failed');
+  });
+
+  it('a nested audited call is recorded once, by the outermost operation', async () => {
+    const f = new Fixture();
+    await expect(f.outer(actx(), new Error('inner'))).rejects.toThrow('inner');
+    expect(f.failed).toEqual([
+      {
+        action: 'source_connection.configure',
+        targetKind: 'source_connection',
+        reason: 'operation_failed',
+      },
+    ]);
+  });
+
+  it('records only when the condition holds, and never on a broken chain', async () => {
+    const f = new Fixture();
+    await expect(f.maybeWrite(actx(), 'read', new Error('x'))).rejects.toThrow('x');
+    expect(f.failed).toEqual([]);
+    await expect(f.maybeWrite(actx(), 'record', new Error('x'))).rejects.toThrow('x');
+    expect(f.failed).toHaveLength(1);
+    const broken = Object.assign(new Error('chain'), { code: 'audit_chain_broken' });
+    await expect(f.write(actx(), broken)).rejects.toBe(broken);
+    expect(f.failed).toHaveLength(1);
   });
 });

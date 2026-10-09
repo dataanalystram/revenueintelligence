@@ -405,9 +405,7 @@ describe('M10A1 audit trail behaviour', () => {
         expect.objectContaining({
           action: 'policy.save',
           outcome: 'failed',
-          reason_code: expect.stringMatching(
-            /^(stale_base_version|validation_failed|operation_failed)$/,
-          ),
+          reason_code: 'stale_base_version',
           details: {},
         }),
       ]);

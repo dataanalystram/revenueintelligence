@@ -382,12 +382,8 @@ describe('M10A1 security operations', () => {
           ownerDatabaseUrl: infra.adminUrl,
         }),
       ).rejects.toThrow(/does not verify/);
-      // Nothing deleted, no anchor; the refused attempt itself is recorded as failed.
-      const after = await auditRows(t);
-      expect(after.slice(0, before.length)).toEqual(before);
-      expect(after.slice(before.length).map((r) => [r.action, r.outcome])).toEqual([
-        ['security.audit.purge', 'failed'],
-      ]);
+      // Nothing deleted, no anchor, and the broken chain is not extended (not even by a failed event).
+      expect(await auditRows(t)).toEqual(before);
       expect(
         await admin('SELECT 1 FROM tenant_audit_anchors WHERE tenant_id = $1', [t.tenantId]),
       ).toEqual([]);

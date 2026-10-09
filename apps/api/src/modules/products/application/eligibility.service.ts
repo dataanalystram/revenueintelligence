@@ -121,7 +121,10 @@ export class EligibilityService {
    * an operator authorized for `data.eligibility.record` (M10A1); a plain
    * evaluation needs only a tenant context.
    */
-  @AuditFailures('eligibility.record', 'eligibility_snapshot')
+  // Only a recording evaluation is a write; a plain evaluation is a read.
+  @AuditFailures('eligibility.record', 'eligibility_snapshot', (args) =>
+    Boolean((args[3] as { record?: unknown } | undefined)?.record),
+  )
   async evaluate(
     target: TenantContext | AuthorizedContext<'data.eligibility.record'>,
     companyId: string,

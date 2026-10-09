@@ -162,6 +162,17 @@ Review-fix mutation proofs (each failed for the stated reason, restored clean):
 | RMm2 | purge skips chain verification             | broken-chain purge "resolved … instead of rejecting"     |
 | RMm3 | an action added in code only               | closed-set guard: 45 ≠ 46 actions                        |
 
+Re-review (`47d74f9..258cc0e`): **PASS WITH FINDINGS** — M1–M4 confirmed fixed, no major or blocker. Follow-ups:
+
+| Finding                                                                 | Resolution                                                                                                                                                                            |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| m-a stale tenant-config versions recorded as `operation_failed`         | `version_conflict` / `Concurrency…` map to `stale_base_version`; the integration test asserts the exact code (RMa: reverting the pattern fails it)                                    |
+| m-b failed events extended a broken chain                               | `audit_chain_broken` is a refusal: nothing is appended to a chain that does not verify (test asserts no new row)                                                                      |
+| m-c nested audited calls recorded twice                                 | only the outermost audited operation records the failure (AsyncLocalStorage); unit test                                                                                               |
+| m-d plain evaluation recorded as a failed snapshot write                | `evaluate` records failures only with `options.record`; unit test of the condition                                                                                                    |
+| m-e webhook intake now takes the tenant's chain lock per batch          | **accepted, documented**: fail closed by design (an audit failure returns 5xx and HubSpot retries); audit volume grows with webhook batches, latency shares the per-tenant chain lock |
+| m-f purge verifies the chain before taking the lock, in another session | **accepted, documented**: the remaining window can only be used by the schema owner, who could bypass the triggers anyway                                                             |
+
 ## Deviations and notes
 
 - `PLATFORM_TOKEN_ENCRYPTION_PREVIOUS_KEY_IDS` (configuration) names the key ids kept readable after a rotation;
