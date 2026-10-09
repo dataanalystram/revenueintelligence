@@ -1,8 +1,11 @@
 # Milestone 10 — Canonical Architecture + Security/Data Governance Implementation: plan
 
-- Status: **PLAN, REVISION 2. Approved in principle (2026-10-09), with decisions D1–D6 and the security & data
-  governance amendment (§0a).** This revision applies them. **M10A1 does not start until the owner approves this
-  revision.** No schema, migration or code change has been made for M10.
+- Status: **APPROVED PLAN (revision 3, 2026-10-09).**
+  - Revision 2 applied decisions D1–D6 and the security & data governance amendment.
+  - The owner approved revision 2 with final decisions F1–F5 (§0b), which this revision applies.
+  - Each sub-milestone still needs its own detailed plan approved before implementation. The next one is **M10A1 —
+    Security Foundation**, whose detailed plan is prepared separately.
+  - No schema, migration or code change has been made for M10.
 - Input: the approved [Canonical Architecture v1 Candidate](../architecture/canonical-v1/CANDIDATE.md) (M9E, E12 `PASS
 — CANONICAL ARCHITECTURE V1 CANDIDATE APPROVED`) and [ADR 0025](../adr/0025-canonical-architecture-v1-candidate.md).
 - Base: `main` after the M9E closure (`19a0044`).
@@ -56,6 +59,16 @@ They move to M11 and later (§19).
 | D5  | Module enablement is **not** stored on the canonical adoption record. A separate tenant-scoped, auditable module-enablement mechanism. Changing a module never implies a canonical version change                                                                            | §17, M10A2                            |
 | D6  | Engines stay out of M10                                                                                                                                                                                                                                                      | §0                                    |
 | SG  | Security & data governance throughout: every sub-milestone has two acceptance sections, `Canonical / business correctness` and `Security & Data Governance`                                                                                                                  | §16, §15                              |
+
+## 0b. Final decisions on revision 2 (2026-10-09)
+
+| #   | Decision                                                                                                                                                                                                                                                                                                                                         | Applied in |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------- |
+| F1  | M10A1 / M10A2 split approved: **M10A1 — Security Foundation** before **M10A2 — Canonical Versioning/Foundation**. No canonical writer is created before the A1 security primitives exist                                                                                                                                                         | §4, §15    |
+| F2  | Entity index approved **with a scope rule**: `tenant_entity_index` only for genuinely polymorphic references; a relation that permanently targets one known entity kind uses an ordinary tenant-scoped direct FK. All three protections stay (writer validation; database enforcement as the security boundary; periodic integrity verification) | §18        |
+| F3  | Classification approved: sensitivity and data category are **independent**. Sensitivity: Public, Internal, Confidential, Restricted. Categories at least: Personal, Financial, Communication, Operational, Commercial, Security. `personal` is never a sensitivity level                                                                         | §16.1      |
+| F4  | Module disabling approved: keeps data; readable subject to authorization; provenance/history preserved; new writes refused; new mapping publication for the module refused, or the resulting governed gap recorded; never physically deletes; re-enabling needs no data migration                                                                | §17        |
+| F5  | Retention **policy-first**: configurable retention classes, no hard-coded legal/compliance assumptions, conservative engineering defaults; product defaults are not SOC 2, GDPR, HIPAA or legal-retention claims; tech debt #15 stays open                                                                                                       | §10, §16.3 |
 
 ## 1. Current schema and components that can be reused (`IMPLEMENTED TODAY`)
 
@@ -310,14 +323,15 @@ change_id → tenant_context_changes, actor_kind, recorded_at)`;
 - **Immutable entities** need no value history; corrections supersede. They are signals, metric observations,
   evidence links, recommendation and action events, action outcomes and registry versions. Immutability is enforced in
   the database by privileges plus a trigger.
-- **Restricted history rules** (owner amendment; data policy, §16 control 12):
-  - `restricted` fields never write value history unless the tenant's data policy explicitly allows it for that
-    field;
-  - `personal` fields (data category) write value history only under the field's retention class;
+- **Restricted history rules** (owner amendment and F5; data policy, §16 control 12):
+  - **sensitive value history is disabled unless an approved policy allows it.** "Sensitive" means sensitivity
+    `restricted`, or category `personal`, `communication` or `security`;
+  - an allowing policy is a published data-policy version (audited) that names the field and its retention class;
   - when history is suppressed, the history row records that a change happened (field, actor, time, change id)
     **without** old or new values;
   - this is enforced in the writer helper and verified by a test that scans `tenant_value_history` for values of
-    restricted fields;
+    sensitive fields;
+  - canonical business records follow their entity lifecycle/history policy, not generic log retention;
   - retention purges of history are audited.
 - **Initial value-history fields:**
   - Account `parent_account_id` / `customer_status` / `name`;
@@ -454,29 +468,29 @@ independent review and closure. Each has **two acceptance sections**, `Canonical
 
 ### 15.0 Revised sub-milestone table
 
-| #     | Sub-milestone                                                                                                                                                                               | Canonical version after     | Depends on |
-| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------- | ---------- |
-| M10A1 | Security & governance foundation: actor, write authorization, audit events, classification, secret-like refusal, privilege manifest, key-identified cipher                                  | `0.1` (no canonical change) | —          |
-| M10A2 | Canonical versioning + adoption, module enablement, governed registries (incl. data policy), entity index, value history, change-record widening, mapping lifecycle, integrity verification | `0.1` baseline recorded     | A1         |
-| M10B  | Generic SourceReference (incl. product key) + EvidenceLink                                                                                                                                  | `0.2`                       | A2         |
-| M10C  | Account hierarchy + Person–Account affiliation                                                                                                                                              | `0.3`                       | B          |
-| M10D  | Extension framework                                                                                                                                                                         | `0.4`                       | B          |
-| M10E  | AccountContext                                                                                                                                                                              | `0.5`                       | C, D       |
-| M10F  | Commercial: Price/Offer, Contract, Entitlement, line commercial references                                                                                                                  | `0.6`                       | E          |
-| M10G  | Vendor-neutral Signal + Signal Type Registry                                                                                                                                                | `0.7`                       | F          |
-| M10H  | Opportunity + lines + contact roles                                                                                                                                                         | `0.8`                       | G          |
-| M10I  | Recommendation, decision events, Action, ActionOutcome                                                                                                                                      | `0.9`                       | H          |
-| M10J  | Value: Goal, MetricDefinition, MetricObservation                                                                                                                                            | `0.10`                      | I          |
-| M10K  | Engagement: Activity, ActivityParticipant, ContentReference, SupportCase                                                                                                                    | `0.11`                      | H          |
-| M10L  | Data quality: rejected observations + field intelligence                                                                                                                                    | `0.12`                      | D          |
-| M10M  | Migration framework and adoption hardening; canonical implementation record                                                                                                                 | `0.12` (no new structure)   | all        |
+| #     | Sub-milestone                                                                                                                                                                                                                    | Canonical version after     | Depends on |
+| ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------- | ---------- |
+| M10A1 | **Security Foundation**: actor, write authorization, audit events, classification, secret-like refusal, privilege manifest, key-identified cipher                                                                                | `0.1` (no canonical change) | —          |
+| M10A2 | **Canonical Versioning/Foundation**: canonical versioning + adoption, module enablement, governed registries (incl. data policy), entity index, value history, change-record widening, mapping lifecycle, integrity verification | `0.1` baseline recorded     | A1         |
+| M10B  | Generic SourceReference (incl. product key) + EvidenceLink                                                                                                                                                                       | `0.2`                       | A2         |
+| M10C  | Account hierarchy + Person–Account affiliation                                                                                                                                                                                   | `0.3`                       | B          |
+| M10D  | Extension framework                                                                                                                                                                                                              | `0.4`                       | B          |
+| M10E  | AccountContext                                                                                                                                                                                                                   | `0.5`                       | C, D       |
+| M10F  | Commercial: Price/Offer, Contract, Entitlement, line commercial references                                                                                                                                                       | `0.6`                       | E          |
+| M10G  | Vendor-neutral Signal + Signal Type Registry                                                                                                                                                                                     | `0.7`                       | F          |
+| M10H  | Opportunity + lines + contact roles                                                                                                                                                                                              | `0.8`                       | G          |
+| M10I  | Recommendation, decision events, Action, ActionOutcome                                                                                                                                                                           | `0.9`                       | H          |
+| M10J  | Value: Goal, MetricDefinition, MetricObservation                                                                                                                                                                                 | `0.10`                      | I          |
+| M10K  | Engagement: Activity, ActivityParticipant, ContentReference, SupportCase                                                                                                                                                         | `0.11`                      | H          |
+| M10L  | Data quality: rejected observations + field intelligence                                                                                                                                                                         | `0.12`                      | D          |
+| M10M  | Migration framework and adoption hardening; canonical implementation record                                                                                                                                                      | `0.12` (no new structure)   | all        |
 
 Every entity area from M10E onward is gated by its module key (§17): `account_context`, `commercial`, `signals`,
 `opportunities`, `decision_chain`, `value`, `engagement`; M10D and M10L by `extension` and `data_quality`. Version
 labels are indicative. Each sub-milestone that adds canonical structure publishes the next MINOR when it
 closes. None publishes `1.0`.
 
-### M10A1 — Security & governance foundation
+### M10A1 — Security Foundation
 
 - **Objective:** the security primitives every later writer and table uses. No canonical entity is added.
 - **Schema:**
@@ -532,7 +546,7 @@ target_id, outcome (allowed/denied), request_id, details jsonb)`;
   - make the cipher ignore the key id → the rotation test fails.
 - **Gates:** `pnpm verify`, runtime, Docker, fresh clone, mutation proofs, independent review.
 
-### M10A2 — Versioning, adoption, module enablement, registries, entity index, history, mapping lifecycle
+### M10A2 — Canonical Versioning/Foundation (versioning, adoption, module enablement, registries, entity index, history, mapping lifecycle)
 
 - **Objective:** the platform foundation every later entity uses. No business entity yet.
 - **Schema:**
@@ -899,8 +913,8 @@ target_id, outcome (allowed/denied), request_id, details jsonb)`;
   - content never in core rows;
   - an Activity never creates an Opportunity directly.
 - **Security & Data Governance:**
-  - transcript/email/content sensitivity: content is category `communication_content`, minimum sensitivity
-    `restricted`;
+  - transcript/email/content sensitivity: content is category `communication`, sensitivity `restricted` (floor
+    for communication content);
   - **ContentReference instead of blind content copying:**
     - core rows hold a classified summary at most;
     - full content is reachable only through a ContentReference (source coordinates, or a governed store that is
@@ -992,10 +1006,10 @@ Each control has a mechanism, a sub-milestone and a test. "Today" is the state o
 | 6   | Connector credential isolation                                                                | name-only credential refs with tenant-prefix CHECK; `SecretProvider`; credentials never in mappings, registries or canonical rows                                                                                     | kept; asserted A1          | `IMPLEMENTED TODAY`                              |
 | 7   | Secrets never stored as canonical/extension values                                            | secret-like detector in writers; credential-like extension field definitions refused; capture drops `sensitive_by_name`                                                                                               | A1, D                      | not present                                      |
 | 8   | Field/data classification                                                                     | classification manifest for every tenant-table column (guard); extension fields classified at definition; metric/signal/context types classified                                                                      | A1, D, G, J                | not present                                      |
-| 9   | Sensitivity levels                                                                            | `public` / `internal` / `confidential` / `restricted`, plus data category `none` / `personal` / `financial` / `communication_content` (§16.1)                                                                         | A1                         | not present                                      |
+| 9   | Sensitivity levels                                                                            | `public` / `internal` / `confidential` / `restricted`, independent of data category (`personal`, `financial`, `communication`, `operational`, `commercial`, `security`; §16.1)                                        | A1                         | not present                                      |
 | 10  | PII/restricted-field handling                                                                 | category `personal` → minimum `confidential`; restricted values not stored while raw retention is off; masking in core rows; detectors                                                                                | A1, D, K, L                | privacy rule for logs/profiles today             |
 | 11  | Retention-policy metadata                                                                     | retention class per classified field; tenant data policy (registry kind `data_policy`); TTL guardrails; audited purges                                                                                                | A1, A2                     | M9A profile retention only                       |
-| 12  | Restricted history rules                                                                      | value-free history rows for restricted fields; policy-gated personal history                                                                                                                                          | A2                         | not present                                      |
+| 12  | Restricted history rules                                                                      | value-free history rows for sensitive fields unless an approved policy allows values                                                                                                                                  | A2                         | not present                                      |
 | 13  | Audit events for privileged/configuration changes                                             | `tenant_audit_events`, append-only, denials included                                                                                                                                                                  | A1, then all               | M9A purge audit only                             |
 | 14  | Immutable provenance/evidence                                                                 | privileges + triggers on evidence, events, observations, signals, history, registry versions                                                                                                                          | A2, B, G, I, J             | product model / mapping versions immutable today |
 | 15  | Source/mapping/migration auditability                                                         | change record (origin, actor, versions, transforms); mapping lifecycle audit; migration runs + approvals                                                                                                              | A2, M                      | partial (mapping versions immutable)             |
@@ -1005,22 +1019,56 @@ Each control has a mechanism, a sub-milestone and a test. "Today" is the state o
 | 19  | Security/event observability                                                                  | metrics + structured events (codes only): authorization denials, audit failures, secret-like refusals, integrity failures, guard failures                                                                             | A1, A2                     | logs/metrics exist, no security events           |
 | 20  | No cross-tenant leakage through polymorphic relations, registries, mappings or extension data | entity-index composite FKs; tenant-scoped registries/mappings; adversarial raw-SQL tests; integrity verification                                                                                                      | A2, B, D, all              | not applicable yet                               |
 
-### 16.1 Classification vocabulary
+### 16.1 Classification vocabulary (F3)
 
-- **Sensitivity level** (owner amendment): `public`, `internal`, `confidential`, `restricted`.
-- **Data category** (orthogonal): `none`, `personal`, `financial`, `communication_content`. `credential` is never
-  stored, so it is a refusal reason, not a category.
-- **Minimums:**
-  - `personal` → `confidential`;
-  - `financial` → `confidential`;
-  - `communication_content` → `restricted`.
+- **Sensitivity** (exactly one per field): `public`, `internal`, `confidential`, `restricted`.
+- **Data categories** (one or more per field, independent of sensitivity): `personal`, `financial`,
+  `communication`, `operational`, `commercial`, `security`. The set may grow by a platform decision; it is never
+  tenant-defined.
+- Examples: `category = personal, sensitivity = confidential`; `category = communication, sensitivity = restricted`;
+  `categories = {personal, financial}, sensitivity = restricted`.
+- **`personal` is a category, never a sensitivity level.**
+- **Default floors** (a field may be classified stricter, never weaker):
+  - `personal` → at least `confidential`;
+  - `financial` → at least `confidential`;
+  - `security` → at least `confidential`;
+  - `communication` → at least `confidential`; communication **content** (bodies, transcripts, attachments) →
+    `restricted`;
+  - `operational`, `commercial` → no floor beyond the default `internal`.
+- **Credentials and secrets are not a category.** They are never stored as data; a value detected as a credential is
+  refused (§16 control 7).
 - **Candidate clarification:**
-  - the candidate's E4 sensitivity list (`internal | confidential | personal | restricted`) becomes level + category;
-  - the candidate's `personal` is category `personal` at level `confidential` (or stricter);
+  - the candidate's E4 sensitivity list (`internal | confidential | personal | restricted`) becomes sensitivity plus
+    category;
+  - the candidate's `personal` is category `personal` at sensitivity `confidential` or stricter;
   - this is applied to E4 as a documented candidate revision in M10A1 (no semantic loss; stricter, not weaker).
 - **Per classified column:** `retention_class`, `history_policy` (`full` / `value_free` / `none`) and
   `subject_link` (for control 17).
 - **Unknown classifications are `tbc`.** A `tbc` column is treated as `restricted` until classified, never as public.
+
+### 16.3 Retention policy: policy-first, with product defaults (F5)
+
+- Retention is **configurable per retention class** through the tenant data policy (registry kind `data_policy`,
+  versioned, audited). No legal or compliance retention period is hard-coded.
+- **Initial engineering product defaults:**
+
+| Retention class                                 | Product default                                                      |
+| ----------------------------------------------- | -------------------------------------------------------------------- |
+| Restricted raw communication content            | **storage disabled**                                                 |
+| Raw rejected values                             | **disabled** (no column exists; tech debt #15 open)                  |
+| Sensitive value history                         | **disabled** unless an approved policy allows it (value-free rows)   |
+| Non-sensitive normalized rejected candidate     | at most **30 days**, purged on resolution                            |
+| Security / audit events                         | **365 days**                                                         |
+| Operational diagnostics (run diagnostics, gaps) | **90 days**                                                          |
+| Canonical business records                      | their entity lifecycle and history policy, not generic log retention |
+
+- **These are product defaults, not SOC 2, GDPR, HIPAA or legal-retention claims.** Customers and their advisers set
+  binding periods through the data policy.
+- A policy may shorten any period; lengthening sensitive retention or enabling a disabled store requires an approved,
+  audited policy version. Enabling raw rejected values or raw communication content additionally requires the privacy
+  decision (tech debt #15), which remains open.
+- Purges run per tenant, are audited (counts only) and never touch canonical business records outside their
+  lifecycle.
 
 ### 16.2 What M10 does not claim
 
@@ -1075,12 +1123,14 @@ actor_id, reason, occurred_at, audit_event_id)`.
 2. Enabling requires the tenant's adopted canonical version ≥ the module's `minimum_canonical_version`, and every
    module in `depends_on` enabled.
 3. Disabling is refused while an enabled module depends on it.
-4. Disabling **never deletes data**:
-   - writers and mapping publication refuse new writes for the module, with the reason `module_disabled`;
-   - existing data stays readable to operators and keeps its retention;
-   - re-enabling resumes without migration.
-5. Mapping versions targeting a disabled module's entities fail validation, and a published one is not executed for
-   those entries. The run records the skipped entries as a gap. Nothing is silently dropped.
+4. Disabling (F4) **never physically deletes module data**:
+   - existing data is kept and stays readable, subject to authorization;
+   - provenance, change records and value history are preserved;
+   - writers refuse new writes for the module, with the reason `module_disabled` (audited);
+   - re-enabling resumes without any data migration.
+5. Mapping publication for a disabled module is refused: a new mapping version whose entries target the module's
+   entities fails validation. An already published version is not executed for those entries; the run records each
+   skipped entry as a **governed gap** (`module_disabled`). Nothing is silently dropped.
 6. Every change writes one setting event **and** one audit event in the same transaction.
 7. New tenants: all optional modules disabled. Existing tenants: all disabled at M10A2 (no behaviour change).
 
@@ -1140,11 +1190,21 @@ This gives precise error messages. It is **not** the security boundary.
 - **Why not plain triggers that look up targets:** a lookup trigger can race with a concurrent delete unless it locks
   correctly, and the delete side needs its own triggers too. A declarative FK has neither problem. Triggers are used
   only to maintain the index, which the app role cannot write directly.
-- **Why not one FK column per target kind (exclusive arc):**
-  - it is safe, but it widens every polymorphic table as kinds are added;
-  - the index gives the same declarative guarantee with one column pair;
-  - exclusive arcs remain acceptable for small fixed sets and may be used where a relation allows only one or two
-    kinds (for example AccountContext → account).
+- **Why not one FK column per target kind (exclusive arc):** it is safe, but it widens every polymorphic table as
+  kinds are added. The index gives the same declarative guarantee with one column pair.
+- **Scope rule (F2):** the entity index is used **only for genuinely polymorphic references**, where a relation may
+  target several entity kinds or kinds added later:
+  - evidence links;
+  - extension targets and extension reference values;
+  - custom relationships;
+  - activity links;
+  - recommendation targets;
+  - generic source references;
+  - metric observation subjects.
+    A relation that permanently targets **one known entity kind** uses an ordinary tenant-scoped direct composite FK
+    `(tenant_id, x_id) → table (tenant_id, id)`. Examples: AccountContext → account, Opportunity → account, line →
+    contract, contract → contract, affiliation → person/account (two direct FKs). Direct FKs keep all three protections:
+    writer validation, the FK as the database boundary (it includes `tenant_id`), and integrity verification.
 - **Adding a canonical entity kind** happens only in a canonical MINOR migration. It extends the CHECK set and
   attaches the triggers. A schema-guard test asserts that every table listed in the kind catalogue has both triggers,
   and that no polymorphic column set exists without its FKs.
@@ -1216,19 +1276,10 @@ New numbering, from M10 onward:
   - each is corrected when a sub-milestone next touches the file.
 - **Not milestone numbers:** "live mutations M09/M10" are Chargebee live-mutation labels from M9B. They are unaffected.
 
-## 20. Decisions requested before M10A1
+## 20. Decisions (resolved)
 
-1. **A1/A2 split:** security & governance primitives (A1) before versioning/modules/registries (A2). Recommended,
-   because every later writer needs the actor, authorizer, audit and classification from the start.
-2. **Entity index** (§18) as the database mechanism for all polymorphic references, with exclusive arcs allowed for
-   one- or two-kind relations. Recommended.
-3. **Classification vocabulary** (§16.1): four sensitivity levels plus an orthogonal data category, with the
-   candidate's `personal` mapped to category `personal` at minimum `confidential`. Recommended.
-4. **Module disable semantics** (§17): data retained and readable; new writes refused; mapping entries skipped as
-   recorded gaps. Recommended.
-5. **Retention defaults** (TTL values per retention class): `tbc`, supplied by the owner. Until supplied, the
-   existing guardrail defaults apply (for example 30 days for rejected-observation candidates) and no class defaults
-   to "retain forever" for personal or restricted data.
+All decisions requested in revision 2 are resolved by F1–F5 (§0b). Open questions specific to each sub-milestone are
+raised in that sub-milestone's own plan.
 
 ## 21. Open items (unchanged, separate)
 
