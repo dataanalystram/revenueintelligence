@@ -1,7 +1,8 @@
 # ADR 0024: Chargebee reference adapter, double-enumeration proof and parent-scoped child reconciliation (Milestone 9B)
 
-- Status: implemented against the deterministic fake; awaiting independent implementation review and
-  LIVE CHARGEBEE VERIFICATION (V2–V12, PENDING)
+- Status: **accepted and implemented — M9B CLOSED** (PR #16, merge `eb92580`; final independent review
+  `PASS — M9B APPROVED FOR CLOSURE`). Live TEST-site verification as recorded in the M9B record (V6, V9, V10, V11
+  open)
 - Date: 2026-10-08
 - Plan: [M09B plan](../milestones/M09B-chargebee-reference-adapter-plan.md) (approved at `ba72e91`), decisions
   B1–B11
