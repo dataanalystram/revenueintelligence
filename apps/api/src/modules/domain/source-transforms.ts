@@ -41,6 +41,15 @@ export const ParseSchema = z.discriminatedUnion('type', [
     format: z.literal('iso_datetime'),
     timeZone: TimeZoneSchema,
   }),
+  z.strictObject({
+    type: z.literal('timestamp'),
+    /**
+     * M9B: an integer count of seconds since the Unix epoch, UTC (no zone to
+     * declare). Values outside 2000-01-01..2100-01-01 are `invalid_date`, so
+     * milliseconds or garbage never become a plausible instant.
+     */
+    format: z.literal('unix_seconds'),
+  }),
   z.strictObject({ type: z.literal('number'), decimalSeparator: z.enum(['.', ',']).default('.') }),
   z.strictObject({ type: z.literal('integer') }),
   z.strictObject({
@@ -88,6 +97,9 @@ export type TransformResult =
     };
 
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
+/** Plausible Unix-second instants: 2000-01-01T00:00:00Z inclusive to 2100-01-01T00:00:00Z exclusive. */
+const UNIX_SECONDS_MIN = 946_684_800;
+const UNIX_SECONDS_MAX = 4_102_444_800;
 const ISO_DATETIME =
   /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?(Z|[+-]\d{2}:?\d{2})?$/;
 
@@ -168,6 +180,18 @@ function parseValue(value: string | number | boolean, rule: ParseRule): ParseOut
           : { ok: true, value: date };
       }
       return { ok: true, value: zonedTime(y, mo, d, h, mi, s, ms, rule.timeZone) };
+    }
+    case 'timestamp': {
+      const n =
+        typeof value === 'number'
+          ? value
+          : typeof value === 'string' && /^\d{1,12}$/.test(value)
+            ? Number(value)
+            : NaN;
+      if (!Number.isSafeInteger(n) || n < UNIX_SECONDS_MIN || n >= UNIX_SECONDS_MAX) {
+        return { ok: false, code: 'invalid_date' };
+      }
+      return { ok: true, value: new Date(n * 1000) };
     }
     case 'number': {
       if (typeof value === 'number') {

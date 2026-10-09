@@ -3,6 +3,7 @@ import { Injectable } from '@nestjs/common';
 import {
   proofOfRun,
   requiresAcceptance,
+  acceptsStableSnapshot,
   type KnownCoverageTier,
   type ProofMetadata,
   type RunProof,
@@ -66,18 +67,6 @@ export type TenantCoverage =
     };
 
 /** Operator acceptances of adapter-declared stable proofs, stored on an authority version. */
-function acceptsStableSnapshot(acceptances: unknown, connectionId: string): boolean {
-  return (
-    Array.isArray(acceptances) &&
-    acceptances.some(
-      (a) =>
-        a !== null &&
-        typeof a === 'object' &&
-        (a as Record<string, unknown>).connectionId === connectionId &&
-        (a as Record<string, unknown>).tier === 'stable_snapshot',
-    )
-  );
-}
 
 @Injectable()
 export class SubscriptionRunsStore {

@@ -73,6 +73,14 @@ const M8_MIGRATIONS = [
 const M9A_MIGRATIONS = ['20261101120000_m9a_source_profiling'];
 const M9A_DOWN = resolve(`prisma/rollback/${M9A_MIGRATIONS[0]}.down.sql`);
 
+/** M9B migrations in apply order (reference data, then reference retirement). */
+const M9B_MIGRATIONS = [
+  '20261115120000_m9b_chargebee_connector_kind',
+  '20261116120000_m9b_reference_retirement',
+];
+const M9B_DOWN = resolve(`prisma/rollback/${M9B_MIGRATIONS[0]}.down.sql`);
+const M9B_RETIRE_DOWN = resolve(`prisma/rollback/${M9B_MIGRATIONS[1]}.down.sql`);
+
 /** Everything a migration can change, as sorted text (for exact schema comparison). */
 async function schemaSnapshot(url: string): Promise<Record<string, string[]>> {
   const queries: Record<string, string> = {
@@ -99,7 +107,7 @@ async function schemaSnapshot(url: string): Promise<Record<string, string[]>> {
 }
 
 /** Down-scripts back to M7 (M9A, then M8), in the order they must run (newest first). */
-const POST_M7_DOWNS = [...M8_MIGRATIONS, ...M9A_MIGRATIONS]
+const POST_M7_DOWNS = [...M8_MIGRATIONS, ...M9A_MIGRATIONS, ...M9B_MIGRATIONS]
   .reverse()
   .map((name) => resolve(`prisma/rollback/${name}.down.sql`));
 
@@ -149,6 +157,7 @@ describe('database migrations and schema guard', () => {
         '20261010130000_m7_eligibility_snapshots',
         ...M8_MIGRATIONS,
         ...M9A_MIGRATIONS,
+        ...M9B_MIGRATIONS,
       ]);
       expect(rows.every((r) => r.finished_at !== null)).toBe(true);
     });
@@ -1148,6 +1157,9 @@ describe('database migrations and schema guard', () => {
         `m8_conn_down_${Math.random().toString(36).slice(2, 8)}`,
       );
       await migrate(target);
+      // Newest first: the M9B down-scripts run before any older one (M9B adds a connector kind).
+      await withAdmin(target, (db) => db.query(readFileSync(M9B_RETIRE_DOWN, 'utf8')));
+      await withAdmin(target, (db) => db.query(readFileSync(M9B_DOWN, 'utf8')));
       await withAdmin(target, async (db) => {
         await db.query(
           `INSERT INTO tenants (id, slug, name, updated_at) VALUES ($1, 'msevena', 'A', now()), ($2, 'msevenb', 'B', now())`,
@@ -1451,6 +1463,9 @@ describe('database migrations and schema guard', () => {
         await migrate(m8Url, ['--config', m8MigrationsConfig(dir)]);
         await migrate(url);
         const latest = await schemaSnapshot(url);
+        // Newest first: M9B (retirement, then the connector kind), then M9A.
+        await withAdmin(url, (db) => db.query(readFileSync(M9B_RETIRE_DOWN, 'utf8')));
+        await withAdmin(url, (db) => db.query(readFileSync(M9B_DOWN, 'utf8')));
         await withAdmin(url, (db) => db.query(readFileSync(M9A_DOWN, 'utf8')));
         expect(await schemaSnapshot(url)).toEqual(await schemaSnapshot(m8Url));
         const output = await migrate(url);
@@ -1520,6 +1535,212 @@ describe('database migrations and schema guard', () => {
         expect(await schemaSnapshot(target)).toEqual(snapshot);
       },
     );
+  });
+
+  describe('chargebee connector kind (M9B reference data)', () => {
+    const tenant = '9b9b9b9b-9b9b-49b9-89b9-9b9b9b9b9b9b';
+    const kinds = (url: string) =>
+      withAdmin(url, (db) =>
+        db.query<{ kind: string; display_name: string; has_adapter: boolean }>(
+          'SELECT kind, display_name, has_adapter FROM connector_kinds ORDER BY kind',
+        ),
+      ).then((r) => r.rows);
+
+    it('the M9B down-script refuses while a tenant row names the kind, then restores exactly the M9A state and re-applies', async () => {
+      const m9aUrl = await createDatabase(pg, 'm9a_reference_db');
+      const url = await createDatabase(pg, 'm9b_down_db');
+      const dir = resolve('test/.tmp/m9a-reference');
+      try {
+        await migrate(m9aUrl, ['--config', migrationsBefore(dir, '20261115')]);
+        await migrate(url);
+        const latest = await schemaSnapshot(url);
+        expect((await kinds(url)).map((k) => k.kind)).toContain('chargebee');
+        await withAdmin(url, async (db) => {
+          await db.query(
+            `INSERT INTO tenants (id, slug, name, updated_at) VALUES ($1, 'mninebee', 'B', now())`,
+            [tenant],
+          );
+          await db.query(
+            `INSERT INTO tenant_source_connections (tenant_id, id, kind, label, status, mapping_mode)
+             VALUES ($1, gen_random_uuid(), 'chargebee', 'Chargebee', 'disabled', 'versioned')`,
+            [tenant],
+          );
+        });
+        // A chargebee credential NAME can be registered; read_write access never can.
+        await withAdmin(url, async (db) => {
+          await db.query(
+            `INSERT INTO tenant_credential_refs (tenant_id, tenant_slug, system, name, secret_key, updated_at)
+             VALUES ($1, 'mninebee', 'chargebee', 'chargebee_api', 'tenant.mninebee.chargebee.chargebee_api', now())`,
+            [tenant],
+          );
+          await db.query(
+            `INSERT INTO tenant_integrations (tenant_id, system, access, updated_at) VALUES ($1, 'chargebee', 'read_only', now())`,
+            [tenant],
+          );
+        });
+        await expect(
+          withAdmin(url, (db) =>
+            db.query(
+              `UPDATE tenant_integrations SET access = 'read_write' WHERE tenant_id = $1 AND system = 'chargebee'`,
+              [tenant],
+            ),
+          ),
+        ).rejects.toThrow(/tenant_integrations_chargebee_read_only/);
+        await expect(
+          withAdmin(m9aUrl, async (db) => {
+            await db.query(
+              `INSERT INTO tenants (id, slug, name, updated_at) VALUES ($1, 'mninebee', 'B', now())`,
+              [tenant],
+            );
+            await db.query(
+              `INSERT INTO tenant_credential_refs (tenant_id, tenant_slug, system, name, secret_key, updated_at)
+               VALUES ($1, 'mninebee', 'chargebee', 'chargebee_api', 'tenant.mninebee.chargebee.chargebee_api', now())`,
+              [tenant],
+            );
+          }),
+        ).rejects.toThrow(/tenant_credential_refs_system_valid/);
+        await withAdmin(m9aUrl, (db) => db.query(`DELETE FROM tenants WHERE id = $1`, [tenant]));
+        // Newest first: the retirement down-script (nothing retired here), then the kind.
+        await withAdmin(url, (db) => db.query(readFileSync(M9B_RETIRE_DOWN, 'utf8')));
+        await expect(
+          withAdmin(url, (db) => db.query(readFileSync(M9B_DOWN, 'utf8'))),
+        ).rejects.toThrow(/refusing rollback: 3 rows still name the chargebee connector kind/);
+        expect((await kinds(url)).map((k) => k.kind)).toContain('chargebee');
+        await withAdmin(url, async (db) => {
+          await db.query(`DELETE FROM tenant_source_connections WHERE kind = 'chargebee'`);
+          await db.query(`DELETE FROM tenant_integrations WHERE system = 'chargebee'`);
+        });
+        await expect(
+          withAdmin(url, (db) => db.query(readFileSync(M9B_DOWN, 'utf8'))),
+        ).rejects.toThrow(/refusing rollback: 1 rows still name the chargebee connector kind/);
+        await withAdmin(url, (db) =>
+          db.query(`DELETE FROM tenant_credential_refs WHERE system = 'chargebee'`),
+        );
+        await withAdmin(url, (db) => db.query(readFileSync(M9B_DOWN, 'utf8')));
+        expect(await kinds(url)).toEqual(await kinds(m9aUrl));
+        expect(await schemaSnapshot(url)).toEqual(await schemaSnapshot(m9aUrl));
+        const output = await migrate(url);
+        expect(output).toMatch(new RegExp(M9B_MIGRATIONS[0]!));
+        expect(output).toMatch(new RegExp(M9B_MIGRATIONS[1]!));
+        expect(await schemaSnapshot(url)).toEqual(latest);
+        expect(await kinds(url)).toContainEqual({
+          kind: 'chargebee',
+          display_name: 'Chargebee',
+          has_adapter: true,
+        });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('source reference retirement (M9B governed correction)', () => {
+    const tenant = '9c9c9c9c-9c9c-49c9-89c9-9c9c9c9c9c9c';
+    const company = '9c9c9c9c-0000-49c9-89c9-9c9c9c9c9c9c';
+    const run = '9c9c9c9c-1111-49c9-89c9-9c9c9c9c9c9c';
+    const seed = (url: string) =>
+      withAdmin(url, async (db) => {
+        await db.query(
+          `INSERT INTO tenants (id, slug, name, updated_at) VALUES ($1, 'mninec', 'C', now())`,
+          [tenant],
+        );
+        await db.query(
+          `INSERT INTO companies (id, tenant_id, name, created_at, updated_at) VALUES ($1, $2, 'School', now(), now())`,
+          [company, tenant],
+        );
+        await db.query(
+          `INSERT INTO tenant_sync_checkpoints (tenant_id, id, system, kind, mode, status, correlation_id, completed_at)
+           VALUES ($1, $2, 'chargebee', 'subscription', 'reconcile', 'completed', gen_random_uuid(), now())`,
+          [tenant, run],
+        );
+        await db.query(
+          `INSERT INTO company_external_refs (tenant_id, system, object_type, external_id, company_id)
+           VALUES ($1, 'chargebee', 'Customers', 'cust_1', $2)`,
+          [tenant, company],
+        );
+      });
+
+    it('`retired` needs its time and run (and only then), the run must exist, and the row cannot lose the company', async () => {
+      const url = await createDatabase(pg, 'm9b_retire_checks_db');
+      await migrate(url);
+      await seed(url);
+      const set = (assignments: string) =>
+        withAdmin(url, (db) =>
+          db.query(
+            `UPDATE company_external_refs SET ${assignments} WHERE tenant_id = $1 AND external_id = 'cust_1'`,
+            [tenant],
+          ),
+        );
+      await expect(set(`state = 'retired'`)).rejects.toThrow(
+        /company_external_refs_retired_consistent/,
+      );
+      await expect(set(`state = 'retired', retired_at = now()`)).rejects.toThrow(
+        /company_external_refs_retired_(consistent|partial)/,
+      );
+      await expect(set(`retired_at = now(), retired_by_run_id = '${run}'`)).rejects.toThrow(
+        /company_external_refs_retired_consistent/,
+      );
+      await expect(
+        set(`state = 'retired', retired_at = now(), retired_by_run_id = gen_random_uuid()`),
+      ).rejects.toThrow(/company_external_refs_tenant_id_retired_by_run_id_fkey/);
+      await expect(set(`state = 'gone'`)).rejects.toThrow(/company_external_refs_state_valid/);
+      await set(`state = 'retired', retired_at = now(), retired_by_run_id = '${run}'`);
+      // The retiring run cannot be removed while a reference names it.
+      await expect(
+        withAdmin(url, (db) =>
+          db.query(`DELETE FROM tenant_sync_checkpoints WHERE tenant_id = $1 AND id = $2`, [
+            tenant,
+            run,
+          ]),
+        ),
+      ).rejects.toThrow(/company_external_refs_tenant_id_retired_by_run_id_fkey/);
+      // Reactivation clears both together.
+      await set(`state = 'active', retired_at = NULL, retired_by_run_id = NULL`);
+    });
+
+    it('the retirement down-script refuses while a reference is retired, then restores exactly the prior M9B state and re-applies', async () => {
+      const before = await createDatabase(pg, 'm9b_kind_reference_db');
+      const url = await createDatabase(pg, 'm9b_retire_down_db');
+      const dir = resolve('test/.tmp/m9b-kind-reference');
+      try {
+        await migrate(before, ['--config', migrationsBefore(dir, '20261116')]);
+        await migrate(url);
+        const latest = await schemaSnapshot(url);
+        await seed(url);
+        await withAdmin(url, (db) =>
+          db.query(
+            `UPDATE company_external_refs SET state = 'retired', retired_at = now(), retired_by_run_id = $2
+             WHERE tenant_id = $1`,
+            [tenant, run],
+          ),
+        );
+        await expect(
+          withAdmin(url, (db) => db.query(readFileSync(M9B_RETIRE_DOWN, 'utf8'))),
+        ).rejects.toThrow(/refusing rollback: 1 references are retired/);
+        // Nothing changed: the reference is still retired and the columns still exist.
+        const kept = await withAdmin(url, (db) =>
+          db.query<{ state: string }>(
+            `SELECT state FROM company_external_refs WHERE tenant_id = $1`,
+            [tenant],
+          ),
+        );
+        expect(kept.rows).toEqual([{ state: 'retired' }]);
+        await withAdmin(url, (db) =>
+          db.query(
+            `UPDATE company_external_refs SET state = 'active', retired_at = NULL, retired_by_run_id = NULL
+             WHERE tenant_id = $1`,
+            [tenant],
+          ),
+        );
+        await withAdmin(url, (db) => db.query(readFileSync(M9B_RETIRE_DOWN, 'utf8')));
+        expect(await schemaSnapshot(url)).toEqual(await schemaSnapshot(before));
+        const output = await migrate(url);
+        expect(output).toMatch(new RegExp(M9B_MIGRATIONS[1]!));
+        expect(await schemaSnapshot(url)).toEqual(latest);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 
   describe('upgrading from the Milestone 1 state', () => {

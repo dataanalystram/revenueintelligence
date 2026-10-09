@@ -7,6 +7,7 @@ export const IntegrationSystemSchema = z.enum([
   'gainsight_cs',
   'gainsight_px',
   'jev',
+  'chargebee',
 ]);
 export type IntegrationSystem = z.infer<typeof IntegrationSystemSchema>;
 
@@ -74,6 +75,12 @@ export const IntegrationSettingsSchemas = {
       .regex(/^[a-z0-9][a-z0-9_.-]{0,63}$/)
       .optional(),
   }),
+  /**
+   * M9B: no integration-level settings. The Chargebee site and limits live on
+   * the source connection (ChargebeeConnectionConfigSchema); the read-only API
+   * key is a credential name resolved through the SecretProvider.
+   */
+  chargebee: z.strictObject({}),
 } as const satisfies Record<IntegrationSystem, z.ZodType>;
 
 export type IntegrationSettings<S extends IntegrationSystem = IntegrationSystem> = z.infer<

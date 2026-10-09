@@ -12,6 +12,45 @@ const date = (tz = 'UTC', inclusiveEnd = false) =>
   });
 
 describe('closed transforms (ADR 0020 §3)', () => {
+  it('M9B: Unix seconds (UTC) parse integers in 2000..2100 only; milliseconds are invalid_date', () => {
+    const t = TransformsSchema.parse({ parse: { type: 'timestamp', format: 'unix_seconds' } });
+    expect(applyTransforms(1_767_225_600, t)).toEqual({
+      ok: true,
+      value: new Date('2026-01-01T00:00:00.000Z'),
+    });
+    expect(applyTransforms('1767225600', t)).toEqual({
+      ok: true,
+      value: new Date('2026-01-01T00:00:00.000Z'),
+    });
+    expect(applyTransforms(946_684_800, t)).toEqual({
+      ok: true,
+      value: new Date('2000-01-01T00:00:00.000Z'),
+    });
+    for (const bad of [
+      1_767_225_600_000, // milliseconds (resource_version is milliseconds, F18)
+      946_684_799,
+      4_102_444_800,
+      0,
+      -1,
+      1_767_225_600.5,
+      '1767225600.0',
+      '2026-01-01',
+      ' 1767225600x',
+      true,
+    ]) {
+      expect(applyTransforms(bad, t)).toMatchObject({ ok: false, code: 'invalid_date' });
+    }
+    // No zone to declare: the format is UTC by definition.
+    expect(() =>
+      TransformsSchema.parse({
+        parse: { type: 'timestamp', format: 'unix_seconds', timeZone: 'UTC' },
+      }),
+    ).toThrow();
+    expect(() =>
+      TransformsSchema.parse({ parse: { type: 'timestamp', format: 'unix_millis' } }),
+    ).toThrow();
+  });
+
   it('null handling: missing, empty, whitespace and declared sentinels are empty', () => {
     const t = TransformsSchema.parse({ nullValues: ['NULL'] });
     for (const raw of [null, undefined, '', '   ', 'NULL', ' NULL ']) {

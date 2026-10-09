@@ -68,7 +68,14 @@ describe('credential secret keys', () => {
     // show up here if slugs, system names or credential names allowed one.
     const slugs = ['ab', 'abc', 'abcd', 'bc', 'a1', 'a1b', 'gainsight', 'hubspot'].map(slug);
     const systems = IntegrationSystemSchema.options;
-    expect(systems).toEqual(['hubspot', 'sugar', 'gainsight_cs', 'gainsight_px', 'jev']);
+    expect(systems).toEqual([
+      'hubspot',
+      'sugar',
+      'gainsight_cs',
+      'gainsight_px',
+      'jev',
+      'chargebee',
+    ]);
     const names = [
       'xc',
       'xc_d',

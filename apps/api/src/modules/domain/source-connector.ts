@@ -73,6 +73,36 @@ export const ObjectCapabilitiesSchema = z
     /** The source can count a bounded set (full-read proof). */
     count: z.boolean().default(false),
     maxPageSize: z.number().int().min(1).max(1000),
+    /**
+     * M9B: how a full read of the object is proven when it cannot count.
+     * `double_enumeration` lists the bounded set twice and requires identical
+     * membership (tier `stable_snapshot`, never `externally_grounded`).
+     * Absent: the object can only be proven by `count`.
+     */
+    fullReadProof: z.literal('double_enumeration').optional(),
+    /**
+     * M9B (parent-scoped child reconciliation): the object is a derived child
+     * set of `object`. Every record carries its parent's key in
+     * `parentKeyField`, its identity is `<parentKey>:<suffix>`, and one page
+     * always carries a parent's complete child set (never split). Absent: a
+     * plain object.
+     */
+    childOf: z.strictObject({ object: ApiName, parentKeyField: ApiName }).optional(),
+    /**
+     * M9B: `false` when incremental reads of the object are not proven safe
+     * (e.g. a child change may not move the parent's change field). Such an
+     * object is read by full runs only. Absent: incremental reads allowed.
+     */
+    incrementalReads: z.literal(false).optional(),
+    /**
+     * M9B (governed correction after live M08): references of this account
+     * object may be retired when a successful full run whose read of the
+     * object was proven (count or double enumeration) and, where the proof
+     * requires it, operator-accepted, did not see them. Retirement is a
+     * reference lifecycle state only (never an account deletion). Absent: a
+     * reference is never retired from absence.
+     */
+    referenceRetirement: z.literal('accepted_full_read').optional(),
   })
   .readonly();
 export type ObjectCapabilities = z.infer<typeof ObjectCapabilitiesSchema>;
@@ -192,6 +222,14 @@ export interface SourceRecord {
   readonly modifiedAt?: Date;
   /** Only when the object's delete visibility is `flag`. */
   readonly deleted?: boolean;
+  /**
+   * M9B: the adapter observed this record but it failed boundary validation
+   * (structurally invalid). It is never mapped: the platform counts it,
+   * protects what it may have represented and, for a child set, never
+   * reconciles its parent. `values` then holds only what could be read safely
+   * (for a child set at least the parent key).
+   */
+  readonly rejection?: 'invalid_payload';
   /** Mapped fields only, keyed by API name. Never logged. */
   readonly values: Readonly<Record<string, string | number | boolean | null>>;
 }

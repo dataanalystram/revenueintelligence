@@ -73,6 +73,20 @@ describe('decideApply (ADR 0014)', () => {
     );
   });
 
+  it('M9B: a retired reference is reactivated only by a read made after the retirement', () => {
+    const retired = stored({ state: 'retired', retiredAt: t('12:30:00') });
+    // A page read before the retirement cannot undo it, even with identical fields.
+    expect(decideApply(retired, company({ observed: t('12:10:00') }))).toBe('stale');
+    // A later read always reactivates it, even with the same source time and fields.
+    expect(decideApply(retired, company({ observed: t('13:00:00') }))).toBe('restore');
+    // Absence of a retired reference changes nothing (never a deletion).
+    expect(decideApply(retired, absent(t('13:00:00')))).toBe('unchanged');
+    // Without the retirement time nothing can prove the read is newer.
+    expect(decideApply(stored({ state: 'retired' }), company({ observed: t('13:00:00') }))).toBe(
+      'stale',
+    );
+  });
+
   it('a merged-away reference is never revived', () => {
     expect(decideApply(stored({ state: 'merged' }), company({ updated: t('23:00:00') }))).toBe(
       'stale',

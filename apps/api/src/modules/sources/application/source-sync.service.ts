@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ContextIngestionService, type IngestMeta } from '../../context';
 import {
+  acceptsStableSnapshot,
   assertNoRawFinding,
   buildProfileDocument,
   capFindings,
@@ -16,6 +17,7 @@ import {
   profileContentHash,
   profileNames,
   protectionFor,
+  requiresAcceptance,
   requiresRepublish,
   RunGuards,
   runProof,
@@ -31,7 +33,9 @@ import {
   type ObjectAccumulator,
   type FallbackAccount,
   type MappingDocument,
+  type ObjectCapabilities,
   type ObjectMapping,
+  type ProofMethod,
   type ReadSelection,
   type SourceConnector,
   type SourceProductStatus,
@@ -91,10 +95,23 @@ interface RunContext {
   /** The snapshot the mapping version was validated against (run-quality profiles). */
   readonly snapshotHash: string;
   readonly authority: AuthorityDocument;
+  /** The authority version's stable-snapshot acceptances (ADR 0023; never promote a tier). */
+  readonly acceptances: readonly unknown[];
   readonly connector: SourceConnector;
   readonly boundary: Date;
   readonly observedAt: Date;
   readonly cause: 'backfill' | 'reconciliation';
+}
+
+/**
+ * M9B (G4): one parent's child set as observed in this run. `uncertain` once
+ * anything about it is not positive, complete, accepted evidence.
+ */
+interface ChildSet {
+  readonly keys: Set<string>;
+  readonly page: number;
+  uncertain: boolean;
+  deleted: boolean;
 }
 
 /** Mutable run counters: counts and codes only, never values. */
@@ -123,6 +140,22 @@ class RunState {
   readonly guards = new Map<string, RunGuards>();
   readonly accumulators = new Map<string, ObjectAccumulator>();
   readonly populations = new Map<string, number>();
+  /** M9B: the full-read proof methods this run passed (the weakest decides the tier). */
+  readonly proofs = new Set<ProofMethod>();
+  /** M9B (G4): observed child sets per derived object and parent key. */
+  readonly childSets = new Map<string, Map<string, ChildSet>>();
+  /** M9B (G4): derived objects whose child sets cannot be trusted this run at all. */
+  readonly childObjectsUncertain = new Set<string>();
+  /** M9B (G4): pages of each derived object processed so far (split-parent detection). */
+  readonly childPages = new Map<string, number>();
+  /** Active canonical line ids per object, loaded once per run when needed. */
+  readonly activeLines = new Map<string, readonly string[]>();
+  /**
+   * M9B: account objects whose references this full run may retire, with
+   * every id the run saw for them (read, rejected, or referenced by a line).
+   * `uncertain` once a record without a readable id was read.
+   */
+  readonly retirement = new Map<string, { readonly seen: Set<string>; uncertain: boolean }>();
 
   count(code: string, by = 1): void {
     this.quality[code] = (this.quality[code] ?? 0) + by;
@@ -195,6 +228,19 @@ export class SourceSyncService {
           throw new SyncRefusedError(
             'overlap_not_configured',
             'Set sync.overlapMinutes on the connection',
+          );
+        }
+        // M9B: objects not proven safe for incremental reads are read by full runs only.
+        const published = MappingDocumentSchema.parse(mapping!.document);
+        const snap = await this.repo.snapshot(tx, connectionId, mapping!.schemaSnapshotHash);
+        const objects = snap ? SourceSchemaSchema.parse(snap.document).objects : [];
+        const fullOnly = published.objects.filter(
+          (o) => objects.find((x) => x.name === o.source)?.capabilities.incrementalReads === false,
+        );
+        if (fullOnly.length > 0) {
+          throw new SyncRefusedError(
+            'incremental_not_supported',
+            `${fullOnly.map((o) => o.source).join(', ')} can only be read by full runs`,
           );
         }
         const last = await this.repo.latestCompletedRun(tx, connectionId);
@@ -276,8 +322,13 @@ export class SourceSyncService {
         snapshot: SourceSchemaSchema.parse(loaded.snapshot.document),
         snapshotHash: loaded.mapping.schemaSnapshotHash,
         authority: loaded.authority!.document,
+        acceptances: loaded.authority!.proofAcceptances,
         connector: this.connections.connector(ctx, loaded.connection),
-        boundary: run.startedAt,
+        // M9B: a settle window keeps eventually consistent list reads behind the boundary.
+        boundary: new Date(
+          run.startedAt.getTime() -
+            (this.connections.syncSettings(loaded.connection)?.settleMinutes ?? 0) * 60_000,
+        ),
         observedAt: new Date(),
         cause: run.mode === 'backfill' ? 'backfill' : 'reconciliation',
       };
@@ -394,10 +445,18 @@ export class SourceSyncService {
     const selection: ReadSelection = { mode: 'full', boundary: rc.boundary };
     // 1. Accounts and people: references (and profiles with authority).
     for (const obj of rc.mapping.objects.filter((o) => o.entity !== 'subscription')) {
-      await this.readAll(rc, obj.source, mappedFields(obj), selection, async (records) => {
+      const onPage = async (records: readonly SourceRecord[]) => {
         this.observe(rc, state, obj, records);
+        this.noteSeen(state, obj, records);
         await this.ingestContext(rc, state, obj, records);
-      });
+      };
+      if (this.retiresReferences(rc, obj)) {
+        // M9B: this run may retire the object's references, so its read must be proven.
+        state.retirement.set(obj.source, { seen: new Set(), uncertain: false });
+        await this.provenRead(rc, state, obj.source, mappedFields(obj), selection, onPage);
+      } else {
+        await this.readAll(rc, obj.source, mappedFields(obj), selection, onPage);
+      }
     }
     const lineObjects = rc.mapping.objects.filter((o) => o.entity === 'subscription');
     if (lineObjects.length > 0) {
@@ -405,31 +464,43 @@ export class SourceSyncService {
       const productStatus = await this.catalogueFull(rc, state);
       // 3. Lines, bounded and ordered, with start/end count reconciliation.
       for (const obj of lineObjects) {
-        const before = await this.countOrRefuse(rc, obj.source, selection);
-        state.populations.set(obj.source, before);
-        let read = 0;
-        await this.readAll(rc, obj.source, mappedFields(obj), selection, async (records, next) => {
-          read += records.length;
-          // B guards before writes (M9A §8): structural failure stops the run here.
-          this.observe(rc, state, obj, records);
-          await this.processLines(rc, state, obj, records, (id) => productStatus(id));
-          await this.saveProgress(rc, state, next);
-        });
-        const after = await this.countOrRefuse(rc, obj.source, selection);
-        if (before !== after || after !== read) {
-          state.detail.read = { expected: before, after, read };
-          throw new SyncRefusedError('unstable_read', 'The source changed during the read');
-        }
+        const population = await this.provenRead(
+          rc,
+          state,
+          obj.source,
+          this.readFields(rc, obj),
+          selection,
+          async (records, next) => {
+            // B guards before writes (M9A §8): structural failure stops the run here.
+            this.observe(rc, state, obj, records);
+            await this.processLines(rc, state, obj, records, (id) => productStatus(id));
+            await this.saveProgress(rc, state, next);
+          },
+        );
+        state.populations.set(obj.source, population);
       }
     }
     // 4a. M9A: pre-tombstone B guards over the whole run, then unattributable rejections.
     this.guardAll(rc, state, 'pre_tombstone');
     this.refuseUnattributable(state);
-    if (lineObjects.length > 0) {
+    // 4b. M9B (G4): positive child-set evidence retires removed children (any proof).
+    await this.reconcileChildren(rc, state);
+    // The full-read proof this run passed: the weakest method decides (ADR 0023).
+    const proof = runProof(state.proofs.has('double_enumeration') ? 'double_enumeration' : 'count');
+    // A stable-snapshot proof deletes nothing until an operator accepted it for this connection.
+    const tombstonesAllowed =
+      !requiresAcceptance(proof.method) || acceptsStableSnapshot(rc.acceptances, rc.connection.id);
+    if (lineObjects.length > 0 && !tombstonesAllowed) state.count('tombstones_not_accepted');
+    if (lineObjects.length > 0 && tombstonesAllowed) {
       // 4b. Tombstones: lines in neither the run's holdings nor its protection set (§9.3).
       let suppressed = 0;
       for (const obj of lineObjects) {
         const active = await this.subscriptions.activeSourceRecordIds(rc.ctx, rc.kind, obj.source);
+        if (state.childObjectsUncertain.has(obj.source)) {
+          // M9B: a child set without usable parent keys proves no absence at all.
+          suppressed += active.length;
+          continue;
+        }
         for (const recordId of active) {
           const key = `${obj.source}|${recordId}`;
           if (!mayTombstone(key, state.holdingIds, state.seenButRejected)) {
@@ -453,25 +524,51 @@ export class SourceSyncService {
       }
       if (suppressed > 0) state.count('tombstones_suppressed', suppressed);
     }
-    // The full-read proof this run passed (count reconciliation, ADR 0023).
-    state.detail.proof = runProof('count');
+    // 4d. M9B: account references this proven full read did not see — retired (in the
+    // completion transaction below) only when the proof is accepted and nothing is uncertain.
+    const retire = [...state.retirement].filter(([, r]) => {
+      if (!tombstonesAllowed) state.count('reference_retirement_not_accepted');
+      else if (r.uncertain) state.count('reference_retirement_suppressed');
+      return tombstonesAllowed && !r.uncertain;
+    });
+    state.detail.proof = proof;
     const runQuality = await this.runQualityProfiles(rc, state);
     // 5. Complete: gaps replaced, run-quality profiles stored and the run completed in one transaction.
+    // Counted locally: a rolled-back completion must not report retirements that never happened.
+    let retired = 0;
     await this.db.transaction(rc.ctx, async (tx) => {
       if (lineObjects.length > 0) {
         await this.gaps.replaceWithin(tx, rc.connection.id, [...state.gaps.values()], rc.run.id);
       }
       await this.storeRunQuality(tx, rc, runQuality);
+      retired = 0;
+      for (const [object, r] of retire) {
+        retired += await this.context.retireAbsentWithin(
+          tx,
+          {
+            system: rc.kind,
+            objectType: object,
+            seen: r.seen,
+            observedAt: rc.observedAt,
+            runId: rc.run.id,
+          },
+          this.contextMeta(rc),
+        );
+      }
       await this.repo.finishRun(tx, rc.run.id, {
         status: 'completed',
         highWatermark: rc.boundary,
-        quality: state.snapshot(),
+        quality: { ...state.snapshot(), ...(retired > 0 ? { references_retired: retired } : {}) },
         seen: state.seen,
-        changed: state.changed,
+        changed: state.changed + retired,
         skipped: state.skipped,
         failed: state.failed,
       });
     });
+    if (retired > 0) {
+      state.changed += retired;
+      state.count('references_retired', retired);
+    }
   }
 
   /** Reads the whole catalogue (ids only), proves it, and classifies product ids. */
@@ -481,22 +578,18 @@ export class SourceSyncService {
   ): Promise<(id: string) => SourceProductStatus> {
     const refs = rc.mapping.productReferences!;
     const selection: ReadSelection = { mode: 'full', boundary: rc.boundary };
-    const before = await this.countOrRefuse(rc, refs.object, selection);
     const catalogue = new Set<string>();
-    let read = 0;
-    await this.readAll(rc, refs.object, [refs.identity.field], selection, (records) => {
-      read += records.length;
+    await this.provenRead(rc, state, refs.object, [refs.identity.field], selection, (records) => {
       for (const r of records) {
+        if (r.rejection) {
+          // A catalogue record that cannot be read: its product is neither known nor unknown.
+          throw new SyncRefusedError('unstable_read', 'A product catalogue record is invalid');
+        }
         const id = text(r.values[refs.identity.field]);
         if (id) catalogue.add(id);
       }
       return Promise.resolve();
     });
-    const after = await this.countOrRefuse(rc, refs.object, selection);
-    if (before !== after || after !== read) {
-      state.detail.read = { object: refs.object, expected: before, after, read };
-      throw new SyncRefusedError('unstable_read', 'The product catalogue changed during the read');
-    }
     const { modelled, ignored } = await this.productSets(rc);
     const unmodelled = [...catalogue].filter((id) => !modelled.has(id) && !ignored.has(id)).sort();
     if (unmodelled.length > 0) {
@@ -560,7 +653,7 @@ export class SourceSyncService {
         await this.readAll(
           rc,
           obj.source,
-          mappedFields(obj),
+          this.readFields(rc, obj),
           selection,
           async (records, next) => {
             // Products neither modelled nor ignored: in the catalogue (unmodelled) or not (orphan).
@@ -593,6 +686,8 @@ export class SourceSyncService {
     // Incremental runs never tombstone and never replace gaps: they only add.
     this.guardAll(rc, state, 'pre_tombstone');
     this.refuseUnattributable(state);
+    // M9B (G4): a re-read parent's complete child set is positive evidence on any run.
+    await this.reconcileChildren(rc, state);
     const runQuality = await this.runQualityProfiles(rc, state);
     await this.db.transaction(rc.ctx, async (tx) => {
       await this.storeRunQuality(tx, rc, runQuality);
@@ -622,6 +717,12 @@ export class SourceSyncService {
     const fact = obj.entity === 'person' ? 'person_profile' : 'account_profile';
     const profileAuthority = isAuthoritative(rc.authority, fact, rc.connection.id);
     for (const record of records) {
+      if (record.rejection) {
+        // M9B: structurally invalid — never mapped; a full run counts it as seen (no retirement).
+        state.failed += 1;
+        state.count('record_rejected');
+        continue;
+      }
       const result = mapContextRecord(obj, record, {
         kind: rc.kind,
         profileAuthority,
@@ -679,6 +780,8 @@ export class SourceSyncService {
       const hop = via ? hops.get(via) : undefined;
       if (hop?.kind === 'account') accountIds.add(hop.id);
     }
+    // M9B: an account a line refers to is not absent, whatever the account read returned.
+    accountIds.forEach((id) => state.retirement.get(accountObject)?.seen.add(id));
     const unresolved = [...accountIds].filter(
       (id) => !state.knownAccounts.has(id) && !state.orphanAccounts.has(id),
     );
@@ -695,9 +798,88 @@ export class SourceSyncService {
       missing.filter((id) => !foundIds.has(id)).forEach((id) => state.orphanAccounts.add(id));
     }
 
+    // M9B (G4): derived child sets (one page carries a parent's complete set).
+    const childOf = this.capabilities(rc, obj.source)?.childOf;
+    const page = childOf ? (state.childPages.get(obj.source) ?? 0) + 1 : 0;
+    if (childOf) state.childPages.set(obj.source, page);
+    const sets = childOf ? this.childSetsOf(state, obj.source) : undefined;
+    // Keys repeated within a page of a child set are ambiguous: every occurrence is rejected.
+    const repeated = new Set<string>();
+    if (childOf) {
+      const counts = new Map<string, number>();
+      for (const r of records) {
+        if (r.rejection) continue;
+        const k = lineIdOf(obj, r);
+        if (k) counts.set(k, (counts.get(k) ?? 0) + 1);
+      }
+      for (const [k, n] of counts) if (n > 1) repeated.add(k);
+    }
+    const childSet = (record: SourceRecord): ChildSet | undefined => {
+      if (!childOf || !sets) return undefined;
+      const parent = text(record.values[childOf.parentKeyField]);
+      if (!parent || parent.includes(':')) {
+        // A child without a usable parent key: no child set of this object can be trusted.
+        state.childObjectsUncertain.add(obj.source);
+        return undefined;
+      }
+      let set = sets.get(parent);
+      if (!set) {
+        set = { keys: new Set(), page, uncertain: false, deleted: false };
+        sets.set(parent, set);
+      } else if (set.page !== page) {
+        // The parent was split across pages: its child set may be incomplete.
+        set.uncertain = true;
+      }
+      return set;
+    };
+
     for (const record of records) {
       state.seen += 1;
-      const key = `${obj.source}|${record.id}`;
+      const set = childSet(record);
+      if (record.rejection) {
+        // M9B: observed but structurally invalid. Never mapped, never reconciled.
+        state.failed += 1;
+        state.count('record_rejected');
+        if (set) set.uncertain = true;
+        const accountId = text(record.values[accountRel.field]);
+        if (childOf) {
+          const parent = text(record.values[childOf.parentKeyField]);
+          await this.protectParent(rc, state, obj, accountObject, parent, accountId);
+        } else {
+          await this.protect(
+            rc,
+            state,
+            obj,
+            accountObject,
+            record.id,
+            'record_rejected',
+            accountId,
+          );
+        }
+        continue;
+      }
+      const lineId = lineIdOf(obj, record) ?? record.id;
+      const key = `${obj.source}|${lineId}`;
+      if (set) {
+        set.keys.add(lineId);
+        if (record.deleted) set.deleted = true;
+      }
+      if (repeated.has(lineId)) {
+        // Duplicate child identity: fail closed (no write, protected, parent not reconciled).
+        state.skipped += 1;
+        state.count('duplicate_external_id');
+        if (set) set.uncertain = true;
+        await this.protect(
+          rc,
+          state,
+          obj,
+          accountObject,
+          lineId,
+          'duplicate_external_id',
+          text(record.values[accountRel.field]),
+        );
+        continue;
+      }
       if (state.seenLineIds.has(key)) state.count('duplicate_external_id');
       state.seenLineIds.add(key);
       const result = mapSubscriptionRecord(obj, record, {
@@ -721,12 +903,14 @@ export class SourceSyncService {
         case 'skipped': {
           state.skipped += 1;
           state.count(result.code);
+          // A protected skip makes the parent's child set uncertain (G4 never retires its siblings).
+          if (set && protectionFor(result.code).protect) set.uncertain = true;
           await this.protect(
             rc,
             state,
             obj,
             accountObject,
-            record.id,
+            lineId,
             result.code,
             result.gapAccountId,
           );
@@ -747,13 +931,14 @@ export class SourceSyncService {
             if (out.reason === 'invalid_observation') {
               state.failed += 1;
               state.count('record_rejected');
+              if (set) set.uncertain = true;
               // M9A §9.2: the writer rejected the observation; its line is protected.
               await this.protect(
                 rc,
                 state,
                 obj,
                 accountObject,
-                record.id,
+                lineId,
                 'invalid_observation',
                 result.accountId,
               );
@@ -857,7 +1042,7 @@ export class SourceSyncService {
     }
     for (const record of records) {
       guards.observe(record);
-      if (!record.deleted) acc?.addRecord(record.values);
+      if (!record.deleted && !record.rejection) acc?.addRecord(record.values);
     }
     this.trip(state, guards.check('pre_write'));
   }
@@ -998,6 +1183,10 @@ export class SourceSyncService {
   ): Promise<void> {
     const pageSize = this.pageSize(rc, object);
     let position = from;
+    // M9B: positions are opaque; a repeated one, or a page identical to the
+    // previous one, is non-progress. The read stops at once (never a loop).
+    const used = new Set<string>(position ? [position] : []);
+    let previous: string | undefined;
     for (let page = 0; page < MAX_PAGES; page += 1) {
       const result = await rc.connector.readRecords({
         purpose: 'sync',
@@ -1007,11 +1196,247 @@ export class SourceSyncService {
         pageSize,
         ...(position ? { position } : {}),
       });
+      const signature =
+        result.records.length > 0
+          ? `${result.records.length}|${result.records[0]!.id}|${result.records.at(-1)!.id}`
+          : undefined;
+      if (
+        (result.next !== undefined && used.has(result.next)) ||
+        (result.next !== undefined && signature !== undefined && signature === previous)
+      ) {
+        throw new SyncRefusedError(
+          'pagination_stalled',
+          `${object}: the source repeated a page position (non-progress)`,
+        );
+      }
       await onPage(result.records, result.next);
       if (!result.next) return;
+      used.add(result.next);
+      previous = signature;
       position = result.next;
     }
     throw new SyncRefusedError('page_limit_exceeded', 'The read exceeded the page limit');
+  }
+
+  /**
+   * Reads a bounded selection with a full-read proof (ADR 0023): a count
+   * before and after (`count`, externally grounded), or, for an object that
+   * declares it, two enumerations with identical membership
+   * (`double_enumeration`, stable snapshot). Returns the population read.
+   * A failed proof is `unstable_read`: nothing is established.
+   */
+  private async provenRead(
+    rc: RunContext,
+    state: RunState,
+    object: string,
+    fields: readonly string[],
+    selection: ReadSelection,
+    onPage: (records: readonly SourceRecord[], next: string | undefined) => Promise<void>,
+  ): Promise<number> {
+    const capability = this.capabilities(rc, object);
+    if (capability?.count && rc.connector.countRecords) {
+      const before = await rc.connector.countRecords({ object, selection });
+      let read = 0;
+      await this.readAll(rc, object, fields, selection, async (records, next) => {
+        read += records.length;
+        await onPage(records, next);
+      });
+      const after = await rc.connector.countRecords({ object, selection });
+      if (before !== after || after !== read) {
+        state.detail.read = { object, expected: before, after, read };
+        throw new SyncRefusedError('unstable_read', `${object} changed during the read`);
+      }
+      state.proofs.add('count');
+      return read;
+    }
+    if (capability?.fullReadProof === 'double_enumeration') {
+      const first = await this.enumerate(rc, object, capability, fields, selection, onPage);
+      const proofFields = capability.childOf ? [capability.childOf.parentKeyField] : [];
+      const second = await this.enumerate(rc, object, capability, proofFields, selection);
+      if (first.size !== second.size || [...first].some((k) => !second.has(k))) {
+        state.detail.read = { object, pass1: first.size, pass2: second.size };
+        throw new SyncRefusedError(
+          'unstable_read',
+          `${object}: the two enumerations differ (membership changed during the read)`,
+        );
+      }
+      state.proofs.add('double_enumeration');
+      return first.size;
+    }
+    throw new SyncRefusedError(
+      'unstable_read',
+      `${object} can neither be counted nor double-enumerated: completeness cannot be proven`,
+    );
+  }
+
+  /**
+   * One exhausted traversal collecting membership keys: the record id, or for
+   * a derived child set the parent key (a parent's children never span
+   * pages). A key reappearing on a later page is unstable.
+   */
+  private async enumerate(
+    rc: RunContext,
+    object: string,
+    capability: ObjectCapabilities,
+    fields: readonly string[],
+    selection: ReadSelection,
+    onPage?: (records: readonly SourceRecord[], next: string | undefined) => Promise<void>,
+  ): Promise<Set<string>> {
+    const firstPage = new Map<string, number>();
+    let page = 0;
+    await this.readAll(rc, object, fields, selection, async (records, next) => {
+      page += 1;
+      for (const r of records) {
+        const key = capability.childOf
+          ? (text(r.values[capability.childOf.parentKeyField]) ?? `#${r.id}`)
+          : r.id;
+        const seenOn = firstPage.get(key);
+        if (seenOn !== undefined && (seenOn !== page || !capability.childOf)) {
+          throw new SyncRefusedError(
+            'unstable_read',
+            `${object}: a record appeared twice in one enumeration`,
+          );
+        }
+        firstPage.set(key, page);
+      }
+      if (onPage) await onPage(records, next);
+    });
+    return new Set(firstPage.keys());
+  }
+
+  /** M9B: the connector declares that this account object's references may be retired. */
+  private retiresReferences(rc: RunContext, obj: ObjectMapping): boolean {
+    return (
+      obj.entity === 'account' &&
+      this.capabilities(rc, obj.source)?.referenceRetirement === 'accepted_full_read'
+    );
+  }
+
+  /** M9B: records the ids a retiring full run saw (accepted or rejected; never deleted ones). */
+  private noteSeen(state: RunState, obj: ObjectMapping, records: readonly SourceRecord[]): void {
+    const tracked = state.retirement.get(obj.source);
+    if (!tracked) return;
+    for (const record of records) {
+      if (record.deleted) continue;
+      const id =
+        text(record.values[obj.identity.field]) ?? (record.rejection ? undefined : text(record.id));
+      if (id) tracked.seen.add(id);
+      else tracked.uncertain = true;
+    }
+  }
+
+  private capabilities(rc: RunContext, object: string): ObjectCapabilities | undefined {
+    return rc.snapshot.objects.find((o) => o.name === object)?.capabilities;
+  }
+
+  /** The mapped fields of an object, plus a derived child set's parent key (G4). */
+  private readFields(rc: RunContext, obj: ObjectMapping): string[] {
+    const fields = mappedFields(obj);
+    const parentKey = this.capabilities(rc, obj.source)?.childOf?.parentKeyField;
+    return parentKey && !fields.includes(parentKey) ? [...fields, parentKey] : fields;
+  }
+
+  private childSetsOf(state: RunState, object: string): Map<string, ChildSet> {
+    let sets = state.childSets.get(object);
+    if (!sets) {
+      sets = new Map();
+      state.childSets.set(object, sets);
+    }
+    return sets;
+  }
+
+  private async activeLinesOf(rc: RunContext, state: RunState, object: string) {
+    let ids = state.activeLines.get(object);
+    if (!ids) {
+      ids = await this.subscriptions.activeSourceRecordIds(rc.ctx, rc.kind, object);
+      state.activeLines.set(object, ids);
+    }
+    return ids;
+  }
+
+  /**
+   * A structurally rejected parent (M9B CB35): every existing line of that
+   * parent is protected (no tombstone, no retirement) with a gap on its
+   * account. Without a parent key, or with no existing line and no account to
+   * attribute, the rejection is unattributable and the run fails (M9A §9.4).
+   */
+  private async protectParent(
+    rc: RunContext,
+    state: RunState,
+    obj: ObjectMapping,
+    accountObject: string,
+    parent: string | undefined,
+    accountId: string | undefined,
+  ): Promise<void> {
+    if (!parent) {
+      state.childObjectsUncertain.add(obj.source);
+      state.unattributable += 1;
+      state.count('rejected_record_unattributable');
+      return;
+    }
+    const lines = (await this.activeLinesOf(rc, state, obj.source)).filter((id) =>
+      id.startsWith(`${parent}:`),
+    );
+    for (const id of lines) {
+      await this.protect(rc, state, obj, accountObject, id, 'record_rejected', accountId);
+    }
+    if (lines.length === 0) {
+      await this.protect(rc, state, obj, accountObject, `${parent}:`, 'record_rejected', accountId);
+    }
+  }
+
+  /**
+   * Parent-scoped child reconciliation (M9B G4). For a derived child set, a
+   * parent observed in this run with a complete, accepted child set is
+   * positive evidence: its active lines whose keys are absent from that set
+   * are retired. Never for a parent that was rejected, split across pages,
+   * deleted, had any rejected, protected or duplicated child, or for an
+   * object whose child sets are uncertain. Runs only after every read and
+   * guard succeeded (a failed run never reaches it).
+   */
+  private async reconcileChildren(rc: RunContext, state: RunState): Promise<void> {
+    for (const [object, sets] of state.childSets) {
+      if (state.childObjectsUncertain.has(object)) {
+        state.count('child_reconciliation_skipped');
+        continue;
+      }
+      const active = await this.subscriptions.activeSourceRecordIds(rc.ctx, rc.kind, object);
+      for (const [parent, set] of sets) {
+        if (set.uncertain) {
+          // An uncertain child set retires nothing: none of the parent's existing
+          // lines may be tombstoned by this run either (full-run pass included).
+          state.count('child_reconciliation_skipped');
+          for (const id of active) {
+            const key = `${object}|${id}`;
+            if (!id.startsWith(`${parent}:`) || state.holdingIds.has(key)) continue;
+            if (!state.seenButRejected.has(key)) {
+              state.seenButRejected.set(key, { code: 'child_set_uncertain' });
+              state.count('child_set_protected');
+            }
+          }
+          continue;
+        }
+        if (set.deleted) continue;
+        for (const id of active) {
+          if (!id.startsWith(`${parent}:`) || set.keys.has(id)) continue;
+          const key = `${object}|${id}`;
+          if (!mayTombstone(key, state.holdingIds, state.seenButRejected)) continue;
+          const out = await this.subscriptions.ingest(
+            rc.ctx,
+            {
+              presence: 'absent',
+              source: { system: rc.kind, objectType: object, recordId: id },
+              observedAt: rc.observedAt,
+            },
+            this.lineMeta(rc),
+          );
+          if (out.outcome === 'deleted') {
+            state.changed += 1;
+            state.count('child_retired');
+          }
+        }
+      }
+    }
   }
 
   private async readIds(
@@ -1034,22 +1459,6 @@ export class SourceSyncService {
       );
     }
     return out;
-  }
-
-  /** Count of a bounded selection; a source that cannot count cannot prove a full read. */
-  private async countOrRefuse(
-    rc: RunContext,
-    object: string,
-    selection: ReadSelection,
-  ): Promise<number> {
-    const capability = rc.snapshot.objects.find((o) => o.name === object)?.capabilities;
-    if (!capability?.count || !rc.connector.countRecords) {
-      throw new SyncRefusedError(
-        'unstable_read',
-        `${object} cannot be counted: completeness cannot be proven`,
-      );
-    }
-    return rc.connector.countRecords({ object, selection });
   }
 
   private pageSize(rc: RunContext, object: string): number {
@@ -1078,6 +1487,11 @@ export class SourceSyncService {
       mappingVersion: rc.mappingVersion,
     };
   }
+}
+
+/** The canonical source id of a line record: its mapped identity value, else the record id. */
+function lineIdOf(obj: ObjectMapping, record: SourceRecord): string | undefined {
+  return text(record.values[obj.identity.field]) ?? text(record.id);
 }
 
 function text(value: string | number | boolean | null | undefined): string | undefined {

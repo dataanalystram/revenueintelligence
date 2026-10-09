@@ -274,6 +274,23 @@ describe('publish-time profile checks and acknowledgements (M9A §7.3, §7.4)', 
       'date_format_required',
     );
   });
+
+  it('M9B: a Unix-seconds timestamp entry reads only integers; any other observed type is refused', () => {
+    const doc = testMapping();
+    const start = lines(doc).fields.find(
+      (e) => 'source' in e && e.source === 'service_start_date',
+    ) as { transforms?: unknown };
+    start.transforms = { parse: { type: 'timestamp', format: 'unix_seconds' } };
+    const seconds = withValues('service_start_date', (i) => 1_767_225_600 + i * 86_400);
+    expect(codes(doc, testProfilingInput({ profiles: seconds }))).not.toContain(
+      'date_format_required',
+    );
+    const strings = withValues('service_start_date', (i) => (i < 3 ? '2026-01-01' : 1_767_225_600));
+    expect(codes(doc, testProfilingInput({ profiles: strings }))).toContain('date_format_required');
+    // Milliseconds (F18: resource_version is milliseconds) are not seconds.
+    const millis = withValues('service_start_date', (i) => 1_767_225_600_000 + i);
+    expect(codes(doc, testProfilingInput({ profiles: millis }))).toContain('date_format_required');
+  });
 });
 
 describe('holding filters need a known, reviewed domain (M9A §10.2)', () => {

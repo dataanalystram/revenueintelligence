@@ -21,6 +21,7 @@ import {
   SourceSyncService,
   type SourceConnection,
 } from '../modules/sources';
+import { chargebeeAdapterFactory } from '../modules/chargebee';
 import { sugarAdapterFactory } from '../modules/sugar';
 import { TenancyModule, TenantContextService, type TenantContext } from '../modules/tenancy';
 import { loadConfig } from '../platform/config';
@@ -84,7 +85,11 @@ async function withSources<T>(work: (app: INestApplicationContext) => Promise<T>
       HubSpotModule,
       ContextIntakeModule,
       context,
-      SourcesModule.register({ context, adapters: [sugarAdapterFactory()], processors: false }),
+      SourcesModule.register({
+        context,
+        adapters: [sugarAdapterFactory(), chargebeeAdapterFactory()],
+        processors: false,
+      }),
     ],
   })
   class SourcesCliModule {}

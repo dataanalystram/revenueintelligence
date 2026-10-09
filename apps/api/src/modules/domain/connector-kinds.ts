@@ -48,6 +48,13 @@ export const CONNECTOR_KIND_CATALOGUE = [
     hasAdapter: false,
   },
   {
+    kind: 'chargebee',
+    displayName: 'Chargebee',
+    externalReferences: true,
+    mappingMode: 'versioned',
+    hasAdapter: true,
+  },
+  {
     kind: 'import',
     displayName: 'Operator import (CSV)',
     externalReferences: false,

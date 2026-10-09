@@ -399,7 +399,7 @@ model CompanyExternalRef {
   objectType           String    @map("object_type")
   externalId           String    @map("external_id")
   companyId            String    @map("company_id") @db.Uuid
-  /// active | deleted | merged (ADR 0014)
+  /// active | deleted | merged (ADR 0014) | retired (M9B: absent from an accepted full read)
   state                String    @default("active")
   mergedIntoExternalId String?   @map("merged_into_external_id")
   firstSeenAt          DateTime  @default(now()) @map("first_seen_at") @db.Timestamptz(3)
@@ -410,9 +410,13 @@ model CompanyExternalRef {
   /// SHA-256 of the last applied mapped fields (idempotency; no values)
   fieldHash            String?   @map("field_hash")
   lastChangeId         String?   @map("last_change_id") @db.Uuid
+  /// M9B: set exactly when `state = retired` (the accepted full run that no longer returned it)
+  retiredAt            DateTime? @map("retired_at") @db.Timestamptz(3)
+  retiredByRunId       String?   @map("retired_by_run_id") @db.Uuid
 
-  company   Company       @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Cascade, onUpdate: Restrict)
-  connector ConnectorKind @relation(fields: [system], references: [kind], onDelete: Restrict, onUpdate: Restrict)
+  company      Company               @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Cascade, onUpdate: Restrict)
+  connector    ConnectorKind         @relation(fields: [system], references: [kind], onDelete: Restrict, onUpdate: Restrict)
+  retiredByRun TenantSyncCheckpoint? @relation(fields: [tenantId, retiredByRunId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
 
   @@id([tenantId, system, objectType, externalId])
   @@index([tenantId, companyId])
@@ -638,11 +642,12 @@ model TenantSyncCheckpoint {
   /// M8: run quality counters and codes (counts and codes only, never values); M9A adds `proof`
   quality            Json?
 
-  tenant     Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  connector  ConnectorKind               @relation(fields: [system], references: [kind], onDelete: Restrict, onUpdate: Restrict)
-  connection TenantSourceConnection?     @relation(fields: [tenantId, sourceConnectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
-  mapping    TenantSourceMappingVersion? @relation(fields: [tenantId, sourceConnectionId, mappingVersion], references: [tenantId, connectionId, version], onDelete: Restrict, onUpdate: Restrict)
-  profiles   TenantSourceProfile[]
+  tenant      Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  connector   ConnectorKind               @relation(fields: [system], references: [kind], onDelete: Restrict, onUpdate: Restrict)
+  connection  TenantSourceConnection?     @relation(fields: [tenantId, sourceConnectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  mapping     TenantSourceMappingVersion? @relation(fields: [tenantId, sourceConnectionId, mappingVersion], references: [tenantId, connectionId, version], onDelete: Restrict, onUpdate: Restrict)
+  profiles    TenantSourceProfile[]
+  retiredRefs CompanyExternalRef[]
 
   @@id([tenantId, id])
   @@unique([tenantId, activeKey])

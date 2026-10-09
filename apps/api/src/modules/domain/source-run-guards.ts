@@ -65,6 +65,12 @@ export function valueRulesFor(obj: ObjectMapping): ValueRule[] {
     const parse = entry.transforms?.parse;
     if (entry.target === 'subscription.quantity') {
       rules.push({ field: entry.source, types: new Set<ObservedType>(['integer']) });
+    } else if (
+      (entry.target === 'subscription.startsAt' || entry.target === 'subscription.endsAt') &&
+      parse?.type === 'timestamp'
+    ) {
+      // M9B: Unix seconds are integers (natively or as digit strings).
+      rules.push({ field: entry.source, types: new Set<ObservedType>(['integer']) });
     } else if (entry.target === 'subscription.startsAt' || entry.target === 'subscription.endsAt') {
       rules.push({
         field: entry.source,

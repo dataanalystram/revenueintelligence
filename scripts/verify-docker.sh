@@ -125,6 +125,7 @@ REDIS="redis://127.0.0.1:$LIP_REDIS_PORT"
 out="$(run_once migrate --network host -e MIGRATION_DATABASE_URL="$OWNER" "$TAG-migrate" 2>&1 || true)"
 grep -q 'successfully applied' <<<"$out" && pass "migrate job applies migrations (owner credentials only)" || fail "migrate job"
 grep -q '20261101120000_m9a_source_profiling' <<<"$out" && pass "migrate job applies the M9A profiling migration" || fail "migrate job M9A migration"
+grep -q '20261115120000_m9b_chargebee_connector_kind' <<<"$out" && pass "migrate job applies the M9B Chargebee migration" || fail "migrate job M9B migration"
 
 docker run -d --name "$PROJECT-api" --label "$RUN_LABEL" --network host -e PORT="$API_PORT" -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" "$TAG-runtime" >/dev/null
 docker run -d --name "$PROJECT-worker" --label "$RUN_LABEL" --network host -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" "$TAG-runtime" node dist/worker.js >/dev/null
@@ -187,6 +188,30 @@ out="$(run_once prfshow --network host -e DATABASE_URL="$APP" -e REDIS_URL="$RED
   node dist/cli/sources.js profile-show --tenant dockerco --connection import --object Lines 2>&1 || true)"
 grep -q '"found": false' <<<"$out" \
   && pass "sources profile-show runs inside the image (M9A)" || fail "sources profile-show in image"
+
+# M9B: the Chargebee adapter is registered in the image's composition roots.
+# Static checks only (no network): a non-loopback endpoint is refused by the
+# adapter's config validation; a site-only connection is configured with a
+# credential NAME (the widened credential CHECK) and its metadata-only schema
+# is captured (describeSchema sends no request).
+CB_CFG="$(mktemp -d)"
+chmod 755 "$CB_CFG"
+printf '{"site":"docker-synthetic-test","endpoint":"http://198.51.100.7:80","sync":{"overlapMinutes":10}}' >"$CB_CFG/bad.json"
+printf '{"site":"docker-synthetic-test","sync":{"overlapMinutes":10}}' >"$CB_CFG/ok.json"
+chmod 644 "$CB_CFG"/*.json
+out="$(run_once cbbad --network host -v "$CB_CFG:/cfg:ro" -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" "$TAG-runtime" \
+  node dist/cli/sources.js configure --tenant dockerco --kind chargebee --label 'Chargebee' --file /cfg/bad.json --credential chargebee_api --execute 2>&1 || true)"
+grep -q '"code": "invalid_config"' <<<"$out" \
+  && pass "Chargebee adapter refuses a non-loopback endpoint inside the image (M9B)" || fail "Chargebee config validation in image"
+out="$(run_once cbok --network host -v "$CB_CFG:/cfg:ro" -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" "$TAG-runtime" \
+  node dist/cli/sources.js configure --tenant dockerco --kind chargebee --label 'Chargebee' --file /cfg/ok.json --credential chargebee_api --status disabled --execute 2>&1 || true)"
+grep -q '"kind": "chargebee"' <<<"$out" && grep -q '"credentialName": "chargebee_api"' <<<"$out" \
+  && pass "Chargebee connection configured with a credential name inside the image (M9B)" || fail "Chargebee configure in image"
+out="$(run_once cbschema --network host -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" "$TAG-runtime" \
+  node dist/cli/sources.js schema --tenant dockerco --connection chargebee --capture --execute 2>&1 || true)"
+grep -q '"created": true' <<<"$out" && grep -q '"objects": 5' <<<"$out" \
+  && pass "Chargebee metadata-only schema captured inside the image (M9B)" || fail "Chargebee schema in image"
+rm -rf "$CB_CFG"
 
 echo "== Cleanup self-test"
 # The leftover detector must see every kind of resource this run creates, or

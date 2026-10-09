@@ -123,6 +123,8 @@ export interface StoredReference {
   readonly sourceUpdatedAt?: Date;
   readonly fieldHash?: string;
   readonly deletedAt?: Date;
+  /** M9B: when an accepted full read retired the reference (state `retired`). */
+  readonly retiredAt?: Date;
   /** Latest time the record was read as present. */
   readonly lastSeenAt?: Date;
 }
@@ -132,7 +134,7 @@ export type ApplyDecision =
   | 'create'
   /** Newer source state: update the canonical record. */
   | 'apply'
-  /** A tombstoned record read as present after its deletion was recorded. */
+  /** A tombstoned (or retired) record read as present after that was recorded. */
   | 'restore'
   /** The source no longer returns the record: tombstone the reference. */
   | 'delete'
@@ -180,7 +182,9 @@ export function decideApplyWithHash(
   if (!stored) return observation.presence === 'present' ? 'create' : 'not_found';
 
   if (observation.presence === 'absent') {
-    if (stored.state === 'deleted' || stored.state === 'merged') return 'unchanged';
+    if (stored.state === 'deleted' || stored.state === 'merged' || stored.state === 'retired') {
+      return 'unchanged';
+    }
     if (stored.lastSeenAt && observation.observedAt <= stored.lastSeenAt) return 'stale';
     return 'delete';
   }
@@ -188,6 +192,10 @@ export function decideApplyWithHash(
   if (stored.state === 'merged') return 'stale';
   if (stored.state === 'deleted') {
     return stored.deletedAt && observation.observedAt > stored.deletedAt ? 'restore' : 'stale';
+  }
+  if (stored.state === 'retired') {
+    // A read from before the retirement cannot undo it; a later one always does.
+    return stored.retiredAt && observation.observedAt > stored.retiredAt ? 'restore' : 'stale';
   }
 
   if (stored.sourceUpdatedAt && observation.sourceUpdatedAt) {

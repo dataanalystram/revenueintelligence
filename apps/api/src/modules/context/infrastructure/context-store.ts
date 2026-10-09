@@ -27,6 +27,7 @@ export interface RefRow {
   readonly sourceCreatedAt: Date | undefined;
   readonly fieldHash: string | undefined;
   readonly deletedAt: Date | undefined;
+  readonly retiredAt: Date | undefined;
   readonly lastSeenAt: Date;
   readonly firstSeenAt: Date;
 }
@@ -37,6 +38,9 @@ export interface RefWrite {
   readonly sourceCreatedAt?: Date | null;
   readonly sourceUpdatedAt?: Date | null;
   readonly deletedAt?: Date | null;
+  /** M9B: cleared (with the retiring run) whenever the reference becomes active again. */
+  readonly retiredAt?: null;
+  readonly retiredByRunId?: null;
   readonly fieldHash?: string | null;
   readonly lastSeenAt?: Date;
   readonly lastChangeId?: string | null;
@@ -97,6 +101,7 @@ function toRef(
     sourceCreatedAt: Date | null;
     fieldHash: string | null;
     deletedAt: Date | null;
+    retiredAt?: Date | null;
     lastSeenAt: Date;
     firstSeenAt: Date;
   },
@@ -112,6 +117,7 @@ function toRef(
     sourceCreatedAt: r.sourceCreatedAt ?? undefined,
     fieldHash: r.fieldHash ?? undefined,
     deletedAt: r.deletedAt ?? undefined,
+    retiredAt: r.retiredAt ?? undefined,
     lastSeenAt: r.lastSeenAt,
     firstSeenAt: r.firstSeenAt,
   };
@@ -171,6 +177,51 @@ export class ContextStore {
             where: { tenantId: tx.tenantId, personId: canonicalId },
           });
     return rows.map((r) => toRef(kind, r));
+  }
+
+  /**
+   * M9B: active company references of one source object last read before
+   * `notSeenSince` (a reference read after a run's read started is never
+   * that run's candidate).
+   */
+  async activeCompanyRefsOf(
+    tx: TenantTransaction,
+    system: string,
+    objectType: string,
+    notSeenSince: Date,
+  ): Promise<{ readonly externalId: string; readonly canonicalId: string }[]> {
+    const rows = await tenantClient(tx).companyExternalRef.findMany({
+      where: {
+        tenantId: tx.tenantId,
+        system,
+        objectType,
+        state: 'active',
+        lastSeenAt: { lte: notSeenSince },
+      },
+      select: { externalId: true, companyId: true },
+      orderBy: { externalId: 'asc' },
+    });
+    return rows.map((r) => ({ externalId: r.externalId, canonicalId: r.companyId }));
+  }
+
+  /** M9B: `active` → `retired`, with the retiring run (no other state is touched). */
+  async retireCompanyRef(
+    tx: TenantTransaction,
+    ref: ExternalRef,
+    retiredAt: Date,
+    runId: string,
+  ): Promise<boolean> {
+    const out = await tenantClient(tx).companyExternalRef.updateMany({
+      where: {
+        tenantId: tx.tenantId,
+        system: ref.system,
+        objectType: ref.objectType,
+        externalId: ref.id,
+        state: 'active',
+      },
+      data: { state: 'retired', retiredAt, retiredByRunId: runId },
+    });
+    return out.count === 1;
   }
 
   async insertRef(
@@ -327,11 +378,16 @@ export class ContextStore {
     throw new Error('merge lineage too deep');
   }
 
+  /**
+   * References that keep a canonical record active. M9B: a `retired` company
+   * reference counts as active here — retirement is absence from a source
+   * read, never evidence that the company itself is gone.
+   */
   async activeRefCount(tx: TenantTransaction, kind: ContextKind, id: string): Promise<number> {
     const db = tenantClient(tx);
     return kind === 'company'
       ? db.companyExternalRef.count({
-          where: { tenantId: tx.tenantId, companyId: id, state: 'active' },
+          where: { tenantId: tx.tenantId, companyId: id, state: { in: ['active', 'retired'] } },
         })
       : db.personExternalRef.count({
           where: { tenantId: tx.tenantId, personId: id, state: 'active' },
