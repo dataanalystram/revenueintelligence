@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { Logger } from '@nestjs/common';
 import {
   SecretLikeValueError,
@@ -13,6 +14,8 @@ import {
 } from './authorized-context';
 
 const logger = new Logger('AuditFailures');
+/** Set while an audited write runs: a nested audited call leaves the failure to the outermost one. */
+const inAuditedWrite = new AsyncLocalStorage<true>();
 
 /** Refusals already recorded as `denied` (or never authorized): no `failed` event. */
 function isRefusal(error: unknown): boolean {
@@ -22,7 +25,10 @@ function isRefusal(error: unknown): boolean {
     error instanceof SecretLikeValueError ||
     (typeof error === 'object' &&
       error !== null &&
-      (error as { code?: unknown }).code === 'audit_purge_disabled')
+      // Already recorded as denied, or a broken chain that must not be extended.
+      ['audit_purge_disabled', 'audit_chain_broken'].includes(
+        String((error as { code?: unknown }).code),
+      ))
   );
 }
 
@@ -32,7 +38,7 @@ export function failureReason(error: unknown): AuditReasonCode {
   const code =
     typeof error === 'object' && error !== null ? String((error as { code?: unknown }).code) : '';
   const text = `${name} ${code}`;
-  if (/Concurrent|Stale|VersionConflict|concurrent_publish|stale/i.test(text)) {
+  if (/Concurren|Stale|VersionConflict|version_conflict|concurrent_publish|stale/i.test(text)) {
     return 'stale_base_version';
   }
   if (/Invalid|Validation|ConfigError|ZodError|Required|invalid|validation/i.test(text)) {
@@ -50,15 +56,21 @@ export function failureReason(error: unknown): AuditReasonCode {
  * (a plain TenantContext) records nothing. If the failure cannot be recorded,
  * the original error still wins.
  */
-export function AuditFailures(action: AuditAction, targetKind?: AuditTargetKind) {
+export function AuditFailures(
+  action: AuditAction,
+  targetKind?: AuditTargetKind,
+  /** Records only when this holds for the call's arguments (e.g. a write option). */
+  when: (args: readonly unknown[]) => boolean = () => true,
+) {
   return (_target: object, _key: string | symbol, descriptor: PropertyDescriptor): void => {
     const original = descriptor.value as (...args: unknown[]) => Promise<unknown>;
     descriptor.value = async function (this: { audit: AuditTrail }, ...args: unknown[]) {
+      const nested = inAuditedWrite.getStore() === true;
       try {
-        return await original.apply(this, args);
+        return await inAuditedWrite.run(true, () => original.apply(this, args));
       } catch (error) {
         const first: unknown = args[0];
-        if (first instanceof AuthorizedContext && !isRefusal(error)) {
+        if (!nested && first instanceof AuthorizedContext && !isRefusal(error) && when(args)) {
           const actx = first as AuthorizedContext;
           try {
             await this.audit.recordFailed(actx, {
