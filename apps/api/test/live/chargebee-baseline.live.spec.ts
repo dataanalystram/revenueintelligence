@@ -1002,7 +1002,7 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
 
   const m08 = process.env.CHARGEBEE_M08_CUSTOMER ? it : it.skip;
   m08(
-    'M08: deleted customer + cascaded S09: lines retired only by the next accepted full run',
+    'M08: deleted customer + cascaded S09: line and customer reference retired only by the next accepted full run',
     async () => {
       const customer08 = process.env.CHARGEBEE_M08_CUSTOMER!;
       const s = sourcesServices(c);
@@ -1119,20 +1119,67 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
           globalThis.fetch = original;
         }
       };
+      // Sanitized run labels (no run ids in the report).
+      const runLabels = new Map<string, string>();
       const customerRef = async () =>
         (
-          await c.sql<{ deleted_at: Date | null }>(
-            `SELECT deleted_at FROM company_external_refs WHERE tenant_id = $1 AND system = 'chargebee' AND object_type = 'Customers' AND external_id = $2`,
+          await c.sql<{
+            state: string;
+            deleted_at: Date | null;
+            retired_at: Date | null;
+            retired_by_run_id: string | null;
+          }>(
+            `SELECT state, deleted_at, retired_at, retired_by_run_id FROM company_external_refs WHERE tenant_id = $1 AND system = 'chargebee' AND object_type = 'Customers' AND external_id = $2`,
             [f.ctx.tenantId, customer08],
           )
-        ).map((x) => ({ present: true, retired: x.deleted_at !== null }))[0] ?? { present: false };
-      const companyRows = async () =>
+        ).map((x) => ({
+          present: true,
+          state: x.state,
+          retired: x.state === 'retired',
+          deletedAt: x.deleted_at !== null,
+          retiredAt: x.retired_at !== null,
+          retiredBy:
+            x.retired_by_run_id === null
+              ? null
+              : (runLabels.get(x.retired_by_run_id) ?? 'unknown_run'),
+        }))[0] ?? { present: false };
+      const companyRows = async () => {
+        const rows = await c.sql<{ record_state: string }>(
+          `SELECT co.record_state FROM companies co JOIN company_external_refs x ON x.tenant_id = co.tenant_id AND x.company_id = co.id WHERE x.tenant_id = $1 AND x.system = 'chargebee' AND x.external_id = $2`,
+          [f.ctx.tenantId, customer08],
+        );
+        return { rows: rows.length, recordStates: rows.map((r) => r.record_state) };
+      };
+      const rowCounts = async () =>
         (
-          await c.sql<{ n: number }>(
-            `SELECT count(*)::int AS n FROM companies co JOIN company_external_refs x ON x.tenant_id = co.tenant_id AND x.company_id = co.id WHERE x.tenant_id = $1 AND x.system = 'chargebee' AND x.external_id = $2`,
-            [f.ctx.tenantId, customer08],
+          await c.sql<{ companies: number; refs: number; lines: number; changes: number }>(
+            `SELECT (SELECT count(*)::int FROM companies WHERE tenant_id = $1) AS companies,
+                    (SELECT count(*)::int FROM company_external_refs WHERE tenant_id = $1) AS refs,
+                    (SELECT count(*)::int FROM tenant_subscriptions WHERE tenant_id = $1) AS lines,
+                    (SELECT count(*)::int FROM tenant_context_changes WHERE tenant_id = $1) AS changes`,
+            [f.ctx.tenantId],
           )
-        )[0]!.n;
+        )[0]!;
+      const otherRefs = async () =>
+        new Map(
+          (
+            await c.sql<{ external_id: string; state: string; company_id: string }>(
+              `SELECT external_id, state, company_id FROM company_external_refs WHERE tenant_id = $1 AND external_id <> $2`,
+              [f.ctx.tenantId, customer08],
+            )
+          ).map((r) => [r.external_id, `${r.state}:${r.company_id}`]),
+        );
+      const refDiff = (a: Map<string, string>, b: Map<string, string>) => ({
+        compared: new Set([...a.keys(), ...b.keys()]).size,
+        changed: [...new Set([...a.keys(), ...b.keys()])].filter((k) => a.get(k) !== b.get(k))
+          .length,
+        allActive: [...b.values()].every((v) => v.startsWith('active:')),
+      });
+      const customerSnapshot = async () => ({
+        ref: await customerRef(),
+        company: await companyRows(),
+        rows: await rowCounts(),
+      });
       const snapshot = async () =>
         new Map(
           (await linesOf(f.ctx)).map((l) => [
@@ -1166,13 +1213,17 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
       };
       // 1. Pre-M07 state (replayed S04).
       const r1 = await run({ inject04: true, reject03: false });
+      runLabels.set(r1.runId, 'run1');
       const p1 = await snapshot();
-      out.run1ReplayCustomer = { ref: await customerRef(), companyRows: await companyRows() };
+      const o1 = await otherRefs();
+      out.run1ReplayCustomer = await customerSnapshot();
       out.run1Replay = { status: r1.status, quality: r1.quality, s04: await s04Lines() };
       // 2. Live read without acceptance: absence alone must not retire.
       const r2 = await run({ inject04: false, reject03: false });
+      runLabels.set(r2.runId, 'run2');
       const p2 = await snapshot();
-      out.run2NoAcceptanceCustomer = { ref: await customerRef(), companyRows: await companyRows() };
+      const o2 = await otherRefs();
+      out.run2NoAcceptanceCustomer = { ...(await customerSnapshot()), otherRefs: refDiff(o1, o2) };
       out.run2NoAcceptance = {
         status: r2.status,
         quality: r2.quality,
@@ -1188,12 +1239,22 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
         proofAcceptances: [{ connectionId: f.connectionId, reason: 'live test site' }],
       });
       const r3 = await run({ inject04: false, reject03: true });
+      runLabels.set(r3.runId, 'run3');
       const p3 = await snapshot();
+      const o3 = await otherRefs();
       const gaps3 = await c.sql<{ reason: string; n: number }>(
         `SELECT reason, count(*)::int AS n FROM tenant_ownership_gaps WHERE tenant_id = $1 GROUP BY reason`,
         [f.ctx.tenantId],
       );
-      out.run3AcceptedCustomer = { ref: await customerRef(), companyRows: await companyRows() };
+      const provenance = await c.sql<{ change_type: string; changed_fields: string[] }>(
+        `SELECT change_type, changed_fields FROM tenant_context_changes WHERE tenant_id = $1 AND source_object_type = 'Customers' AND source_record_id = $2 AND checkpoint_id = $3`,
+        [f.ctx.tenantId, customer08, r3.runId],
+      );
+      out.run3AcceptedCustomer = {
+        ...(await customerSnapshot()),
+        otherRefs: refDiff(o2, o3),
+        provenance,
+      };
       out.run3Accepted = {
         status: r3.status,
         quality: r3.quality,
@@ -1204,12 +1265,18 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
       };
       // 4. Clean accepted rerun: nothing further retired (exactly once), S03 normal again.
       const r4 = await run({ inject04: false, reject03: false });
+      runLabels.set(r4.runId, 'run4');
       const p4 = await snapshot();
+      const o4 = await otherRefs();
       const gaps4 = await c.sql<{ reason: string; n: number }>(
         `SELECT reason, count(*)::int AS n FROM tenant_ownership_gaps WHERE tenant_id = $1 GROUP BY reason`,
         [f.ctx.tenantId],
       );
-      out.run4RerunCustomer = { ref: await customerRef(), companyRows: await companyRows() };
+      out.run4RerunCustomer = {
+        ...(await customerSnapshot()),
+        otherRefs: refDiff(o3, o4),
+        otherRefsRun1VsRun4: refDiff(o1, o4),
+      };
       out.run4Rerun = {
         status: r4.status,
         quality: r4.quality,
@@ -1233,6 +1300,21 @@ live('Chargebee TEST site — baseline live pipeline (M9B)', () => {
         };
       }
       report.m08 = out;
+      // Governed correction: the reference retires only on the accepted run, the company stays.
+      expect(out.connectorNeverSentIncludeDeleted).toBe(true);
+      expect((out.run2NoAcceptanceCustomer as E).ref).toMatchObject({ state: 'active' });
+      expect((out.run3AcceptedCustomer as E).ref).toMatchObject({
+        state: 'retired',
+        retiredBy: 'run3',
+      });
+      expect((out.run3AcceptedCustomer as E).company).toEqual({
+        rows: 1,
+        recordStates: ['active'],
+      });
+      expect((out.run4RerunCustomer as E).ref).toMatchObject({
+        state: 'retired',
+        retiredBy: 'run3',
+      });
     },
     900_000,
   );

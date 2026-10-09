@@ -94,6 +94,15 @@ export const ObjectCapabilitiesSchema = z
      * object is read by full runs only. Absent: incremental reads allowed.
      */
     incrementalReads: z.literal(false).optional(),
+    /**
+     * M9B (governed correction after live M08): references of this account
+     * object may be retired when a successful full run whose read of the
+     * object was proven (count or double enumeration) and, where the proof
+     * requires it, operator-accepted, did not see them. Retirement is a
+     * reference lifecycle state only (never an account deletion). Absent: a
+     * reference is never retired from absence.
+     */
+    referenceRetirement: z.literal('accepted_full_read').optional(),
   })
   .readonly();
 export type ObjectCapabilities = z.infer<typeof ObjectCapabilitiesSchema>;

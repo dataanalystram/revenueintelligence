@@ -150,6 +150,12 @@ class RunState {
   readonly childPages = new Map<string, number>();
   /** Active canonical line ids per object, loaded once per run when needed. */
   readonly activeLines = new Map<string, readonly string[]>();
+  /**
+   * M9B: account objects whose references this full run may retire, with
+   * every id the run saw for them (read, rejected, or referenced by a line).
+   * `uncertain` once a record without a readable id was read.
+   */
+  readonly retirement = new Map<string, { readonly seen: Set<string>; uncertain: boolean }>();
 
   count(code: string, by = 1): void {
     this.quality[code] = (this.quality[code] ?? 0) + by;
@@ -439,10 +445,18 @@ export class SourceSyncService {
     const selection: ReadSelection = { mode: 'full', boundary: rc.boundary };
     // 1. Accounts and people: references (and profiles with authority).
     for (const obj of rc.mapping.objects.filter((o) => o.entity !== 'subscription')) {
-      await this.readAll(rc, obj.source, mappedFields(obj), selection, async (records) => {
+      const onPage = async (records: readonly SourceRecord[]) => {
         this.observe(rc, state, obj, records);
+        this.noteSeen(state, obj, records);
         await this.ingestContext(rc, state, obj, records);
-      });
+      };
+      if (this.retiresReferences(rc, obj)) {
+        // M9B: this run may retire the object's references, so its read must be proven.
+        state.retirement.set(obj.source, { seen: new Set(), uncertain: false });
+        await this.provenRead(rc, state, obj.source, mappedFields(obj), selection, onPage);
+      } else {
+        await this.readAll(rc, obj.source, mappedFields(obj), selection, onPage);
+      }
     }
     const lineObjects = rc.mapping.objects.filter((o) => o.entity === 'subscription');
     if (lineObjects.length > 0) {
@@ -510,6 +524,13 @@ export class SourceSyncService {
       }
       if (suppressed > 0) state.count('tombstones_suppressed', suppressed);
     }
+    // 4d. M9B: account references this proven full read did not see — retired (in the
+    // completion transaction below) only when the proof is accepted and nothing is uncertain.
+    const retire = [...state.retirement].filter(([, r]) => {
+      if (!tombstonesAllowed) state.count('reference_retirement_not_accepted');
+      else if (r.uncertain) state.count('reference_retirement_suppressed');
+      return tombstonesAllowed && !r.uncertain;
+    });
     state.detail.proof = proof;
     const runQuality = await this.runQualityProfiles(rc, state);
     // 5. Complete: gaps replaced, run-quality profiles stored and the run completed in one transaction.
@@ -518,6 +539,23 @@ export class SourceSyncService {
         await this.gaps.replaceWithin(tx, rc.connection.id, [...state.gaps.values()], rc.run.id);
       }
       await this.storeRunQuality(tx, rc, runQuality);
+      for (const [object, r] of retire) {
+        const retired = await this.context.retireAbsentWithin(
+          tx,
+          {
+            system: rc.kind,
+            objectType: object,
+            seen: r.seen,
+            observedAt: rc.observedAt,
+            runId: rc.run.id,
+          },
+          this.contextMeta(rc),
+        );
+        if (retired > 0) {
+          state.changed += retired;
+          state.count('references_retired', retired);
+        }
+      }
       await this.repo.finishRun(tx, rc.run.id, {
         status: 'completed',
         highWatermark: rc.boundary,
@@ -676,6 +714,12 @@ export class SourceSyncService {
     const fact = obj.entity === 'person' ? 'person_profile' : 'account_profile';
     const profileAuthority = isAuthoritative(rc.authority, fact, rc.connection.id);
     for (const record of records) {
+      if (record.rejection) {
+        // M9B: structurally invalid — never mapped; a full run counts it as seen (no retirement).
+        state.failed += 1;
+        state.count('record_rejected');
+        continue;
+      }
       const result = mapContextRecord(obj, record, {
         kind: rc.kind,
         profileAuthority,
@@ -733,6 +777,8 @@ export class SourceSyncService {
       const hop = via ? hops.get(via) : undefined;
       if (hop?.kind === 'account') accountIds.add(hop.id);
     }
+    // M9B: an account a line refers to is not absent, whatever the account read returned.
+    accountIds.forEach((id) => state.retirement.get(accountObject)?.seen.add(id));
     const unresolved = [...accountIds].filter(
       (id) => !state.knownAccounts.has(id) && !state.orphanAccounts.has(id),
     );
@@ -1253,6 +1299,27 @@ export class SourceSyncService {
       if (onPage) await onPage(records, next);
     });
     return new Set(firstPage.keys());
+  }
+
+  /** M9B: the connector declares that this account object's references may be retired. */
+  private retiresReferences(rc: RunContext, obj: ObjectMapping): boolean {
+    return (
+      obj.entity === 'account' &&
+      this.capabilities(rc, obj.source)?.referenceRetirement === 'accepted_full_read'
+    );
+  }
+
+  /** M9B: records the ids a retiring full run saw (accepted or rejected; never deleted ones). */
+  private noteSeen(state: RunState, obj: ObjectMapping, records: readonly SourceRecord[]): void {
+    const tracked = state.retirement.get(obj.source);
+    if (!tracked) return;
+    for (const record of records) {
+      if (record.deleted) continue;
+      const id =
+        text(record.values[obj.identity.field]) ?? (record.rejection ? undefined : text(record.id));
+      if (id) tracked.seen.add(id);
+      else tracked.uncertain = true;
+    }
   }
 
   private capabilities(rc: RunContext, object: string): ObjectCapabilities | undefined {

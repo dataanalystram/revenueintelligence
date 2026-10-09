@@ -254,9 +254,19 @@ describe('Chargebee adapter against the deterministic fake (no live Chargebee)',
       });
       const end = lines.fields.find((f) => f.name === 'current_term_end')!;
       expect(end).toMatchObject({ type: 'datetime', sourceType: 'timestamp_utc_seconds' });
-      expect(schema.objects.find((o) => o.name === 'Customers')!.capabilities.fullReadProof).toBe(
-        undefined,
-      );
+      // Governed correction after live M08: customers are double-enumerated and their
+      // references may be retired by an accepted full read (never on any other run).
+      expect(schema.objects.find((o) => o.name === 'Customers')!.capabilities).toMatchObject({
+        deleteVisibility: 'none',
+        fullReadProof: 'double_enumeration',
+        referenceRetirement: 'accepted_full_read',
+      });
+      // No other object declares reference retirement.
+      expect(
+        schema.objects
+          .filter((o) => o.capabilities.referenceRetirement !== undefined)
+          .map((o) => o.name),
+      ).toEqual(['Customers']);
     });
 
     it('V12 unverified: line objects refuse incremental reads; verified: offered', async () => {

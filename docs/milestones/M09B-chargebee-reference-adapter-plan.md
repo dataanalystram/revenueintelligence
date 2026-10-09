@@ -18,6 +18,15 @@ IMPLEMENTATION MUST WAIT`; no architectural redesign). No Chargebee code, no mig
   customer/subscription; G5 for Chargebee (`deleteVisibility: none`); CB20/CB21 expected results; C17 (now: the
   live-only filter removed / `include_deleted` requested again). Recorded in the
   [M9B record](M09B-chargebee-reference-adapter.md#approved-correction-live-records-only).
+- **Revision 4 — governed customer source-reference retirement (owner approval after live M08, 2026-10-09).**
+  Supersedes Revision 3's "customer references are never retired from absence". A Chargebee customer reference
+  absent from a successful, double-enumerated and operator-accepted full read becomes `retired` (explicit
+  reference state; row kept; retiring run recorded); the canonical company is never deleted, changed or made
+  inactive; no whitespace follows; incremental, partial, failed, unstable or unaccepted runs and seen-but-rejected
+  customers never retire; line retirement stays separate (§18, G4). One additional migration
+  (`20261116120000_m9b_reference_retirement`, with down-script) — a deviation from "one M9B migration", approved
+  with this change. Recorded in the
+  [M9B record](M09B-chargebee-reference-adapter.md#governed-correction-customer-source-reference-retirement).
 - Predecessors: [M9 master plan](M09-multi-source-data-quality-plan.md) §10 (approved; this plan refines it with
   API evidence), [M9A record](M09A-source-data-profiling.md) (**CLOSED**: merge `dfcb352`, closure record
   `a8c61ee`).

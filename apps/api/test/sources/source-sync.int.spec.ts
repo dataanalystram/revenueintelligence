@@ -249,6 +249,27 @@ describe('source synchronisation (Sugar adapter, fake Sugar)', () => {
       }
     });
 
+    it('M9B: a Sugar account absent from a full run keeps an active reference (no retirement capability)', async () => {
+      const local = await new FakeSugar().start();
+      try {
+        const f = await sugarTenant(c, local, { prefix: 'srcnoretire' });
+        expect((await runSync(c, f, 'full')).status).toBe('completed');
+        const account = String(local.data.get('Accounts')![0]!.id);
+        local.remove('Accounts', account);
+        const run = await runSync(c, f, 'full');
+        expect(run.status).toBe('completed');
+        expect(run.quality.references_retired).toBeUndefined();
+        const states = await c.sql<{ state: string; n: number }>(
+          `SELECT state, count(*)::int AS n FROM company_external_refs
+            WHERE tenant_id = $1 AND system = 'sugar' GROUP BY state`,
+          [f.ctx.tenantId],
+        );
+        expect(states.map((s) => s.state)).toEqual(['active']);
+      } finally {
+        await local.stop();
+      }
+    });
+
     it('an incremental run reads from the watermark minus the overlap and advances it only on success', async () => {
       const local = await new FakeSugar().start();
       try {

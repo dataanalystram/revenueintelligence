@@ -50,6 +50,17 @@ export interface MergeInput {
   readonly observedAt: Date;
 }
 
+/** M9B: retirement of the references an accepted full read no longer returned. */
+export interface RetireAbsentInput {
+  readonly system: ExternalRef['system'];
+  readonly objectType: string;
+  /** Every id the run saw for the object: read (accepted or rejected) or referenced. */
+  readonly seen: ReadonlySet<string>;
+  /** The run's read time: the retirement time, and only references last read before it qualify. */
+  readonly observedAt: Date;
+  readonly runId: string;
+}
+
 export interface IngestOptions {
   /** Run inside this transaction (a backfill page) instead of opening one. */
   readonly within?: TenantTransaction;
@@ -92,6 +103,50 @@ export class ContextIngestionService {
     return options.within
       ? run(options.within)
       : this.db.transaction(ctx, run, { timeoutMs: TX_TIMEOUT_MS });
+  }
+
+  /**
+   * M9B (governed correction after live M08): retires, inside the caller's
+   * transaction, every active company reference of one source object that a
+   * successful, proven and operator-accepted full read did not see. The caller
+   * owns those gates. Retirement is a reference lifecycle state only: the row
+   * is kept, the canonical company and its record state are untouched (no
+   * account deletion is inferred), and one provenance row per reference
+   * records the run. A later observation reactivates the reference.
+   */
+  async retireAbsentWithin(
+    tx: TenantTransaction,
+    input: RetireAbsentInput,
+    meta: IngestMeta,
+  ): Promise<number> {
+    let retired = 0;
+    const candidates = await this.store.activeCompanyRefsOf(
+      tx,
+      input.system,
+      input.objectType,
+      input.observedAt,
+    );
+    for (const row of candidates) {
+      if (input.seen.has(row.externalId)) continue;
+      const ref: ExternalRef = {
+        system: input.system,
+        objectType: input.objectType,
+        id: row.externalId,
+      };
+      await this.store.lockRef(tx, 'company', ref);
+      if (!(await this.store.retireCompanyRef(tx, ref, input.observedAt, input.runId))) continue;
+      const id = await this.store.resolveCanonical(tx, 'company', row.canonicalId);
+      const changeId = await this.store.insertChange(tx, {
+        entityKind: 'company',
+        entityId: id,
+        changeType: 'state_changed',
+        changedFields: ['refState'],
+        ...this.change(meta, ref, undefined),
+      });
+      await this.store.updateRef(tx, 'company', ref, { lastChangeId: changeId });
+      retired += 1;
+    }
+    return retired;
   }
 
   /** Applies a source merge: lineage from merged ids to the survivor (ADR 0014 §5). */
@@ -267,6 +322,7 @@ export class ContextIngestionService {
     await this.store.updateRef(tx, obs.kind, obs.ref, {
       state: 'active',
       deletedAt: null,
+      ...(obs.kind === 'company' ? { retiredAt: null, retiredByRunId: null } : {}),
       sourceCreatedAt: obs.sourceCreatedAt ?? stored.sourceCreatedAt ?? null,
       sourceUpdatedAt: obs.sourceUpdatedAt ?? stored.sourceUpdatedAt ?? null,
       fieldHash: fieldHash(obs),

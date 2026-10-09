@@ -279,7 +279,8 @@ Approved by the owner after the live baseline (reused subscription id, V5/V7). I
   unattributable refusal). Without an acceptance: `tombstones_not_accepted`, lines stay. G4 keeps retiring removed
   children of subscriptions that are read. No account deletion is inferred from absence.
 - Plan revision 3, ADR 0024 amendment; tech-debt #57 (deleted-customer reference) is superseded: customer
-  references are never retired from absence.
+  references are never retired from absence. **Itself superseded after live M08** by the
+  [governed customer source-reference retirement](#governed-correction-customer-source-reference-retirement).
 
 Tests (fake): CB20 (customer and its subscription deleted → lines retired by the accepted full run, reference kept),
 CB21 split into "never retired without acceptance" and "retired by the next accepted full run (not cancelled)",
@@ -580,7 +581,7 @@ connector sent was intercepted. (The report reuses the M07 field name `s04` for 
   double enumeration **and** an operator acceptance — not child reconciliation (S09 was not observed, so no child set
   existed; no `child_retired`), not status inference (state stayed `unknown`; a `paused` subscription is not treated as
   cancelled), not explicit `deleted=true` processing (never requested, never read).
-- **Customer retirement path:** **none, by approved design.** The live-records-only correction infers no account
+- **Customer retirement path (as first verified):** **none, by the design then approved** (superseded below). The live-records-only correction infers no account
   deletion from absence (tech-debt #57 superseded); the customer reference stays as the record of the source identity
   and the company row is preserved.
 - **Source-level cascade:** Chargebee deleted the subscription with its customer (aligned deletion times). The platform
@@ -589,9 +590,89 @@ connector sent was intercepted. (The report reuses the M07 field name `s04` for 
 - **History preservation:** the S09 line row remains (`record_state = deleted`, product and quantity kept); the customer
   reference and company remain; nothing was physically deleted.
 
-**Design note for the owner:** the M08 request expected the customer reference to be "retired safely". Under the
-approved design it is retained, not retired. Retiring account references on accepted full-run absence would be a new,
-governed change (code, tests, mutation proof, ADR amendment) and needs explicit approval; it is not implemented.
+**Design note for the owner (as first verified):** the M08 request expected the customer reference to be "retired
+safely". Under the design then approved it was retained, not retired. **Resolved:** the owner approved a governed
+change; M08 was re-run against it — see the next section.
+
+## Governed correction: customer source-reference retirement
+
+Approved by the owner after M08 (2026-10-09), for **Chargebee customer source references only**. The canonical
+company/account is never deleted, changed or made inactive; history and provenance are kept; line retirement stays
+governed separately (full-run tombstone pass, G4).
+
+**Schema / state change** (migration `20261116120000_m9b_reference_retirement`, down-script
+`prisma/rollback/20261116120000_m9b_reference_retirement.down.sql`):
+
+- `company_external_refs.state` admits `retired` (CHECK now `active | deleted | merged | retired`). `retired` is an
+  explicit reference lifecycle state, distinct from `deleted` (the source said deleted).
+- New columns `retired_at TIMESTAMPTZ(3)` and `retired_by_run_id UUID` (foreign key `(tenant_id, retired_by_run_id)` →
+  `tenant_sync_checkpoints`, `ON DELETE RESTRICT`). CHECKs: both set **exactly** when `state = retired`; never one
+  without the other. Person references are unchanged.
+- The down-script refuses (changes nothing) while any reference is retired; otherwise it restores the exact prior
+  schema (snapshot-compared) and the migration re-applies.
+
+**Rules (implemented):**
+
+| Rule                                                               | How                                                                                                                                                                                                                                       |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Opt-in per account object                                          | capability `referenceRetirement: accepted_full_read`, declared only on Chargebee `Customers` (with `fullReadProof: double_enumeration`); Sugar does not declare it (regression test)                                                      |
+| Proven read                                                        | a full run reads a retiring object with its full-read proof (double enumeration); a mismatch fails the run (`unstable_read`)                                                                                                              |
+| Accepted full run only                                             | retirement runs only in the full run's completion transaction, and only when the run's proof is accepted (same gate as tombstones); otherwise `reference_retirement_not_accepted`                                                         |
+| Never on incremental, partial, failed, unstable or unaccepted runs | incremental runs have no retirement step; a failed/unstable run never reaches the completion transaction                                                                                                                                  |
+| Seen-but-rejected protection                                       | every id the run saw counts as present: accepted records, structurally rejected records, and every account a line of the run refers to; a read record without a readable id suppresses the whole pass (`reference_retirement_suppressed`) |
+| Row never deleted; explicit state                                  | `active → retired` via `ContextIngestionService.retireAbsentWithin` (the single canonical writer), with `retired_at`, `retired_by_run_id` and one provenance row (`state_changed`, `refState`) per reference                              |
+| Canonical account untouched                                        | no company write; a retired reference still counts as active for the company's record state, so retirement can never make the company `inactive`                                                                                          |
+| No whitespace from retirement                                      | ownership and coverage are unchanged by a reference state; absence stays `unknown`                                                                                                                                                        |
+| No blind cascade                                                   | a customer referenced by any line of the run is never retired; a removed subscription never retires its customer; S09-style lines retire on their own evidence (tombstone pass)                                                           |
+| Reactivation                                                       | a later observation of the customer (read after `retired_at`) makes the reference `active` again on the same company (`retired_at`/`retired_by_run_id` cleared)                                                                           |
+
+Also fixed: a structurally invalid customer row is no longer ingested as an empty observation (it is counted
+`record_rejected` and protects its reference).
+
+**Tests (fake Chargebee, real PostgreSQL):** CB20 (rewritten: deleted customer + subscription → line and reference
+retired, company kept); R1 (no acceptance → reference active); R2–R6, R8–R10 (accepted run retires exactly the
+absent reference; company identical; line kept as `deleted`/`unknown`; physical row counts never decrease; one
+provenance row; every other reference unchanged; coverage `stable_snapshot`; no owned products and no eligible
+whitespace for the company, ownership `unknown`; rerun idempotent); R3b (retirement neutral to the company record
+state when its other source deletes it); R7a (a structurally rejected customer is not retired while an absent one is,
+in the same run, without suppression); R7b (unreadable rejected id → whole pass suppressed); R7c (no blind cascade
+in either direction); R-gates (unstable, failed and incremental runs never retire; the next accepted full run does);
+R-restore (reactivation on the same company, no duplicate); migrations (CHECK/FK behaviour; down-script refusal and
+exact restore); unit (`decideApply` retired/restore/stale); Sugar regression (an absent Sugar account keeps an
+active reference).
+
+**Mutation proofs** (break the mechanism, run the guarding test, restore, rerun green):
+
+| #   | Mutation                                                     | Guarding test | Broken                                                           | Restored |
+| --- | ------------------------------------------------------------ | ------------- | ---------------------------------------------------------------- | -------- |
+| C23 | retirement without the acceptance gate                       | R1            | FAILED: `references_retired` expected undefined, got 1           | green    |
+| C24 | customer read not proven (single enumeration)                | R-gates       | FAILED: the unstable run completed instead of `unstable_read`    | green    |
+| C25 | structurally rejected customer ignored (not counted as seen) | R7a           | FAILED: quality mismatch (the rejected customer was retired too) | green    |
+| C26 | customers referenced by lines not protected                  | R7c           | FAILED: `references_retired` expected undefined, got 1           | green    |
+| C27 | retired reference no longer keeps the company active         | R3b           | FAILED: company `record_state` no longer `active`                | green    |
+| C28 | a retired reference can never be reactivated                 | R-restore     | FAILED: reference stayed `retired`                               | green    |
+| C29 | an uncertain customer read still retires                     | R7b           | FAILED: `references_retired` expected undefined, got 1           | green    |
+
+Two harness attempts were not accepted as evidence and were redone: C27 first failed on a syntax error introduced by
+the mutation itself (a build error is not evidence); C25 first removed only the rejected row's id, which tripped the
+uncertainty suppression (a second protection) so the test passed — R7a was strengthened (a control customer must
+retire in the same run, no suppression) and C25 now ignores the rejected row entirely. The sync-related earlier
+mutations C4, C5, C6, C7, C8 and C17 were re-run against the changed code: all still killed and restored green.
+
+**Live M08 re-run** (live spec test "M08", Key A, tenant `cblivem08`, sanitized; replay as before):
+
+| Run                                                                                 | Customer reference                                                                                    | Company             | S09 line                                                                                                                                                                         | Rows (companies / refs / lines / changes) | Other references (16)      |
+| ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- | -------------------------- |
+| 1 — replayed pre-M08, no acceptance                                                 | `active`                                                                                              | 1 row, `active`     | active, `unknown`, qty 1                                                                                                                                                         | 17 / 17 / 22 / 39                         | —                          |
+| 2 — live, **no acceptance**                                                         | `active` (`reference_retirement_not_accepted: 1`)                                                     | 1 row, `active`     | unchanged (`tombstones_not_accepted: 1`); coverage `proof_not_accepted`                                                                                                          | 17 / 17 / 22 / 39                         | 0 changed, all `active`    |
+| 3 — **accepted** full run (double enumeration passed); S03 rejected in the same run | **`retired`**, `retired_by` = run 3, `deleted_at` null; one provenance row `state_changed`/`refState` | **1 row, `active`** | `record_state = deleted`, state **`unknown`**, no `child_retired` (`tombstoned: 1`, `references_retired: 1`); S03 protected (`seen_but_rejected: 1`, `tombstones_suppressed: 1`) | 17 / 17 / 22 / **41**                     | 0 changed, all `active`    |
+| 4 — clean rerun                                                                     | still `retired` by run 3 (idempotent)                                                                 | 1 row, `active`     | no change; gaps cleared                                                                                                                                                          | 17 / 17 / 22 / 41                         | 0 changed (also run 1 → 4) |
+
+Coverage `stable_snapshot` / `double_enumeration` in runs 3–4; customer 08's account: no owned products, eligible
+whitespace 0. Connector requests 28, none carried `include_deleted`. Whole tenant (normal live spec run, same
+command): 18 live subscriptions, 21 active lines, line fingerprints identical to post-M08; page size 10 proof passed
+(twice); Key B `forbidden` / `source_forbidden`, 21 → 21 active lines; incremental start refused. The spec now
+asserts the reference states (active → retired by run 3), the company (1 row, `active`) and no `include_deleted`.
 
 ## V12 final decision and incremental-sync assessment
 

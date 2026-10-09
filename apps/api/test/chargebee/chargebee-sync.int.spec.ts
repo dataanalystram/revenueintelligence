@@ -78,6 +78,47 @@ describe('Chargebee reference adapter (fake Chargebee, CB01–CB36)', () => {
         [f.ctx.tenantId, customerId],
       )
     )[0];
+  type RefRow = {
+    external_id: string;
+    state: string;
+    company_id: string;
+    deleted_at: Date | null;
+    retired_at: Date | null;
+    retired_by_run_id: string | null;
+  };
+  const refs = async (f: SourcesFixture) =>
+    new Map(
+      (
+        await c.sql<RefRow>(
+          `SELECT external_id, state, company_id, deleted_at, retired_at, retired_by_run_id
+             FROM company_external_refs
+            WHERE tenant_id = $1 AND system = 'chargebee' AND object_type = 'Customers'`,
+          [f.ctx.tenantId],
+        )
+      ).map((r) => [r.external_id, r]),
+    );
+  const refOf = async (f: SourcesFixture, id: string) => (await refs(f)).get(id);
+  const companyRow = async (id: string) =>
+    (
+      await c.sql<{ id: string; name: string | null; record_state: string }>(
+        `SELECT id, name, record_state FROM companies WHERE id = $1`,
+        [id],
+      )
+    )[0];
+  /** Physical row counts of every table retirement could touch (never decreasing). */
+  const rowCounts = async (f: SourcesFixture) =>
+    (
+      await c.sql<{ companies: number; refs: number; lines: number; changes: number }>(
+        `SELECT (SELECT count(*)::int FROM companies WHERE tenant_id = $1) AS companies,
+                (SELECT count(*)::int FROM company_external_refs WHERE tenant_id = $1) AS refs,
+                (SELECT count(*)::int FROM tenant_subscriptions WHERE tenant_id = $1) AS lines,
+                (SELECT count(*)::int FROM tenant_context_changes WHERE tenant_id = $1) AS changes`,
+        [f.ctx.tenantId],
+      )
+    )[0]!;
+  const removeCustomer = (fake: FakeChargebee, id: string) => {
+    fake.customers = fake.customers.filter((x) => x.id !== id);
+  };
   const checkpoint = async (runId: string) =>
     (
       await c.sql<{
@@ -357,7 +398,7 @@ describe('Chargebee reference adapter (fake Chargebee, CB01–CB36)', () => {
       });
     });
 
-    it('CB20 (live-only reads): a deleted customer and its subscriptions are absent; lines retire only on an accepted full run; the reference is never inferred deleted', async () => {
+    it('CB20 (live-only reads): a deleted customer and its subscriptions are absent; the accepted full run retires the lines and the customer reference (never the company)', async () => {
       await withFake({ accept: true }, async (fake, f) => {
         await full(f);
         const company = (await companyOf(f, 'cus-01'))!.company_id;
@@ -372,8 +413,15 @@ describe('Chargebee reference adapter (fake Chargebee, CB01–CB36)', () => {
           state: 'active',
           company_id: company,
         });
-        // No account deletion is inferred from absence.
-        expect((await companyOf(f, 'cus-01'))!.deleted_at).toBeNull();
+        // Governed correction (M08): the reference is retired, never deleted; the company stays.
+        expect(await refOf(f, 'cus-01')).toMatchObject({
+          state: 'retired',
+          deleted_at: null,
+          retired_by_run_id: run.runId,
+          company_id: company,
+        });
+        expect(run.quality).toMatchObject({ references_retired: 1 });
+        expect(await companyRow(company)).toMatchObject({ record_state: 'active' });
       });
     });
 
@@ -833,6 +881,268 @@ describe('Chargebee reference adapter (fake Chargebee, CB01–CB36)', () => {
           );
         },
       );
+    });
+  });
+
+  describe('governed customer reference retirement (M08 correction; R1–R10)', () => {
+    it('R1: without an acceptance a customer absent from a proven full read keeps an active reference', async () => {
+      await withFake({ accept: false }, async (fake, f) => {
+        await full(f);
+        removeCustomer(fake, 'cus-08');
+        removeSubscription(fake, 'sub-08');
+        const run = await full(f);
+        expect(run).toMatchObject({ status: 'completed' });
+        expect(run.quality).toMatchObject({
+          reference_retirement_not_accepted: 1,
+          tombstones_not_accepted: 1,
+        });
+        expect(run.quality.references_retired).toBeUndefined();
+        expect(await refOf(f, 'cus-08')).toMatchObject({ state: 'active', retired_at: null });
+        expect((await lines(f)).get('sub-08:plan-basic-USD-monthly')!.record_state).toBe('active');
+      });
+    });
+
+    it('R2–R6, R8–R10 (M08 shape): the accepted full run retires exactly the absent customer reference; company, history and unrelated references are kept; rerun idempotent', async () => {
+      await withFake({ accept: true }, async (fake, f) => {
+        await full(f);
+        const company = (await refOf(f, 'cus-08'))!.company_id;
+        const name = (await companyRow(company))!.name;
+        const refsBefore = await refs(f);
+        const countsBefore = await rowCounts(f);
+        // Chargebee deletes the customer together with its only (paused) subscription.
+        removeCustomer(fake, 'cus-08');
+        removeSubscription(fake, 'sub-08');
+        const run = await full(f);
+        expect(run).toMatchObject({ status: 'completed' });
+        expect(run.quality.proof).toEqual({
+          method: 'double_enumeration',
+          tier: 'stable_snapshot',
+          outcome: 'passed',
+        });
+        expect(run.quality).toMatchObject({ references_retired: 1, tombstoned: 1 });
+        expect(run.quality.child_retired).toBeUndefined();
+        // R2: the Chargebee source reference is retired by this run.
+        const retired = (await refOf(f, 'cus-08'))!;
+        expect(retired).toMatchObject({
+          state: 'retired',
+          deleted_at: null,
+          retired_by_run_id: run.runId,
+          company_id: company,
+        });
+        expect(retired.retired_at).toBeInstanceOf(Date);
+        // R3: the canonical company remains, active and unchanged.
+        expect(await companyRow(company)).toEqual({ id: company, name, record_state: 'active' });
+        // R4: the historical line is stored but retired by the tombstone pass (not cancelled).
+        expect((await lines(f)).get('sub-08:plan-basic-USD-monthly')).toMatchObject({
+          record_state: 'deleted',
+          state: 'unknown',
+          company_id: company,
+        });
+        // R5: nothing was physically deleted.
+        const countsAfter = await rowCounts(f);
+        expect(countsAfter.companies).toBe(countsBefore.companies);
+        expect(countsAfter.refs).toBe(countsBefore.refs);
+        expect(countsAfter.lines).toBe(countsBefore.lines);
+        expect(countsAfter.changes).toBeGreaterThan(countsBefore.changes);
+        // Provenance: one state change naming the reference and the run.
+        const prov = await c.sql<{ change_type: string; changed_fields: string[] }>(
+          `SELECT change_type, changed_fields FROM tenant_context_changes
+            WHERE tenant_id = $1 AND source_object_type = 'Customers' AND source_record_id = 'cus-08'
+              AND checkpoint_id = $2`,
+          [f.ctx.tenantId, run.runId],
+        );
+        expect(prov).toEqual([{ change_type: 'state_changed', changed_fields: ['refState'] }]);
+        // R6: every other reference is unchanged.
+        const refsAfter = await refs(f);
+        for (const [id, before] of refsBefore) {
+          if (id === 'cus-08') continue;
+          expect(refsAfter.get(id)).toEqual(before);
+        }
+        // R8: coverage stays stable_snapshot (never externally grounded).
+        expect(await coverage(f.ctx)).toMatchObject({
+          known: true,
+          coverageTier: 'stable_snapshot',
+          proof: { method: 'double_enumeration', runId: run.runId },
+        });
+        // R9: no whitespace from the retirement: absence stays unknown.
+        const ws = await eligibility.whitespace(f.ctx, company);
+        expect(ws.categories.owned).toEqual([]);
+        expect(ws.categories.eligible_whitespace).toEqual([]);
+        const r = await eligibility.evaluate(f.ctx, company, 'plan-basic');
+        expect(r).toMatchObject({ ownership: 'unknown', coverageTier: 'stable_snapshot' });
+        expect(r.status).not.toBe('eligible');
+        // R10: a clean rerun changes nothing (retired exactly once).
+        const again = await full(f);
+        expect(again).toMatchObject({ status: 'completed' });
+        expect(again.quality.references_retired).toBeUndefined();
+        expect(again.quality.tombstoned).toBeUndefined();
+        expect(await refOf(f, 'cus-08')).toEqual(retired);
+        expect(await rowCounts(f)).toEqual(countsAfter);
+      });
+    });
+
+    it('R7a: seen-but-rejected — a structurally invalid customer is never retired (and never mapped) while an absent one is', async () => {
+      await withFake(
+        {
+          accept: true,
+          prepare: (fake) => {
+            // A second customer without subscriptions, removed in the same run as the control.
+            const t = fake.customers.find((x) => x.id === 'cus-23')!;
+            fake.customers.push({
+              ...structuredClone(t),
+              id: 'cus-24',
+              created_at: t.created_at + 1,
+            });
+          },
+        },
+        async (fake, f) => {
+          await full(f);
+          const company = (await refOf(f, 'cus-23'))!.company_id;
+          const name = (await companyRow(company))!.name;
+          // cus-23 has no subscription: only the customer read can protect it.
+          fake.customers.find((x) => x.id === 'cus-23')!.resource_version = -5;
+          removeCustomer(fake, 'cus-24');
+          const run = await full(f);
+          expect(run).toMatchObject({ status: 'completed' });
+          expect(run.quality).toMatchObject({ record_rejected: 1, references_retired: 1 });
+          // Protected because it was seen, not because the whole pass was suppressed.
+          expect(run.quality.reference_retirement_suppressed).toBeUndefined();
+          expect(await refOf(f, 'cus-24')).toMatchObject({ state: 'retired' });
+          expect(await refOf(f, 'cus-23')).toMatchObject({ state: 'active', retired_at: null });
+          expect(await companyRow(company)).toMatchObject({ name, record_state: 'active' });
+        },
+      );
+    });
+
+    it('R7b: a rejected customer without a readable id makes the whole retirement uncertain', async () => {
+      await withFake({ accept: true }, async (fake, f) => {
+        await full(f);
+        removeCustomer(fake, 'cus-23');
+        const t = fake.customers.find((x) => x.id === 'cus-22')!;
+        fake.customers.push({ ...structuredClone(t), id: 'bad id!', created_at: t.created_at + 1 });
+        const run = await full(f);
+        expect(run).toMatchObject({ status: 'completed' });
+        expect(run.quality).toMatchObject({ reference_retirement_suppressed: 1 });
+        expect(run.quality.references_retired).toBeUndefined();
+        expect(await refOf(f, 'cus-23')).toMatchObject({ state: 'active' });
+      });
+    });
+
+    it('R7c: no blind cascade — a customer absent from the customer read but referenced by a live subscription is not retired; a removed subscription never retires its customer', async () => {
+      await withFake({ accept: true }, async (fake, f) => {
+        await full(f);
+        removeCustomer(fake, 'cus-10');
+        removeSubscription(fake, 'sub-07');
+        const run = await full(f);
+        expect(run).toMatchObject({ status: 'completed' });
+        expect(run.quality.references_retired).toBeUndefined();
+        expect(await refOf(f, 'cus-10')).toMatchObject({ state: 'active' });
+        expect((await lines(f)).get('sub-10:plan-basic-USD-monthly')!.record_state).toBe('active');
+        expect(run.quality).toMatchObject({ tombstoned: 1 });
+        expect(await refOf(f, 'cus-07')).toMatchObject({ state: 'active' });
+      });
+    });
+
+    it('R-gates: unstable, failed and incremental runs never retire a reference', async () => {
+      await withFake(
+        { accept: true, config: { incrementalLines: 'verified' } },
+        async (fake, f) => {
+          await full(f);
+          removeCustomer(fake, 'cus-23');
+          // Unstable: a customer appears between the two enumerations.
+          let calls = 0;
+          fake.afterListPage = (path) => {
+            if (path !== '/customers') return;
+            calls += 1;
+            if (calls === 1) {
+              const t = fake.customers.find((x) => x.id === 'cus-22')!;
+              fake.customers.push({
+                ...structuredClone(t),
+                id: 'cus-late',
+                created_at: nowSeconds() - 120,
+              });
+            }
+          };
+          const unstable = await full(f);
+          expect(unstable).toMatchObject({ status: 'failed', errorCode: 'unstable_read' });
+          fake.afterListPage = undefined;
+          removeCustomer(fake, 'cus-late');
+          // Failed: the customer read completes, the run fails later.
+          fake.fail({
+            match: /^\/subscriptions$/,
+            status: 403,
+            times: 100,
+            body: { api_error_code: 'api_authorization_failed' },
+          });
+          const failed = await full(f);
+          expect(failed).toMatchObject({ status: 'failed' });
+          fake.faults.length = 0;
+          // Incremental: never an absence-based retirement.
+          const inc = await runSync(c, f, 'incremental');
+          expect(inc).toMatchObject({ status: 'completed' });
+          expect(inc.quality.references_retired).toBeUndefined();
+          expect(await refOf(f, 'cus-23')).toMatchObject({ state: 'active', retired_at: null });
+          // The next accepted full run retires it.
+          const ok = await full(f);
+          expect(ok.quality).toMatchObject({ references_retired: 1 });
+          expect(await refOf(f, 'cus-23')).toMatchObject({
+            state: 'retired',
+            retired_by_run_id: ok.runId,
+          });
+        },
+      );
+    });
+
+    it('R3b: retirement is neutral to the company record state (its other source may still delete it, never the retirement)', async () => {
+      await withFake({ accept: true }, async (fake, f) => {
+        await full(f);
+        const company = (await refOf(f, 'cus-23'))!.company_id;
+        removeCustomer(fake, 'cus-23');
+        await full(f);
+        expect(await refOf(f, 'cus-23')).toMatchObject({ state: 'retired' });
+        // The same company is also known to HubSpot, which then deletes its record.
+        await c.sql(
+          `INSERT INTO company_external_refs (tenant_id, system, object_type, external_id, company_id)
+           VALUES ($1, 'hubspot', 'companies', 'hs-r3b', $2)`,
+          [f.ctx.tenantId, company],
+        );
+        const out = await c.ingestion.ingest(
+          f.ctx,
+          {
+            kind: 'company',
+            presence: 'absent',
+            ref: { system: 'hubspot', objectType: 'companies', id: 'hs-r3b' },
+            observedAt: new Date(),
+          },
+          { cause: 'backfill', correlationId: randomUUID() },
+        );
+        expect(out.decision).toBe('delete');
+        // The retired Chargebee reference still counts: the company is not inferred gone.
+        expect(await companyRow(company)).toMatchObject({ record_state: 'active' });
+      });
+    });
+
+    it('R-restore: a retired customer read again is reactivated on the same company (no duplicate)', async () => {
+      await withFake({ accept: true }, async (fake, f) => {
+        await full(f);
+        const company = (await refOf(f, 'cus-23'))!.company_id;
+        const saved = structuredClone(fake.customers.find((x) => x.id === 'cus-23')!);
+        removeCustomer(fake, 'cus-23');
+        await full(f);
+        expect(await refOf(f, 'cus-23')).toMatchObject({ state: 'retired' });
+        const counts = await rowCounts(f);
+        fake.customers.push(saved);
+        const run = await full(f);
+        expect(run).toMatchObject({ status: 'completed' });
+        expect(await refOf(f, 'cus-23')).toMatchObject({
+          state: 'active',
+          retired_at: null,
+          retired_by_run_id: null,
+          company_id: company,
+        });
+        expect((await rowCounts(f)).companies).toBe(counts.companies);
+        expect(await companyRow(company)).toMatchObject({ record_state: 'active' });
+      });
     });
   });
 

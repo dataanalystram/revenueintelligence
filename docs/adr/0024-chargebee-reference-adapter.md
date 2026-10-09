@@ -66,4 +66,20 @@ parent.
   absence: a deleted subscription's lines are retired by the next accepted full run (double enumeration passed,
   operator acceptance, M9A protections); removed children of observed parents by G4. No account deletion is
   inferred from absence. Cancellation is never deletion evidence.
+- **Amended again after live mutation M08 (governed customer source-reference retirement, owner approval
+  2026-10-09).** Supersedes "No account deletion is inferred from absence" _for references only_: a customer
+  reference that a successful full run did not see is **retired** when that run's customer read was proven (double
+  enumeration) and the proof is operator-accepted. Mechanics: migration `20261116120000_m9b_reference_retirement`
+  adds the reference state `retired` with `retired_at` and `retired_by_run_id` (set exactly when retired; the run is a
+  foreign key); a connector opts an account object in with the capability `referenceRetirement: accepted_full_read`
+  (Chargebee `Customers` only); the sync service reads such an object with a full-read proof, records every id it
+  saw (accepted, structurally rejected, or referenced by any line of the run) and retires the rest inside the run's
+  completion transaction through `ContextIngestionService.retireAbsentWithin` (single writer; one provenance row
+  per reference). Never on an incremental, failed, unstable or unaccepted run, nor when a read record had no
+  readable id. The canonical company is never deleted or changed: a retired reference still counts for the
+  company's record state, so retirement can never make it `inactive`. Retirement creates no whitespace (absence
+  stays `unknown`). Subscription lines keep their own retirement (tombstone pass, G4); a source-level
+  customer→subscription cascade is not replayed as an application cascade. A later observation of the customer
+  reactivates the reference on the same company. Structurally invalid customer rows are no longer ingested as
+  empty observations (they are counted `record_rejected` and protect their reference).
 - Live behaviour (V2–V12) is unproven; M9B cannot close on the fake alone.

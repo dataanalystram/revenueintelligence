@@ -26,9 +26,12 @@ export type ExternalRef = z.infer<typeof ExternalRefSchema>;
 /**
  * Lifecycle of a reference in its source system (ADR 0014): `deleted` keeps
  * the link (history) after the source record is deleted; `merged` points to
- * the surviving source record.
+ * the surviving source record. M9B: `retired` — a successful, proven and
+ * operator-accepted full read no longer returned the record (absence, not a
+ * deletion signal). Retirement keeps the link, never changes the canonical
+ * record and is undone by a later observation of the record.
  */
-export const ExternalRefStateSchema = z.enum(['active', 'deleted', 'merged']);
+export const ExternalRefStateSchema = z.enum(['active', 'deleted', 'merged', 'retired']);
 export type ExternalRefState = z.infer<typeof ExternalRefStateSchema>;
 
 /**

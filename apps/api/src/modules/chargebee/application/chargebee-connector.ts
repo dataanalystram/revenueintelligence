@@ -136,6 +136,10 @@ export class ChargebeeConnector implements SourceConnector {
           deleteVisibility: 'none',
           count: false,
           maxPageSize: page,
+          // Governed correction after live M08: a customer absent from an accepted,
+          // double-enumerated full read has its reference retired (never deleted).
+          fullReadProof: 'double_enumeration',
+          referenceRetirement: 'accepted_full_read',
         },
         fields: [
           field('id', 'id', { unique: true, required: true }),
