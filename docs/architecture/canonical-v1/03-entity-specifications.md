@@ -50,16 +50,18 @@ Every label states what exists today.
   - `name`, which is never a placeholder;
   - `domains[]`;
   - `customer_status` (`prospect` / `customer` / `former_customer` / `unknown`);
-  - `parent_account_id` (proposed);
-  - `owner_ref` (deferred shape, a pointer to an internal user).
+  - `parent_account_id` (`PROPOSED FOR V1 CANDIDATE`);
+  - `owner_ref` (`DEFERRED`; the shape is reserved as a pointer to an internal user).
 - **Lifecycle:** `active` → `inactive` (every source reference source-`deleted`) → `active` (a reference is restored),
   plus `merged` (terminal, with lineage).
   - Reference retirement never changes the record state (M9B).
   - Can it exist before a source mapping? **Yes**: created by import or by an operator.
-- **Hierarchy (proposed):**
+- **Hierarchy (`PROPOSED FOR V1 CANDIDATE`):**
   - `parent_account_id` is a nullable reference to an Account of the same tenant.
-  - Cycles are refused.
-  - Depth is at most 10.
+  - Cycles are refused (canonical semantics).
+  - **Depth is not canonical semantics.** A configurable platform guardrail (default 10 levels, adjustable per
+    deployment or tenant tier) bounds traversal and roll-up cost. A write that exceeds it is refused and recorded as a
+    data-quality issue; raising the guardrail is configuration, never a canonical version change.
   - A merged account cannot be a parent: children are re-pointed to the survivor through the merge-participant port.
   - Which source may set the parent is a new authority fact, `account_hierarchy` (one authoritative source, as for
     other facts).
@@ -74,7 +76,7 @@ Every label states what exists today.
   - contexts (0..n);
   - signals, opportunities, recommendations, goals, activities, contracts (0..n each).
 - **Provenance:** change records per write (`IMPLEMENTED TODAY`, field names only); value history for `name`,
-  `customer_status` and `parent_account_id` (proposed, E5).
+  `customer_status` and `parent_account_id` (`PROPOSED FOR V1 CANDIDATE`, E5).
 - **Retention:** indefinite while the tenant is active; erasure is a governed process.
 - **Source mapping expectations:**
   - mapping entity `account`;
@@ -99,7 +101,8 @@ Every label states what exists today.
 - **Relationships:**
   - primary account (0..1);
   - additional account affiliations (0..n), source-observed today through `tenant_source_relationships`, specified as
-    **Person–Account affiliation** with role and period (proposed; needed for champions moving companies);
+    **Person–Account affiliation** with role and period (`PROPOSED FOR V1 CANDIDATE`; needed for champions moving
+    companies);
   - context memberships (0..n);
   - activity participations (0..n);
   - signals (0..n);
@@ -141,10 +144,14 @@ Every label states what exists today.
   `unknown`), source reference, `record_state`.
 - **Optional fields:**
   - `starts_at`, `ends_at`, `quantity`;
-  - `agreement_ref` (proposed): the source subscription/contract header key, so lines of one agreement can be grouped
-    without a header entity;
-  - `context_id` (proposed, only with the Account Context module);
-  - `price_offer_id` (proposed, only with the Commercial module).
+  - `agreement_ref` (`PROPOSED FOR V1 CANDIDATE`; defined precisely below);
+  - `contract_id` (`PROPOSED FOR V1 CANDIDATE`, only with the Commercial module): the canonical Contract the line
+    currently belongs to;
+  - `context_id` (`PROPOSED FOR V1 CANDIDATE`, only with the Account Context module);
+  - `price_offer_id` (`PROPOSED FOR V1 CANDIDATE`, only with the Commercial module);
+  - `supersedes_line_id` (`PROPOSED FOR V1 CANDIDATE`, derived lineage, optional): the earlier line this line
+    replaced, set only when the source states it or a deterministic, versioned rule links a retired line and a new
+    line of the same agreement in one run; carries provenance and is never used for ownership.
 - **Lifecycle:**
   - `record_state` is `active` / `deleted` (tombstone, kept).
   - Retirement happens only on an accepted full run, or by G4 parent-scoped reconciliation.
@@ -155,8 +162,46 @@ Every label states what exists today.
   - coverage tiers;
   - one authoritative source per fact;
   - single writer.
-- **History:** proposed value history for `state`, terms, product key and quantity (today, the change log records
-  field names only).
+- **History:** value history (`PROPOSED FOR V1 CANDIDATE`) for `state`, terms, product key, quantity and
+  `contract_id`; today the change log records field names only.
+
+### 4.1 `agreement_ref` — precise definition
+
+- **What it is:** an optional, opaque **source grouping key** on a subscription line: the source's own reference
+  `(connector kind, object type, external id)` of the commercial header record the line is part of (a subscription
+  header, a contract, an order form, a contract-number column in a file or warehouse table).
+- **Semantics:** "these lines were sold together under one source agreement". The meaning of the mapped field is
+  confirmed by a human in the mapping (target `subscription.agreement`, `PROPOSED FOR V1 CANDIDATE`); a field that
+  groups lines by **deal or opportunity** (for example a Sugar RLI's opportunity id) is **not** an agreement and
+  must not be mapped to it.
+- **Distinct from a SourceReference:** a SourceReference is the **identity mapping** of a source record to a
+  canonical record (one reference → one canonical record; lifecycle states). `agreement_ref` is an **attribute of
+  the line** that names the header record by its source coordinates; it is not an identity, has no lifecycle of its
+  own and does not require any canonical record to exist.
+- **Distinct from Contract identity:** a Contract is a canonical record with a platform UUID (Commercial module).
+  When the module is enabled, the platform resolves `agreement_ref` through the Contract's **SourceReference** to
+  `contract_id`. When the module is off, `agreement_ref` still groups lines; nothing else changes.
+- **Distinct from G4's parent key:** G4 (`childOf.parentKeyField`) is a read-completeness mechanism of a derived child
+  object. The value may coincide (Chargebee `subscription_id`), but `agreement_ref` is only set by an explicit,
+  confirmed mapping entry.
+- **Vendor neutrality:** the value shape is the generic source-coordinate triple and the meaning is a business
+  grouping that exists in billing (Chargebee, Stripe subscriptions), CRM (Salesforce contracts / orders), CLM
+  records, files and warehouse tables; no vendor name or vocabulary appears in the canonical field.
+
+### 4.2 Line ↔ Contract cardinality under renewals, amendments, replacements and co-terming
+
+| Scenario                                                                                     | How the candidate represents it                                                                                                                                                                                         |
+| -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Renewal, same source line continues** (billing systems keep the line id across terms)      | The line's `contract_id` moves to the renewal Contract (value history keeps the earlier one); the renewal Contract records `renews_contract_id`. At any instant a line has **0..1** contract.                           |
+| **Renewal creates new lines** (CRM renewal opportunity → new contract and new lines)         | New lines on the new Contract; old lines end (`ends_at`) on the old Contract; optional `supersedes_line_id` lineage; ownership derivation unchanged (it reads lines and terms).                                         |
+| **Amendment in place** (quantity / product added during term)                                | Same Contract identity; added lines join it; changed lines keep identity with value history (quantity, terms). Contract value history records the amendment.                                                            |
+| **Amendment as a new source contract** (some CLM/CRM systems)                                | New Contract with `amends_contract_id`; affected lines move by `contract_id` value history.                                                                                                                             |
+| **Replacement** (plan/price replaced; new line key, e.g. Chargebee M03/M04)                  | Old line retired (G4 or accepted full run); new line created; optional `supersedes_line_id`; product-model `replaces` governs ownership semantics. Both may share one Contract.                                         |
+| **Co-terming** (lines from several agreements aligned to one end date / one master contract) | Many lines → one Contract (many-to-one). Order forms under a master agreement: child Contracts with `parent_contract_id`; lines belong to the order-form Contract.                                                      |
+| **One line genuinely under two concurrent contracts**                                        | Not modelled as many-to-many. The source's structure is represented by Contract → Contract (`parent_contract_id`) with the line on the most specific Contract; if that is impossible, the case is held for review (E7). |
+
+Conclusion: **Subscription line → Contract is many-to-one at any point in time (0..1 per line), with history over
+time**, plus Contract → Contract links (`renews`, `amends`, `parent`). No line-level many-to-many is needed.
 
 ## 5. CustomerProduct — Derived view (owner decision 8)
 
@@ -183,7 +228,7 @@ Every label states what exists today.
 - **Identity:** a platform UUID.
   - De-duplication key `(tenant, signal_type, subject, source event id | derivation key + window)`.
 - **Required fields:**
-  - `signal_type`: a code from the governed **Signal Type catalogue**;
+  - `signal_type`: a code from the governed **Signal Type Registry** (§6, below);
   - `subject`: at least one of account or person (account resolved when known);
   - `observed_at`;
   - `origin` (`source_provided` / `deterministic` / `ai_derived` / `human`);
@@ -198,12 +243,20 @@ Every label states what exists today.
   - `summary` (sensitivity-tagged);
   - `derivation` (definition key + version + inputs hash) when not `source_provided`;
   - `confidence` for `ai_derived`.
-- **Signal Type catalogue:**
+- **Signal Type Registry:**
   - Platform generic types: `usage_change`, `engagement_change`, `sentiment_change`, `support_escalation`,
     `champion_change`, `contract_milestone`, `budget_threshold`, `product_interest`, `adoption_milestone`,
     `risk_indicator`, `expansion_indicator`.
-  - Plus tenant-defined codes in a versioned registry (as the product model).
-  - Each type declares allowed subjects, polarity default and value type.
+  - Plus tenant-defined codes.
+  - **Both live in the governed Signal Type Registry** (`PROPOSED FOR V1 CANDIDATE`): immutable, versioned, hashed
+    registry documents (the product-model pattern). Platform generic types are published by the platform as registry
+    versions and copied into a tenant registry on adoption; tenant types are published by the tenant with a base
+    version and human confirmation.
+  - Each type definition declares: code (identity, never reused), description, allowed subjects, default polarity,
+    value type and unit, de-duplication window, default expiry, allowed origins, sensitivity, status
+    (`active` / `retired`).
+  - **Adding or retiring a signal type is a registry version, never a canonical schema or canonical version change**
+    (E6 §2). The canonical model version changes only if the Signal entity's own shape or semantics change.
   - **No vendor in a type.** Vendor and system live in provenance.
 - **Lifecycle:** `active` → `superseded` (a newer signal with the same de-dup key) / `expired` (after
   `effective_to`) / `retracted` (source deletion or human correction).
@@ -247,15 +300,35 @@ Every label states what exists today.
   - `type` (`new_business` / `expansion` / `renewal` / `cross_sell` / `upsell` / `unclassified`);
   - `owner_ref`;
   - evidence links (signals, eligibility snapshot);
-  - `lines[]`: Opportunity line = product, quantity, amount (for multi-product deals).
+  - `lines[]`: Opportunity lines (§7.1).
 - **Canonical status:** `open` / `won` / `lost` / `abandoned` / `suppressed` / `unknown`.
   - The source stage is preserved as a code with value history.
   - Stage changes are never rejected; a backwards transition is recorded with a warning (ADR 0007 rule kept).
 - **Lifecycle:** status transitions are recorded in value history.
   - A `suppressed` platform opportunity records its suppression reason (duplicate, already owned, already pursued,
     cool-off).
-- **Relationships:** account (1), product (0..1), context (0..1), persons (0..n), signals (0..n via evidence),
-  recommendations (0..n), outcome (0..1), lines (0..n).
+- **Relationships:** account (1), product (0..1), context (0..1), persons (0..n via contact roles), signals (0..n via
+  evidence), recommendations (0..n), action outcomes (0..n over time), lines (0..n).
+
+### 7.1 Opportunity line — vendor-neutral definition
+
+- **Business concept:** one **product component** of a potential deal: which product (canonical product key), how
+  much (quantity), at what expected value (amount, optional Price/Offer), over which term. It answers "what would the
+  account buy in this opportunity?" — independent of any CRM.
+- **Why canonical (not a copied CRM object):** multi-product opportunities exist in CRM line items (Salesforce,
+  HubSpot, Sugar revenue line items linked to an opportunity, Pipedrive deal products), in quotes, and in
+  **platform-derived** opportunities (a whitespace bundle of several eligible products); eligibility and expansion
+  logic read product keys per line. It passes P1–P6 (E2) without any vendor field: no pricebook, no sort order, no
+  vendor discount schedule.
+- **Fields:** product key (required), quantity, amount (money), `price_offer_id` (Commercial module), term
+  start/end, source reference (`source_native`) or derivation (`platform_derived`), extension values.
+- **Identity:** a platform UUID plus the source line reference; for platform-derived lines the natural key
+  `(opportunity, product key)`.
+- **Not a subscription line:** an opportunity line is potential; a subscription line is held. One source record may
+  feed both only through two mapping objects with declared, non-overlapping filters (the reviewed holding domain
+  decides holdings, `IMPLEMENTED TODAY`); a source record is never silently counted as both.
+- **Optional:** an opportunity with a single product uses its scope product; lines are only used when there are
+  several components.
 
 ## 8. Recommendation and decision events — Core
 
@@ -283,7 +356,7 @@ Every label states what exists today.
 - **Never** collapses raw facts into recommendations: a recommendation cites signals and opportunities, not raw
   records.
 
-## 9. Action and Outcome — Module "Action & Outcome"
+## 9. Action and ActionOutcome — Module "Action & Outcome"
 
 - **Status:** `PROPOSED FOR V1 CANDIDATE` (specification only). Implemented with M15/M16.
 - **Action:** an execution of an accepted recommendation, or a human action (task created, email sent, CRM write
@@ -291,11 +364,21 @@ Every label states what exists today.
   - Fields: type, target, executor, `status` (`pending` / `succeeded` / `failed` / `cancelled`), external reference
     (the created CRM task), time, approval reference.
   - Writes to customer systems stay behind approval gates (ADR 0004/0012).
-- **Outcome:** what happened.
+- **ActionOutcome:** what happened **as a result of the platform's or the seller's activity**.
   - Fields: subject (opportunity / recommendation / action), `outcome_type` (ADR 0012 vocabulary: accepted, worked,
     ignored, rejected/disqualified, converted, won, lost, expired, superseded), value (money), time, source reference
     or human entry.
   - Feeds learning (measurement, M16).
+
+### 9.1 Two different kinds of "outcome" (terminology)
+
+| Term                                | What it means                                                                                                                      | Where it lives                                                                                                                   |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| **Customer business/value outcome** | what the **customer** wants to achieve with the product (e.g. "reduce reporting time by 30% this year") and whether it is achieved | **Goal** (Value module): outcome statement, category, target metric, status `achieved` / `missed`; evidence = MetricObservations |
+| **Action outcome**                  | what happened to an **opportunity, recommendation or action** (accepted, ignored, won, lost, expired, superseded)                  | **ActionOutcome** (Action & Outcome module)                                                                                      |
+
+They are never conflated. A Goal reaching `missed` may produce a risk **Signal**; an ActionOutcome `won` may close an
+Opportunity. "BusinessOutcome" is not a separate entity: the customer value outcome **is** the Goal.
 
 ## 10. AccountContext — Module "Account Context" (owner decision 10)
 
@@ -322,7 +405,7 @@ Every label states what exists today.
   - extension values.
 - **Associations:**
   - products (via dimension or membership);
-  - subscriptions (`context_id` on the line, or a membership rule);
+  - subscriptions (`context_id` on the line; a line belongs to at most one context);
   - persons (context contacts with role);
   - goals, metric observations (health), signals, opportunities, recommendations, activities, contracts.
 - **Pressure scenario:** the same account and product in two regions gives two contexts, each with its own CSM,
@@ -408,7 +491,9 @@ Every label states what exists today.
   - Fields: account, optional context, start/end, renewal date, auto-renew, status (`draft` / `active` / `expired` /
     `terminated` / `unknown`), total value, source references (Salesforce Contract, Chargebee/Stripe subscription
     header, CLM record).
-  - Lines reference it through `agreement_ref` → `contract_id` resolution.
+  - Lines reference it through `agreement_ref` → SourceReference → `contract_id` resolution (§4.1).
+  - Contract → Contract links: `renews_contract_id`, `amends_contract_id`, `parent_contract_id` (master agreement /
+    order forms), each 0..1 (§4.2).
   - Renewal-window signals derive from it.
 - **Entitlement/Asset:** a right to use a product independent of a subscription: perpetual licence, installed asset,
   bundled entitlement.
@@ -423,40 +508,58 @@ Every label states what exists today.
 Cardinality is read as "one row-entity relates to N column-entities". `—` means no direct relationship (only through
 another entity).
 
-| From \ To                                       | Cardinality and rule                                                                                                             | Status                                                               |
-| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| Account → Account (parent)                      | many-to-one (0..1 parent; 0..n children); acyclic; depth ≤ 10; same tenant                                                       | `PROPOSED FOR V1 CANDIDATE`                                          |
-| Account → Person                                | one-to-many as primary account (0..n persons have it as primary); many-to-many through Person–Account affiliation (role, period) | primary `IMPLEMENTED TODAY`; affiliation `PROPOSED FOR V1 CANDIDATE` |
-| Account → AccountContext                        | one-to-many (a context belongs to exactly one account)                                                                           | `PROPOSED FOR V1 CANDIDATE`                                          |
-| Account → Product                               | many-to-many, **derived** (CustomerProduct view via subscriptions/entitlements); never stored                                    | `IMPLEMENTED TODAY` (derived)                                        |
-| Account → Subscription                          | one-to-many (a line has exactly one account)                                                                                     | `IMPLEMENTED TODAY`                                                  |
-| Account → Opportunity                           | one-to-many (exactly one account per opportunity)                                                                                | `PROPOSED FOR V1 CANDIDATE`                                          |
-| Account → Signal                                | one-to-many (0..1 account per signal; person-only signals resolve the account when known)                                        | `PROPOSED FOR V1 CANDIDATE`                                          |
-| Account → Recommendation                        | one-to-many (target account, directly or via context/person/opportunity)                                                         | `PROPOSED FOR V1 CANDIDATE`                                          |
-| Account → Goal                                  | one-to-many (goal scope account, or account+product)                                                                             | `PROPOSED FOR V1 CANDIDATE`                                          |
-| Account → Activity                              | many-to-many (an activity may involve several accounts; links carry derived/source origin)                                       | `PROPOSED FOR V1 CANDIDATE`                                          |
-| Account → Contract                              | one-to-many                                                                                                                      | `PROPOSED FOR V1 CANDIDATE`                                          |
-| AccountContext → Product                        | many-to-many (dimension product key, or several products in a programme context)                                                 | `PROPOSED FOR V1 CANDIDATE`                                          |
-| AccountContext → Person                         | many-to-many (context contacts with role)                                                                                        | `PROPOSED FOR V1 CANDIDATE`                                          |
-| AccountContext → Goal                           | one-to-many                                                                                                                      | `PROPOSED FOR V1 CANDIDATE`                                          |
-| AccountContext → Signal                         | one-to-many (0..1 context per signal)                                                                                            | `PROPOSED FOR V1 CANDIDATE`                                          |
-| AccountContext → Opportunity                    | one-to-many (scope `context_product`)                                                                                            | `PROPOSED FOR V1 CANDIDATE`                                          |
-| AccountContext → Recommendation                 | one-to-many                                                                                                                      | `PROPOSED FOR V1 CANDIDATE`                                          |
-| AccountContext → Subscription                   | one-to-many (`context_id` on the line, optional) — a line belongs to at most one context                                         | `PROPOSED FOR V1 CANDIDATE`                                          |
-| Product → Price/Offer                           | one-to-many                                                                                                                      | `PROPOSED FOR V1 CANDIDATE`                                          |
-| Product → Subscription                          | one-to-many (a line has exactly one product key)                                                                                 | `IMPLEMENTED TODAY`                                                  |
-| Product → Product                               | many-to-many typed (`requires` / `excludes` / `replaces` / `includes`) inside the product model                                  | `IMPLEMENTED TODAY`                                                  |
-| Product → Signal                                | one-to-many (0..1 product per signal)                                                                                            | `PROPOSED FOR V1 CANDIDATE`                                          |
-| Product → Opportunity                           | one-to-many as scope product; many-to-many through opportunity lines                                                             | `PROPOSED FOR V1 CANDIDATE`                                          |
-| Subscription → Contract                         | many-to-one (0..1 contract per line, via `agreement_ref`)                                                                        | `PROPOSED FOR V1 CANDIDATE`                                          |
-| Subscription → Price/Offer                      | many-to-one (0..1)                                                                                                               | `PROPOSED FOR V1 CANDIDATE`                                          |
-| Signal → Opportunity / Recommendation           | many-to-many through **evidence links** (one signal supports many decisions; one decision cites many signals)                    | `PROPOSED FOR V1 CANDIDATE`                                          |
-| Activity → Signal                               | many-to-many through evidence links (derivations)                                                                                | `PROPOSED FOR V1 CANDIDATE`                                          |
-| Activity → Person                               | many-to-many through participants                                                                                                | `PROPOSED FOR V1 CANDIDATE`                                          |
-| Opportunity → Recommendation                    | one-to-many                                                                                                                      | `PROPOSED FOR V1 CANDIDATE`                                          |
-| Recommendation → Action                         | one-to-many (retries / several actions)                                                                                          | `PROPOSED FOR V1 CANDIDATE`                                          |
-| Opportunity / Recommendation / Action → Outcome | one-to-many over time (latest outcome is the projection)                                                                         | `PROPOSED FOR V1 CANDIDATE`                                          |
-| Goal → MetricDefinition                         | many-to-one (target metric)                                                                                                      | `PROPOSED FOR V1 CANDIDATE`                                          |
-| MetricDefinition → MetricObservation            | one-to-many                                                                                                                      | `PROPOSED FOR V1 CANDIDATE`                                          |
-| Any entity → custom record                      | many-to-many through governed custom relationships (E4)                                                                          | `PROPOSED FOR V1 CANDIDATE`                                          |
-| Any entity → source reference                   | one-to-many (one record, many source references; one source reference resolves to exactly one record)                            | partly `IMPLEMENTED TODAY` (E5)                                      |
+| From \ To                                                  | Cardinality and rule                                                                                                                                                                                                      | Status                                                               |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| Account → Account (parent)                                 | many-to-one (0..1 parent; 0..n children); acyclic; same tenant; depth bounded only by a configurable platform guardrail (default 10), not by canonical semantics                                                          | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Account → Person                                           | one-to-many as primary account (0..n persons have it as primary); many-to-many through Person–Account affiliation (role, period)                                                                                          | primary `IMPLEMENTED TODAY`; affiliation `PROPOSED FOR V1 CANDIDATE` |
+| Account → AccountContext                                   | one-to-many (a context belongs to exactly one account)                                                                                                                                                                    | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Account → Product                                          | many-to-many, **derived** (CustomerProduct view via subscriptions/entitlements); never stored                                                                                                                             | `IMPLEMENTED TODAY` (derived)                                        |
+| Account → Subscription                                     | one-to-many (a line has exactly one account)                                                                                                                                                                              | `IMPLEMENTED TODAY`                                                  |
+| Account → Opportunity                                      | one-to-many (exactly one account per opportunity)                                                                                                                                                                         | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Account → Signal                                           | one-to-many (0..1 account per signal; person-only signals resolve the account when known)                                                                                                                                 | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Account → Recommendation                                   | one-to-many (target account, directly or via context/person/opportunity)                                                                                                                                                  | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Account → Goal                                             | one-to-many (goal scope account, or account+product)                                                                                                                                                                      | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Account → Activity                                         | many-to-many (an activity may involve several accounts; links carry derived/source origin)                                                                                                                                | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Account → Contract                                         | one-to-many                                                                                                                                                                                                               | `PROPOSED FOR V1 CANDIDATE`                                          |
+| AccountContext → Product                                   | many-to-many (dimension product key, or several products in a programme context)                                                                                                                                          | `PROPOSED FOR V1 CANDIDATE`                                          |
+| AccountContext → Person                                    | many-to-many (context contacts with role)                                                                                                                                                                                 | `PROPOSED FOR V1 CANDIDATE`                                          |
+| AccountContext → Goal                                      | one-to-many                                                                                                                                                                                                               | `PROPOSED FOR V1 CANDIDATE`                                          |
+| AccountContext → Signal                                    | one-to-many (0..1 context per signal)                                                                                                                                                                                     | `PROPOSED FOR V1 CANDIDATE`                                          |
+| AccountContext → Opportunity                               | one-to-many (scope `context_product`)                                                                                                                                                                                     | `PROPOSED FOR V1 CANDIDATE`                                          |
+| AccountContext → Recommendation                            | one-to-many                                                                                                                                                                                                               | `PROPOSED FOR V1 CANDIDATE`                                          |
+| AccountContext → Subscription                              | one-to-many (`context_id` on the line, optional) — a line belongs to at most one context                                                                                                                                  | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Product → Price/Offer                                      | one-to-many                                                                                                                                                                                                               | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Product → Subscription                                     | one-to-many (a line has exactly one product key)                                                                                                                                                                          | `IMPLEMENTED TODAY`                                                  |
+| Product → Product                                          | many-to-many typed (`requires` / `excludes` / `replaces` / `includes`) inside the product model                                                                                                                           | `IMPLEMENTED TODAY`                                                  |
+| Product → Signal                                           | one-to-many (0..1 product per signal)                                                                                                                                                                                     | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Product → Opportunity                                      | one-to-many as scope product; many-to-many through opportunity lines                                                                                                                                                      | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Subscription → Contract                                    | many-to-one **at any point in time** (0..1 `contract_id` per line, resolved from `agreement_ref` through the Contract's source reference); history of earlier contracts via value history (renewals, amendments; E3 §4.2) | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Subscription → Price/Offer                                 | many-to-one (0..1)                                                                                                                                                                                                        | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Signal → Opportunity / Recommendation                      | many-to-many through **evidence links** (one signal supports many decisions; one decision cites many signals)                                                                                                             | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Activity → Signal                                          | many-to-many through evidence links (derivations)                                                                                                                                                                         | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Activity → Person                                          | many-to-many through participants                                                                                                                                                                                         | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Opportunity → Recommendation                               | one-to-many                                                                                                                                                                                                               | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Recommendation → Action                                    | one-to-many (retries / several actions)                                                                                                                                                                                   | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Opportunity / Recommendation / Action → ActionOutcome      | one-to-many over time (latest action outcome is the projection); customer value outcomes are Goals, not ActionOutcomes (E3 §9.1)                                                                                          | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Goal → MetricDefinition                                    | many-to-one (target metric)                                                                                                                                                                                               | `PROPOSED FOR V1 CANDIDATE`                                          |
+| MetricDefinition → MetricObservation                       | one-to-many                                                                                                                                                                                                               | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Any entity → custom record                                 | many-to-many through governed custom relationships (E4)                                                                                                                                                                   | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Contract → Contract                                        | 0..1 each of `renews`, `amends`, `parent` (master agreement → order forms); acyclic                                                                                                                                       | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Subscription → Subscription (`supersedes_line_id`)         | 0..1 predecessor per line; derived lineage with provenance; never used for ownership                                                                                                                                      | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Opportunity → Person                                       | many-to-many through contact roles; never required                                                                                                                                                                        | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Opportunity → Opportunity line                             | one-to-many (0..n; only for multi-product opportunities)                                                                                                                                                                  | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Opportunity → Opportunity (`linked_source_opportunity_id`) | many-to-one (a platform-derived opportunity links to at most one source-native opportunity); no merge                                                                                                                     | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Product → Goal                                             | one-to-many (0..1 product per goal; scope account + product)                                                                                                                                                              | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Recommendation → target                                    | exactly one target: Account, AccountContext, Person or Opportunity                                                                                                                                                        | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Activity → Opportunity                                     | many-to-many (links with source/derived origin)                                                                                                                                                                           | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Support case → Account / Person / Product                  | many-to-one each (0..1 product); Support case → Activity one-to-many (`support_interaction`)                                                                                                                              | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Account → Entitlement / Product → Entitlement              | one-to-many each                                                                                                                                                                                                          | `PROPOSED FOR V1 CANDIDATE`                                          |
+| MetricObservation → subject                                | many-to-one: exactly one of Account, AccountContext, Person, or Account + Product                                                                                                                                         | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Account → Signal / Person → Signal                         | one-to-many each; a signal has at least one of account or person                                                                                                                                                          | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Subscription → Signal                                      | one-to-many (0..1 subscription per signal)                                                                                                                                                                                | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Goal → Opportunity / Contract                              | many-to-one each (0..1 linked opportunity, 0..1 linked renewal contract)                                                                                                                                                  | `PROPOSED FOR V1 CANDIDATE`                                          |
+| AccountContext → Activity                                  | many-to-many (links with source/derived origin)                                                                                                                                                                           | `PROPOSED FOR V1 CANDIDATE`                                          |
+| AccountContext → Contract                                  | one-to-many (a contract has 0..1 context)                                                                                                                                                                                 | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Recommendation → Product (recommended product)             | many-to-one (0..1)                                                                                                                                                                                                        | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Opportunity line → Product / Price/Offer                   | many-to-one each (product required; price/offer 0..1)                                                                                                                                                                     | `PROPOSED FOR V1 CANDIDATE`                                          |
+| Any entity → source reference                              | one-to-many (one record, many source references; one source reference resolves to exactly one record)                                                                                                                     | partly `IMPLEMENTED TODAY` (E5)                                      |

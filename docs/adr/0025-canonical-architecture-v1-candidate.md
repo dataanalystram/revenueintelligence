@@ -34,7 +34,7 @@ context, value, engagement or commercial concepts (M9E discovery report).
 2. **Three layers.**
    - **Core:** Account (+ hierarchy), Person, Product, Subscription line, Signal, Opportunity, Recommendation.
    - **Optional modules:** Account Context, Value (Goal / Metric), Engagement (Activity, participants, content
-     reference, Support case), Commercial (Price/Offer, Contract/Agreement, Entitlement/Asset), Action & Outcome.
+     reference, Support case), Commercial (Price/Offer, Contract/Agreement, Entitlement/Asset), Action & Outcome (Action, ActionOutcome).
    - **Extension layer:** governed custom fields (scalar, multi-select/array, JSON), custom objects, custom
      relationships, source attribute capture.
    - **Platform infrastructure:** source references, change records, evidence links, history policy, field
@@ -43,7 +43,10 @@ context, value, engagement or commercial concepts (M9E discovery report).
 3. **Promotion rule.** A concept becomes canonical only if it passes P1–P6:
    - P1 reusable meaning;
    - P2 stable identity/lifecycle;
-   - P3 three or more systems across two categories;
+   - P3 cross-system applicability — a **strong default evidence threshold** (three or more systems across two
+     categories), not an immutable law: justified exceptions are allowed when P1, P2, P4, P5 and P6 pass, the
+     shortfall is explained, additional independent evidence is cited, and the owner approves it in the promoting
+     ADR (Recommendation is recorded as such an exception: the platform is its primary producer);
    - P4 capability dependency;
    - P5 vendor-free semantics;
    - P6 the extension layer is insufficient.
@@ -51,20 +54,27 @@ context, value, engagement or commercial concepts (M9E discovery report).
    Exposure by a source is never sufficient. Promotion needs an ADR, a version bump and a migration.
 
 4. **Account** is the architecture term; the `companies` table stays.
-   - Hierarchy is canonical (`parent_account_id`, acyclic, authority fact `account_hierarchy`).
+   - Hierarchy is canonical (`parent_account_id`, acyclic, same tenant, authority fact `account_hierarchy`). Maximum
+     depth is a configurable platform guardrail (default 10), not canonical semantics.
    - Sub-account business context is the optional **AccountContext** module, never used for hierarchy.
 5. **Reasoning chain as distinct records:** FACT → SIGNAL → OPPORTUNITY → DECISION (recommendation events) → ACTION
-   → OUTCOME → learning, linked by evidence links.
-   - Signal is vendor-neutral (governed type codes; origin `source_provided` / `deterministic` / `ai_derived` /
-     `human`).
-   - Opportunity has Account, Account + Product or Context + Product scope, with Person optional.
+   → ACTION OUTCOME → learning, linked by evidence links. Customer business/value outcomes are **Goals** (Value
+   module); **ActionOutcome** records what happened to opportunities, recommendations and actions. They are never
+   conflated.
+   - Signal is vendor-neutral (origin `source_provided` / `deterministic` / `ai_derived` / `human`). Signal types
+     live in a governed, versioned **Signal Type Registry** (platform generic + tenant types); adding a type is a
+     registry version, never a canonical schema or version change.
+   - Opportunity has Account, Account + Product or Context + Product scope, with Person optional. Opportunity
+     lines are a vendor-neutral product component of a potential deal (product key, quantity, amount, term), not a
+     copied CRM object.
    - Activity is never a signal by itself.
 6. **CustomerProduct is a derived view.** Ownership stays derived (ADR 0017). An Entitlement/Asset may later feed the
    derivation under a new evaluator version.
 7. **Extension framework.**
    - One immutable, versioned tenant registry with field, object and relationship definitions.
    - Typed storage, with no per-tenant DDL.
-   - Limits, `allowed_uses`, `not_evidence_of`, sensitivity.
+   - Limits enforced as **configurable platform guardrails** (not canonical-model constraints), `allowed_uses`,
+     `not_evidence_of`, sensitivity.
    - Single writers and provenance.
    - Human-confirmed publish.
    - No expression or inference engine.
@@ -102,7 +112,8 @@ context, value, engagement or commercial concepts (M9E discovery report).
   - `parent_account_id`;
   - Person–Account affiliation;
   - Opportunity lines;
-  - `agreement_ref` on lines;
+  - `agreement_ref` on lines (an opaque source grouping key, distinct from SourceReference and from canonical
+    Contract identity) and line → Contract as 0..1 at a time with history;
   - the Support case specification.
 - **No implementation in M9E.** Each entity is built by the milestone that needs it, with its own plan, ADR revision
   and tests:

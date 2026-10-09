@@ -6,18 +6,18 @@ migration plus ADR (`IMPLEMENTED TODAY`).
 
 ## 1. What is versioned, and by whom
 
-| Artifact                                                 | Versioned by                                       | Today                                 |
-| -------------------------------------------------------- | -------------------------------------------------- | ------------------------------------- |
-| **Canonical model** (core + modules)                     | platform (`MAJOR.MINOR`, e.g. `1.0`, `1.1`, `2.0`) | not present                           |
-| Entity definition                                        | platform, integer per entity within the model      | not present                           |
-| Tenant extension registry                                | tenant (immutable versions, base version)          | not present (designed in E4)          |
-| Product model                                            | tenant (immutable versions, K1–K4)                 | `IMPLEMENTED TODAY`                   |
-| Source schema snapshot                                   | captured per connection (hash)                     | `IMPLEMENTED TODAY`                   |
-| Mapping version                                          | tenant per connection (immutable, base version)    | `IMPLEMENTED TODAY` (published only)  |
-| Authority version                                        | tenant (immutable)                                 | `IMPLEMENTED TODAY`                   |
-| Signal type / metric / action-type registries            | tenant (immutable versions)                        | not present                           |
-| Derivations (signal definitions, evaluators, generators) | platform/tenant `key + version`                    | evaluator version `IMPLEMENTED TODAY` |
-| Adapter                                                  | code constant                                      | `IMPLEMENTED TODAY`                   |
+| Artifact                                                 | Versioned by                                                                                             | Today                                 |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| **Canonical model** (core + modules)                     | platform (`MAJOR.MINOR`, e.g. `1.0`, `1.1`, `2.0`)                                                       | not present                           |
+| Entity definition                                        | platform, integer per entity within the model                                                            | not present                           |
+| Tenant extension registry                                | tenant (immutable versions, base version)                                                                | not present (designed in E4)          |
+| Product model                                            | tenant (immutable versions, K1–K4)                                                                       | `IMPLEMENTED TODAY`                   |
+| Source schema snapshot                                   | captured per connection (hash)                                                                           | `IMPLEMENTED TODAY`                   |
+| Mapping version                                          | tenant per connection (immutable, base version)                                                          | `IMPLEMENTED TODAY` (published only)  |
+| Authority version                                        | tenant (immutable)                                                                                       | `IMPLEMENTED TODAY`                   |
+| Signal Type / Metric / Action Type registries            | platform (generic definitions) + tenant (own definitions), immutable versions; never a canonical version | not present                           |
+| Derivations (signal definitions, evaluators, generators) | platform/tenant `key + version`                                                                          | evaluator version `IMPLEMENTED TODAY` |
+| Adapter                                                  | code constant                                                                                            | `IMPLEMENTED TODAY`                   |
 
 ## 2. Canonical model version semantics
 
@@ -26,7 +26,6 @@ migration plus ADR (`IMPLEMENTED TODAY`).
   - a new entity in a module;
   - a new **optional** field;
   - a new relationship;
-  - a new value in an **open** code set (signal types, action types);
   - a new mapping target;
   - widening a constraint.
   - Existing mappings, rules and data stay valid without change.
@@ -43,7 +42,9 @@ migration plus ADR (`IMPLEMENTED TODAY`).
   - a new product, product relationship or product model version;
   - a new mapping version, new connection or new connector kind;
   - a new adapter version;
-  - a new tenant signal type or metric definition (registry data);
+  - a new or retired signal type, metric definition or action type — platform-provided or tenant-defined — because
+    these are versions of governed registries (Signal Type, Metric, Action Type registries), not canonical schema;
+  - a change to a platform guardrail (hierarchy depth, extension limits, retention defaults);
   - a new derivation version (versioned separately and cited in provenance);
   - data-quality policy changes.
 - A genuinely new reusable business concept that passes the promotion test justifies a version change:

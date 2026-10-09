@@ -14,7 +14,8 @@
   - [E5 source reference, provenance, history](05-source-reference-and-provenance.md);
   - [E6 versioning and migration](06-versioning-and-migration.md);
   - [E7 data quality and structured values](07-data-quality-and-structured-values.md);
-  - [E8 pressure-test matrix](08-pressure-test-matrix.md).
+  - [E8 pressure-test matrix](08-pressure-test-matrix.md);
+  - [E11 consistency and pressure check](09-e11-consistency-check.md).
 - Labels:
   - `IMPLEMENTED TODAY`: code, schema and tests on `main`;
   - `DOMAIN-ONLY`: a Zod schema exists but is unused and unpersisted;
@@ -23,15 +24,15 @@
 
 ## 1. The candidate in one page
 
-| Layer                     | Contents                                                                                                                                                                                                                   | Status                                                                                                                                                                                                                                                    |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Core**                  | Account (+ `parent_account_id`), Person (+ affiliation), Product, Subscription line (+ `agreement_ref`), Signal, Opportunity (+ lines), Recommendation (+ decision events)                                                 | Account, Person, Product, Subscription line: `IMPLEMENTED TODAY`. Hierarchy, affiliation, `agreement_ref`, Signal, Opportunity, Recommendation: `PROPOSED FOR V1 CANDIDATE` (M1 Signal/LeadCandidate/QualificationDecision are `DOMAIN-ONLY`, superseded) |
-| **Optional modules**      | Account Context; Value (Goal, MetricDefinition, MetricObservation); Engagement (Activity, participant, content reference, Support case); Commercial (Price/Offer, Contract/Agreement, Entitlement/Asset); Action & Outcome | all `PROPOSED FOR V1 CANDIDATE` (Support case, Entitlement, Action, Outcome: specification only)                                                                                                                                                          |
-| **Extension**             | custom fields (scalar, enum, multi-select, array, JSON, money, reference), custom objects, custom relationships, source attribute capture — one versioned tenant registry                                                  | `PROPOSED FOR V1 CANDIDATE` (nothing stored today; `attribute` mapping kind reserved)                                                                                                                                                                     |
-| **Platform**              | source references, change records, evidence links, history policy, field intelligence, rejected observations, canonical version + tenant adoption, mapping lifecycle, migration framework                                  | references and change log `IMPLEMENTED TODAY` (partial); rest `PROPOSED FOR V1 CANDIDATE`                                                                                                                                                                 |
-| **Derived**               | ownership, eligibility, whitespace, CustomerProduct view, hierarchy roll-ups, health status                                                                                                                                | ownership/eligibility/whitespace `IMPLEMENTED TODAY`; others `PROPOSED FOR V1 CANDIDATE` (derived, never stored)                                                                                                                                          |
-| **Rejected / superseded** | BusinessOutcome entity, Health entity, Conversation entity, vendor-specific canonical objects, Lead/LeadCandidate                                                                                                          | —                                                                                                                                                                                                                                                         |
-| **Deferred**              | Order (extension until promoted), internal user/team, segment, campaign, invoice/payment, bitemporal history, multi-currency FX                                                                                            | `DEFERRED`                                                                                                                                                                                                                                                |
+| Layer                     | Contents                                                                                                                                                                                                                                           | Status                                                                                                                                                                                                                                                    |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Core**                  | Account (+ `parent_account_id`), Person (+ affiliation), Product, Subscription line (+ `agreement_ref`), Signal, Opportunity (+ lines), Recommendation (+ decision events)                                                                         | Account, Person, Product, Subscription line: `IMPLEMENTED TODAY`. Hierarchy, affiliation, `agreement_ref`, Signal, Opportunity, Recommendation: `PROPOSED FOR V1 CANDIDATE` (M1 Signal/LeadCandidate/QualificationDecision are `DOMAIN-ONLY`, superseded) |
+| **Optional modules**      | Account Context; Value (Goal, MetricDefinition, MetricObservation); Engagement (Activity, participant, content reference, Support case); Commercial (Price/Offer, Contract/Agreement, Entitlement/Asset); Action & Outcome (Action, ActionOutcome) | all `PROPOSED FOR V1 CANDIDATE` (Support case, Entitlement, Action, ActionOutcome: specification only)                                                                                                                                                    |
+| **Extension**             | custom fields (scalar, enum, multi-select, array, JSON, money, reference), custom objects, custom relationships, source attribute capture — one versioned tenant registry                                                                          | `PROPOSED FOR V1 CANDIDATE` (nothing stored today; `attribute` mapping kind reserved)                                                                                                                                                                     |
+| **Platform**              | source references, change records, evidence links, history policy, field intelligence, rejected observations, canonical version + tenant adoption, mapping lifecycle, migration framework                                                          | references and change log `IMPLEMENTED TODAY` (partial); rest `PROPOSED FOR V1 CANDIDATE`                                                                                                                                                                 |
+| **Derived**               | ownership, eligibility, whitespace, CustomerProduct view, hierarchy roll-ups, health status                                                                                                                                                        | ownership/eligibility/whitespace `IMPLEMENTED TODAY`; others `PROPOSED FOR V1 CANDIDATE` (derived, never stored)                                                                                                                                          |
+| **Rejected / superseded** | BusinessOutcome entity (the customer value outcome is the Goal), Health entity, Conversation entity, vendor-specific canonical objects, Lead/LeadCandidate                                                                                         | —                                                                                                                                                                                                                                                         |
+| **Deferred**              | Order (extension until promoted), internal user/team, segment, campaign, invoice/payment, bitemporal history, multi-currency FX                                                                                                                    | `DEFERRED`                                                                                                                                                                                                                                                |
 
 ## 2. Diagrams
 
@@ -44,14 +45,14 @@ flowchart TD
   D["Schema discovery + snapshot (hash)<br/>[IMPLEMENTED TODAY]"]
   P["Profiling: population, types, drift, findings<br/>advisory only [IMPLEMENTED TODAY]"]
   H["Human business confirmation<br/>identity · ownership · value maps · authority"]
-  M["Versioned mapping<br/>draft → validated → published → superseded → retired<br/>[published only TODAY]"]
+  M["Versioned mapping<br/>draft → validated → published → superseded → retired<br/>[IMPLEMENTED TODAY: published only; other states PROPOSED FOR V1 CANDIDATE]"]
   W["Single writers + source references + change records<br/>[IMPLEMENTED TODAY for Account/Person/Subscription]"]
-  K["Canonical core + modules + extension<br/>[core partly IMPLEMENTED; rest PROPOSED]"]
-  SG["Signals (vendor-neutral) [PROPOSED]"]
-  O["Opportunities [PROPOSED]"]
-  R["Recommendations + decision events [PROPOSED]"]
-  A["Actions [PROPOSED, M15]"]
-  OU["Outcomes → learning [PROPOSED, M16]"]
+  K["Canonical core + modules + extension<br/>[core partly IMPLEMENTED TODAY; rest PROPOSED FOR V1 CANDIDATE]"]
+  SG["Signals (vendor-neutral) [PROPOSED FOR V1 CANDIDATE]"]
+  O["Opportunities [PROPOSED FOR V1 CANDIDATE]"]
+  R["Recommendations + decision events [PROPOSED FOR V1 CANDIDATE]"]
+  A["Actions [PROPOSED FOR V1 CANDIDATE, M15]"]
+  OU["ActionOutcomes → learning [PROPOSED FOR V1 CANDIDATE, M16]"]
   S --> C --> D --> P --> H --> M --> W --> K
   K --> SG --> O --> R --> A --> OU
   K -.->|"eligibility / whitespace [IMPLEMENTED TODAY]"| O
@@ -61,27 +62,27 @@ flowchart TD
 
 ```mermaid
 flowchart TB
-  subgraph EXT["Layer 3 — Extension (tenant-governed, versioned registry) [PROPOSED]"]
+  subgraph EXT["Layer 3 — Extension (tenant-governed, versioned registry) [PROPOSED FOR V1 CANDIDATE]"]
     CF["Custom fields<br/>scalar · enum · multi-select · array · JSON · money · reference"]
     CO["Custom objects + records"]
     CR["Custom relationships"]
     SA["Source attribute capture"]
   end
-  subgraph MOD["Layer 2 — Optional modules [PROPOSED]"]
+  subgraph MOD["Layer 2 — Optional modules [PROPOSED FOR V1 CANDIDATE]"]
     AC["Account Context"]
     VAL["Value: Goal · MetricDefinition · MetricObservation"]
     ENG["Engagement: Activity · participant · content ref · Support case"]
     COM["Commercial: Price/Offer · Contract · Entitlement"]
-    AO["Action & Outcome"]
+    AO["Action & Outcome: Action · ActionOutcome"]
   end
   subgraph CORE["Layer 1 — Core"]
-    ACC["Account (+ hierarchy) [IMPL + PROPOSED]"]
-    PER["Person [IMPL]"]
-    PRD["Product [IMPL]"]
-    SUB["Subscription line [IMPL]"]
-    SIG["Signal [PROPOSED]"]
-    OPP["Opportunity [PROPOSED]"]
-    REC["Recommendation [PROPOSED]"]
+    ACC["Account (+ hierarchy) [IMPLEMENTED TODAY + hierarchy PROPOSED FOR V1 CANDIDATE]"]
+    PER["Person [IMPLEMENTED TODAY]"]
+    PRD["Product [IMPLEMENTED TODAY]"]
+    SUB["Subscription line [IMPLEMENTED TODAY]"]
+    SIG["Signal [PROPOSED FOR V1 CANDIDATE]"]
+    OPP["Opportunity [PROPOSED FOR V1 CANDIDATE]"]
+    REC["Recommendation [PROPOSED FOR V1 CANDIDATE]"]
   end
   subgraph PLAT["Platform: source references · change records · evidence · history · versioning · field intelligence · rejected observations"]
   end
@@ -96,19 +97,20 @@ flowchart TB
 
 ```mermaid
 erDiagram
-  ACCOUNT ||--o{ ACCOUNT : "parent_account_id (hierarchy) [PROPOSED]"
-  ACCOUNT ||--o{ PERSON : "primary account [IMPL]"
-  ACCOUNT }o--o{ PERSON : "affiliation (role, period) [PROPOSED]"
-  ACCOUNT ||--o{ ACCOUNT_CONTEXT : "context within account [PROPOSED module]"
-  ACCOUNT ||--o{ SUBSCRIPTION_LINE : "holds [IMPL]"
-  PRODUCT ||--o{ SUBSCRIPTION_LINE : "product key [IMPL]"
-  PRODUCT ||--o{ PRICE_OFFER : "priced as [PROPOSED module]"
-  CONTRACT ||--o{ SUBSCRIPTION_LINE : "agreement_ref [PROPOSED]"
-  ACCOUNT ||--o{ CONTRACT : "agreement [PROPOSED module]"
-  ACCOUNT_CONTEXT ||--o{ SUBSCRIPTION_LINE : "context_id (optional) [PROPOSED]"
-  ACCOUNT_CONTEXT }o--o{ PRODUCT : "dimension / membership [PROPOSED]"
-  ACCOUNT_CONTEXT }o--o{ PERSON : "context contacts [PROPOSED]"
-  ACCOUNT ||--o{ CUSTOMER_PRODUCT_VIEW : "derived ownership, never stored [IMPL as ownership]"
+  ACCOUNT ||--o{ ACCOUNT : "parent_account_id (acyclic hierarchy) [PROPOSED FOR V1 CANDIDATE]"
+  ACCOUNT ||--o{ PERSON : "primary account [IMPLEMENTED TODAY]"
+  ACCOUNT }o--o{ PERSON : "affiliation (role, period) [PROPOSED FOR V1 CANDIDATE]"
+  ACCOUNT ||--o{ ACCOUNT_CONTEXT : "context within account [PROPOSED FOR V1 CANDIDATE, module]"
+  ACCOUNT ||--o{ SUBSCRIPTION_LINE : "holds [IMPLEMENTED TODAY]"
+  PRODUCT ||--o{ SUBSCRIPTION_LINE : "product key [IMPLEMENTED TODAY]"
+  PRODUCT ||--o{ PRICE_OFFER : "priced as [PROPOSED FOR V1 CANDIDATE, module]"
+  CONTRACT ||--o{ SUBSCRIPTION_LINE : "contract_id via agreement_ref, 0..1 at a time [PROPOSED FOR V1 CANDIDATE]"
+  ACCOUNT ||--o{ CONTRACT : "agreement [PROPOSED FOR V1 CANDIDATE, module]"
+  CONTRACT ||--o{ CONTRACT : "renews / amends / parent (0..1 each) [PROPOSED FOR V1 CANDIDATE]"
+  ACCOUNT_CONTEXT ||--o{ SUBSCRIPTION_LINE : "context_id (optional) [PROPOSED FOR V1 CANDIDATE]"
+  ACCOUNT_CONTEXT }o--o{ PRODUCT : "dimension product(s) [PROPOSED FOR V1 CANDIDATE]"
+  ACCOUNT_CONTEXT }o--o{ PERSON : "context contacts [PROPOSED FOR V1 CANDIDATE]"
+  ACCOUNT ||--o{ CUSTOMER_PRODUCT_VIEW : "derived ownership, never stored [IMPLEMENTED TODAY as ownership]"
 ```
 
 ### Diagram 4 — Activity → Signal → Opportunity → Recommendation
@@ -116,16 +118,16 @@ erDiagram
 ```mermaid
 flowchart LR
   F1["Facts<br/>subscriptions · metrics · contracts · custom fields (signal_input only)"]
-  ACT["Activity (call · meeting · email · message · support interaction) [PROPOSED]"]
+  ACT["Activity (call · meeting · email · message · support interaction) [PROPOSED FOR V1 CANDIDATE]"]
   DER["Derivation (versioned definition: deterministic or AI)<br/>origin + version + inputs hash"]
-  SPS["Source-provided signal (mapping) [PROPOSED]"]
-  SIG["Signal (vendor-neutral, immutable) [PROPOSED]"]
+  SPS["Source-provided signal (mapping) [PROPOSED FOR V1 CANDIDATE]"]
+  SIG["Signal (vendor-neutral, immutable) [PROPOSED FOR V1 CANDIDATE]"]
   ELIG["Eligibility / whitespace snapshot [IMPLEMENTED TODAY]"]
-  OPP["Opportunity (Account · Account+Product · Context+Product; Person optional) [PROPOSED]"]
-  REC["Recommendation [PROPOSED]"]
-  EVT["Decision events: accepted · dismissed · executed · expired · superseded [PROPOSED]"]
-  ACTN["Action [PROPOSED]"]
-  OUT["Outcome [PROPOSED]"]
+  OPP["Opportunity (Account · Account+Product · Context+Product; Person optional) [PROPOSED FOR V1 CANDIDATE]"]
+  REC["Recommendation [PROPOSED FOR V1 CANDIDATE]"]
+  EVT["Decision events: accepted · dismissed · executed · expired · superseded [PROPOSED FOR V1 CANDIDATE]"]
+  ACTN["Action [PROPOSED FOR V1 CANDIDATE]"]
+  OUT["ActionOutcome [PROPOSED FOR V1 CANDIDATE]"]
   F1 --> DER
   ACT --> DER
   DER --> SIG
@@ -156,28 +158,28 @@ stateDiagram-v2
 
 ## 3. Answers to the brief's 20 questions
 
-| #   | Question                                                         | Answer (section)                                                                                                                                                                                                                                                                                                 |
-| --- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | What belongs in the minimal core?                                | Account (+ hierarchy), Person, Product, Subscription line, Signal, Opportunity, Recommendation (E2 §2). The first four are `IMPLEMENTED TODAY`                                                                                                                                                                   |
-| 2   | What belongs in optional modules?                                | Account Context; Value; Engagement; Commercial; Action & Outcome (E2 §2, E3 §9–13)                                                                                                                                                                                                                               |
-| 3   | What must remain extension data?                                 | Anything failing the promotion test: tenant-specific fields, custom objects (orders until promoted, inspections, projects), source-captured attributes (E2, E4)                                                                                                                                                  |
-| 4   | What exactly is Relationship / AccountContext?                   | A managed business context within one account (Account + Product + Region, BU, workspace, programme, service/contract), with its own owner, goals, health, renewal, signals and opportunities; optional module (E3 §10)                                                                                          |
-| 5   | How is hierarchy different from Relationship?                    | Hierarchy: account under account (`parent_account_id`, acyclic, authority-governed). Context: a scope inside one account. Never interchangeable (E3 §1, §10)                                                                                                                                                     |
-| 6   | How do Goals / Outcomes / Metrics work?                          | Goal (scope, status, target metric + window, origin, owner); MetricDefinition (registry); MetricObservation (immutable time series); BusinessOutcome folded into Goal; health = metric/signal (E3 §11)                                                                                                           |
-| 7   | How do Gong / Fireflies / Gmail / Calendar fit without redesign? | One Activity model (+ participants, content references, threads) in the Engagement module; interpretation via versioned derivations into Signals; vendor in provenance (E3 §12, E8)                                                                                                                              |
-| 8   | How do custom objects fit?                                       | Registry definitions + records + relationships in typed stores, with limits, single writer and provenance; promotion path (E4 §2–§3, §7)                                                                                                                                                                         |
-| 9   | How do JSON / arrays / multi-selects fit?                        | Decision order: canonical collection → normalized child records → extension collection → extension JSON → source payload reference; never blind stringify (E7 §4, E4 §3)                                                                                                                                         |
-| 10  | What causes a new canonical version?                             | Additive model changes → MINOR; breaking changes (remove/rename/change meaning/require/narrow/closed-enum semantics) → MAJOR (E6 §2)                                                                                                                                                                             |
-| 11  | What does not?                                                   | Custom fields/objects, product models, mappings, connectors/adapters, tenant signal types/metrics, derivation versions, data-quality policy (E6 §2)                                                                                                                                                              |
-| 12  | How are mappings migrated?                                       | Re-validated per canonical version; MINOR keeps them valid; MAJOR generates mapping migration proposals → human publishes new mapping versions within the compatibility window; lifecycle draft → validated → published → superseded → retired (E6 §4)                                                           |
-| 13  | How is rollback handled?                                         | Schema forward-fix in production (unchanged policy); data rollback by reverse steps or pre-migration tenant snapshot; adoption rollback within the compatibility window (E6 §5)                                                                                                                                  |
-| 14  | How are source identities separated from canonical identity?     | Platform UUIDs; source references `(system, object, external id)` with lifecycle; one reference → one record; one record → many references (E5 §1–§2; `IMPLEMENTED TODAY` for accounts/persons/lines)                                                                                                            |
-| 15  | How is historical data retained?                                 | Per-entity history policy: immutable records; projection + value history for business-critical fields; projection + change log elsewhere; tombstones, never physical deletion by ingestion (E5 §4)                                                                                                               |
-| 16  | How is every important fact traced to evidence?                  | Widened change record (source, run, mapping, schema snapshot, transforms, origin, derivation, actor, canonical version) + immutable evidence links (E5 §3)                                                                                                                                                       |
-| 17  | Can files and warehouse tables map into the architecture?        | Yes by design (E8): rows → core/custom objects/metrics via mapping; completeness via manifest/count proofs. **To be proven by M9C/M9D** before the freeze                                                                                                                                                        |
-| 18  | Can new systems be added primarily through adapter + mapping?    | Yes: 19 systems tested, none needed a new core entity; changes forced were additive and are in the candidate (E8 §2)                                                                                                                                                                                             |
-| 19  | What still requires human semantic confirmation?                 | Identity fields, holding/ownership semantics and reviewed domains, value maps, authority, stable-snapshot acceptance, eligibility / signal-input / AI uses of extension fields, AI-suggested goals/definitions/mappings, per-tenant semantic choices (Lead object, CTA, scores-as-signals) (ADR 0025 §12, E8 §2) |
-| 20  | What is intentionally deferred?                                  | Order, internal user/team, segment, campaign, invoice/payment, bitemporal history, multi-currency FX, physical table designs, all implementation (E1, E2 §Deferred)                                                                                                                                              |
+| #   | Question                                                         | Answer (section)                                                                                                                                                                                                                                                                                                                             |
+| --- | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | What belongs in the minimal core?                                | Account (+ hierarchy), Person, Product, Subscription line, Signal, Opportunity, Recommendation (E2 §2). The first four are `IMPLEMENTED TODAY`                                                                                                                                                                                               |
+| 2   | What belongs in optional modules?                                | Account Context; Value; Engagement; Commercial; Action & Outcome (E2 §2, E3 §9–13)                                                                                                                                                                                                                                                           |
+| 3   | What must remain extension data?                                 | Anything failing the promotion test: tenant-specific fields, custom objects (orders until promoted, inspections, projects), source-captured attributes (E2, E4)                                                                                                                                                                              |
+| 4   | What exactly is Relationship / AccountContext?                   | A managed business context within one account (Account + Product + Region, BU, workspace, programme, service/contract), with its own owner, goals, health, renewal, signals and opportunities; optional module (E3 §10)                                                                                                                      |
+| 5   | How is hierarchy different from Relationship?                    | Hierarchy: account under account (`parent_account_id`, acyclic, authority-governed). Context: a scope inside one account. Never interchangeable (E3 §1, §10)                                                                                                                                                                                 |
+| 6   | How do Goals / Outcomes / Metrics work?                          | Customer business/value outcomes are **Goals** (scope, outcome statement, status, target metric + window, origin, owner); MetricDefinition (registry); MetricObservation (immutable time series); health = metric/signal. **ActionOutcome** is a different concept: what happened to an opportunity, recommendation or action (E3 §9.1, §11) |
+| 7   | How do Gong / Fireflies / Gmail / Calendar fit without redesign? | One Activity model (+ participants, content references, threads) in the Engagement module; interpretation via versioned derivations into Signals; vendor in provenance (E3 §12, E8)                                                                                                                                                          |
+| 8   | How do custom objects fit?                                       | Registry definitions + records + relationships in typed stores, with limits, single writer and provenance; promotion path (E4 §2–§3, §7)                                                                                                                                                                                                     |
+| 9   | How do JSON / arrays / multi-selects fit?                        | Decision order: canonical collection → normalized child records → extension collection → extension JSON → source payload reference; never blind stringify (E7 §4, E4 §3)                                                                                                                                                                     |
+| 10  | What causes a new canonical version?                             | Changes to canonical entity shape or semantics: additive (new module, entity, optional field, relationship, mapping target) → MINOR; breaking (remove/rename/change meaning/require/narrow/closed-enum semantics) → MAJOR (E6 §2)                                                                                                            |
+| 11  | What does not?                                                   | Custom fields/objects, product models, mappings, connectors/adapters, signal types / metric definitions / action types (registry versions, platform or tenant), derivation versions, platform guardrails (hierarchy depth, extension limits, retention defaults), data-quality policy (E6 §2)                                                |
+| 12  | How are mappings migrated?                                       | Re-validated per canonical version; MINOR keeps them valid; MAJOR generates mapping migration proposals → human publishes new mapping versions within the compatibility window; lifecycle draft → validated → published → superseded → retired (E6 §4)                                                                                       |
+| 13  | How is rollback handled?                                         | Schema forward-fix in production (unchanged policy); data rollback by reverse steps or pre-migration tenant snapshot; adoption rollback within the compatibility window (E6 §5)                                                                                                                                                              |
+| 14  | How are source identities separated from canonical identity?     | Platform UUIDs; source references `(system, object, external id)` with lifecycle; one reference → one record; one record → many references (E5 §1–§2; `IMPLEMENTED TODAY` for accounts/persons/lines)                                                                                                                                        |
+| 15  | How is historical data retained?                                 | Per-entity history policy: immutable records; projection + value history for business-critical fields; projection + change log elsewhere; tombstones, never physical deletion by ingestion (E5 §4)                                                                                                                                           |
+| 16  | How is every important fact traced to evidence?                  | Widened change record (source, run, mapping, schema snapshot, transforms, origin, derivation, actor, canonical version) + immutable evidence links (E5 §3)                                                                                                                                                                                   |
+| 17  | Can files and warehouse tables map into the architecture?        | Yes by design (E8): rows → core/custom objects/metrics via mapping; completeness via manifest/count proofs. **To be proven by M9C/M9D** before the freeze                                                                                                                                                                                    |
+| 18  | Can new systems be added primarily through adapter + mapping?    | Yes: 19 systems tested, none needed a new core entity; changes forced were additive and are in the candidate (E8 §2)                                                                                                                                                                                                                         |
+| 19  | What still requires human semantic confirmation?                 | Identity fields, holding/ownership semantics and reviewed domains, value maps, authority, stable-snapshot acceptance, eligibility / signal-input / AI uses of extension fields, AI-suggested goals/definitions/mappings, per-tenant semantic choices (Lead object, CTA, scores-as-signals) (ADR 0025 §12, E8 §2)                             |
+| 20  | What is intentionally deferred?                                  | Order, internal user/team, segment, campaign, invoice/payment, bitemporal history, multi-currency FX, physical table designs, all implementation (E1, E2 §Deferred)                                                                                                                                                                          |
 
 ## 4. Preserved guarantees (M7–M9B), and how the candidate keeps them
 
@@ -193,6 +195,15 @@ stateDiagram-v2
 | Single writers; provenance with connection + mapping version          | every new entity gets a single writer; change record widened, not duplicated        |
 | Tenant isolation (ADR 0008)                                           | every new store tenant-owned, forced RLS, tenant-scoped keys, schema guard          |
 | Immutable versioned documents with base version                       | reused for extension, signal type, metric and action-type registries                |
+
+## 4a. Semantics vs guardrails (E11 clarification)
+
+| Canonical semantics (changing them is a canonical version change)            | Configurable platform guardrails (operational; never a canonical version change)                              |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| account hierarchy is acyclic and same-tenant                                 | maximum hierarchy depth (default 10)                                                                          |
+| a subscription line has 0..1 contract at a time                              | extension limits (fields per entity, custom objects, enum values, array items, JSON size, records per object) |
+| signals are immutable and vendor-neutral                                     | candidate-value retention TTL (default 30 days)                                                               |
+| P1–P6 promotion tests (P3 as an evidence threshold with recorded exceptions) | registry sizes for signal types, metrics, action types                                                        |
 
 ## 5. What this candidate is not
 

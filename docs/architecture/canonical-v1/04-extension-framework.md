@@ -50,7 +50,7 @@ The registry contains three kinds of definition.
 | `display_name`, `description` | required; the approved business meaning                                                                                                                                                                                                                                    |
 | `value_type`                  | closed set: `string`, `text`, `number`, `integer`, `boolean`, `date`, `datetime`, `money` (amount + currency), `enum`, `multi_enum` (multi-select), `array` (of one scalar type), `json` (structured, with optional schema), `reference` (to a canonical or custom record) |
 | `allowed_values`              | for `enum` / `multi_enum`: `{code, label, status: active\|retired}`; codes never removed                                                                                                                                                                                   |
-| `constraints`                 | per type: max length; numeric min/max/integer; array max items (≤ 500); JSON max bytes (≤ 64 KiB) and optional JSON Schema subset (types, required, enum, max depth ≤ 5); no regex execution beyond a bounded safe subset                                                  |
+| `constraints`                 | per type: max length; numeric min/max/integer; array max items; JSON max bytes and optional JSON Schema subset (types, required, enum, bounded depth); no regex execution beyond a bounded safe subset. Upper bounds come from the platform guardrails (§2.4)              |
 | `sensitivity`                 | `internal` \| `confidential` \| `personal` \| `restricted`; `restricted` values are never stored in clear without a policy decision                                                                                                                                        |
 | `allowed_uses`                | closed set: `display`, `segmentation`, `eligibility`, `signal_input`, `analytics`, `ai_context`; every consumer checks its own use                                                                                                                                         |
 | `not_evidence_of`             | canonical facts this field must never be used to infer (e.g. `subscription_ownership`, `account_identity`)                                                                                                                                                                 |
@@ -99,7 +99,7 @@ Examples:
 | `required`          | whether `from` must have one                                                                                               |
 | `on_target_retired` | always `keep` (no cascades); a reference to a merged canonical record follows merge lineage                                |
 
-### 2.4 Limits (per tenant; deliberate, configurable only upward by a platform decision)
+### 2.4 Guardrails (configurable platform limits, not canonical-model constraints)
 
 | Limit                           | v1 value                                                                 |
 | ------------------------------- | ------------------------------------------------------------------------ |
@@ -112,7 +112,15 @@ Examples:
 | JSON value size                 | 64 KiB                                                                   |
 | custom records per object       | 10 M (beyond that the data belongs in a warehouse source read on demand) |
 
-Limits are validated at registry publish and at write time. Exceeding a limit is a refused publish or a rejected
+These values are **default platform guardrails**, not canonical semantics:
+
+- they live in platform configuration (per deployment, optionally per tenant tier), not in the canonical model or the
+  registry schema;
+- changing a guardrail is an operational decision with a capacity review; it is **never** a canonical version change
+  and never requires a registry or mapping migration;
+- the canonical model only requires that limits exist and are enforced, so one tenant cannot degrade another.
+
+Guardrails are validated at registry publish and at write time. Exceeding one is a refused publish or a rejected
 observation (E7), never silent truncation.
 
 ## 3. Value storage (logical design; physical design by the implementing milestone)
