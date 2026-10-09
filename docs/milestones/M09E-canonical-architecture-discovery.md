@@ -1,6 +1,7 @@
 # Milestone 9E — Canonical architecture review: discovery report and proposed plan
 
-- Status: **DISCOVERY COMPLETE — PLAN PROPOSED, AWAITING OWNER REVIEW.** No architecture document, schema, migration or
+- Status: **PLAN APPROVED (owner, 2026-10-09) — E1–E10 in progress.** See [Owner decisions](#owner-decisions-2026-10-09).
+  Previously: discovery complete, plan proposed. No architecture document, schema, migration or
   code has been changed for M9E. M9C and M9D have not started. Canonical Model v1.0 is **not** frozen.
 - Base: `main` at `a9c0133` (M9B closed: PR #16 merge `eb92580`, closure PR #17 merge `a9c0133`).
 - Brief: the owner's "M9E — Canonical Architecture Review and v1 Candidate Design" (2026-10-09). The sequence is
@@ -287,3 +288,32 @@ not to be started without approval:
 4. Confirm the sequencing fix (C1): the M9 plan's §13.5 review gate becomes the **v1.0 freeze gate** after M9C + M9D.
 5. Confirm the rejected-value store (C7) is designed in M9E but stays **off/blocked** until the privacy ADR
    (tech debt #15).
+
+## Owner decisions (2026-10-09)
+
+The owner approved the E1–E12 plan with these decisions (binding for the v1 candidate):
+
+1. M9E is design/documentation only; no canonical schema, table or code unless a very small change is separately
+   approved.
+2. The earlier narrow extension design is **replaced**: governed scalar custom fields, arrays/multi-select, JSON /
+   structured values, custom object definitions and records, relationships between custom objects and canonical
+   entities, and source-specific attributes — with limits, tenant isolation and governance; no expression or inference
+   engine.
+3. **Account** is the canonical architecture term; the physical `companies` table is unchanged; the terminology
+   mapping is documented.
+4. The M9 plan §13.5 review gate becomes the **v1.0 freeze gate after M9C and M9D**. M9E produces the
+   `Canonical Architecture v1 Candidate`.
+5. A rejected-value / data-quality model is designed, separating raw source payload/reference, normalized candidate,
+   reason code, safe diagnostics and optional sensitive/raw retention; raw sensitive retention stays disabled and
+   policy-gated until the privacy decision (tech debt #15).
+6. The vendor-tied M1 Signal is replaced in the architecture by a vendor-neutral Signal; origin lives in provenance.
+7. Opportunity does not require a Person; it exists at Account, Account + Product, Context + Product, with optional
+   Person context. The M1 LeadCandidate shape does not dictate it.
+8. CustomerProduct is not persisted automatically; derived ownership is preserved; M9E evaluates derived view vs
+   future first-class entity.
+9. Account hierarchy is canonical (`parent_account_id` or equivalent); never modelled through Relationship /
+   AccountContext.
+10. Relationship / AccountContext is an optional business-context module.
+11. Activity / Interaction / Conversation is evaluated as an optional module.
+12. Open items stay open and separate: tech debt #62/#63/#64; live mutations M09/M10; V6/V9/V10/V11; Chargebee
+    incremental; live Sugar verification.
