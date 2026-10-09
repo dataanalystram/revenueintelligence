@@ -203,7 +203,9 @@ For source attributes the tenant wants **kept but not yet interpreted**:
   them, which publishes a registry version that changes `allowed_uses` and adds a description.
 - This keeps unmapped information without silently creating business meaning, and without adding canonical columns.
 
-## 6. Field intelligence metadata (supports the M10 Data Intelligence Console)
+## 6. Field intelligence metadata (supports the Data Intelligence Console)
+
+The metadata is built in M10 (M10L); the console views come with the operator workspace (M15).
 
 A **field metadata record** per (connection, source object, source field) and per (custom field). Logical fields:
 

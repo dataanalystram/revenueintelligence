@@ -10,6 +10,12 @@
   [ADR 0012](../adr/0012-revenue-opportunity-intelligence-direction.md).
 - Approval of the roadmap is not approval to start a milestone. Each
   milestone still starts only after its own plan is approved.
+- **Renumbered on 2026-10-09 (owner decision D4, M10 plan).** A new **M10 —
+  Canonical Architecture + Security/Data Governance Implementation** is
+  inserted. It absorbs the data-model halves of the former M10 (signal model)
+  and M11 (opportunity candidates). Their engine halves and every later
+  milestone move up by one. See [Renumbering of 2026-10-09](#renumbering-of-2026-10-09).
+  Closed milestone records and accepted ADRs keep the numbering of their date.
 
 ## Approved roadmap
 
@@ -26,29 +32,33 @@ M8   Authoritative subscription-source connector
 
 M9   Remaining system read connector
 
-M10  Signal model and ingestion
-     provenance schema defined at kickoff
+M10  Canonical Architecture + Security/Data Governance Implementation
+     canonical v1 candidate structures, provenance, extensions,
+     versioning, module enablement, classification, audit (no engines)
 
-M11  Opportunity candidates / whitespace / suppression
-     Account × Product, Person optional
+M11  Signal derivation and ingestion engine
+     on the M10 Signal model and provenance
 
-M12  Rules-based qualification and evidence
+M12  Opportunity candidate generation / whitespace / suppression
+     on the M10 Opportunity model (Account × Product, Person optional)
+
+M13  Rules-based qualification and evidence
      Jev interface only
 
-M13  Prioritisation + routing
+M14  Prioritisation + routing
      shadow only
      separate Priority Decision and Routing Decision records
 
-M14  Minimal operator workspace
+M15  Minimal operator workspace
      review / explanation / override
 
-M15  Commercial actions under approval
+M16  Commercial actions under approval
      outbox / approval gates / Fuelius coexistence
 
-M16  Outcomes / attribution / measurement
+M17  Outcomes / attribution / measurement
      including expired and superseded
 
-M17  Juniper pilot
+M18  Juniper pilot
      shadow → coexist → active
 
 Later
@@ -71,10 +81,10 @@ The order follows the product's dependencies, not the list of integrations:
 3. **Connectors arrive when a capability needs their data**, and read-only
    first. Which connector comes first is decided by discovery, not assumed.
 4. **Decisions before actions, shadow before writes**. Every decision
-   milestone produces explainable records in shadow mode first. M11–M14
+   milestone produces explainable records in shadow mode first. M12–M15
    write nothing to customer systems.
 5. **Humans see and correct decisions before the platform acts**, so the
-   minimal operator workspace (M14) comes before any write (M15).
+   minimal operator workspace (M15) comes before any write (M16).
 6. **Outcomes and measurement before learning.**
 
 Every milestone keeps the M0–M5 discipline:
@@ -86,22 +96,23 @@ Every milestone keeps the M0–M5 discipline:
 
 ## Overview
 
-| #     | Milestone                                          | Capability layer         | Core / connector           | External access                |
-| ----- | -------------------------------------------------- | ------------------------ | -------------------------- | ------------------------------ |
-| M6    | Event processing and canonical account context     | Data context             | core + HubSpot adapter     | HubSpot test account           |
-| M7    | Product catalogue, subscriptions and eligibility   | Product intelligence     | core                       | none                           |
-| Gate  | Subscription Source Discovery (before M8)          | Data context / product   | discovery only (no code)   | Juniper source schemas         |
-| M8    | Authoritative subscription-source connector        | Data context / product   | connector                  | the chosen system (mock first) |
-| M9    | Remaining system read connector                    | Data context             | connector                  | the other system (mock first)  |
-| M10   | Signal model and ingestion                         | Signal intelligence      | core + adapters            | as connected                   |
-| M11   | Opportunity candidates, whitespace and suppression | Opportunity intelligence | core                       | none                           |
-| M12   | Rules-based qualification and evidence             | Opportunity intelligence | core                       | none                           |
-| M13   | Prioritisation and routing (shadow)                | Commercial action        | core                       | none                           |
-| M14   | Minimal operator workspace                         | all (human control)      | core (UI)                  | none                           |
-| M15   | Commercial actions under approval                  | Commercial action        | connectors, gated          | customer sandbox + approval    |
-| M16   | Outcomes, attribution and measurement              | Revenue outcome / learn  | core + adapters            | as connected                   |
-| M17   | Juniper pilot: shadow → coexist → active           | all                      | configuration + operations | Juniper accounts + approvals   |
-| Later | On demonstrated need                               | Learn / improve          | core                       | per item                       |
+| #     | Milestone                                         | Capability layer         | Core / connector           | External access                |
+| ----- | ------------------------------------------------- | ------------------------ | -------------------------- | ------------------------------ |
+| M6    | Event processing and canonical account context    | Data context             | core + HubSpot adapter     | HubSpot test account           |
+| M7    | Product catalogue, subscriptions and eligibility  | Product intelligence     | core                       | none                           |
+| Gate  | Subscription Source Discovery (before M8)         | Data context / product   | discovery only (no code)   | Juniper source schemas         |
+| M8    | Authoritative subscription-source connector       | Data context / product   | connector                  | the chosen system (mock first) |
+| M9    | Remaining system read connector                   | Data context             | connector                  | the other system (mock first)  |
+| M10   | Canonical Architecture + Security/Data Governance | Data foundation          | core                       | Chargebee TEST site (read)     |
+| M11   | Signal derivation and ingestion engine            | Signal intelligence      | core + adapters            | as connected                   |
+| M12   | Opportunity candidate generation and suppression  | Opportunity intelligence | core                       | none                           |
+| M13   | Rules-based qualification and evidence            | Opportunity intelligence | core                       | none                           |
+| M14   | Prioritisation and routing (shadow)               | Commercial action        | core                       | none                           |
+| M15   | Minimal operator workspace                        | all (human control)      | core (UI)                  | none                           |
+| M16   | Commercial actions under approval                 | Commercial action        | connectors, gated          | customer sandbox + approval    |
+| M17   | Outcomes, attribution and measurement             | Revenue outcome / learn  | core + adapters            | as connected                   |
+| M18   | Juniper pilot: shadow → coexist → active          | all                      | configuration + operations | Juniper accounts + approvals   |
+| Later | On demonstrated need                              | Learn / improve          | core                       | per item                       |
 
 The "later" items are:
 
@@ -244,24 +255,58 @@ must be complete before M8 starts.
 - **Inputs**: the discovery gate, M6 and M7.
 - **Outputs**: open leads and opportunities per account (Sugar), or account
   health and usage aggregates (Gainsight).
-- **Out of scope**: writes; using the data for decisions (that is M10–M11).
+- **Out of scope**: writes; using the data for decisions (that is M11–M12).
 - **Verification**: as M8.
 
-### M10 — Signal model and ingestion
+### M10 — Canonical Architecture + Security/Data Governance Implementation
+
+- **Business purpose**: build the approved
+  [Canonical Architecture v1 Candidate](../architecture/canonical-v1/CANDIDATE.md)
+  and its security and data-governance foundations, so every later engine
+  reads trustworthy, isolated, classified and provenanced data.
+- **Technical scope** ([M10 plan](../milestones/M10-canonical-architecture-implementation-plan.md),
+  sub-milestones M10A1–M10M):
+  - security & governance primitives: actor attribution, write
+    authorization, audit events, data classification, retention metadata,
+    secret-like value refusal, key-identified encryption;
+  - canonical versioning (`0.x`; `1.0` reserved for the freeze), tenant
+    adoption, separate module enablement, governed registries, value history,
+    mapping lifecycle;
+  - generic source references and immutable evidence links, with
+    database-enforced polymorphic integrity;
+  - Account hierarchy, Person affiliation, extension framework,
+    AccountContext, Commercial, vendor-neutral Signal model, Opportunity
+    model, Recommendation / Action / ActionOutcome records, Value,
+    Engagement, data quality and field intelligence;
+  - migration and adoption tooling.
+- **Why now**: every engine milestone needs these structures, and security
+  is built in rather than retrofitted.
+- **Inputs**: M6–M9B, M9E.
+- **Outputs**: the canonical data foundation at `0.x`, with the two
+  acceptance sections (canonical correctness; security & data governance)
+  passed per sub-milestone.
+- **Out of scope**: engines (signal derivation, candidate generation,
+  recommendation generation, qualification, routing), customer-system
+  writes, the v1.0 freeze (needs M9C/M9D), compliance claims.
+- **Verification**: per sub-milestone, as the M10 plan sets out (`pnpm
+verify`, runtime, Docker, fresh clone, mutation and adversarial proofs).
+
+### M11 — Signal derivation and ingestion engine
 
 - **Business purpose**: combine fragmented signals (charter §8) into one
   stream of explainable facts and indications.
-- **Technical scope**:
-  - generalise the M1 signal model to facts and derived signals, where the
+- **Technical scope** (the Signal model, Signal Type Registry, provenance and
+  evidence links are built in M10):
+  - versioned signal derivation definitions and their evaluator, where the
     source is data rather than a per-vendor rule;
   - adapters that turn HubSpot (forms, lifecycle, lead score, Lead
     changes), Sugar and Gainsight data into canonical facts and signals,
     with evidence and provenance;
-  - de-duplication;
+  - de-duplication over time;
   - retention rules.
-- **Kickoff checkpoint (required before implementation)**: the signal and
-  provenance schema is designed and approved first. Where applicable, it
-  must explicitly include:
+- **Kickoff checkpoint**: the signal and provenance schema was designed in
+  M9E and is implemented in M10 (M10A2, M10B, M10G). At kickoff, confirm it
+  covers, where applicable:
   - tenant;
   - source system;
   - source record id;
@@ -280,7 +325,7 @@ must be complete before M8 starts.
 
 - **Why now**: candidates need signals, and signals need account and product
   context to be meaningful.
-- **Inputs**: M6–M9.
+- **Inputs**: M6–M10.
 - **Outputs**: per-account and per-person fact and signal timelines.
 - **Out of scope**: AI-derived soft signals (later); decisions.
 - **Verification**:
@@ -290,21 +335,21 @@ must be complete before M8 starts.
   - adapter contract tests;
   - live HubSpot signals end to end.
 
-### M11 — Opportunity candidates, whitespace and suppression
+### M12 — Opportunity candidate generation, whitespace and suppression
 
 - **Business purpose**: answer "why is this account an opportunity, for which
   product?" (charter §9).
 - **Technical scope**:
-  - the opportunity-candidate model: **Account × Product, Person optional**
-    (approved direction). The schema evolution from `LeadCandidate` happens
-    here, with its own ADR;
+  - the opportunity model (**Account × Product, Person optional**; approved
+    direction) is built in M10 (M10H), replacing `LeadCandidate`; this
+    milestone generates candidates on it;
   - candidate creation from signals plus M7 eligibility and whitespace;
   - suppression of duplicates, already-owned, already-pursued and cool-off
     cases (ADR 0006);
   - an evidence trail per candidate;
   - shadow mode only: no writes.
 - **Why now**: this is the first point where all prerequisite context exists.
-- **Inputs**: M7, M9 and M10.
+- **Inputs**: M7, M9, M10 and M11.
 - **Outputs**: explainable candidates and suppression records.
 - **Out of scope**: qualification, priority, routing, writes.
 - **Verification**:
@@ -312,7 +357,7 @@ must be complete before M8 starts.
   - an evidence trail on each candidate;
   - mutation proofs on suppression rules.
 
-### M12 — Rules-based qualification and evidence
+### M13 — Rules-based qualification and evidence
 
 - **Business purpose**: say how strong each candidate is, with reasons
   (charter §10).
@@ -325,7 +370,7 @@ must be complete before M8 starts.
   - the Jev adapter interface only (no Jev implementation).
 - **Why now**: qualification needs candidates. The rules provider gives a
   measurable baseline before any AI.
-- **Inputs**: M11.
+- **Inputs**: M12.
 - **Outputs**: qualified candidates (HOT / WARM / COLD / NEEDS_REVIEW) with
   reasons.
 - **Out of scope**: Jev/AI, priority, routing, writes.
@@ -335,7 +380,7 @@ must be complete before M8 starts.
   - reasons required;
   - mutation proofs.
 
-### M13 — Prioritisation and routing (shadow)
+### M14 — Prioritisation and routing (shadow)
 
 - **Business purpose**: decide what to work first and who should receive it
   (charter §11–12).
@@ -348,17 +393,17 @@ must be complete before M8 starts.
   - recorded "would route to" decisions (shadow only).
 - **Separation rule**: qualification, priority and routing remain separate
   concepts and separate records, each with its own policy version, reasons
-  and override. Neither M13 decision overwrites the qualification decision.
+  and override. Neither M14 decision overwrites the qualification decision.
 - **Why now**: priority and routing consume qualified candidates. Shadow
   output can be compared with today's process.
-- **Inputs**: M12.
+- **Inputs**: M13.
 - **Outputs**: Priority Decision and Routing Decision records (shadow), with
   explanations.
-- **Out of scope**: writes, the UI (M14).
+- **Out of scope**: writes, the UI (M15).
 - **Verification**: policy tests per branch for each decision type;
   explanation completeness; record separation; isolation.
 
-### M14 — Minimal operator workspace: review, explanation, override
+### M15 — Minimal operator workspace: review, explanation, override
 
 - **Business purpose**: let people:
   - see every opportunity and its full explanation;
@@ -366,16 +411,19 @@ must be complete before M8 starts.
   - override qualification, priority, routing and suppression;
   - compare shadow decisions with reality.
 
-  This comes before the platform acts anywhere (approved: M14 before M15).
+  This comes before the platform acts anywhere (approved: M15 before M16).
 
 - **Technical scope**:
   - a minimal authenticated web UI over the API (tenant-scoped, roles);
   - explanation views;
+  - Data Intelligence Console views over the M10 field metadata and
+    rejected observations;
+  - user identity and roles, through the M10 write-authorization port;
   - override actions (append-only);
   - a shadow-comparison report.
 - **Why now**: explainability and human override are core requirements, and
   the pilot needs them. This moves the original M21 earlier, kept minimal.
-- **Inputs**: M11–M13.
+- **Inputs**: M12–M14.
 - **Outputs**: a usable review surface; audit of human decisions.
 - **Out of scope**: dashboards or analytics beyond the review needs; design
   polish; writes to customer systems.
@@ -385,7 +433,7 @@ must be complete before M8 starts.
   - accessibility basics;
   - end-to-end browser tests.
 
-### M15 — Commercial actions under approval
+### M16 — Commercial actions under approval
 
 - **Business purpose**: deliver opportunities into the commercial workflow:
   HubSpot Lead, Sugar Lead or Opportunity, or a CS task.
@@ -398,7 +446,7 @@ must be complete before M8 starts.
   - coexistence with Fuelius.
 - **Why now**: only after decisions are explainable, reviewable and proven in
   shadow. This is the first milestone that may write to a customer system.
-- **Inputs**: M13 and M14; the customer's explicit approval for writes.
+- **Inputs**: M14 and M15; the customer's explicit approval for writes.
 - **Outputs**: approved actions in sandbox systems, with an audit trail.
 - **Out of scope**: production writes without approval; bulk back-fills.
 - **Verification**:
@@ -407,7 +455,7 @@ must be complete before M8 starts.
   - approval-gate mutation proofs;
   - zero writes in `shadow` and `coexist`.
 
-### M16 — Outcomes, attribution and measurement
+### M17 — Outcomes, attribution and measurement
 
 - **Business purpose**: know what happened to each opportunity, and measure
   which signals, products, rules and routes convert (charter §17).
@@ -416,7 +464,7 @@ must be complete before M8 starts.
     decisions;
   - attribution reporting;
   - conversion metrics.
-- **Design-time requirement**: the outcome vocabulary is settled at M16
+- **Design-time requirement**: the outcome vocabulary is settled at M17
   design time and must cover, as appropriate:
   - accepted;
   - worked;
@@ -430,14 +478,14 @@ must be complete before M8 starts.
 
   The existing `SalesOutcomeType` is extended then, not before.
 
-- **Why now**: requires actions (M15) or, in coexist mode, matching (M6/M9).
-- **Inputs**: M9, M15.
+- **Why now**: requires actions (M16) or, in coexist mode, matching (M6/M9).
+- **Inputs**: M9, M16.
 - **Outputs**: measured conversion by signal, product, rule, route and
   source.
 - **Out of scope**: machine learning; automated rule changes.
 - **Verification**: correct linkage of outcomes; metric tests; isolation.
 
-### M17 — Juniper pilot: shadow → coexist → active
+### M18 — Juniper pilot: shadow → coexist → active
 
 - **Business purpose**: prove business value on Juniper's real data, safely.
 - **Technical scope**:
@@ -460,13 +508,35 @@ must be complete before M8 starts.
 | M8 cross-references         | M6                                                          |
 | M9 field-mapping engine     | M6/M8/M9 (as each connector needs it)                       |
 | M10 Gainsight CS            | M8 or M9 (decided by the discovery gate)                    |
-| M11 signal aggregation      | M10 + M11                                                   |
-| M12 Jev                     | later (interface only in M12)                               |
-| M13 deterministic fallback  | M12 (rules provider is the baseline, not a fallback)        |
-| M14 policy/SLA/routing      | M13                                                         |
-| M15 simulated end-to-end    | each milestone's shadow mode plus the M14 comparison report |
-| M16 real HubSpot validation | M17 (HubSpot already live-proven in M5)                     |
-| M17–M18 Sugar read/write    | M8/M9 (read), M15 (write)                                   |
-| M19 Sugar → HubSpot sync    | M15/M16                                                     |
-| M20 pilot                   | M17                                                         |
-| M21 frontend                | M14 (minimal, earlier); polish later                        |
+| M11 signal aggregation      | M10 (model) + M11 + M12                                     |
+| M12 Jev                     | later (interface only in M13)                               |
+| M13 deterministic fallback  | M13 (rules provider is the baseline, not a fallback)        |
+| M14 policy/SLA/routing      | M14                                                         |
+| M15 simulated end-to-end    | each milestone's shadow mode plus the M15 comparison report |
+| M16 real HubSpot validation | M18 (HubSpot already live-proven in M5)                     |
+| M17–M18 Sugar read/write    | M8/M9 (read), M16 (write)                                   |
+| M19 Sugar → HubSpot sync    | M16/M17                                                     |
+| M20 pilot                   | M18                                                         |
+| M21 frontend                | M15 (minimal, earlier); polish later                        |
+
+## Renumbering of 2026-10-09
+
+Owner decision D4 in the
+[M10 plan](../milestones/M10-canonical-architecture-implementation-plan.md).
+Closed milestone records and accepted ADRs keep the numbering of their date;
+use this table to read them.
+
+| Before 2026-10-09                                     | From 2026-10-09                                                            |
+| ----------------------------------------------------- | -------------------------------------------------------------------------- |
+| —                                                     | M10 Canonical Architecture + Security/Data Governance Implementation (new) |
+| M10 Signal model and ingestion                        | data model → M10 (M10G); derivation and ingestion engine → M11             |
+| M11 Opportunity candidates / whitespace / suppression | data model → M10 (M10H); candidate generation and suppression → M12        |
+| M12 Rules-based qualification and evidence            | M13                                                                        |
+| M13 Prioritisation + routing                          | M14                                                                        |
+| M14 Minimal operator workspace                        | M15 (also user identity/roles and the Data Intelligence Console views)     |
+| M15 Commercial actions under approval                 | M16                                                                        |
+| M16 Outcomes / attribution / measurement              | M17                                                                        |
+| M17 Juniper pilot                                     | M18                                                                        |
+
+"Live mutations M09/M10" in the M9B records are Chargebee live-mutation
+labels, not milestones.

@@ -66,7 +66,7 @@ health status (when computed from metrics).
 | **Value**            | Goal, MetricDefinition, MetricObservation                       | P1 ✔, P2 ✔ (goal lifecycle; observation immutable), P3 ✔ (Gainsight success plans/scorecards, Staircase, product analytics, warehouse metrics, spreadsheets), P4 ✔ (value-realisation signals), P5 ✔, P6 ✔ (time series and targets)                                        | Not every tenant tracks goals/metrics                                                     |
 | **Engagement**       | Activity, Activity participant, content reference, Support case | Activity: P3 ✔✔ (Gong, Fireflies, Zoom, Gmail, Calendar, Slack, Staircase, CRM tasks, support). Support case: P3 ✔ (Zendesk, Freshdesk, Salesforce Case, HubSpot Ticket), P4 ✔ (support escalation signals)                                                                 | Only tenants connecting engagement systems need it                                        |
 | **Commercial**       | Price/Offer, Contract/Agreement, Entitlement/Asset              | Price: P3 ✔ (Chargebee, Stripe, Salesforce), P4 ✔ (value, ARR, upgrade path). Contract: P3 ✔ (Salesforce, CLM, billing headers), P4 ✔ (renewal). Entitlement: P3 ✔ (Salesforce Asset, licence systems), P4 ✔ (ownership without subscription)                               | Lines + product model already cover v1 ownership; value/renewal capabilities are optional |
-| **Action & Outcome** | Action, ActionOutcome                                           | P1 ✔, P2 ✔, P4 ✔ (M15 actions, M16 measurement) — specified now so the reasoning chain is complete. ActionOutcome is distinct from the customer value outcome, which is the Goal (Value module)                                                                             | Implemented with M15/M16                                                                  |
+| **Action & Outcome** | Action, ActionOutcome                                           | P1 ✔, P2 ✔, P4 ✔ (M16 actions, M17 measurement) — specified now so the reasoning chain is complete. ActionOutcome is distinct from the customer value outcome, which is the Goal (Value module)                                                                             | Implemented with M16/M17                                                                  |
 
 ### Extension (tenant data, governed; never changes canonical schema)
 
@@ -89,8 +89,8 @@ health status (when computed from metrics).
 ### Deferred
 
 - **Order:** stays an extension until promoted.
-- **Internal user / team:** reference shape reserved; M13/M14.
-- **Segment:** M14.
-- **Campaign:** M16.
+- **Internal user / team:** reference shape reserved; M14/M15.
+- **Segment:** M15.
+- **Campaign:** M17.
 - **Invoice / payment:** excluded for sensitivity.
 - **Multi-currency FX:** money is stored with its currency; no conversion.
