@@ -4,6 +4,7 @@ import {
   translateDatabaseError,
   type TenantTransaction,
 } from '../../src/modules/tenancy';
+import { rawText } from '../support/errors';
 import { startContextHarness, type ContextHarness } from '../support/context';
 import { FakeSugar } from '../support/fake-sugar';
 import { runSync, sugarTenant, type SourcesFixture } from '../support/sources';
@@ -58,7 +59,9 @@ describe('M8 source tables: cross-tenant isolation (raw SQL, app role, forced RL
         translateDatabaseError(error, 'attack');
       } catch (translated) {
         const e = translated as Error;
-        return { refused: e.constructor.name, message: e.message };
+        // `cause` keeps the raw database text: 42501 is translated to the same class
+        // for an RLS refusal and a missing privilege, so tests tell them apart here.
+        return { refused: e.constructor.name, message: e.message, cause: rawText(error) };
       }
     }
   };
@@ -291,8 +294,22 @@ describe('M8 source tables: cross-tenant isolation (raw SQL, app role, forced RL
   });
 
   describe("UPDATE and DELETE of B's rows affect nothing", () => {
-    // For the three immutable tables the refuse-change trigger would raise if a
-    // B row were visible; "0 rows, no error" proves RLS filtered them first.
+    // Mutable tables: "0 rows, no error" proves RLS filtered B's rows. M10A1: the
+    // three immutable tables are append-only for the app role (no UPDATE/DELETE
+    // privilege), so the attempt is refused before RLS is even consulted.
+    const IMMUTABLE: readonly string[] = [
+      'tenant_source_schema_snapshots',
+      'tenant_source_mapping_versions',
+      'tenant_source_authority_versions',
+    ];
+    const outcome = (t: string) =>
+      IMMUTABLE.includes(t)
+        ? {
+            ...RLS_REFUSED,
+            message: expect.any(String),
+            cause: expect.stringMatching(new RegExp(`permission denied for table ${t}\\b`)),
+          }
+        : { ok: 0 };
     const updates: Record<(typeof TABLES)[number], string> = {
       tenant_source_connections: `UPDATE tenant_source_connections SET label = 'Hijacked', status = 'disabled' WHERE tenant_id = $1::uuid`,
       tenant_source_schema_snapshots: `UPDATE tenant_source_schema_snapshots SET captured_by = 'attacker' WHERE tenant_id = $1::uuid`,
@@ -304,7 +321,7 @@ describe('M8 source tables: cross-tenant isolation (raw SQL, app role, forced RL
     it.each(TABLES)('%s: UPDATE targeting tenant B affects 0 rows', async (t) => {
       expect(
         await attempt((tx) => tenantClient(tx).$executeRawUnsafe(updates[t], b.ctx.tenantId)),
-      ).toEqual({ ok: 0 });
+      ).toEqual(outcome(t));
     });
 
     it.each(TABLES)('%s: DELETE targeting tenant B affects 0 rows', async (t) => {
@@ -315,7 +332,7 @@ describe('M8 source tables: cross-tenant isolation (raw SQL, app role, forced RL
             b.ctx.tenantId,
           ),
         ),
-      ).toEqual({ ok: 0 });
+      ).toEqual(outcome(t));
     });
 
     it("UPDATE/DELETE by B's keys (no tenant filter) affect 0 rows", async () => {
@@ -325,10 +342,22 @@ describe('M8 source tables: cross-tenant isolation (raw SQL, app role, forced RL
           await db.$executeRaw`UPDATE tenant_source_connections SET label = 'Hijacked' WHERE id = ${b.connectionId}::uuid`,
           await db.$executeRaw`DELETE FROM tenant_ownership_gaps
             WHERE connection_id = ${b.connectionId}::uuid AND source_record_id = ${bGap.source_record_id}`,
-          await db.$executeRaw`DELETE FROM tenant_source_schema_snapshots WHERE connection_id = ${b.connectionId}::uuid`,
         ];
       });
-      expect(res).toEqual([0, 0, 0]);
+      expect(res).toEqual([0, 0]);
+      // Append-only for the app role (M10A1): refused outright, whatever the key.
+      expect(
+        await attempt(
+          (tx) =>
+            tenantClient(tx)
+              .$executeRaw`DELETE FROM tenant_source_schema_snapshots WHERE connection_id = ${b.connectionId}::uuid`,
+        ),
+      ).toMatchObject({
+        ...RLS_REFUSED,
+        cause: expect.stringMatching(
+          /permission denied for table tenant_source_schema_snapshots\b/,
+        ),
+      });
     });
   });
 

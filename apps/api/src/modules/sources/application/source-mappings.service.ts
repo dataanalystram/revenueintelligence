@@ -13,8 +13,12 @@ import {
   type MappingValidation,
 } from '../../domain';
 import {
+  assertAuthorized,
+  AuditTrail,
+  WriteAuthorizer,
   tenantAdvisoryLock,
   TenantDatabase,
+  type AuthorizedContext,
   type TenantContext,
   type TenantTransaction,
 } from '../../tenancy';
@@ -27,11 +31,11 @@ import {
 } from '../errors';
 import { ProfilesRepository } from '../infrastructure/profiles.repository';
 import { SourcesRepository, type StoredMappingVersion } from '../infrastructure/sources.repository';
+import { AuditFailures } from '../../tenancy';
 
 export interface PublishMappingOptions {
   /** The version the document was edited from: required (0 for the first). */
   readonly expectedBaseVersion: number;
-  readonly actor: string;
   /** The snapshot the operator validated against; stale when not the latest. */
   readonly validatedAgainst?: string;
   /** Acknowledged findings of the covering profiles (M9A §7.4). */
@@ -79,6 +83,8 @@ export class SourceMappingsService {
     private readonly db: TenantDatabase,
     private readonly repo: SourcesRepository,
     private readonly profiles: ProfilesRepository,
+    private readonly audit: AuditTrail,
+    private readonly authorizer: WriteAuthorizer,
     @Optional() @Inject(MetricsService) private readonly metrics?: MetricsService,
   ) {}
 
@@ -102,19 +108,29 @@ export class SourceMappingsService {
    * stale base is refused (`concurrent_publish`), so an edit made from version
    * N can never silently replace a version N+1 published meanwhile.
    */
+  @AuditFailures('mapping.publish', 'source_connection')
   async publish(
-    ctx: TenantContext,
+    actx: AuthorizedContext<'config.mapping.publish'>,
     connectionId: string,
     raw: unknown,
     options: PublishMappingOptions,
   ): Promise<PublishedMapping> {
+    assertAuthorized(actx, 'config.mapping.publish');
+    const ctx = actx.tenant;
+    const actor = actx.actor.id;
     const base = (options as { expectedBaseVersion?: number }).expectedBaseVersion;
     if (base === undefined || !Number.isInteger(base) || base < 0) {
       throw new PublishBaseVersionRequiredError('a mapping');
     }
-    if (!ACTOR.test(options.actor)) throw new SourcesError('invalid_actor', 'Invalid actor');
+    if (!ACTOR.test(actor)) throw new SourcesError('invalid_actor', 'Invalid actor');
+    // Plan §11: reasons and confirmations are stored free text.
+    await this.authorizer.refuseSecretLike(
+      actx,
+      { action: 'mapping.publish', targetKind: 'source_connection', targetRef: connectionId },
+      { mapping: raw, options },
+    );
     // An override attempt is audited as refused before anything else happens.
-    this.auditOverride(ctx, connectionId, options, options.actor);
+    this.auditOverride(ctx, connectionId, options, actor);
     return this.db.transaction(ctx, async (tx) => {
       // One publication per connection at a time.
       await tenantAdvisoryLock(tx, 'source-mapping', connectionId);
@@ -144,11 +160,23 @@ export class SourceMappingsService {
             findingId: a.findingId,
             code: a.code,
             reasonCode: a.reasonCode,
-            actor: options.actor,
+            actor,
             at: new Date().toISOString(),
           })),
         },
-        publishedBy: options.actor,
+        publishedBy: actor,
+      });
+      await this.audit.record(tx, actx, {
+        action: 'mapping.publish',
+        targetKind: 'mapping',
+        targetRef: `${connectionId}/v${stored.version}`,
+        details: {
+          version: stored.version,
+          baseVersion: latestVersion,
+          contentHash: stored.contentHash,
+          authorityVersion: stored.authorityVersion,
+          acknowledgements: validation.acknowledgements.length,
+        },
       });
       return {
         version: stored.version,

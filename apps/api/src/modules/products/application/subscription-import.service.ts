@@ -1,7 +1,13 @@
 import { createHash } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { runProof, type SubscriptionObservation, type SubscriptionSource } from '../../domain';
-import { TenantDatabase, type TenantContext } from '../../tenancy';
+import {
+  assertAuthorized,
+  AuditTrail,
+  AuthorizedContext,
+  TenantDatabase,
+  type TenantContext,
+} from '../../tenancy';
 import { SubscriptionRunsStore, type ImportMode } from '../infrastructure/subscription-runs.store';
 import { SubscriptionQueries } from '../infrastructure/subscription.queries';
 import { parseSubscriptionCsv, type CsvError, type CsvLine } from './subscription-csv';
@@ -9,6 +15,7 @@ import {
   SubscriptionIngestionService,
   type SubscriptionIngestOutcome,
 } from './subscription-ingestion.service';
+import { AuditFailures } from '../../tenancy';
 
 export const CSV_IMPORT_ADAPTER = 'csv_import';
 export const CSV_IMPORT_ADAPTER_VERSION = 'm7.0';
@@ -70,13 +77,21 @@ export class SubscriptionImportService {
     private readonly writer: SubscriptionIngestionService,
     private readonly queries: SubscriptionQueries,
     private readonly runs: SubscriptionRunsStore,
+    private readonly audit: AuditTrail,
   ) {}
 
+  /**
+   * A dry run needs only a tenant context; executing writes subscription lines
+   * and needs an operator authorized for `canonical.import` (M10A1).
+   */
+  @AuditFailures('subscription_import.run', 'subscription_import')
   async import(
-    ctx: TenantContext,
+    target: TenantContext | AuthorizedContext<'canonical.import'>,
     file: Uint8Array,
     request: ImportRequest,
   ): Promise<ImportReport> {
+    if (request.execute) assertAuthorized(target, 'canonical.import');
+    const ctx = target instanceof AuthorizedContext ? target.tenant : target;
     if (!SOURCE_NAME.test(request.source))
       throw new Error('--source must match [A-Za-z0-9_]{1,100}');
     if (RESERVED_SOURCES.has(request.source) && !request.allowReservedSource) {
@@ -100,15 +115,25 @@ export class SubscriptionImportService {
     }
     const lines = parsed.lines;
     return request.execute
-      ? this.execute(ctx, lines, request, base)
+      ? this.execute(target as AuthorizedContext<'canonical.import'>, lines, request, base)
       : this.dryRun(ctx, lines, request, base);
   }
 
   /** Marks a run that was killed midway as cancelled (coverage stays as it was). */
-  async cancel(ctx: TenantContext, checkpointId: string): Promise<{ cancelled: boolean }> {
-    return this.db.transaction(ctx, async (tx) => {
+  @AuditFailures('subscription_import.cancel', 'subscription_import')
+  async cancel(
+    actx: AuthorizedContext<'canonical.import'>,
+    checkpointId: string,
+  ): Promise<{ cancelled: boolean }> {
+    assertAuthorized(actx, 'canonical.import');
+    return this.db.transaction(actx.tenant, async (tx) => {
       const running = await this.runs.running(tx);
       if (!running || running.id !== checkpointId) return { cancelled: false };
+      await this.audit.record(tx, actx, {
+        action: 'subscription_import.cancel',
+        targetKind: 'subscription_import',
+        targetRef: checkpointId,
+      });
       await this.runs.finish(tx, checkpointId, {
         status: 'cancelled',
         seen: running.recordsSeen,
@@ -157,7 +182,7 @@ export class SubscriptionImportService {
   }
 
   private async execute(
-    ctx: TenantContext,
+    actx: AuthorizedContext<'canonical.import'>,
     lines: readonly CsvLine[],
     request: ImportRequest,
     base: { mode: 'full' | 'incremental'; source: string; inputHash: string },
@@ -167,14 +192,29 @@ export class SubscriptionImportService {
     // lastSeenAt >= runObservedAt, so the tombstone pass (lastSeenAt <
     // runObservedAt) can only hit lines this file did not contain.
     const runObservedAt = new Date();
-    const { checkpointId, connectionId } = await this.db.transaction(ctx, async (tx) => ({
-      checkpointId: await this.runs.start(tx, {
-        mode,
-        inputHash: base.inputHash,
-        correlationId: request.correlationId,
-      }),
-      connectionId: await this.runs.importConnectionId(tx),
-    }));
+    const ctx = actx.tenant;
+    const { checkpointId, connectionId } = await this.db.transaction(ctx, async (tx) => {
+      const started = {
+        checkpointId: await this.runs.start(tx, {
+          mode,
+          inputHash: base.inputHash,
+          correlationId: request.correlationId,
+        }),
+        connectionId: await this.runs.importConnectionId(tx),
+      };
+      await this.audit.record(tx, actx, {
+        action: 'subscription_import.run',
+        targetKind: 'subscription_import',
+        targetRef: started.checkpointId,
+        details: {
+          mode: request.mode,
+          source: request.source,
+          inputHash: base.inputHash,
+          rows: lines.length,
+        },
+      });
+      return started;
+    });
     const meta = {
       cause: 'import' as const,
       correlationId: request.correlationId,
@@ -191,7 +231,7 @@ export class SubscriptionImportService {
     try {
       for (const line of lines) {
         const result = await this.writer.ingest(
-          ctx,
+          actx,
           this.observation(line, request.source, runObservedAt),
           meta,
         );
@@ -208,7 +248,7 @@ export class SubscriptionImportService {
           );
           for (const row of unseen) {
             const result = await this.writer.ingest(
-              ctx,
+              actx,
               { presence: 'absent', source: row.source, observedAt: new Date() },
               meta,
             );

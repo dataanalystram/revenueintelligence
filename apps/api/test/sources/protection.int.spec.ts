@@ -20,6 +20,7 @@ import {
   withSnapshot,
   type SourcesFixture,
 } from '../support/sources';
+import { authz } from '../support/security';
 
 /**
  * M9A record-level safety end to end (ADR 0023): seen-but-rejected
@@ -87,9 +88,9 @@ describe('record-level protection, reviewed domains, guards and coverage tiers',
         const current = await s.authority.show(f.ctx);
         // TEST configuration: state read from `status`; an unmapped value rejects the record.
         await s.authority.publish(
-          f.ctx,
+          await authz(f.ctx, 'config.authority.publish'),
           { facts: { ...current!.document.facts, subscription_state: f.connectionId } },
-          { expectedBaseVersion: current!.version, actor: 'test' },
+          { expectedBaseVersion: current!.version },
         );
         const snapshot = await s.snapshots.latest(f.ctx, f.connectionId);
         const withState = withSnapshot(
@@ -314,7 +315,7 @@ describe('record-level protection, reviewed domains, guards and coverage tiers',
           quantity: '7',
         });
         const s = sourcesServices(c);
-        await s.snapshots.capture(f.ctx, f.connectionId, 'test');
+        await s.snapshots.capture(await authz(f.ctx, 'config.source.schema'), f.connectionId);
         expect((await runProfile(c, f, mappingObjects(sugarTestMapping()))).status).toBe(
           'completed',
         );
@@ -382,7 +383,12 @@ describe('record-level protection, reviewed domains, guards and coverage tiers',
           ],
         );
         await expect(
-          sourcesServices(c).sync.start(f.ctx, f.connectionId, 'full', { enqueue: false }),
+          sourcesServices(c).sync.start(
+            await authz(f.ctx, 'data.sync.run'),
+            f.connectionId,
+            'full',
+            { enqueue: false },
+          ),
         ).rejects.toMatchObject({ code: 'mapping_requires_republish' });
       } finally {
         await local.stop();
@@ -466,9 +472,14 @@ describe('record-level protection, reviewed domains, guards and coverage tiers',
           proof: { method: 'count', runId: first.runId, inferred: false },
         });
         const company = await companyOf(f, 'FIX-ACC-001');
-        const r = await eligibility.evaluate(f.ctx, company, 'fix-prod-001', {
-          record: { purpose: 'test_evidence', correlationId: randomUUID() },
-        });
+        const r = await eligibility.evaluate(
+          await authz(f.ctx, 'data.eligibility.record'),
+          company,
+          'fix-prod-001',
+          {
+            record: { purpose: 'test_evidence', correlationId: randomUUID() },
+          },
+        );
         expect(r.coverageTier).toBe('externally_grounded');
         const snap = await eligibility.snapshot(f.ctx, r.snapshotId!);
         expect(JSON.stringify(snap.result)).toContain('"coverageTier":"externally_grounded"');
@@ -532,13 +543,16 @@ describe('record-level protection, reviewed domains, guards and coverage tiers',
         });
         const s = sourcesServices(c);
         const current = await s.authority.show(f.ctx);
-        const accepted = await s.authority.publish(f.ctx, current!.document, {
-          expectedBaseVersion: current!.version,
-          actor: 'ops',
-          proofAcceptances: [
-            { connectionId: f.connectionId, reason: 'double enumeration reviewed' },
-          ],
-        });
+        const accepted = await s.authority.publish(
+          await authz(f.ctx, 'config.authority.publish'),
+          current!.document,
+          {
+            expectedBaseVersion: current!.version,
+            proofAcceptances: [
+              { connectionId: f.connectionId, reason: 'double enumeration reviewed' },
+            ],
+          },
+        );
         expect(accepted.contentHash).not.toBe(current!.contentHash);
         expect(await coverage(f.ctx)).toMatchObject({
           known: true,
@@ -603,14 +617,13 @@ describe('record-level protection, reviewed domains, guards and coverage tiers',
 
     async function csvTenant(prefix: string) {
       const t = await c.tenant(prefix, 1101 + Math.floor(Math.random() * 1000));
-      await c.h.catalogue.publish(t, genericModel(), {
-        actor: 'test',
+      await c.h.catalogue.publish(await authz(t, 'config.product_model.publish'), genericModel(), {
         basedOnVersion: 0,
         effectiveFrom: new Date('2026-01-01T00:00:00Z'),
         now: new Date('2026-01-01T00:00:00Z'),
       });
       const r = await c.ingestion.ingest(
-        t,
+        await authz(t, 'canonical.source_sync'),
         {
           kind: 'company',
           presence: 'present',
@@ -621,7 +634,7 @@ describe('record-level protection, reviewed domains, guards and coverage tiers',
         { cause: 'webhook', correlationId: randomUUID() },
       );
       await c.h.imports.import(
-        t,
+        await authz(t, 'canonical.import'),
         new TextEncoder().encode(
           `${HEADER}\nC1,hubspot:companies:970,core,active,2026-01-01T00:00:00Z,,,\n`,
         ),

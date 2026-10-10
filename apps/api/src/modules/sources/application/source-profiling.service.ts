@@ -22,7 +22,13 @@ import {
   type SourceObject,
   type ValidatedProfileRequest,
 } from '../../domain';
-import { TenantDatabase, type TenantContext } from '../../tenancy';
+import {
+  assertAuthorized,
+  AuditTrail,
+  AuthorizedContext,
+  TenantDatabase,
+  type TenantContext,
+} from '../../tenancy';
 import { MetricsService } from '../../../platform/metrics';
 import { QueueService } from '../../../platform/queue';
 import { ConnectionNotFoundError, SourcesError } from '../errors';
@@ -37,6 +43,7 @@ import {
 import { SourcesRepository } from '../infrastructure/sources.repository';
 import { SOURCE_PROFILE_JOB, SOURCES_QUEUE, sourceProfileJobId } from '../jobs';
 import { SourceConnectionsService } from './source-connections.service';
+import { AuditFailures } from '../../tenancy';
 
 const MAX_PAGES = 100_000;
 const DEFAULT_PAGE_SIZE = 200;
@@ -79,17 +86,23 @@ export class SourceProfilingService {
     private readonly repo: SourcesRepository,
     private readonly profiles: ProfilesRepository,
     private readonly connections: SourceConnectionsService,
+    private readonly audit: AuditTrail,
     @Optional() @Inject(QueueService) private readonly queues?: QueueService,
     @Optional() @Inject(MetricsService) private readonly metrics?: MetricsService,
   ) {}
 
   /** Validates a request (dry run) or creates the run and queues `source.profile`. */
+  @AuditFailures('profile.start', 'profile_run')
   async request(
-    ctx: TenantContext,
+    target: TenantContext | AuthorizedContext<'data.profile.run'>,
     connectionId: string,
     input: ProfileRequestInput,
-    options: { actor: string; execute: boolean; correlationId?: string; enqueue?: boolean },
+    options: { execute: boolean; correlationId?: string; enqueue?: boolean },
   ): Promise<ProfileRequestResult> {
+    // A dry run needs only a tenant; creating the run needs data.profile.run (M10A1).
+    if (options.execute) assertAuthorized(target, 'data.profile.run');
+    const ctx = target instanceof AuthorizedContext ? target.tenant : target;
+    const actx = target instanceof AuthorizedContext ? target : undefined;
     const correlationId = options.correlationId ?? randomUUID();
     const created = await this.db.transaction(ctx, async (tx) => {
       const connection = await this.repo.connection(tx, connectionId);
@@ -131,10 +144,20 @@ export class SourceProfilingService {
             objects: verdict.request.objects,
             sampling: verdict.request.sampling,
             maxRows: verdict.request.maxRows,
-            optIns: verdict.request.optIns.map((o) => ({ ...o, actor: options.actor })),
+            optIns: verdict.request.optIns.map((o) => ({ ...o, actor: actx!.actor.id })),
           },
-          requestedBy: options.actor,
+          requestedBy: actx!.actor.id,
           correlationId,
+        });
+        await this.audit.record(tx, actx!, {
+          action: 'profile.start',
+          targetKind: 'profile_run',
+          targetRef: run.id,
+          details: {
+            connectionId,
+            objects: verdict.request.objects.length,
+            optIns: verdict.request.optIns.length,
+          },
         });
         return { dryRun: false as const, request: verdict.request, run };
       } catch (err) {
@@ -175,10 +198,12 @@ export class SourceProfilingService {
    * fails the run with a stable code and persists nothing.
    */
   async execute(
-    ctx: TenantContext,
+    actx: AuthorizedContext<'data.profile.run'>,
     runId: string,
     now: () => Date = () => new Date(),
   ): Promise<ProfileRunResult> {
+    assertAuthorized(actx, 'data.profile.run');
+    const ctx = actx.tenant;
     const loaded = await this.db.transaction(ctx, async (tx) => {
       const run = await this.profiles.run(tx, runId);
       if (!run || (run.status !== 'requested' && run.status !== 'running')) return undefined;
@@ -221,7 +246,19 @@ export class SourceProfilingService {
       const stored = await this.db.transaction(ctx, async (tx) => {
         const current = await this.profiles.run(tx, run.id);
         if (current?.status !== 'running') throw new ProfileRunError('profile_run_not_running');
-        return this.profiles.completeRun(tx, run, sampling, built, now());
+        const completed = await this.profiles.completeRun(tx, run, sampling, built, now());
+        await this.audit.record(
+          tx,
+          actx,
+          {
+            action: 'profile.finish',
+            targetKind: 'profile_run',
+            targetRef: run.id,
+            details: { status: 'completed', profiles: completed.length },
+          },
+          'completed',
+        );
+        return completed;
       });
       this.metrics?.increment('lip_profile_runs', {
         kind: loaded.connection.kind,
@@ -235,6 +272,18 @@ export class SourceProfilingService {
         const current = await this.profiles.run(tx, run.id);
         if (current && (current.status === 'running' || current.status === 'requested')) {
           await this.profiles.failRun(tx, run.id, 'failed', code, now());
+          await this.audit.record(
+            tx,
+            actx,
+            {
+              action: 'profile.finish',
+              targetKind: 'profile_run',
+              targetRef: run.id,
+              details: { status: 'failed', code },
+            },
+            'failed',
+            'operation_failed',
+          );
         }
       });
       this.metrics?.increment('lip_profile_runs', {
@@ -247,11 +296,23 @@ export class SourceProfilingService {
   }
 
   /** Marks a run failed after its job exhausted its retries (dead-lettered). */
-  async abandon(ctx: TenantContext, runId: string, code: string): Promise<void> {
-    await this.db.transaction(ctx, async (tx) => {
+  @AuditFailures('profile.abandon', 'profile_run')
+  async abandon(
+    actx: AuthorizedContext<'data.profile.run'>,
+    runId: string,
+    code: string,
+  ): Promise<void> {
+    assertAuthorized(actx, 'data.profile.run');
+    await this.db.transaction(actx.tenant, async (tx) => {
       const run = await this.profiles.run(tx, runId);
       if (!run || (run.status !== 'requested' && run.status !== 'running')) return;
       await this.profiles.failRun(tx, runId, 'failed', code, new Date());
+      await this.audit.record(tx, actx, {
+        action: 'profile.abandon',
+        targetKind: 'profile_run',
+        targetRef: runId,
+        details: { code },
+      });
     });
   }
 

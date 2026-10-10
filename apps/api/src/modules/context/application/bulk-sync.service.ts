@@ -2,20 +2,28 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { APP_CONFIG, type AppConfig } from '../../../platform/config';
 import { MetricsService } from '../../../platform/metrics';
 import { PermanentJobError, type QueueJob } from '../../../platform/queue';
-import type {
-  ContextKind,
-  CrmReader,
-  ExternalCompanySnapshot,
-  ExternalPersonSnapshot,
-  ExternalRef,
-  SourceObservation,
+import {
+  systemActor,
+  type ContextKind,
+  type CrmReader,
+  type ExternalCompanySnapshot,
+  type ExternalPersonSnapshot,
+  type ExternalRef,
+  type SourceObservation,
 } from '../../domain';
 import {
+  assertAuthorized,
+  AuditTrail,
   TenantContextService,
   TenantDatabase,
   UniqueConstraintError,
+  WriteAuthorizer,
+  type AuthorizedContext,
   type TenantContext,
 } from '../../tenancy';
+
+/** The worker's actor for scheduled reconciliations and page ingestion (M10A1). */
+const WORKER = systemActor('worker');
 import { toJobError } from '../errors';
 import { PageJobSchema } from '../jobs';
 import {
@@ -26,6 +34,7 @@ import {
 import { ContextIngestionService } from './context-ingestion.service';
 import { ContextJobs, ContextReaders } from './context-runtime';
 import { companyLinks, companyObservation, personObservation } from './observe';
+import { AuditFailures } from '../../tenancy';
 
 const PAGE_TX_TIMEOUT_MS = 90_000;
 export const CONTEXT_KINDS: readonly ContextKind[] = ['company', 'person'];
@@ -59,32 +68,41 @@ export class BulkSyncService {
     private readonly readers: ContextReaders,
     private readonly jobs: ContextJobs,
     private readonly metrics: MetricsService,
+    private readonly authorizer: WriteAuthorizer,
+    private readonly audit: AuditTrail,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
   /** Starts (or resumes) a backfill per kind; one active run per kind. */
+  @AuditFailures('context.backfill.start', 'context')
   async startBackfill(
-    ctx: TenantContext,
+    actx: AuthorizedContext<'data.sync.run'>,
     kinds: readonly ContextKind[],
     options: { pageSize?: number; maxRecords?: number; correlationId: string },
   ): Promise<StartedRun[]> {
+    assertAuthorized(actx, 'data.sync.run');
+    const ctx = actx.tenant;
     const reader = await this.readers.forTenant(ctx);
     const out: StartedRun[] = [];
     for (const kind of kinds) {
       const { checkpoint, resumed } = await this.db.transaction(ctx, async (tx) => {
         const running = await this.records.running(tx, reader.system, kind, 'backfill');
         if (running) return { checkpoint: running, resumed: true };
-        return {
-          checkpoint: await this.records.startCheckpoint(tx, {
-            system: reader.system,
-            kind,
-            mode: 'backfill',
-            correlationId: options.correlationId,
-            pageSize: options.pageSize ?? 100,
-            ...(options.maxRecords ? { maxRecords: options.maxRecords } : {}),
-          }),
-          resumed: false,
-        };
+        const started = await this.records.startCheckpoint(tx, {
+          system: reader.system,
+          kind,
+          mode: 'backfill',
+          correlationId: options.correlationId,
+          pageSize: options.pageSize ?? 100,
+          ...(options.maxRecords ? { maxRecords: options.maxRecords } : {}),
+        });
+        await this.audit.record(tx, actx, {
+          action: 'context.backfill.start',
+          targetKind: 'sync_run',
+          targetRef: started.id,
+          details: { kind, system: reader.system },
+        });
+        return { checkpoint: started, resumed: false };
       });
       await this.enqueuePage(ctx, checkpoint, resumed);
       out.push({ kind, checkpointId: checkpoint.id, resumed });
@@ -96,11 +114,14 @@ export class BulkSyncService {
    * Starts a reconciliation from the last watermark (source time) minus the
    * lookback. Needs a baseline: a completed reconciliation or backfill.
    */
+  @AuditFailures('context.reconcile.start', 'context')
   async startReconcile(
-    ctx: TenantContext,
+    actx: AuthorizedContext<'data.sync.run'>,
     kind: ContextKind,
     options: { since?: Date; pageSize?: number; correlationId: string },
   ): Promise<StartedRun> {
+    assertAuthorized(actx, 'data.sync.run');
+    const ctx = actx.tenant;
     const reader = await this.readers.forTenant(ctx);
     const lookback = this.config.context.reconcileLookbackMs;
     const result = await this.db.transaction(ctx, async (tx) => {
@@ -118,6 +139,12 @@ export class BulkSyncService {
         windowSince,
         // Carries the baseline forward even if this run finds nothing.
         highWatermark: baseline,
+      });
+      await this.audit.record(tx, actx, {
+        action: 'context.reconcile.start',
+        targetKind: 'sync_run',
+        targetRef: checkpoint.id,
+        details: { kind, system: reader.system },
       });
       return { checkpoint, resumed: false };
     });
@@ -142,23 +169,38 @@ export class BulkSyncService {
         return false;
       });
       if (due) {
-        await this.startReconcile(ctx, kind, { correlationId: crypto.randomUUID() }).catch(
-          (err: unknown) => {
-            if (!(err instanceof UniqueConstraintError)) throw err;
-          },
-        );
+        const correlationId = crypto.randomUUID();
+        const actx = await this.authorizer.authorize(ctx, WORKER, 'data.sync.run', {
+          action: 'context.reconcile.start',
+          correlationId,
+        });
+        await this.startReconcile(actx, kind, { correlationId }).catch((err: unknown) => {
+          if (!(err instanceof UniqueConstraintError)) throw err;
+        });
       }
     }
   }
 
   /** Re-opens a failed run at its stored cursor (operator command). */
-  async resume(ctx: TenantContext, checkpointId: string): Promise<StartedRun> {
+  @AuditFailures('context.backfill.start', 'context')
+  async resume(
+    actx: AuthorizedContext<'data.sync.run'>,
+    checkpointId: string,
+  ): Promise<StartedRun> {
+    assertAuthorized(actx, 'data.sync.run');
+    const ctx = actx.tenant;
     const checkpoint = await this.db.transaction(ctx, async (tx) => {
       const cp = await this.records.lockCheckpoint(tx, checkpointId);
       if (!cp) throw new Error('checkpoint not found');
       if (cp.status === 'running') return cp;
       if (cp.status !== 'failed') throw new Error(`checkpoint is ${cp.status}`);
       await this.records.reopenCheckpoint(tx, cp);
+      await this.audit.record(tx, actx, {
+        action: cp.mode === 'backfill' ? 'context.backfill.start' : 'context.reconcile.start',
+        targetKind: 'sync_run',
+        targetRef: checkpointId,
+        details: { resumed: true },
+      });
       return { ...cp, status: 'running' as const };
     });
     await this.enqueuePage(ctx, checkpoint, true);
@@ -186,6 +228,10 @@ export class BulkSyncService {
   }
 
   private async page(ctx: TenantContext, cp: CheckpointRow, pageNo: number): Promise<void> {
+    const actx = await this.authorizer.authorize(ctx, WORKER, 'canonical.source_sync', {
+      action: cp.mode === 'backfill' ? 'context.backfill.start' : 'context.reconcile.start',
+      correlationId: cp.correlationId,
+    });
     const reader = await this.readers.forTenant(ctx);
     const observedAt = new Date();
     const fetched =
@@ -229,7 +275,7 @@ export class BulkSyncService {
         const cause = cp.mode === 'backfill' ? 'backfill' : 'reconciliation';
         for (const obs of observations) {
           const r = await this.ingestion.ingest(
-            ctx,
+            actx,
             obs,
             { cause, correlationId: cp.correlationId, checkpointId: cp.id },
             { within: tx },
@@ -312,9 +358,15 @@ export class BulkSyncService {
     );
     if (cp.mode === 'backfill') {
       // Close the gap between the page reads and live webhooks.
-      await this.startReconcile(ctx, cp.kind, { correlationId: cp.correlationId }).catch(
-        (err: unknown) => this.logger.warn({ err }, 'Post-backfill reconciliation not started'),
-      );
+      await this.authorizer
+        .authorize(ctx, WORKER, 'data.sync.run', {
+          action: 'context.reconcile.start',
+          correlationId: cp.correlationId,
+        })
+        .then((sync) => this.startReconcile(sync, cp.kind, { correlationId: cp.correlationId }))
+        .catch((err: unknown) =>
+          this.logger.warn({ err }, 'Post-backfill reconciliation not started'),
+        );
     }
   }
 

@@ -9,6 +9,7 @@ import { tenantClient, type TenantContext } from '../../src/modules/tenancy';
 import { startInfrastructure, withAdmin, type TestInfrastructure } from '../support/containers';
 import { genericModel } from '../support/product-models';
 import { provisionTenant, startTenancy, type TenancyHarness } from '../support/tenancy';
+import { authz } from '../support/security';
 
 /**
  * M7 product catalogue (ADR 0016): immutable versions, atomic publish with the
@@ -39,12 +40,15 @@ describe('product catalogue: versions, projection, publication', () => {
   it('publishes atomically: version, projection and selection by effective time', async () => {
     const t = await provisionTenant(h, 'cat');
     await expect(h.catalogue.modelAt(t, new Date())).resolves.toBeUndefined();
-    const v1 = await h.catalogue.publish(t, genericModel(), {
-      actor: 'ops:test',
-      basedOnVersion: 0,
-      now: new Date('2026-01-01T00:00:00Z'),
-      effectiveFrom: new Date('2026-01-01T00:00:00Z'),
-    });
+    const v1 = await h.catalogue.publish(
+      await authz(t, 'config.product_model.publish'),
+      genericModel(),
+      {
+        basedOnVersion: 0,
+        now: new Date('2026-01-01T00:00:00Z'),
+        effectiveFrom: new Date('2026-01-01T00:00:00Z'),
+      },
+    );
     expect(v1.version).toBe(1);
     expect(v1.contentHash).toMatch(/^[0-9a-f]{64}$/);
     const rows = await projection(t);
@@ -63,8 +67,7 @@ describe('product catalogue: versions, projection, publication', () => {
       ),
     });
     const future = new Date(Date.now() + 86_400_000);
-    const v2 = await h.catalogue.publish(t, doc2, {
-      actor: 'ops:test',
+    const v2 = await h.catalogue.publish(await authz(t, 'config.product_model.publish'), doc2, {
       effectiveFrom: future,
       basedOnVersion: 1,
     });
@@ -91,18 +94,21 @@ describe('product catalogue: versions, projection, publication', () => {
 
   it('stored versions are immutable and catalogue rows are never deleted, even with raw SQL', async () => {
     const t = await provisionTenant(h, 'imm');
-    await h.catalogue.publish(t, genericModel(), { actor: 'ops:test', basedOnVersion: 0 });
+    await h.catalogue.publish(await authz(t, 'config.product_model.publish'), genericModel(), {
+      basedOnVersion: 0,
+    });
     const inT = <R>(work: (db: ReturnType<typeof tenantClient>) => Promise<R>) =>
       h.db.transaction(t, (tx) => work(tenantClient(tx)));
+    // M10A1: append-only for the app role by privilege (the M7 triggers stay behind it).
     await expect(
       inT((db) => db.$executeRaw`UPDATE tenant_product_models SET published_by = 'x'`),
-    ).rejects.toThrow(/UPDATE on tenant_product_models is not allowed/);
+    ).rejects.toThrow(/permission denied for table tenant_product_models/);
     await expect(inT((db) => db.$executeRaw`DELETE FROM tenant_product_models`)).rejects.toThrow(
-      /DELETE on tenant_product_models is not allowed/,
+      /permission denied for table tenant_product_models/,
     );
     await expect(
       inT((db) => db.$executeRaw`DELETE FROM tenant_products WHERE key = 'core'`),
-    ).rejects.toThrow(/DELETE on tenant_products is not allowed/);
+    ).rejects.toThrow(/permission denied for table tenant_products/);
     // A duplicate version number is refused by the key, not just by the service.
     await expect(
       inT(
@@ -115,7 +121,9 @@ describe('product catalogue: versions, projection, publication', () => {
 
   it('a failed publish writes nothing; K1–K3 are enforced against the stored latest version', async () => {
     const t = await provisionTenant(h, 'kkk');
-    await h.catalogue.publish(t, genericModel(), { actor: 'ops:test', basedOnVersion: 0 });
+    await h.catalogue.publish(await authz(t, 'config.product_model.publish'), genericModel(), {
+      basedOnVersion: 0,
+    });
     const before = await projection(t);
     const attempts: [unknown, string][] = [
       [
@@ -161,7 +169,7 @@ describe('product catalogue: versions, projection, publication', () => {
     ];
     for (const [doc, code] of attempts) {
       const err = await h.catalogue
-        .publish(t, doc, { actor: 'ops:test', basedOnVersion: 1 })
+        .publish(await authz(t, 'config.product_model.publish'), doc, { basedOnVersion: 1 })
         .catch((e: unknown) => e);
       expect(err, code).toBeInstanceOf(ProductModelInvalidError);
       expect(
@@ -182,17 +190,19 @@ describe('product catalogue: versions, projection, publication', () => {
       [t.tenantId],
     );
     const err = await h.catalogue
-      .publish(t, genericModel(), { actor: 'ops:test', basedOnVersion: 0 })
+      .publish(await authz(t, 'config.product_model.publish'), genericModel(), {
+        basedOnVersion: 0,
+      })
       .catch((e: unknown) => e);
     expect((err as ProductModelInvalidError).errors.map((e) => e.code)).toContain(
       'product_key_removed',
     );
     const ok = await h.catalogue.publish(
-      t,
+      await authz(t, 'config.product_model.publish'),
       genericModel({
         products: [...genericModel().products, { key: 'old', name: 'Old', status: 'retired' }],
       }),
-      { actor: 'ops:test', basedOnVersion: 0 },
+      { basedOnVersion: 0 },
     );
     expect(ok.version).toBe(1);
   });
@@ -201,23 +211,37 @@ describe('product catalogue: versions, projection, publication', () => {
     const t = await provisionTenant(h, 'conc');
     // No base version → refused (service layer, not only the CLI).
     await expect(
-      h.catalogue.publish(t, genericModel(), { actor: 'ops:test' } as never),
+      h.catalogue.publish(
+        await authz(t, 'config.product_model.publish'),
+        genericModel(),
+        {} as never,
+      ),
     ).rejects.toBeInstanceOf(BaseVersionRequiredError);
     await expect(
-      h.catalogue.publish(t, genericModel(), { actor: 'ops:test', basedOnVersion: -1 }),
+      h.catalogue.publish(await authz(t, 'config.product_model.publish'), genericModel(), {
+        basedOnVersion: -1,
+      }),
     ).rejects.toBeInstanceOf(BaseVersionRequiredError);
-    await h.catalogue.publish(t, genericModel(), { actor: 'ops:test', basedOnVersion: 0 });
+    await h.catalogue.publish(await authz(t, 'config.product_model.publish'), genericModel(), {
+      basedOnVersion: 0,
+    });
 
     // Admin A and B both loaded v1; B publishes v2; A's publish from v1 is refused.
-    await h.catalogue.publish(t, genericModel(), { actor: 'ops:b', basedOnVersion: 1 });
+    await h.catalogue.publish(await authz(t, 'config.product_model.publish'), genericModel(), {
+      basedOnVersion: 1,
+    });
     await expect(
-      h.catalogue.publish(t, genericModel(), { actor: 'ops:a', basedOnVersion: 1 }),
+      h.catalogue.publish(await authz(t, 'config.product_model.publish'), genericModel(), {
+        basedOnVersion: 1,
+      }),
     ).rejects.toBeInstanceOf(ConcurrentPublishError);
 
     // Truly concurrent publishes from the same base: one version, the rest conflict.
     const racing = await Promise.allSettled(
-      Array.from({ length: 5 }, () =>
-        h.catalogue.publish(t, genericModel(), { actor: 'ops:test', basedOnVersion: 2 }),
+      Array.from({ length: 5 }, async () =>
+        h.catalogue.publish(await authz(t, 'config.product_model.publish'), genericModel(), {
+          basedOnVersion: 2,
+        }),
       ),
     );
     expect(racing.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
@@ -229,7 +253,9 @@ describe('product catalogue: versions, projection, publication', () => {
 
   it('a corrupt stored model fails loudly instead of being evaluated', async () => {
     const t = await provisionTenant(h, 'corrupt');
-    await h.catalogue.publish(t, genericModel(), { actor: 'ops:test', basedOnVersion: 0 });
+    await h.catalogue.publish(await authz(t, 'config.product_model.publish'), genericModel(), {
+      basedOnVersion: 0,
+    });
     // Simulate corruption as the owner, bypassing the immutability trigger.
     await withAdmin(infra.adminUrl, async (db) => {
       await db.query('BEGIN');
@@ -249,15 +275,17 @@ describe('product catalogue: versions, projection, publication', () => {
   it("tenants never see each other's catalogue versions", async () => {
     const a = await provisionTenant(h, 'cata');
     const b = await provisionTenant(h, 'catb');
-    await h.catalogue.publish(b, genericModel(), { actor: 'ops:test', basedOnVersion: 0 });
+    await h.catalogue.publish(await authz(b, 'config.product_model.publish'), genericModel(), {
+      basedOnVersion: 0,
+    });
     await expect(h.catalogue.modelAt(a, new Date())).resolves.toBeUndefined();
     await expect(h.catalogue.versions(a)).resolves.toEqual([]);
     // Publishing in A does not see B's version as "previous" (no cross-tenant K1).
     await expect(
       h.catalogue.publish(
-        a,
+        await authz(a, 'config.product_model.publish'),
         { products: [{ key: 'x', name: 'X' }] },
-        { actor: 'ops:test', basedOnVersion: 0 },
+        { basedOnVersion: 0 },
       ),
     ).resolves.toMatchObject({ version: 1 });
   });

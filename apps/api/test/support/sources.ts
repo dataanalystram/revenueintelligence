@@ -1,3 +1,4 @@
+import { sourceSyncActor } from '../../src/modules/domain';
 import { randomUUID } from 'node:crypto';
 import type { MappingDocument } from '../../src/modules/domain';
 import {
@@ -17,6 +18,7 @@ import { testMapping } from '../fixtures/source-mapping';
 import type { ContextHarness } from './context';
 import { FAKE_SUGAR_CREDENTIALS, type FakeSugar } from './fake-sugar';
 import { provisionTenant } from './tenancy';
+import { authz } from './security';
 
 /** Every product id the discovery and companion lines reference (not the orphan, not FIX-PROD-900). */
 export const MODELLED_SUGAR_PRODUCTS = [
@@ -111,7 +113,7 @@ export async function runProfile(
 ) {
   const s = sourcesServices(c);
   const requested = await s.profiling.request(
-    f.ctx,
+    await authz(f.ctx, 'data.profile.run'),
     f.connectionId,
     {
       objects: objects.map((object) => ({ object })),
@@ -119,9 +121,9 @@ export async function runProfile(
       ...(options.maxRows !== undefined ? { maxRows: options.maxRows } : {}),
       includeExcluded: options.includeExcluded ?? [],
     },
-    { actor: 'test', execute: true, enqueue: false },
+    { execute: true, enqueue: false },
   );
-  return s.profiling.execute(f.ctx, requested.runId!);
+  return s.profiling.execute(await authz(f.ctx, 'data.profile.run'), requested.runId!);
 }
 
 /**
@@ -147,9 +149,8 @@ export async function publishWithAcks(
   const s = sourcesServices(c);
   const report = await s.mappings.validate(f.ctx, f.connectionId, mapping);
   const acknowledgements = acknowledgementsFor(report);
-  return s.mappings.publish(f.ctx, f.connectionId, mapping, {
+  return s.mappings.publish(await authz(f.ctx, 'config.mapping.publish'), f.connectionId, mapping, {
     expectedBaseVersion,
-    actor: 'test',
     acknowledgements,
   });
 }
@@ -174,14 +175,17 @@ export async function sugarTenant(
 ): Promise<SourcesFixture> {
   const s = sourcesServices(c);
   const ctx = await provisionTenant(c.h, options.prefix ?? 'src');
-  await c.h.catalogue.publish(ctx, sugarProductModel(options.productIds), {
-    actor: 'test',
-    basedOnVersion: 0,
-  });
-  await c.h.credentials.register(ctx, 'sugar', 'sugar_api');
+  await c.h.catalogue.publish(
+    await authz(ctx, 'config.product_model.publish'),
+    sugarProductModel(options.productIds),
+    {
+      basedOnVersion: 0,
+    },
+  );
+  await c.h.credentials.register(await authz(ctx, 'config.integration'), 'sugar', 'sugar_api');
   process.env[EnvSecretProvider.toEnvName(`tenant.${ctx.tenantSlug}.sugar.sugar_api`)] =
     JSON.stringify(FAKE_SUGAR_CREDENTIALS);
-  const connection = await s.connections.configure(ctx, {
+  const connection = await s.connections.configure(await authz(ctx, 'config.source.connection'), {
     kind: 'sugar',
     label: 'Sugar (fake)',
     config: {
@@ -198,11 +202,18 @@ export async function sugarTenant(
     },
     credentialName: 'sugar_api',
   });
-  await s.connections.setStatus(ctx, connection.id, 'enabled');
+  await s.connections.setStatus(
+    await authz(ctx, 'config.source.connection'),
+    connection.id,
+    'enabled',
+  );
   const importConnectionId = (await s.connections.list(ctx)).find((x) => x.kind === 'import')!.id;
   const fixture = { ctx, connectionId: connection.id, importConnectionId };
   if (options.stopAfter === 'connection') return fixture;
-  const captured = await s.snapshots.capture(ctx, connection.id, 'test');
+  const captured = await s.snapshots.capture(
+    await authz(ctx, 'config.source.schema'),
+    connection.id,
+  );
   if (options.stopAfter === 'snapshot') return fixture;
   // M9A: a completed, fresh profile of the mapped objects covers the publication.
   const base = options.mapping ?? sugarTestMapping();
@@ -219,7 +230,7 @@ export async function sugarTenant(
   if (options.stopAfter === 'mapping') return fixture;
   const current = await s.authority.show(ctx);
   await s.authority.publish(
-    ctx,
+    await authz(ctx, 'config.authority.publish'),
     {
       facts: {
         account_profile: null,
@@ -229,7 +240,7 @@ export async function sugarTenant(
         subscription_terms: connection.id,
       },
     },
-    { expectedBaseVersion: current!.version, actor: 'test' },
+    { expectedBaseVersion: current!.version },
   );
   await publishWithAcks(c, fixture, mapping, 1);
   return fixture;
@@ -260,9 +271,13 @@ export async function runSync(
   mode: 'full' | 'incremental' = 'full',
 ) {
   const s = sourcesServices(c);
-  const started = await s.sync.start(f.ctx, f.connectionId, mode, {
+  const started = await s.sync.start(await authz(f.ctx, 'data.sync.run'), f.connectionId, mode, {
     enqueue: false,
     correlationId: randomUUID(),
   });
-  return s.sync.execute(f.ctx, started.runId);
+  // As the worker does (SourceSyncProcessor): the run's own source-sync actor.
+  return s.sync.execute(
+    await authz(f.ctx, 'canonical.source_sync', sourceSyncActor(`run:${started.runId}`)),
+    started.runId,
+  );
 }

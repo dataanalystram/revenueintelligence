@@ -5,7 +5,14 @@ import { promisify } from 'node:util';
 import type { StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CONNECTOR_KIND_CATALOGUE } from '../../src/modules/domain/connector-kinds';
+import { AUDIT_ACTIONS, CAPABILITIES } from '../../src/modules/domain/security';
 import { authorityContentHash } from '../../src/modules/domain/source-authority';
+import {
+  CLASSIFICATION_MANIFEST,
+  PRIVILEGE_MANIFEST,
+  SECURITY_DEFINER_FUNCTIONS,
+  TABLE_PRIVILEGES,
+} from '../../src/modules/tenancy/security';
 import { migrate, startPostgres, withAdmin } from '../support/containers';
 
 const run = promisify(execFile);
@@ -81,6 +88,10 @@ const M9B_MIGRATIONS = [
 const M9B_DOWN = resolve(`prisma/rollback/${M9B_MIGRATIONS[0]}.down.sql`);
 const M9B_RETIRE_DOWN = resolve(`prisma/rollback/${M9B_MIGRATIONS[1]}.down.sql`);
 
+/** M10A1 migrations in apply order (security foundation). */
+const M10A1_MIGRATIONS = ['20261201120000_m10a1_security_foundation'];
+const M10A1_DOWN = resolve(`prisma/rollback/${M10A1_MIGRATIONS[0]}.down.sql`);
+
 /** Everything a migration can change, as sorted text (for exact schema comparison). */
 async function schemaSnapshot(url: string): Promise<Record<string, string[]>> {
   const queries: Record<string, string> = {
@@ -107,7 +118,7 @@ async function schemaSnapshot(url: string): Promise<Record<string, string[]>> {
 }
 
 /** Down-scripts back to M7 (M9A, then M8), in the order they must run (newest first). */
-const POST_M7_DOWNS = [...M8_MIGRATIONS, ...M9A_MIGRATIONS, ...M9B_MIGRATIONS]
+const POST_M7_DOWNS = [...M8_MIGRATIONS, ...M9A_MIGRATIONS, ...M9B_MIGRATIONS, ...M10A1_MIGRATIONS]
   .reverse()
   .map((name) => resolve(`prisma/rollback/${name}.down.sql`));
 
@@ -158,6 +169,7 @@ describe('database migrations and schema guard', () => {
         ...M8_MIGRATIONS,
         ...M9A_MIGRATIONS,
         ...M9B_MIGRATIONS,
+        ...M10A1_MIGRATIONS,
       ]);
       expect(rows.every((r) => r.finished_at !== null)).toBe(true);
     });
@@ -307,24 +319,54 @@ describe('database migrations and schema guard', () => {
       expect(rows.length).toBeGreaterThan(10);
     });
 
-    it('the app role can use every table except the migration history and read-only reference data', async () => {
+    it('M10A1: the app role holds exactly the manifest privileges on every table (no more, no less)', async () => {
       const { rows } = await withAdmin(cleanUrl, (db) =>
-        db.query<{ table: string; ok: boolean; read: boolean; write: boolean }>(`
-          SELECT c.relname AS table,
-                 has_table_privilege('lip_app', c.oid, 'SELECT,INSERT,UPDATE,DELETE') AS ok,
-                 has_table_privilege('lip_app', c.oid, 'SELECT') AS read,
-                 has_table_privilege('lip_app', c.oid, 'INSERT,UPDATE,DELETE,TRUNCATE') AS write
-          FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-          WHERE n.nspname = 'public' AND c.relkind = 'r'`),
+        db.query<{ table: string; privilege: string; granted: boolean }>(
+          `SELECT c.relname AS table, p.privilege,
+                  has_table_privilege('lip_app', c.oid, p.privilege) AS granted
+             FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+            CROSS JOIN unnest($1::text[]) AS p(privilege)
+            WHERE n.nspname = 'public' AND c.relkind = 'r'
+            ORDER BY 1, 2`,
+          [[...TABLE_PRIVILEGES]],
+        ),
       );
-      const tenantOwned = rows.filter(
-        (r) => r.table !== '_prisma_migrations' && !READ_ONLY_TABLES.includes(r.table),
-      );
-      expect(tenantOwned.every((r) => r.ok)).toBe(true);
-      expect(rows.find((r) => r.table === '_prisma_migrations')?.ok).toBe(false);
-      for (const table of READ_ONLY_TABLES) {
-        expect(rows.find((r) => r.table === table)).toMatchObject({ read: true, write: false });
+      const actual: Record<string, string[]> = {};
+      for (const r of rows) {
+        actual[r.table] ??= [];
+        if (r.granted) actual[r.table]!.push(r.privilege);
       }
+      const expected = Object.fromEntries(
+        Object.entries(PRIVILEGE_MANIFEST).map(([t, p]) => [t, [...p].sort()]),
+      );
+      expect(Object.fromEntries(Object.entries(actual).map(([t, p]) => [t, p.sort()]))).toEqual(
+        expected,
+      );
+      // The read-only reference tables (ADR 0019) are covered by the manifest.
+      for (const table of READ_ONLY_TABLES) expect(PRIVILEGE_MANIFEST[table]).toEqual(['SELECT']);
+    });
+
+    it('M10A1: the classification manifest covers exactly every column of every table', async () => {
+      const { rows } = await withAdmin(cleanUrl, (db) =>
+        db.query<{ table: string; column: string }>(
+          `SELECT table_name AS table, column_name AS column FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name <> '_prisma_migrations'
+            ORDER BY 1, 2`,
+        ),
+      );
+      const actual = rows.map((r) => `${r.table}.${r.column}`).sort();
+      const manifest = Object.entries(CLASSIFICATION_MANIFEST)
+        .flatMap(([t, cols]) => Object.keys(cols).map((c) => `${t}.${c}`))
+        .sort();
+      expect(
+        actual.filter((c) => !manifest.includes(c)),
+        'columns without a classification',
+      ).toEqual([]);
+      expect(
+        manifest.filter((c) => !actual.includes(c)),
+        'classifications naming no column',
+      ).toEqual([]);
+      expect(actual.length).toBeGreaterThan(400);
     });
 
     it('the connector-kind catalogue in the database equals the code catalogue', async () => {
@@ -391,6 +433,31 @@ describe('database migrations and schema guard', () => {
         ),
       );
       expect(tables.rows[0]!.n).toBe(0);
+    });
+
+    it('M10A1: the audit capability and action CHECKs equal the code catalogues (closed sets)', async () => {
+      const { rows } = await withAdmin(cleanUrl, (db) =>
+        db.query<{ name: string; def: string }>(
+          `SELECT conname AS name, pg_get_constraintdef(oid) AS def FROM pg_constraint
+            WHERE conname IN ('tenant_audit_events_capability_valid', 'tenant_audit_events_action_valid')`,
+        ),
+      );
+      const values = (name: string) =>
+        [...rows.find((r) => r.name === name)!.def.matchAll(/'([a-z_.]+)'::text/g)]
+          .map((m) => m[1]!)
+          .sort();
+      expect(values('tenant_audit_events_capability_valid')).toEqual([...CAPABILITIES].sort());
+      expect(values('tenant_audit_events_action_valid')).toEqual([...AUDIT_ACTIONS].sort());
+    });
+
+    it('M10A1: SECURITY DEFINER functions are exactly the allow-list', async () => {
+      const { rows } = await withAdmin(cleanUrl, (db) =>
+        db.query<{ name: string }>(
+          `SELECT p.proname AS name FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname = 'public' AND p.prosecdef ORDER BY 1`,
+        ),
+      );
+      expect(rows.map((r) => r.name)).toEqual([...SECURITY_DEFINER_FUNCTIONS]);
     });
 
     it('owns exactly one function, SECURITY DEFINER with a fixed search_path, executable by the app role only', async () => {
@@ -1157,7 +1224,8 @@ describe('database migrations and schema guard', () => {
         `m8_conn_down_${Math.random().toString(36).slice(2, 8)}`,
       );
       await migrate(target);
-      // Newest first: the M9B down-scripts run before any older one (M9B adds a connector kind).
+      // Newest first: M10A1, then the M9B down-scripts, before any older one.
+      await withAdmin(target, (db) => db.query(readFileSync(M10A1_DOWN, 'utf8')));
       await withAdmin(target, (db) => db.query(readFileSync(M9B_RETIRE_DOWN, 'utf8')));
       await withAdmin(target, (db) => db.query(readFileSync(M9B_DOWN, 'utf8')));
       await withAdmin(target, async (db) => {
@@ -1463,7 +1531,8 @@ describe('database migrations and schema guard', () => {
         await migrate(m8Url, ['--config', m8MigrationsConfig(dir)]);
         await migrate(url);
         const latest = await schemaSnapshot(url);
-        // Newest first: M9B (retirement, then the connector kind), then M9A.
+        // Newest first: M10A1, M9B (retirement, then the connector kind), then M9A.
+        await withAdmin(url, (db) => db.query(readFileSync(M10A1_DOWN, 'utf8')));
         await withAdmin(url, (db) => db.query(readFileSync(M9B_RETIRE_DOWN, 'utf8')));
         await withAdmin(url, (db) => db.query(readFileSync(M9B_DOWN, 'utf8')));
         await withAdmin(url, (db) => db.query(readFileSync(M9A_DOWN, 'utf8')));
@@ -1600,7 +1669,8 @@ describe('database migrations and schema guard', () => {
           }),
         ).rejects.toThrow(/tenant_credential_refs_system_valid/);
         await withAdmin(m9aUrl, (db) => db.query(`DELETE FROM tenants WHERE id = $1`, [tenant]));
-        // Newest first: the retirement down-script (nothing retired here), then the kind.
+        // Newest first: M10A1, the retirement down-script (nothing retired here), then the kind.
+        await withAdmin(url, (db) => db.query(readFileSync(M10A1_DOWN, 'utf8')));
         await withAdmin(url, (db) => db.query(readFileSync(M9B_RETIRE_DOWN, 'utf8')));
         await expect(
           withAdmin(url, (db) => db.query(readFileSync(M9B_DOWN, 'utf8'))),
@@ -1706,6 +1776,8 @@ describe('database migrations and schema guard', () => {
         await migrate(before, ['--config', migrationsBefore(dir, '20261116')]);
         await migrate(url);
         const latest = await schemaSnapshot(url);
+        // Newest first: M10A1 is rolled back before the M9B retirement down-script.
+        await withAdmin(url, (db) => db.query(readFileSync(M10A1_DOWN, 'utf8')));
         await seed(url);
         await withAdmin(url, (db) =>
           db.query(
@@ -1736,6 +1808,97 @@ describe('database migrations and schema guard', () => {
         expect(await schemaSnapshot(url)).toEqual(await schemaSnapshot(before));
         const output = await migrate(url);
         expect(output).toMatch(new RegExp(M9B_MIGRATIONS[1]!));
+        expect(await schemaSnapshot(url)).toEqual(latest);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('M10A1 security foundation migration', () => {
+    it('applies on M9B data; the down-script refuses audit events, actor records and v2 ciphertexts, then restores exactly the M9B schema and re-applies', async () => {
+      const before = await createDatabase(pg, 'm10a1_before_db');
+      const url = await createDatabase(pg, 'm10a1_down_db');
+      const dir = resolve('test/.tmp/m10a1-before');
+      try {
+        await migrate(before, ['--config', migrationsBefore(dir, '20261201')]);
+        await migrate(url);
+        const latest = await schemaSnapshot(url);
+        const tenant = '00000000-0000-4000-8000-0000000a1a10';
+        const hex = (c: string) => c.repeat(64);
+        await withAdmin(url, async (db) => {
+          await db.query(
+            `INSERT INTO tenants (id, slug, name, updated_at) VALUES ($1, 'm10a1', 'M10A1', now())`,
+            [tenant],
+          );
+          await db.query(`SELECT set_config('app.current_tenant', $1, false)`, [tenant]);
+          await db.query(
+            `INSERT INTO tenant_audit_events (tenant_id, id, seq, occurred_at, actor_kind, actor_id, actor_assurance,
+               capability, action, outcome, correlation_id, policy_version, details, prev_hash, hash)
+             VALUES ($1, gen_random_uuid(), 1, now(), 'operator', 'ops', 'asserted', 'config.policy', 'policy.save',
+               'allowed', gen_random_uuid(), 1, '{}', $2, $3)`,
+            [tenant, hex('0'), hex('a')],
+          );
+          // The value rules hold for the owner too.
+          await expect(
+            db.query(
+              `INSERT INTO tenant_audit_events (tenant_id, id, seq, occurred_at, actor_kind, actor_id, actor_assurance,
+                 capability, action, outcome, correlation_id, policy_version, details, prev_hash, hash)
+               VALUES ($1, gen_random_uuid(), 2, now(), 'operator', 'ops', 'authenticated', 'config.policy', 'policy.save',
+                 'allowed', gen_random_uuid(), 1, '{}', $2, $3)`,
+              [tenant, hex('a'), hex('b')],
+            ),
+          ).rejects.toThrow(/tenant_audit_events_operator_asserted/);
+          await expect(
+            db.query(
+              `INSERT INTO tenant_audit_events (tenant_id, id, seq, occurred_at, actor_kind, actor_id, actor_assurance,
+                 capability, action, outcome, correlation_id, policy_version, details, prev_hash, hash)
+               VALUES ($1, gen_random_uuid(), 2, now(), 'operator', 'ops', 'asserted', 'config.policy', 'policy.save',
+                 'allowed', gen_random_uuid(), 1, $4, $2, $3)`,
+              [tenant, hex('a'), hex('b'), JSON.stringify({ api_key: 'x' })],
+            ),
+          ).rejects.toThrow(/tenant_audit_events_details_no_secrets/);
+          await expect(
+            db.query(
+              `INSERT INTO tenant_audit_events (tenant_id, id, seq, occurred_at, actor_kind, actor_id, actor_assurance,
+                 capability, action, outcome, correlation_id, policy_version, details, prev_hash, hash)
+               VALUES ($1, gen_random_uuid(), 2, now(), 'operator', 'ops', 'asserted', 'config.policy', 'policy.save',
+                 'allowed', gen_random_uuid(), 1, $4, $2, $3)`,
+              [tenant, hex('a'), hex('b'), JSON.stringify({ n: 'x'.repeat(4100) })],
+            ),
+          ).rejects.toThrow(/tenant_audit_events_details_object/);
+          // Owner UPDATE meets the append-only trigger.
+          await expect(
+            db.query(`UPDATE tenant_audit_events SET action = 'policy.save' WHERE tenant_id = $1`, [
+              tenant,
+            ]),
+          ).rejects.toThrow(/audit events are append-only/);
+        });
+        await expect(
+          withAdmin(url, (db) => db.query(readFileSync(M10A1_DOWN, 'utf8'))),
+        ).rejects.toThrow(/refusing rollback: 1 audit events exist/);
+        expect(await schemaSnapshot(url)).toEqual(latest);
+        await withAdmin(url, async (db) => {
+          await db.query('BEGIN');
+          await db.query(`SELECT set_config('lip.audit_purge', 'on', true)`);
+          await db.query(`DELETE FROM tenant_audit_events WHERE tenant_id = $1`, [tenant]);
+          await db.query('COMMIT');
+          await db.query(
+            `INSERT INTO tenant_oauth_tokens (tenant_id, system, account_id, refresh_token_enc, scopes, updated_at)
+             VALUES ($1, 'hubspot', '1', $2, '{}', now())`,
+            [tenant, `v2:k1:${'A'.repeat(40)}`],
+          );
+        });
+        await expect(
+          withAdmin(url, (db) => db.query(readFileSync(M10A1_DOWN, 'utf8'))),
+        ).rejects.toThrow(/refusing rollback: 1 OAuth grants hold v2 ciphertexts/);
+        await withAdmin(url, (db) =>
+          db.query(`DELETE FROM tenant_oauth_tokens WHERE tenant_id = $1`, [tenant]),
+        );
+        await withAdmin(url, (db) => db.query(readFileSync(M10A1_DOWN, 'utf8')));
+        expect(await schemaSnapshot(url)).toEqual(await schemaSnapshot(before));
+        const output = await migrate(url);
+        expect(output).toMatch(new RegExp(M10A1_MIGRATIONS[0]!));
         expect(await schemaSnapshot(url)).toEqual(latest);
       } finally {
         rmSync(dir, { recursive: true, force: true });

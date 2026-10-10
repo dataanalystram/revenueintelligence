@@ -17,6 +17,7 @@ import { TenancyModule, TenantContextService, type TenantContext } from '../modu
 import { loadConfig } from '../platform/config';
 import { PlatformModule } from '../platform/platform.module';
 import { fail } from './hubspot-context';
+import { authorizeOperator } from './operator';
 
 /**
  * Product catalogue, subscriptions and eligibility (M7, ADRs 0016–0018).
@@ -26,7 +27,7 @@ import { fail } from './hubspot-context';
  *
  *   pnpm --filter @lip/api product:model       validate --tenant <slug> --file <model.json> [--effective-from ISO]
  *   pnpm --filter @lip/api product:model       publish  --tenant <slug> --file <model.json> [--effective-from ISO]
- *                                              --based-on <version> [--actor <id>] [--execute]
+ *                                              --based-on <version> --actor <id> --execute (or LIP_OPERATOR_ID)
  *   pnpm --filter @lip/api product:model       show     --tenant <slug> [--version N]
  *   pnpm --filter @lip/api product:model       diff     --tenant <slug> --from N --to M
  *   pnpm --filter @lip/api subscriptions:import         --tenant <slug> --file <lines.csv> --source <name>
@@ -155,10 +156,15 @@ async function main(): Promise<void> {
                 '--based-on <version> is required to publish (0 for the first version)',
               );
             }
+            const auth = await authorizeOperator(app, ctx, 'config.product_model.publish', {
+              actorFlag: values.actor,
+              action: 'product_model.publish',
+              targetKind: 'product_model',
+              correlationId,
+            });
             try {
               return {
-                published: await catalogue.publish(ctx, document, {
-                  actor: values.actor ?? 'cli',
+                published: await catalogue.publish(auth, document, {
                   ...(effectiveFrom ? { effectiveFrom } : {}),
                   basedOnVersion: basedOn,
                 }),
@@ -192,12 +198,26 @@ async function main(): Promise<void> {
       case 'import': {
         if (values.cancel) {
           if (!execute) return { dryRun: true, wouldCancel: values.cancel };
-          return imports.cancel(ctx, values.cancel);
+          const auth = await authorizeOperator(app, ctx, 'canonical.import', {
+            actorFlag: values.actor,
+            action: 'subscription_import.cancel',
+            targetKind: 'subscription_import',
+            correlationId,
+          });
+          return imports.cancel(auth, values.cancel);
         }
         if (!values.source) throw new Error('--source <name> is required');
         if (values.mode !== 'full' && values.mode !== 'incremental')
           throw new Error('--mode full|incremental is required');
-        const report = await imports.import(ctx, readFile(values.file, CSV_LIMITS.maxBytes), {
+        const target = execute
+          ? await authorizeOperator(app, ctx, 'canonical.import', {
+              actorFlag: values.actor,
+              action: 'subscription_import.run',
+              targetKind: 'subscription_import',
+              correlationId,
+            })
+          : ctx;
+        const report = await imports.import(target, readFile(values.file, CSV_LIMITS.maxBytes), {
           source: values.source,
           mode: values.mode,
           execute,
@@ -216,7 +236,15 @@ async function main(): Promise<void> {
           throw new Error('--purpose <code> is required with --record');
         const record =
           values.record && execute ? { purpose: values.purpose!, correlationId } : undefined;
-        const r = await eligibility.evaluate(ctx, await company(ctx), values.product, {
+        const target = record
+          ? await authorizeOperator(app, ctx, 'data.eligibility.record', {
+              actorFlag: values.actor,
+              action: 'eligibility.record',
+              targetKind: 'eligibility_snapshot',
+              correlationId,
+            })
+          : ctx;
+        const r = await eligibility.evaluate(target, await company(ctx), values.product, {
           ...(asOf ? { asOf } : {}),
           ...(record ? { record } : {}),
         });

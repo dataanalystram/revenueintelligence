@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import type { Prisma } from '../../../generated/prisma/client';
 import { PrismaService } from '../../../platform/database';
 import type { TenantId } from '../../domain';
 import type { Tenant, TenantSlug, TenantStatus } from '../tenant';
@@ -32,10 +33,17 @@ export class PrismaTenantRegistryRepository {
     return rows.map(toTenant);
   }
 
-  async setStatus(id: TenantId, status: TenantStatus): Promise<Tenant | undefined> {
+  /** Inside `TenantDatabase.platformChange` (no tenant bound), so the change is audited atomically. */
+  async setStatusWithin(
+    root: Prisma.TransactionClient,
+    id: TenantId,
+    status: TenantStatus,
+  ): Promise<Tenant | undefined> {
     try {
-      const result = await this.prisma.tenant.updateMany({ where: { id }, data: { status } });
-      return result.count === 0 ? undefined : this.findById(id);
+      const result = await root.tenant.updateMany({ where: { id }, data: { status } });
+      if (result.count === 0) return undefined;
+      const row = await root.tenant.findUnique({ where: { id } });
+      return row ? toTenant(row) : undefined;
     } catch (error) {
       translateDatabaseError(error, 'tenant');
     }

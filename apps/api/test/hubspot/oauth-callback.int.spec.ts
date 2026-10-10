@@ -9,6 +9,7 @@ import { OAuthStateService, type TenantContext } from '../../src/modules/tenancy
 import { startInfrastructure, withAdmin, type TestInfrastructure } from '../support/containers';
 import { ALL_READ_SCOPES, FakeHubSpot, sampleData } from '../support/fake-hubspot';
 import { provisionTenant, startTenancy, type TenancyHarness } from '../support/tenancy';
+import { authz, platformAuthz } from '../support/security';
 
 /** GET /oauth/hubspot/callback through the real API process (HTTP, filters, logging). */
 describe('HubSpot OAuth callback endpoint (API process)', () => {
@@ -31,7 +32,7 @@ describe('HubSpot OAuth callback endpoint (API process)', () => {
 
   async function oauthTenant(prefix: string, portalId = '3003'): Promise<TenantContext> {
     const t = await provisionTenant(h, prefix);
-    await h.config.configureIntegration(t, 'hubspot', {
+    await h.config.configureIntegration(await authz(t, 'config.integration'), 'hubspot', {
       access: 'read_only',
       settings: { portalId, auth: 'oauth' },
     });
@@ -40,7 +41,9 @@ describe('HubSpot OAuth callback endpoint (API process)', () => {
 
   /** The callback query HubSpot would send after consent, for a real install link. */
   async function consent(t: TenantContext): Promise<string> {
-    const { url } = await h.app.get(HubSpotOAuthService).installUrl(t);
+    const { url } = await h.app
+      .get(HubSpotOAuthService)
+      .installUrl(await authz(t, 'config.oauth.install'));
     const res = await fetch(url, { redirect: 'manual' });
     return new URL(res.headers.get('location')!).search;
   }
@@ -153,7 +156,7 @@ describe('HubSpot OAuth callback endpoint (API process)', () => {
   it('a callback for a suspended tenant → 409 tenant_not_ready (not 500), nothing stored', async () => {
     const t = await oauthTenant('cbsusp');
     const query = await consent(t);
-    await h.registry.suspend(t.tenantId);
+    await h.registry.suspend(platformAuthz('config.tenant.status'), t.tenantId);
     const res = await request(http).get(`/oauth/hubspot/callback${query}`).expect(409);
     expect(res.body).toEqual({ status: 'error', reason: 'tenant_not_ready' });
     expect(await storedGrants(t)).toBe(0);

@@ -111,12 +111,13 @@ check "replaying the same callback → 400 (single-use state)" oa_replay
 
 oa_encrypted() {
   local row
-  row="$(oa_owner_sql "SELECT account_id, left(refresh_token_enc, 3), left(access_token_enc, 3) FROM tenant_oauth_tokens t JOIN tenants x ON x.id = t.tenant_id WHERE x.slug = 'rtoauth'")" || return 1
+  row="$(oa_owner_sql "SELECT account_id, left(refresh_token_enc, 10), left(access_token_enc, 10) FROM tenant_oauth_tokens t JOIN tenants x ON x.id = t.tenant_id WHERE x.slug = 'rtoauth'")" || return 1
   echo "$row"
-  [[ "$row" == '888|v1:|v1:' ]] &&
+  # M10A1: v2 with the key id (`legacy`: only PLATFORM_TOKEN_ENCRYPTION_KEY is configured here).
+  [[ "$row" == '888|v2:legacy:|v2:legacy:' ]] &&
     ! oa_owner_sql "SELECT refresh_token_enc || access_token_enc FROM tenant_oauth_tokens" | grep -qE 'refresh-[0-9a-f]{32}|access-[0-9a-f]{32}'
 }
-check "grant stored encrypted (v1 ciphertext), no token in the row" oa_encrypted
+check "grant stored encrypted (v2 ciphertext, key id legacy), no token in the row" oa_encrypted
 
 oa_rls() {
   [ "$(compose exec -T -e PGPASSWORD=lip_api postgres psql -h 127.0.0.1 -U lip_api -d lip -Atc 'SELECT count(*) FROM tenant_oauth_tokens')" = 0 ]

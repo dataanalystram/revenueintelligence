@@ -34,6 +34,10 @@ import { TenantConfigError } from '../errors';
 import { PrismaTenantConfigRepository } from '../infrastructure/prisma-tenant-config.repository';
 import { TenantDatabase, type TenantTransaction } from '../infrastructure/tenant-database';
 import type { TenantContext } from '../tenant-context';
+import { AuditTrail } from '../security/audit-trail';
+import { assertAuthorized, type AuthorizedContext } from '../security/authorized-context';
+import { WriteAuthorizer } from '../security/write-authorizer.service';
+import { AuditFailures } from '../security/audit-failures';
 
 /**
  * Configuration changes that validate across settings take the per-tenant
@@ -44,6 +48,7 @@ import type { TenantContext } from '../tenant-context';
  */
 const CONFIG_CHANGE_TX = { isolationLevel: 'ReadCommitted' } as const;
 
+/** Plan §11: configuration documents never carry secret-like values (codes only in the error). */
 function validate<S extends z.ZodType>(schema: S, value: unknown, what: string): z.infer<S> {
   const result = schema.safeParse(value);
   if (!result.success) {
@@ -66,6 +71,8 @@ export class TenantConfigService {
   constructor(
     private readonly db: TenantDatabase,
     private readonly repo: PrismaTenantConfigRepository,
+    private readonly audit: AuditTrail,
+    private readonly authorizer: WriteAuthorizer,
   ) {}
 
   // --- Integrations & flows ---------------------------------------------------
@@ -88,15 +95,22 @@ export class TenantConfigService {
    * the qualification mode uses it. Serialised per tenant (see
    * lockTenantConfiguration) so concurrent requests cannot break these rules.
    */
+  @AuditFailures('integration.configure', 'integration')
   async configureIntegration<S extends IntegrationSystem>(
-    ctx: TenantContext,
+    actx: AuthorizedContext<'config.integration'>,
     system: S,
     change: { access: IntegrationAccess; settings?: unknown },
   ): Promise<IntegrationConfig<S>> {
+    assertAuthorized(actx, 'config.integration');
     const s = validate(IntegrationSystemSchema, system, 'integration system') as S;
     const access = validate(IntegrationAccessSchema, change.access, 'integration access');
+    await this.authorizer.refuseSecretLike(
+      actx,
+      { action: 'integration.configure', targetKind: 'integration', targetRef: s },
+      { 'integration settings': change.settings },
+    );
     return await this.db.transaction(
-      ctx,
+      actx.tenant,
       async (tx) => {
         await this.repo.lockTenantConfiguration(tx);
         const current = await this.repo.getIntegration(tx, s);
@@ -127,6 +141,12 @@ export class TenantConfigService {
         if (s === 'hubspot' && access !== 'disabled') {
           await this.repo.ensureCodeConnection(tx, 'hubspot');
         }
+        await this.audit.record(tx, actx, {
+          action: 'integration.configure',
+          targetKind: 'integration',
+          targetRef: s,
+          details: { access },
+        });
         return saved;
       },
       CONFIG_CHANGE_TX,
@@ -138,16 +158,29 @@ export class TenantConfigService {
   }
 
   /** Sets a flow's mode (off / shadow / coexist / active) after checking integration access. */
-  async setFlowMode(ctx: TenantContext, flow: Flow, mode: FlowMode): Promise<FlowSetting> {
+  @AuditFailures('flow.set', 'flow')
+  async setFlowMode(
+    actx: AuthorizedContext<'config.integration'>,
+    flow: Flow,
+    mode: FlowMode,
+  ): Promise<FlowSetting> {
+    assertAuthorized(actx, 'config.integration');
     const f = validate(FlowSchema, flow, 'flow');
     const m = validate(FlowModeSchema, mode, 'flow mode');
     return await this.db.transaction(
-      ctx,
+      actx.tenant,
       async (tx) => {
         await this.repo.lockTenantConfiguration(tx);
         const problems = flowConfigurationProblems(f, m, await this.accessMap(tx));
         if (problems.length > 0) throw new TenantConfigError(`Cannot set ${f} to ${m}`, problems);
-        return this.repo.saveFlow(tx, f, m);
+        const saved = await this.repo.saveFlow(tx, f, m);
+        await this.audit.record(tx, actx, {
+          action: 'flow.set',
+          targetKind: 'flow',
+          targetRef: f,
+          details: { mode: m },
+        });
+        return saved;
       },
       CONFIG_CHANGE_TX,
     );
@@ -160,14 +193,21 @@ export class TenantConfigService {
   }
 
   /** Optimistic concurrency: `expectedVersion` must match the stored version. */
+  @AuditFailures('qualification.update', 'policy')
   async updateQualificationConfig(
-    ctx: TenantContext,
+    actx: AuthorizedContext<'config.policy'>,
     input: QualificationConfigInput,
     expectedVersion: number,
   ): Promise<QualificationConfig> {
+    assertAuthorized(actx, 'config.policy');
     const config = validate(QualificationConfigInputSchema, input, 'qualification config');
+    await this.authorizer.refuseSecretLike(
+      actx,
+      { action: 'qualification.update', targetKind: 'policy', targetRef: 'qualification' },
+      { 'qualification config': config },
+    );
     return await this.db.transaction(
-      ctx,
+      actx.tenant,
       async (tx) => {
         await this.repo.lockTenantConfiguration(tx);
         if (modeRequiresJev(config.mode)) {
@@ -178,7 +218,13 @@ export class TenantConfigService {
             );
           }
         }
-        return this.repo.updateQualificationConfig(tx, config, expectedVersion);
+        const saved = await this.repo.updateQualificationConfig(tx, config, expectedVersion);
+        await this.audit.record(tx, actx, {
+          action: 'qualification.update',
+          targetKind: 'qualification',
+          details: { mode: config.mode, version: saved.version },
+        });
+        return saved;
       },
       CONFIG_CHANGE_TX,
     );
@@ -204,16 +250,45 @@ export class TenantConfigService {
     return await this.db.transaction(ctx, (tx) => this.repo.listLeadSourceMappings(tx, system));
   }
 
+  @AuditFailures('lead_source_mapping.save', 'lead_source_mapping')
   async saveLeadSourceMapping(
-    ctx: TenantContext,
+    actx: AuthorizedContext<'config.integration'>,
     input: LeadSourceMappingInput,
   ): Promise<LeadSourceMapping & { id: string }> {
+    assertAuthorized(actx, 'config.integration');
     const mapping = validate(LeadSourceMappingSchema, input, 'lead source mapping');
-    return await this.db.transaction(ctx, (tx) => this.repo.saveLeadSourceMapping(tx, mapping));
+    await this.authorizer.refuseSecretLike(
+      actx,
+      { action: 'lead_source_mapping.save', targetKind: 'lead_source_mapping' },
+      { 'lead source mapping': mapping },
+    );
+    return await this.db.transaction(actx.tenant, async (tx) => {
+      const saved = await this.repo.saveLeadSourceMapping(tx, mapping);
+      await this.audit.record(tx, actx, {
+        action: 'lead_source_mapping.save',
+        targetKind: 'lead_source_mapping',
+        targetRef: saved.id,
+      });
+      return saved;
+    });
   }
 
-  async deleteLeadSourceMapping(ctx: TenantContext, id: string): Promise<boolean> {
-    return await this.db.transaction(ctx, (tx) => this.repo.deleteLeadSourceMapping(tx, id));
+  @AuditFailures('lead_source_mapping.delete', 'lead_source_mapping')
+  async deleteLeadSourceMapping(
+    actx: AuthorizedContext<'config.integration'>,
+    id: string,
+  ): Promise<boolean> {
+    assertAuthorized(actx, 'config.integration');
+    return await this.db.transaction(actx.tenant, async (tx) => {
+      const deleted = await this.repo.deleteLeadSourceMapping(tx, id);
+      await this.audit.record(tx, actx, {
+        action: 'lead_source_mapping.delete',
+        targetKind: 'lead_source_mapping',
+        targetRef: id,
+        details: { deleted },
+      });
+      return deleted;
+    });
   }
 
   // --- Policies (SLA / routing / requalification) ------------------------------
@@ -226,16 +301,30 @@ export class TenantConfigService {
   }
 
   /** Creates the policy when `expectedVersion` is omitted; otherwise replaces that version. */
+  @AuditFailures('policy.save', 'policy')
   async savePolicy<K extends PolicyKind>(
-    ctx: TenantContext,
+    actx: AuthorizedContext<'config.policy'>,
     kind: K,
     document: unknown,
     expectedVersion?: number,
   ): Promise<Policy<K>> {
+    assertAuthorized(actx, 'config.policy');
     const doc = validate(PolicySchemas[kind], document, `${kind} policy`);
-    return await this.db.transaction(ctx, (tx) =>
-      this.repo.savePolicy(tx, kind, doc as never, expectedVersion),
+    await this.authorizer.refuseSecretLike(
+      actx,
+      { action: 'policy.save', targetKind: 'policy', targetRef: kind },
+      { [`${kind} policy`]: doc },
     );
+    return await this.db.transaction(actx.tenant, async (tx) => {
+      const saved = await this.repo.savePolicy(tx, kind, doc as never, expectedVersion);
+      await this.audit.record(tx, actx, {
+        action: 'policy.save',
+        targetKind: 'policy',
+        targetRef: kind,
+        details: { version: saved.version },
+      });
+      return saved;
+    });
   }
 
   private async accessMap(

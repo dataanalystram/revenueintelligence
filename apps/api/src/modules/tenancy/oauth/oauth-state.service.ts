@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { z } from 'zod';
 import { TokenCipherSource } from '../../../platform/crypto';
 import { TenantIdSchema } from '../../domain';
@@ -8,6 +8,7 @@ import { InvalidTenantContextError, TenantNotFoundError } from '../errors';
 import { TenantDatabase, tenantClient } from '../infrastructure/tenant-database';
 import type { TenantContext } from '../tenant-context';
 import { OAUTH_SYSTEMS, type OAuthSystem } from './oauth-grants';
+import { SecurityEventsService } from '../security/security-events.service';
 
 /** How long an install link stays valid. */
 export const OAUTH_STATE_TTL_MS = 10 * 60_000;
@@ -49,6 +50,7 @@ export class OAuthStateService {
     private readonly db: TenantDatabase,
     private readonly contexts: TenantContextService,
     private readonly ciphers: TokenCipherSource,
+    @Optional() private readonly events?: SecurityEventsService,
   ) {}
 
   async issue(
@@ -87,6 +89,27 @@ export class OAuthStateService {
    * unexpired state issued by us for `system`.
    */
   async redeem(state: string, system: OAuthSystem, now: Date = new Date()): Promise<TenantContext> {
+    try {
+      return await this.verifyAndConsume(state, system, now);
+    } catch (error) {
+      // M10A1 §15: the failure reason only (never the state, which carries the nonce).
+      if (error instanceof OAuthStateError) {
+        this.events?.emit({
+          event: 'oauth_state_invalid',
+          outcome: 'refused',
+          reasonCode: error.reason,
+          coordinates: { system },
+        });
+      }
+      throw error;
+    }
+  }
+
+  private async verifyAndConsume(
+    state: string,
+    system: OAuthSystem,
+    now: Date,
+  ): Promise<TenantContext> {
     const cipher = await this.ciphers.get();
     const parts = state.split('.');
     if (parts.length !== 2 || !parts[0] || !parts[1] || state.length > 1024) {

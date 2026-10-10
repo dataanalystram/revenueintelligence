@@ -1,5 +1,12 @@
-import { describe, expect, it } from 'vitest';
-import { assessRole, type RoleFacts } from './database-role-guard';
+import { Logger } from '@nestjs/common';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  assessRole,
+  DatabaseRoleGuard,
+  roleRefusalCode,
+  UnsafeDatabaseRoleError,
+  type RoleFacts,
+} from './database-role-guard';
 
 const safe: RoleFacts = {
   currentUser: 'lip_api',
@@ -33,5 +40,46 @@ describe('assessRole', () => {
     expect(assessRole({ ...safe, isSuperuser: true, tenancyInstalled: false }, true).safe).toBe(
       false,
     );
+  });
+});
+
+describe('DatabaseRoleGuard security event (M10A1 §15)', () => {
+  it('a refused role emits role_guard_refused (code only) and counts it', async () => {
+    const counted: unknown[] = [];
+    const prisma = {
+      $queryRaw: () =>
+        Promise.resolve([
+          {
+            current_user: 'admin_role',
+            rolsuper: true,
+            rolbypassrls: false,
+            is_member: true,
+            tenancy_installed: true,
+          },
+        ]),
+    };
+    const metrics = {
+      increment: (name: string, labels: unknown) => counted.push({ name, labels }),
+    };
+    const guard = new DatabaseRoleGuard(
+      prisma as never,
+      { database: { allowPrivilegedRole: false } } as never,
+      metrics as never,
+    );
+    const logs: unknown[] = [];
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation((m: unknown) => void logs.push(m));
+    await expect(guard.ensureSafe()).rejects.toBeInstanceOf(UnsafeDatabaseRoleError);
+    expect(counted).toEqual([
+      {
+        name: 'lip_security_events_total',
+        labels: { event: 'role_guard_refused', outcome: 'refused' },
+      },
+    ]);
+    expect(logs).toEqual([
+      expect.objectContaining({ event: 'role_guard_refused', reasonCode: 'superuser' }),
+    ]);
+    expect(JSON.stringify(logs)).not.toContain('admin_role');
+    expect(roleRefusalCode({ ...safe, isAppRoleMember: false })).toBe('not_app_role_member');
+    vi.restoreAllMocks();
   });
 });

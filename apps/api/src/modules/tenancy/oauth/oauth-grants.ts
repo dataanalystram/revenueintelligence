@@ -1,4 +1,5 @@
 import type { Secret } from '../../../platform/secrets';
+import type { TenantTransaction } from '../infrastructure/tenant-database';
 import type { TenantContext } from '../tenant-context';
 
 /** Systems whose access the platform obtains through an OAuth install. */
@@ -30,8 +31,16 @@ export interface OAuthGrant {
  */
 export interface TenantOAuthGrantStore {
   get(ctx: TenantContext, system: OAuthSystem): Promise<OAuthGrant | undefined>;
-  /** Creates or replaces the tenant's grant for `system`. */
-  put(ctx: TenantContext, system: OAuthSystem, grant: OAuthGrant): Promise<void>;
+  /**
+   * Creates or replaces the tenant's grant for `system`. `afterWrite` runs in
+   * the same transaction (M10A1: the audit event commits with the grant).
+   */
+  put(
+    ctx: TenantContext,
+    system: OAuthSystem,
+    grant: OAuthGrant,
+    afterWrite?: (tx: TenantTransaction) => Promise<void>,
+  ): Promise<void>;
   delete(ctx: TenantContext, system: OAuthSystem): Promise<boolean>;
   /**
    * Runs `work` holding this tenant's exclusive lock for the grant, across
@@ -43,6 +52,8 @@ export interface TenantOAuthGrantStore {
     ctx: TenantContext,
     system: OAuthSystem,
     work: (current: OAuthGrant | undefined) => Promise<{ save?: OAuthGrant; result: T }>,
+    /** Runs in the same transaction after a save (M10A1: audit). */
+    afterSave?: (tx: TenantTransaction) => Promise<void>,
   ): Promise<T>;
 }
 

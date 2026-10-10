@@ -10,6 +10,7 @@ import { EnvSecretProvider } from '../../src/platform/secrets';
 import { startInfrastructure, type TestInfrastructure } from '../support/containers';
 import { ALL_READ_SCOPES, FakeHubSpot, sampleData } from '../support/fake-hubspot';
 import { provisionTenant, startTenancy, type TenancyHarness } from '../support/tenancy';
+import { authz } from '../support/security';
 
 /**
  * The tenant-scoped path end to end: integration settings and credential
@@ -38,11 +39,11 @@ describe('HubSpot connector (tenant-scoped)', () => {
     portalId: string | undefined,
     token?: string,
   ): Promise<void> {
-    await h.config.configureIntegration(ctx, 'hubspot', {
+    await h.config.configureIntegration(await authz(ctx, 'config.integration'), 'hubspot', {
       access: 'read_only',
       settings: portalId ? { portalId } : {},
     });
-    await h.credentials.register(ctx, 'hubspot', 'access_token');
+    await h.credentials.register(await authz(ctx, 'config.integration'), 'hubspot', 'access_token');
     if (token) setToken(ctx, token);
   }
 
@@ -121,7 +122,7 @@ describe('HubSpot connector (tenant-scoped)', () => {
 
     it('enabled but no credential registered → not_configured', async () => {
       const t = await provisionTenant(h, 'hsnoref');
-      await h.config.configureIntegration(t, 'hubspot', {
+      await h.config.configureIntegration(await authz(t, 'config.integration'), 'hubspot', {
         access: 'read_only',
         settings: { portalId: '1001' },
       });
@@ -195,7 +196,9 @@ describe('HubSpot connector (tenant-scoped)', () => {
       const t = await provisionTenant(h, 'hsflip');
       await enable(t, '1001', TOKEN_A);
       await expect(connector.forTenant(t)).resolves.toBeDefined();
-      await h.config.configureIntegration(t, 'hubspot', { access: 'disabled' });
+      await h.config.configureIntegration(await authz(t, 'config.integration'), 'hubspot', {
+        access: 'disabled',
+      });
       expect((await rejection(connector.forTenant(t))).kind).toBe('integration_disabled');
     });
   });

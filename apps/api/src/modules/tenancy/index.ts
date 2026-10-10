@@ -45,3 +45,4 @@ export {
 export { TenancyModule } from './tenancy.module';
 export * from './tenant';
 export { assertTenantContext, isTenantContext, TenantContext } from './tenant-context';
+export * from './security';

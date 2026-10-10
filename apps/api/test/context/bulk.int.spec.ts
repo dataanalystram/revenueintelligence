@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { SourceObservation } from '../../src/modules/domain';
 import type { TenantContext } from '../../src/modules/tenancy';
 import { startContextHarness, APP_ID, type ContextHarness } from '../support/context';
+import { authz } from '../support/security';
 
 /**
  * M6 backfill, reconciliation and historical M5 receipt processing (ADR
@@ -49,16 +50,22 @@ describe('context bulk sync: backfill, reconciliation, historical receipts', () 
     );
 
   it('reconciliation needs a baseline (a completed backfill) first', async () => {
-    const run = await c.bulk.startReconcile(t, 'company', { correlationId: randomUUID() });
+    const run = await c.bulk.startReconcile(await authz(t, 'data.sync.run'), 'company', {
+      correlationId: randomUUID(),
+    });
     expect(run).toEqual({ kind: 'company', resumed: false, skipped: 'needs_backfill' });
   });
 
   it('backfill pages companies and contacts into canonical context through the same writer', async () => {
     const correlationId = randomUUID();
-    const runs = await c.bulk.startBackfill(t, ['company', 'person'], {
-      pageSize: 2,
-      correlationId,
-    });
+    const runs = await c.bulk.startBackfill(
+      await authz(t, 'data.sync.run'),
+      ['company', 'person'],
+      {
+        pageSize: 2,
+        correlationId,
+      },
+    );
     for (const r of runs) await waitDone(r.checkpointId!);
     const companies = await checkpoint(runs[0]!.checkpointId!);
     const persons = await checkpoint(runs[1]!.checkpointId!);
@@ -119,10 +126,14 @@ describe('context bulk sync: backfill, reconciliation, historical receipts', () 
   it('re-running the backfill changes nothing (idempotent) and the state hash is identical', async () => {
     const before = await c.operations.stateHash(t);
     const changes = await count('tenant_context_changes');
-    const runs = await c.bulk.startBackfill(t, ['company', 'person'], {
-      pageSize: 2,
-      correlationId: randomUUID(),
-    });
+    const runs = await c.bulk.startBackfill(
+      await authz(t, 'data.sync.run'),
+      ['company', 'person'],
+      {
+        pageSize: 2,
+        correlationId: randomUUID(),
+      },
+    );
     for (const r of runs) await waitDone(r.checkpointId!);
     expect((await checkpoint(runs[1]!.checkpointId!)).records_changed).toBe(0);
     expect(await count('tenant_context_changes')).toBe(changes);
@@ -143,7 +154,7 @@ describe('context bulk sync: backfill, reconciliation, historical receipts', () 
       when: (r) => r.query.after !== undefined,
       times: 1,
     });
-    const [run] = await c.bulk.startBackfill(t, ['company'], {
+    const [run] = await c.bulk.startBackfill(await authz(t, 'data.sync.run'), ['company'], {
       pageSize: 3,
       correlationId: randomUUID(),
     });
@@ -156,7 +167,7 @@ describe('context bulk sync: backfill, reconciliation, historical receipts', () 
       records_seen: 3,
     });
     expect(failed.cursor).not.toBeNull();
-    const resumed = await c.bulk.resume(t, run!.checkpointId!);
+    const resumed = await c.bulk.resume(await authz(t, 'data.sync.run'), run!.checkpointId!);
     expect(resumed.resumed).toBe(true);
     await waitDone(run!.checkpointId!);
     expect(await checkpoint(run!.checkpointId!)).toMatchObject({
@@ -185,12 +196,16 @@ describe('context bulk sync: backfill, reconciliation, historical receipts', () 
 
     it('a newer webhook read-back wins over an older backfill snapshot processed later', async () => {
       const snapshotReadAt = new Date();
-      await c.ingestion.ingest(t, present(new Date(), '2026-09-20T12:00:00Z', 'From webhook'), {
-        ...meta,
-        cause: 'webhook',
-      });
+      await c.ingestion.ingest(
+        await authz(t, 'canonical.source_sync'),
+        present(new Date(), '2026-09-20T12:00:00Z', 'From webhook'),
+        {
+          ...meta,
+          cause: 'webhook',
+        },
+      );
       const r = await c.ingestion.ingest(
-        t,
+        await authz(t, 'canonical.source_sync'),
         present(snapshotReadAt, '2026-09-20T11:00:00Z', 'From old page'),
         meta,
       );
@@ -206,13 +221,13 @@ describe('context bulk sync: backfill, reconciliation, historical receipts', () 
       const pageReadAt = new Date();
       await new Promise((r) => setTimeout(r, 5));
       const del = await c.ingestion.ingest(
-        t,
+        await authz(t, 'canonical.source_sync'),
         { kind: 'company', presence: 'absent', ref, observedAt: new Date() },
         { ...meta, cause: 'webhook' },
       );
       expect(del.decision).toBe('delete');
       const r = await c.ingestion.ingest(
-        t,
+        await authz(t, 'canonical.source_sync'),
         present(pageReadAt, '2026-09-21T00:00:00Z', 'Zombie'),
         meta,
       );
@@ -250,7 +265,7 @@ describe('context bulk sync: backfill, reconciliation, historical receipts', () 
           updatedAt: `2026-11-0${i + 1}T10:00:00.000Z`,
         });
       }
-      const run = await c.bulk.startReconcile(t, 'company', {
+      const run = await c.bulk.startReconcile(await authz(t, 'data.sync.run'), 'company', {
         since: new Date('2026-11-01T00:00:00Z'),
         pageSize: 2,
         correlationId: randomUUID(),
@@ -276,7 +291,9 @@ describe('context bulk sync: backfill, reconciliation, historical receipts', () 
         ),
       ).toBe(true);
       // The next run starts from the watermark minus the lookback (0 in tests): nothing new to apply.
-      const next = await c.bulk.startReconcile(t, 'company', { correlationId: randomUUID() });
+      const next = await c.bulk.startReconcile(await authz(t, 'data.sync.run'), 'company', {
+        correlationId: randomUUID(),
+      });
       await waitDone(next.checkpointId!);
       const cp2 = await checkpoint(next.checkpointId!);
       expect((cp2.window_since as Date).toISOString()).toBe('2026-11-05T10:00:00.000Z');
@@ -307,7 +324,7 @@ describe('context bulk sync: backfill, reconciliation, historical receipts', () 
         },
         times: 1,
       });
-      const run = await c.bulk.startReconcile(t, 'company', {
+      const run = await c.bulk.startReconcile(await authz(t, 'data.sync.run'), 'company', {
         since: new Date('2026-11-01T00:00:00Z'),
         pageSize: 100,
         correlationId: randomUUID(),
@@ -368,7 +385,7 @@ describe('context bulk sync: backfill, reconciliation, historical receipts', () 
       });
       expect(dry).toMatchObject({ dryRun: true, matched: 6, queued: 0, byStatus: { pending: 6 } });
 
-      const first = await c.operations.processReceipts(t, {
+      const first = await c.operations.processReceipts(await authz(t, 'data.sync.run'), {
         onlyReason: 'pre_m6',
         limit: 100,
         includeFinished: false,
@@ -411,7 +428,7 @@ describe('context bulk sync: backfill, reconciliation, historical receipts', () 
       const h1 = await c.operations.stateHash(t);
       const changes1 = await count('tenant_context_changes');
 
-      const second = await c.operations.processReceipts(t, {
+      const second = await c.operations.processReceipts(await authz(t, 'data.sync.run'), {
         from: new Date(Date.now() - 4 * 86_400_000),
         to: new Date(Date.now() - 2 * 86_400_000),
         limit: 100,
@@ -451,7 +468,10 @@ describe('context bulk sync: backfill, reconciliation, historical receipts', () 
   it('a company first referenced by the person run is created by its follow-up: run cause and correlation, no checkpoint', async () => {
     const u = await c.tenant('bulkorder', 1001);
     const correlationId = randomUUID();
-    const [personRun] = await c.bulk.startBackfill(u, ['person'], { pageSize: 2, correlationId });
+    const [personRun] = await c.bulk.startBackfill(await authz(u, 'data.sync.run'), ['person'], {
+      pageSize: 2,
+      correlationId,
+    });
     await waitDone(personRun!.checkpointId!);
     const companies = async () =>
       (await createdProvenance(u)).filter((p) => p.entity_kind === 'company');
@@ -469,7 +489,7 @@ describe('context bulk sync: backfill, reconciliation, historical receipts', () 
     expect(persons.every((p) => p.checkpoint_id === personRun!.checkpointId)).toBe(true);
     // The company run then finds them: none is created a second time (the
     // shared fake holds more companies by now; those are created normally).
-    const [companyRun] = await c.bulk.startBackfill(u, ['company'], {
+    const [companyRun] = await c.bulk.startBackfill(await authz(u, 'data.sync.run'), ['company'], {
       pageSize: 2,
       correlationId: randomUUID(),
     });

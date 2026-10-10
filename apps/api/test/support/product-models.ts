@@ -94,18 +94,20 @@ export async function publishAdding(
     publish(
       ctx: never,
       document: unknown,
-      options: { actor: string; basedOnVersion: number },
+      options: { basedOnVersion: number },
     ): Promise<{ version: number }>;
   },
   ctx: unknown,
   products: readonly { key: string; name: string; status?: 'active' | 'retired' }[],
+  /** M10A1: an AuthorizedContext for config.product_model.publish (callers obtain it via authz()). */
+  publisher: unknown,
 ): Promise<{ version: number }> {
   const stored = await catalogue.show(ctx as never);
   const latest = stored?.document as ProductModelDocumentInput | undefined;
   const existing = latest?.products ?? [];
   const keys = new Set(existing.map((p) => p.key));
   return catalogue.publish(
-    ctx as never,
+    publisher as never,
     {
       ...(latest ?? {}),
       lifecycle: [],
@@ -114,6 +116,6 @@ export async function publishAdding(
         ...products.filter((p) => !keys.has(p.key)),
       ],
     },
-    { actor: 'test', basedOnVersion: stored?.version ?? 0 },
+    { basedOnVersion: stored?.version ?? 0 },
   );
 }

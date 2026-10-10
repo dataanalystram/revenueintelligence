@@ -51,7 +51,8 @@ The registry contains three kinds of definition.
 | `value_type`                  | closed set: `string`, `text`, `number`, `integer`, `boolean`, `date`, `datetime`, `money` (amount + currency), `enum`, `multi_enum` (multi-select), `array` (of one scalar type), `json` (structured, with optional schema), `reference` (to a canonical or custom record) |
 | `allowed_values`              | for `enum` / `multi_enum`: `{code, label, status: active\|retired}`; codes never removed                                                                                                                                                                                   |
 | `constraints`                 | per type: max length; numeric min/max/integer; array max items; JSON max bytes and optional JSON Schema subset (types, required, enum, bounded depth); no regex execution beyond a bounded safe subset. Upper bounds come from the platform guardrails (§2.4)              |
-| `sensitivity`                 | `internal` \| `confidential` \| `personal` \| `restricted`; `restricted` values are never stored in clear without a policy decision                                                                                                                                        |
+| `sensitivity`                 | **Revised in M10A1 (candidate revision R1, below):** `public` \| `internal` \| `confidential` \| `restricted`, plus one or more `categories`; `restricted` values are never stored in clear without a policy decision                                                      |
+| `categories`                  | **Added in M10A1 (R1):** one or more of `personal`, `financial`, `communication`, `operational`, `commercial`, `security`; category floors apply (below)                                                                                                                   |
 | `allowed_uses`                | closed set: `display`, `segmentation`, `eligibility`, `signal_input`, `analytics`, `ai_context`; every consumer checks its own use                                                                                                                                         |
 | `not_evidence_of`             | canonical facts this field must never be used to infer (e.g. `subscription_ownership`, `account_identity`)                                                                                                                                                                 |
 | `status`                      | `active` \| `retired` \| `promoted` (resolved to a canonical field after promotion)                                                                                                                                                                                        |
@@ -253,3 +254,18 @@ The promotion test is E2 §1. The mechanical path:
 - Sensitive and restricted values follow E7 (retention policy-gated).
 - Isolation: per-tenant registries; no cross-tenant definitions. Platform-provided generic definitions (for example
   metric definitions) are copied into a tenant registry on adoption, never shared mutable state.
+
+## Candidate revision R1 (M10A1, 2026-10-09): sensitivity plus category
+
+Owner decision F3 (M10 plan §16.1), applied in M10A1 (plan §9). Stricter, never weaker; no semantic loss:
+
+- `sensitivity` is exactly one of `public`, `internal`, `confidential`, `restricted`.
+- `categories` is one or more of `personal`, `financial`, `communication`, `operational`, `commercial`, `security`.
+- The candidate's `personal` sensitivity becomes category `personal` at sensitivity `confidential` or stricter.
+- Floors: `personal`, `financial`, `security`, `communication` → at least `confidential`; communication content →
+  `restricted`; `operational` and `commercial` have no floor beyond the default `internal`.
+- Credentials and secrets are not a category: a value detected as a credential is refused, never stored.
+- An unknown classification is `tbc` and is treated as `restricted` until classified (owner decision Q6).
+- Implemented today for the platform's own columns only: `apps/api/src/modules/domain/security/classification.ts`
+  (vocabulary, floors) and `apps/api/src/modules/tenancy/security/classification-manifest.ts` (one entry per
+  column, enforced by the schema guard). Extension fields adopt the same vocabulary when the registry is built (A2+).

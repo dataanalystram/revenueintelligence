@@ -17,6 +17,7 @@ import {
   withSnapshot,
   type SourcesFixture,
 } from '../support/sources';
+import { authz } from '../support/security';
 
 /**
  * M9B: the Chargebee reference adapter end to end against the deterministic
@@ -422,6 +423,16 @@ describe('Chargebee reference adapter (fake Chargebee, CB01–CB36)', () => {
         });
         expect(run.quality).toMatchObject({ references_retired: 1 });
         expect(await companyRow(company)).toMatchObject({ record_state: 'active' });
+        // M10A1: the retirement change record carries the source-sync actor of the run.
+        expect(
+          await c.sql(
+            `SELECT actor_kind, actor_id, actor_assurance FROM tenant_context_changes
+              WHERE tenant_id = $1 AND checkpoint_id = $2 AND changed_fields = '{refState}'`,
+            [f.ctx.tenantId, run.runId],
+          ),
+        ).toEqual([
+          { actor_kind: 'source_sync', actor_id: `run:${run.runId}`, actor_assurance: 'system' },
+        ]);
       });
     });
 
@@ -1107,7 +1118,7 @@ describe('Chargebee reference adapter (fake Chargebee, CB01–CB36)', () => {
           [f.ctx.tenantId, company],
         );
         const out = await c.ingestion.ingest(
-          f.ctx,
+          await authz(f.ctx, 'canonical.source_sync'),
           {
             kind: 'company',
             presence: 'absent',
@@ -1159,8 +1170,8 @@ describe('Chargebee reference adapter (fake Chargebee, CB01–CB36)', () => {
     });
 
     it('R12: settle window raised between runs — a new customer outside the next read window is retired transiently; the next clean run reactivates the same reference (no duplicate company)', async () => {
-      const reconfigure = (fake: FakeChargebee, f: SourcesFixture, settleMinutes: number) =>
-        sourcesServices(c).connections.configure(f.ctx, {
+      const reconfigure = async (fake: FakeChargebee, f: SourcesFixture, settleMinutes: number) =>
+        sourcesServices(c).connections.configure(await authz(f.ctx, 'config.source.connection'), {
           kind: 'chargebee',
           label: 'Chargebee (fake)',
           config: {
@@ -1252,10 +1263,15 @@ describe('Chargebee reference adapter (fake Chargebee, CB01–CB36)', () => {
       await withFake({}, async (_fake, f) => {
         await full(f);
         await expect(
-          sourcesServices(c).sync.start(f.ctx, f.connectionId, 'incremental', {
-            enqueue: false,
-            correlationId: randomUUID(),
-          }),
+          sourcesServices(c).sync.start(
+            await authz(f.ctx, 'data.sync.run'),
+            f.connectionId,
+            'incremental',
+            {
+              enqueue: false,
+              correlationId: randomUUID(),
+            },
+          ),
         ).rejects.toMatchObject({ code: 'incremental_not_supported' });
       });
     });
@@ -1305,7 +1321,12 @@ describe('Chargebee reference adapter (fake Chargebee, CB01–CB36)', () => {
     it('CB32: a Product Catalog 1.0 site is catalog_version_unsupported', async () => {
       await withFake({}, async (fake, f) => {
         fake.productCatalogV1 = true;
-        await expect(sourcesServices(c).connections.test(f.ctx, f.connectionId)).resolves.toEqual({
+        await expect(
+          sourcesServices(c).connections.test(
+            await authz(f.ctx, 'config.source.connection'),
+            f.connectionId,
+          ),
+        ).resolves.toEqual({
           ok: false,
           code: 'catalog_version_unsupported',
         });
@@ -1320,7 +1341,12 @@ describe('Chargebee reference adapter (fake Chargebee, CB01–CB36)', () => {
           times: 100,
           body: { api_error_code: 'api_authorization_failed' },
         });
-        await expect(sourcesServices(c).connections.test(f.ctx, f.connectionId)).resolves.toEqual({
+        await expect(
+          sourcesServices(c).connections.test(
+            await authz(f.ctx, 'config.source.connection'),
+            f.connectionId,
+          ),
+        ).resolves.toEqual({
           ok: false,
           code: 'forbidden',
         });
@@ -1334,7 +1360,10 @@ describe('Chargebee reference adapter (fake Chargebee, CB01–CB36)', () => {
       await withFake({ config: { incrementalLines: 'verified' } }, async (fake, f) => {
         await full(f);
         await runSync(c, f, 'incremental');
-        await sourcesServices(c).connections.test(f.ctx, f.connectionId);
+        await sourcesServices(c).connections.test(
+          await authz(f.ctx, 'config.source.connection'),
+          f.connectionId,
+        );
         expect(Object.keys(fake.methodCounts)).toEqual(['GET']);
         expect([...new Set(fake.requests.map((r) => r.path))].sort()).toEqual([
           '/customers',
@@ -1366,7 +1395,10 @@ describe('Chargebee reference adapter (fake Chargebee, CB01–CB36)', () => {
           'example.invalid',
           'Synthetic Co',
           'masked_number',
-          '1111',
+          // The fake card's masked number and last four digits, as JSON values (a bare
+          // '1111' also occurs by chance inside random UUIDs and hashes).
+          '************1111',
+          '"1111"',
         ]) {
           expect(dump).not.toContain(forbidden);
         }

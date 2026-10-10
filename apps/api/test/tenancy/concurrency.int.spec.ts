@@ -4,6 +4,7 @@ import { PersonIdSchema } from '../../src/modules/domain';
 import { tenantClient, type TenantContext } from '../../src/modules/tenancy';
 import { appConfig, startInfrastructure, type TestInfrastructure } from '../support/containers';
 import { person, provisionTenant, startTenancy, type TenancyHarness } from '../support/tenancy';
+import { authz } from '../support/security';
 
 /**
  * Many tenants working at once through a shared connection pool must never
@@ -137,8 +138,16 @@ describe('concurrent multi-tenant operations', () => {
       h.config.getQualificationConfig(t2!),
     ]);
     await Promise.all([
-      h.config.updateQualificationConfig(t1!, { mode: 'rules', rulesetVersion: 'r-1' }, c1.version),
-      h.config.updateQualificationConfig(t2!, { mode: 'rules', rulesetVersion: 'r-2' }, c2.version),
+      h.config.updateQualificationConfig(
+        await authz(t1!, 'config.policy'),
+        { mode: 'rules', rulesetVersion: 'r-1' },
+        c1.version,
+      ),
+      h.config.updateQualificationConfig(
+        await authz(t2!, 'config.policy'),
+        { mode: 'rules', rulesetVersion: 'r-2' },
+        c2.version,
+      ),
     ]);
     await expect(h.config.getQualificationConfig(t1!)).resolves.toMatchObject({
       rulesetVersion: 'r-1',
@@ -151,12 +160,12 @@ describe('concurrent multi-tenant operations', () => {
     const current = await h.config.getQualificationConfig(t1!);
     const race = await Promise.allSettled([
       h.config.updateQualificationConfig(
-        t1!,
+        await authz(t1!, 'config.policy'),
         { mode: 'rules', rulesetVersion: 'winner-a' },
         current.version,
       ),
       h.config.updateQualificationConfig(
-        t1!,
+        await authz(t1!, 'config.policy'),
         { mode: 'rules', rulesetVersion: 'winner-b' },
         current.version,
       ),

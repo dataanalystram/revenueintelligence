@@ -160,6 +160,8 @@ export class WebhookReceiptRepository {
     events: readonly WebhookEvent[],
     receivedAt: Date,
     correlationId?: string,
+    /** M10A1: runs in the same transaction (the batch's audit event). */
+    afterWrite?: (tx: TenantTransaction, recorded: RecordedDeliveries) => Promise<void>,
   ): Promise<RecordedDeliveries> {
     return await this.db.transaction(ctx, async (tx) => {
       const client = tenantClient(tx);
@@ -199,7 +201,9 @@ export class WebhookReceiptRepository {
           storedKeys.push(e.deliveryKey);
         } else duplicates += 1;
       }
-      return { stored, duplicates, storedKeys };
+      const recorded = { stored, duplicates, storedKeys };
+      await afterWrite?.(tx, recorded);
+      return recorded;
     });
   }
 

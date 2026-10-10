@@ -7,6 +7,7 @@ import {
 } from '../modules/tenancy';
 import { EnvSecretProvider } from '../platform/secrets';
 import { fail, withHubSpotContext } from './hubspot-context';
+import { authorizeOperator } from './operator';
 
 /**
  * Connects a tenant to a HubSpot account, READ-ONLY:
@@ -33,6 +34,7 @@ async function main(): Promise<void> {
       auth: { type: 'string', default: 'static_token' },
       'ui-domain': { type: 'string' },
       disable: { type: 'boolean' },
+      actor: { type: 'string' },
     },
   });
   if (!values.tenant || (!values['portal-id'] && !values.disable)) {
@@ -49,7 +51,13 @@ async function main(): Promise<void> {
   }
   const tenant = values.tenant;
   const result = await withHubSpotContext(async (app) => {
-    const ctx = await app.get(TenantContextService).forSlug(tenant);
+    const tctx = await app.get(TenantContextService).forSlug(tenant);
+    const ctx = await authorizeOperator(app, tctx, 'config.integration', {
+      actorFlag: values.actor,
+      action: 'integration.configure',
+      targetKind: 'integration',
+      targetRef: 'hubspot',
+    });
     const config = app.get(TenantConfigService);
     if (values.disable) {
       return {

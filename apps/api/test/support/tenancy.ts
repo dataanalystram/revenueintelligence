@@ -30,6 +30,7 @@ import {
 } from '../../src/modules/tenancy';
 import type { AppConfig } from '../../src/platform/config';
 import { WorkerModule } from '../../src/worker.module';
+import { platformAuthz, registerSecurityApp } from './security';
 
 export interface TenancyHarness {
   readonly app: INestApplicationContext;
@@ -54,6 +55,7 @@ export async function startTenancy(config: AppConfig): Promise<TenancyHarness> {
   class TenancyTestModule {}
   const app = await NestFactory.createApplicationContext(TenancyTestModule, { logger: false });
   await app.init();
+  registerSecurityApp(app);
   return {
     app,
     db: app.get(TenantDatabase),
@@ -80,7 +82,10 @@ export function uniqueSlug(prefix = 't'): string {
 
 export async function provisionTenant(h: TenancyHarness, prefix = 't'): Promise<TenantContext> {
   const slug = uniqueSlug(prefix);
-  const tenant = await h.registry.provision({ slug, name: `Tenant ${slug}` });
+  const tenant = await h.registry.provision(platformAuthz('config.tenant.provision'), {
+    slug,
+    name: `Tenant ${slug}`,
+  });
   return h.contexts.forTenantId(tenant.id);
 }
 

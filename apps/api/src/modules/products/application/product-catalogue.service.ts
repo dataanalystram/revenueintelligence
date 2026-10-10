@@ -8,8 +8,16 @@ import {
   type ProductModelIssue,
   type PublishedModelRef,
 } from '../../domain';
-import { TenantDatabase, type TenantContext, type TenantTransaction } from '../../tenancy';
+import {
+  assertAuthorized,
+  AuditTrail,
+  TenantDatabase,
+  type AuthorizedContext,
+  type TenantContext,
+  type TenantTransaction,
+} from '../../tenancy';
 import { ProductModelStore, type StoredModelVersion } from '../infrastructure/product-model.store';
+import { AuditFailures, WriteAuthorizer } from '../../tenancy';
 
 export class ProductModelInvalidError extends Error {
   constructor(
@@ -49,8 +57,6 @@ export class NoProductModelError extends Error {
 
 export interface PublishOptions {
   readonly effectiveFrom?: Date;
-  /** Who publishes (operator id or tool name; codes only). */
-  readonly actor: string;
   /**
    * Required optimistic check (M8, ADR 0016 note): the latest version the
    * document was prepared against (`0` before the first version). A publish
@@ -90,6 +96,8 @@ export class ProductCatalogueService {
   constructor(
     private readonly db: TenantDatabase,
     private readonly store: ProductModelStore,
+    private readonly audit: AuditTrail,
+    private readonly authorizer: WriteAuthorizer,
   ) {}
 
   /** Dry run: full validation against the latest version, nothing written. */
@@ -121,12 +129,20 @@ export class ProductCatalogueService {
    * immutable version, update the projection, commit. Any failure leaves no
    * version and no projection change.
    */
+  @AuditFailures('product_model.publish', 'product_model')
   async publish(
-    ctx: TenantContext,
+    actx: AuthorizedContext<'config.product_model.publish'>,
     document: unknown,
     options: PublishOptions,
   ): Promise<PublishedVersion> {
-    return this.db.transaction(ctx, async (tx) => {
+    assertAuthorized(actx, 'config.product_model.publish');
+    // Plan §11: product names and descriptions are stored free text.
+    await this.authorizer.refuseSecretLike(
+      actx,
+      { action: 'product_model.publish', targetKind: 'product_model' },
+      { 'product model': document },
+    );
+    return this.db.transaction(actx.tenant, async (tx) => {
       await this.store.lockPublication(tx);
       const now = options.now ?? new Date();
       const effectiveFrom = options.effectiveFrom ?? now;
@@ -148,9 +164,15 @@ export class ProductCatalogueService {
         document: v.document,
         contentHash: v.contentHash,
         effectiveFrom,
-        publishedBy: options.actor,
+        publishedBy: actx.actor.id,
       });
       await this.store.upsertProjection(tx, v.document, version);
+      await this.audit.record(tx, actx, {
+        action: 'product_model.publish',
+        targetKind: 'product_model',
+        targetRef: `v${version}`,
+        details: { version, baseVersion: latestVersion, contentHash: v.contentHash },
+      });
       return { version, contentHash: v.contentHash, effectiveFrom, warnings: v.warnings };
     });
   }

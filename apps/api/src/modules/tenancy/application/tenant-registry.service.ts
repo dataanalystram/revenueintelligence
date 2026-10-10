@@ -1,6 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { z } from 'zod';
-import type { TenantId } from '../../domain';
+import { findSecretLikeInJson, SecretLikeValueError, type TenantId } from '../../domain';
 import { FlowSchema } from '../config/flows';
 import { IntegrationSystemSchema } from '../config/integrations';
 import {
@@ -20,6 +20,12 @@ import { PrismaTenantConfigRepository } from '../infrastructure/prisma-tenant-co
 import { PrismaTenantRegistryRepository } from '../infrastructure/prisma-tenant-registry.repository';
 import { TenantDatabase } from '../infrastructure/tenant-database';
 import { TenantSlugSchema, type Tenant, type TenantStatus } from '../tenant';
+import { AuditTrail } from '../security/audit-trail';
+import { SecurityEventsService } from '../security/security-events.service';
+import {
+  assertPlatformAuthorized,
+  type PlatformAuthorization,
+} from '../security/authorized-context';
 
 const ProvisionInputSchema = z.strictObject({
   slug: TenantSlugSchema,
@@ -48,6 +54,8 @@ export class TenantRegistryService {
     private readonly db: TenantDatabase,
     private readonly registry: PrismaTenantRegistryRepository,
     private readonly config: PrismaTenantConfigRepository,
+    private readonly audit: AuditTrail,
+    @Optional() private readonly events?: SecurityEventsService,
   ) {}
 
   /**
@@ -55,7 +63,11 @@ export class TenantRegistryService {
    * disabled, every flow off, rules-only qualification, plus the optional
    * template's catalogue, mappings and policies.
    */
-  async provision(input: ProvisionTenantInput): Promise<Tenant> {
+  async provision(
+    auth: PlatformAuthorization<'config.tenant.provision'>,
+    input: ProvisionTenantInput,
+  ): Promise<Tenant> {
+    assertPlatformAuthorized(auth, 'config.tenant.provision');
     const parsed = ProvisionInputSchema.safeParse(input);
     if (!parsed.success) {
       throw new TenantConfigError(
@@ -64,6 +76,21 @@ export class TenantRegistryService {
       );
     }
     const { slug, name, template } = parsed.data;
+    // Plan §11: the tenant name and the template documents are stored free text and
+    // JSON. There is no tenant trail yet: a security event only, then the refusal.
+    const hit = findSecretLikeInJson({ name, template: template ?? null })[0];
+    if (hit) {
+      this.events?.emit({
+        event: 'secret_like_refused',
+        outcome: 'refused',
+        actorKind: auth.actor.kind,
+        capability: auth.capability,
+        reasonCode: 'secret_like_value',
+        correlationId: auth.correlationId,
+        coordinates: { field: `provisioning ${hit.path}`, pattern: hit.code },
+      });
+      throw new SecretLikeValueError(`provisioning ${hit.path}`, hit.code);
+    }
     try {
       const { tenant } = await this.db.provision({ slug, name }, async (tx) => {
         for (const system of IntegrationSystemSchema.options) {
@@ -95,6 +122,12 @@ export class TenantRegistryService {
         if (policies.requalification) {
           await this.config.savePolicy(tx, 'requalification', policies.requalification);
         }
+        await this.audit.recordPlatform(tx, auth, {
+          action: 'tenant.provision',
+          targetKind: 'tenant',
+          targetRef: slug,
+          details: { template: template !== undefined },
+        });
       });
       this.logger.log({ tenantId: tenant.id, slug: tenant.slug }, 'Tenant provisioned');
       return tenant;
@@ -121,27 +154,53 @@ export class TenantRegistryService {
     return this.registry.list(status);
   }
 
-  suspend(tenantId: TenantId): Promise<Tenant> {
-    return this.transition(tenantId, 'suspended');
+  suspend(
+    auth: PlatformAuthorization<'config.tenant.status'>,
+    tenantId: TenantId,
+  ): Promise<Tenant> {
+    return this.transition(auth, tenantId, 'suspended');
   }
 
-  reactivate(tenantId: TenantId): Promise<Tenant> {
-    return this.transition(tenantId, 'active');
+  reactivate(
+    auth: PlatformAuthorization<'config.tenant.status'>,
+    tenantId: TenantId,
+  ): Promise<Tenant> {
+    return this.transition(auth, tenantId, 'active');
   }
 
   /** Terminal. Data retention and deletion are a separate, audited process. */
-  offboard(tenantId: TenantId): Promise<Tenant> {
-    return this.transition(tenantId, 'offboarded');
+  offboard(
+    auth: PlatformAuthorization<'config.tenant.status'>,
+    tenantId: TenantId,
+  ): Promise<Tenant> {
+    return this.transition(auth, tenantId, 'offboarded');
   }
 
-  private async transition(tenantId: TenantId, to: TenantStatus): Promise<Tenant> {
+  private async transition(
+    auth: PlatformAuthorization<'config.tenant.status'>,
+    tenantId: TenantId,
+    to: TenantStatus,
+  ): Promise<Tenant> {
+    assertPlatformAuthorized(auth, 'config.tenant.status');
     const tenant = await this.registry.findById(tenantId);
     if (!tenant) throw new TenantNotFoundError(tenantId);
     if (tenant.status === to) return tenant;
     if (!TRANSITIONS[tenant.status].includes(to)) {
       throw new TenantConfigError(`Tenant cannot move from ${tenant.status} to ${to}`);
     }
-    const updated = await this.registry.setStatus(tenantId, to);
+    const updated = await this.db.platformChange(
+      { id: tenant.id, slug: tenant.slug },
+      (root) => this.registry.setStatusWithin(root, tenantId, to),
+      async (tx, result) => {
+        if (!result) return;
+        await this.audit.recordPlatform(tx, auth, {
+          action: 'tenant.status',
+          targetKind: 'tenant',
+          targetRef: tenant.slug,
+          details: { from: tenant.status, to },
+        });
+      },
+    );
     if (!updated) throw new TenantNotFoundError(tenantId);
     this.logger.log({ tenantId, from: tenant.status, to }, 'Tenant status changed');
     return updated;

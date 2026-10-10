@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { Prisma } from '../../../generated/prisma/client';
 import { APP_CONFIG, type AppConfig } from '../../../platform/config';
 import { PrismaService } from '../../../platform/database';
@@ -7,6 +7,7 @@ import type { TenantId } from '../../domain';
 import { InvalidTenantContextError, TenantInactiveError, TenantNotFoundError } from '../errors';
 import { TenantSchema, type Tenant, type TenantSlug } from '../tenant';
 import { assertTenantContext, type TenantContext } from '../tenant-context';
+import { SecurityEventsService } from '../security/security-events.service';
 
 /**
  * A database transaction bound to exactly one tenant. Repositories take one of
@@ -46,11 +47,13 @@ export async function tenantAdvisoryLock(
   scope: string,
   value: string,
 ): Promise<void> {
-  const key = createHash('sha256')
-    .update(`${tx.tenantId}|${scope}|${value}`)
-    .digest()
-    .readBigInt64BE(0);
+  const key = advisoryLockKey(tx.tenantId, scope, value);
   await tenantClient(tx).$executeRaw`SELECT pg_advisory_xact_lock(${key}::bigint)`;
+}
+
+/** The 64-bit key of a tenant-scoped advisory lock (also used by owner-path operations). */
+export function advisoryLockKey(tenantId: string, scope: string, value: string): bigint {
+  return createHash('sha256').update(`${tenantId}|${scope}|${value}`).digest().readBigInt64BE(0);
 }
 
 async function bindTenant(client: Client, tenantId: string): Promise<string | null> {
@@ -77,15 +80,22 @@ async function runBound<T>(
   }
 }
 
+/** Explicit, never inherited from the role or server default (M10A1). */
+const DEFAULT_ISOLATION = 'ReadCommitted' as const satisfies Prisma.TransactionIsolationLevel;
+
 @Injectable()
 export class TenantDatabase {
   constructor(
     private readonly prisma: PrismaService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
+    @Optional() private readonly events?: SecurityEventsService,
   ) {}
 
   /**
    * Runs `work` in a database transaction scoped to the context's tenant.
+   * READ COMMITTED unless the caller asks otherwise, stated explicitly so a
+   * role or server default (e.g. REPEATABLE READ) never changes behaviour:
+   * audit appends (M10A1) must read the committed chain head after locking.
    * Row-level security limits every statement to that tenant; the tenant's
    * status is re-checked, so a suspension takes effect immediately.
    * Everything inside commits or rolls back together.
@@ -100,15 +110,49 @@ export class TenantDatabase {
     } = {},
   ): Promise<T> {
     assertTenantContext(context);
-    const { timeoutMs, ...rest } = options;
+    const { timeoutMs, isolationLevel } = options;
     return this.prisma.$transaction(
       async (client) => {
         const status = await bindTenant(client, context.tenantId);
         if (status === null) throw new TenantNotFoundError(context.tenantId);
-        if (status !== 'active') throw new TenantInactiveError(context.tenantId, status);
+        if (status !== 'active') {
+          this.events?.emit({
+            event: 'tenant_inactive_access',
+            outcome: 'refused',
+            tenant: context.tenantSlug,
+            reasonCode: `tenant_${status}`,
+          });
+          throw new TenantInactiveError(context.tenantId, status);
+        }
         return runBound(client, { id: context.tenantId, slug: context.tenantSlug }, work);
       },
-      { timeout: timeoutMs ?? this.config.database.transactionTimeoutMs, ...rest },
+      {
+        timeout: timeoutMs ?? this.config.database.transactionTimeoutMs,
+        isolationLevel: isolationLevel ?? DEFAULT_ISOLATION,
+      },
+    );
+  }
+
+  /**
+   * M10A1: a platform-level change of the `tenants` row (no tenant bound, as
+   * the registry policy requires), then `record` in the same transaction bound
+   * to that tenant (its audit trail). Either both commit or neither does. The
+   * tenant's status is deliberately not checked: suspension and offboarding
+   * must still be audited.
+   */
+  async platformChange<T>(
+    tenant: { id: TenantId; slug: TenantSlug },
+    change: (root: Client) => Promise<T>,
+    record: (tx: TenantTransaction, result: T) => Promise<void>,
+  ): Promise<T> {
+    return this.prisma.$transaction(
+      async (client) => {
+        const result = await change(client);
+        await client.$queryRaw`SELECT set_config('app.current_tenant', ${tenant.id}, true)`;
+        await runBound(client, tenant, (tx) => record(tx, result));
+        return result;
+      },
+      { timeout: this.config.database.transactionTimeoutMs, isolationLevel: DEFAULT_ISOLATION },
     );
   }
 
@@ -131,7 +175,7 @@ export class TenantDatabase {
         );
         return { tenant: created, result };
       },
-      { timeout: this.config.database.transactionTimeoutMs },
+      { timeout: this.config.database.transactionTimeoutMs, isolationLevel: DEFAULT_ISOLATION },
     );
   }
 }

@@ -14,6 +14,7 @@ import {
   type SourcesFixture,
 } from './sources';
 import { provisionTenant } from './tenancy';
+import { authz } from './security';
 
 /** Every catalogue item of the fake except the ignored legacy add-on (CB18). */
 export const MODELLED_CHARGEBEE_ITEMS = [
@@ -93,13 +94,20 @@ export async function chargebeeTenant(
 ): Promise<SourcesFixture> {
   const s = sourcesServices(c);
   const ctx = await provisionTenant(c.h, options.prefix ?? 'cb');
-  await c.h.catalogue.publish(ctx, chargebeeProductModel(options.productIds), {
-    actor: 'test',
-    basedOnVersion: 0,
-  });
-  await c.h.credentials.register(ctx, 'chargebee', CHARGEBEE_CREDENTIAL);
+  await c.h.catalogue.publish(
+    await authz(ctx, 'config.product_model.publish'),
+    chargebeeProductModel(options.productIds),
+    {
+      basedOnVersion: 0,
+    },
+  );
+  await c.h.credentials.register(
+    await authz(ctx, 'config.integration'),
+    'chargebee',
+    CHARGEBEE_CREDENTIAL,
+  );
   process.env[chargebeeSecretEnv(ctx.tenantSlug)] = FAKE_CHARGEBEE_API_KEY;
-  const connection = await s.connections.configure(ctx, {
+  const connection = await s.connections.configure(await authz(ctx, 'config.source.connection'), {
     kind: 'chargebee',
     label: 'Chargebee (fake)',
     config: {
@@ -113,11 +121,18 @@ export async function chargebeeTenant(
     },
     credentialName: CHARGEBEE_CREDENTIAL,
   });
-  await s.connections.setStatus(ctx, connection.id, 'enabled');
+  await s.connections.setStatus(
+    await authz(ctx, 'config.source.connection'),
+    connection.id,
+    'enabled',
+  );
   const importConnectionId = (await s.connections.list(ctx)).find((x) => x.kind === 'import')!.id;
   const fixture = { ctx, connectionId: connection.id, importConnectionId };
   if (options.stopAfter === 'connection') return fixture;
-  const captured = await s.snapshots.capture(ctx, connection.id, 'test');
+  const captured = await s.snapshots.capture(
+    await authz(ctx, 'config.source.schema'),
+    connection.id,
+  );
   if (options.stopAfter === 'snapshot') return fixture;
   const base = options.mapping ?? chargebeeTestMapping();
   const profiled = await runProfile(c, fixture, mappingObjects(base));
@@ -130,7 +145,7 @@ export async function chargebeeTenant(
   if (options.stopAfter === 'mapping') return fixture;
   const current = await s.authority.show(ctx);
   await s.authority.publish(
-    ctx,
+    await authz(ctx, 'config.authority.publish'),
     {
       facts: {
         account_profile: null,
@@ -142,7 +157,6 @@ export async function chargebeeTenant(
     },
     {
       expectedBaseVersion: current!.version,
-      actor: 'test',
       ...(options.accept
         ? {
             proofAcceptances: [

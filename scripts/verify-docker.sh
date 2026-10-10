@@ -141,9 +141,18 @@ done
 sleep 1
 [[ "$(docker inspect -f '{{.State.Status}}' "$PROJECT-worker")" == "running" ]] && docker logs "$PROJECT-worker" 2>&1 | grep -q 'Worker started' \
   && pass "worker container running and started" || fail "worker container"
-out="$(run_once cli --network host -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" "$TAG-runtime" \
+# M10A1 (Q1): a writing command without an operator id is refused before any write.
+out="$(run_once clinoop --network host -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" "$TAG-runtime" \
+  node dist/cli/provision-tenant.js --slug dockernoop --name "Docker No Operator" 2>&1 || true)"
+grep -q 'LIP_OPERATOR_ID is required' <<<"$out" \
+  && pass "provisioning without --actor / LIP_OPERATOR_ID refused inside the image (M10A1)" || fail "operator id refusal in image"
+out="$(run_once cli --network host -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" -e LIP_OPERATOR_ID=docker-operator "$TAG-runtime" \
   node dist/cli/provision-tenant.js --slug dockerco --name "Docker Co" --template juniper 2>&1 || true)"
 grep -q '"slug": "dockerco"' <<<"$out" && pass "provisioning CLI works inside the image (template shipped)" || fail "provisioning CLI in image"
+out="$(run_once secverify --network host -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" -e LIP_OPERATOR_ID=docker-operator "$TAG-runtime" \
+  node dist/cli/security.js audit-verify --tenant dockerco 2>&1 || true)"
+grep -q '"ok": true' <<<"$out" \
+  && pass "security audit-verify inside the image: the provisioning event chain verifies (M10A1)" || fail "security audit-verify in image"
 # M6: the worker consumes the context queues (Redis noeviction verified at start-up).
 worker_registered 'Context processors registered' \
   "worker container registered the context processors (M6)" "worker container context processors"
@@ -199,15 +208,15 @@ chmod 755 "$CB_CFG"
 printf '{"site":"docker-synthetic-test","endpoint":"http://198.51.100.7:80","sync":{"overlapMinutes":10}}' >"$CB_CFG/bad.json"
 printf '{"site":"docker-synthetic-test","sync":{"overlapMinutes":10}}' >"$CB_CFG/ok.json"
 chmod 644 "$CB_CFG"/*.json
-out="$(run_once cbbad --network host -v "$CB_CFG:/cfg:ro" -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" "$TAG-runtime" \
+out="$(run_once cbbad --network host -v "$CB_CFG:/cfg:ro" -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" -e LIP_OPERATOR_ID=docker-operator "$TAG-runtime" \
   node dist/cli/sources.js configure --tenant dockerco --kind chargebee --label 'Chargebee' --file /cfg/bad.json --credential chargebee_api --execute 2>&1 || true)"
 grep -q '"code": "invalid_config"' <<<"$out" \
   && pass "Chargebee adapter refuses a non-loopback endpoint inside the image (M9B)" || fail "Chargebee config validation in image"
-out="$(run_once cbok --network host -v "$CB_CFG:/cfg:ro" -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" "$TAG-runtime" \
+out="$(run_once cbok --network host -v "$CB_CFG:/cfg:ro" -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" -e LIP_OPERATOR_ID=docker-operator "$TAG-runtime" \
   node dist/cli/sources.js configure --tenant dockerco --kind chargebee --label 'Chargebee' --file /cfg/ok.json --credential chargebee_api --status disabled --execute 2>&1 || true)"
 grep -q '"kind": "chargebee"' <<<"$out" && grep -q '"credentialName": "chargebee_api"' <<<"$out" \
   && pass "Chargebee connection configured with a credential name inside the image (M9B)" || fail "Chargebee configure in image"
-out="$(run_once cbschema --network host -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" "$TAG-runtime" \
+out="$(run_once cbschema --network host -e DATABASE_URL="$APP" -e REDIS_URL="$REDIS" -e LIP_OPERATOR_ID=docker-operator "$TAG-runtime" \
   node dist/cli/sources.js schema --tenant dockerco --connection chargebee --capture --execute 2>&1 || true)"
 grep -q '"created": true' <<<"$out" && grep -q '"objects": 5' <<<"$out" \
   && pass "Chargebee metadata-only schema captured inside the image (M9B)" || fail "Chargebee schema in image"

@@ -7,11 +7,12 @@ import { NestFactory } from '@nestjs/core';
 import { TenancyModule, TenantRegistryService, TenantTemplateSchema } from '../modules/tenancy';
 import { loadConfig } from '../platform/config';
 import { PlatformModule } from '../platform/platform.module';
+import { authorizePlatformOperator } from './operator';
 
 /**
  * Provisions a tenant with safe defaults (integrations disabled, flows off).
  *
- *   pnpm --filter @lip/api tenant:provision --slug juniper --name "Juniper Education" --template juniper
+ *   pnpm --filter @lip/api tenant:provision --slug juniper --name "Juniper Education" --template juniper --actor <id>
  *
  * `--template` is a name in config/tenant-templates/ or a path to a JSON file.
  * Runs with the application database role, like the API.
@@ -22,6 +23,7 @@ async function main(): Promise<void> {
       slug: { type: 'string' },
       name: { type: 'string' },
       template: { type: 'string' },
+      actor: { type: 'string' },
     },
   });
   if (!values.slug || !values.name) {
@@ -46,7 +48,8 @@ async function main(): Promise<void> {
   });
   try {
     await app.init();
-    const tenant = await app.get(TenantRegistryService).provision({
+    const auth = authorizePlatformOperator(app, 'config.tenant.provision', values.actor);
+    const tenant = await app.get(TenantRegistryService).provision(auth, {
       slug: values.slug,
       name: values.name,
       template: template as never,

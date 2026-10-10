@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import type {
+  SecurityActor,
   ContextKind,
   ExternalRef,
   ExternalRefState,
@@ -82,6 +83,8 @@ export interface ChangeWrite {
   readonly correlationId: string;
   /** M8: the versioned mapping that produced the change (versioned connections only). */
   readonly mappingVersion?: number;
+  /** M10A1: who wrote the change. */
+  readonly actor?: SecurityActor;
 }
 
 const refKey = (r: { system: string; objectType: string; id: string }) =>
@@ -609,6 +612,9 @@ export class ContextStore {
         // M8: every write names the tenant's connection of its source system.
         sourceConnectionId: await sourceConnectionId(tx, change.source.system),
         mappingVersion: change.mappingVersion ?? null,
+        actorKind: change.actor?.kind ?? null,
+        actorId: change.actor?.id ?? null,
+        actorAssurance: change.actor?.assurance ?? null,
       },
     });
     return id;

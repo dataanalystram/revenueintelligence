@@ -21,6 +21,8 @@ import {
   withSnapshot,
   type SourcesFixture,
 } from '../support/sources';
+import { operatorActor } from '../../src/modules/domain';
+import { authz, platformAuthz } from '../support/security';
 
 /**
  * M8 end to end: the production Sugar adapter against the deterministic fake,
@@ -358,13 +360,16 @@ describe('source synchronisation (Sugar adapter, fake Sugar)', () => {
         const f = await sugarTenant(c, local, { prefix: 'srcnocount', stopAfter: 'connection' });
         const s = sourcesServices(c);
         const conn = await s.connections.get(f.ctx, f.connectionId);
-        await s.connections.configure(f.ctx, {
+        await s.connections.configure(await authz(f.ctx, 'config.source.connection'), {
           kind: 'sugar',
           label: conn.label,
           config: { ...conn.config, countSupported: false },
           credentialName: 'sugar_api',
         });
-        const captured = await s.snapshots.capture(f.ctx, f.connectionId, 'test');
+        const captured = await s.snapshots.capture(
+          await authz(f.ctx, 'config.source.schema'),
+          f.connectionId,
+        );
         // M9A: profiling needs no count (population unknown, full and unbounded).
         expect((await runProfile(c, f, mappingObjects(sugarTestMapping()))).status).toBe(
           'completed',
@@ -376,7 +381,7 @@ describe('source synchronisation (Sugar adapter, fake Sugar)', () => {
           0,
         );
         await s.authority.publish(
-          f.ctx,
+          await authz(f.ctx, 'config.authority.publish'),
           {
             facts: {
               account_profile: null,
@@ -386,7 +391,7 @@ describe('source synchronisation (Sugar adapter, fake Sugar)', () => {
               subscription_terms: null,
             },
           },
-          { expectedBaseVersion: 1, actor: 'test' },
+          { expectedBaseVersion: 1 },
         );
         expect(await runSync(c, f, 'full')).toMatchObject({
           status: 'failed',
@@ -413,7 +418,7 @@ describe('source synchronisation (Sugar adapter, fake Sugar)', () => {
         // Publishing against the old snapshot is stale once a new one is captured.
         const s = sourcesServices(c);
         const before = await s.snapshots.latest(f.ctx, f.connectionId);
-        await s.snapshots.capture(f.ctx, f.connectionId, 'test');
+        await s.snapshots.capture(await authz(f.ctx, 'config.source.schema'), f.connectionId);
         const report = await s.mappings.validate(f.ctx, f.connectionId, sugarTestMapping(), {
           validatedAgainst: before!.hash,
         });
@@ -462,7 +467,7 @@ describe('source synchronisation (Sugar adapter, fake Sugar)', () => {
       });
       await expect(
         s.authority.publish(
-          f.ctx,
+          await authz(f.ctx, 'config.authority.publish'),
           {
             facts: {
               account_profile: null,
@@ -472,14 +477,16 @@ describe('source synchronisation (Sugar adapter, fake Sugar)', () => {
               subscription_terms: null,
             },
           },
-          { expectedBaseVersion: 1, actor: 'test' },
+          { expectedBaseVersion: 1 },
         ),
       ).rejects.toMatchObject({
         issues: [expect.objectContaining({ code: 'holding_filter_required' })],
       });
       // Without lines authority the connection cannot run a line sync.
       await expect(
-        s.sync.start(f.ctx, f.connectionId, 'full', { enqueue: false }),
+        s.sync.start(await authz(f.ctx, 'data.sync.run'), f.connectionId, 'full', {
+          enqueue: false,
+        }),
       ).rejects.toMatchObject({
         code: 'not_authoritative_for_lines',
       });
@@ -490,7 +497,7 @@ describe('source synchronisation (Sugar adapter, fake Sugar)', () => {
       const f = await sugarTenant(c, fake, { prefix: 'srccross', stopAfter: 'mapping' });
       await expect(
         s.authority.publish(
-          f.ctx,
+          await authz(f.ctx, 'config.authority.publish'),
           {
             facts: {
               account_profile: null,
@@ -500,7 +507,7 @@ describe('source synchronisation (Sugar adapter, fake Sugar)', () => {
               subscription_terms: null,
             },
           },
-          { expectedBaseVersion: 1, actor: 'test' },
+          { expectedBaseVersion: 1 },
         ),
       ).rejects.toMatchObject({
         issues: [expect.objectContaining({ code: 'cross_source_unsupported' })],
@@ -518,29 +525,36 @@ describe('source synchronisation (Sugar adapter, fake Sugar)', () => {
         await s.mappings.validate(f.ctx, f.connectionId, doc),
       );
       await expect(
-        s.mappings.publish(f.ctx, f.connectionId, doc, { actor: 'test' } as never),
+        s.mappings.publish(
+          await authz(f.ctx, 'config.mapping.publish'),
+          f.connectionId,
+          doc,
+          {} as never,
+        ),
       ).rejects.toMatchObject({ code: 'base_version_required' });
       // A loads v2, B publishes v3, A's publish from v2 is refused.
-      await s.mappings.publish(f.ctx, f.connectionId, doc, {
+      await s.mappings.publish(await authz(f.ctx, 'config.mapping.publish'), f.connectionId, doc, {
         expectedBaseVersion: 2,
-        actor: 'b',
         acknowledgements,
       });
       await expect(
-        s.mappings.publish(f.ctx, f.connectionId, doc, {
+        s.mappings.publish(await authz(f.ctx, 'config.mapping.publish'), f.connectionId, doc, {
           expectedBaseVersion: 2,
-          actor: 'a',
           acknowledgements,
         }),
       ).rejects.toMatchObject({ code: 'concurrent_publish' });
       // Racing publishers from the same base: exactly one wins.
       const racers = await Promise.allSettled(
-        [1, 2, 3, 4].map((i) =>
-          s.mappings.publish(f.ctx, f.connectionId, doc, {
-            expectedBaseVersion: 3,
-            actor: `r${i}`,
-            acknowledgements,
-          }),
+        [1, 2, 3, 4].map(async (i) =>
+          s.mappings.publish(
+            await authz(f.ctx, 'config.mapping.publish', operatorActor(`r${i}`)),
+            f.connectionId,
+            doc,
+            {
+              expectedBaseVersion: 3,
+              acknowledgements,
+            },
+          ),
         ),
       );
       expect(racers.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
@@ -551,15 +565,20 @@ describe('source synchronisation (Sugar adapter, fake Sugar)', () => {
       ).toBe(true);
       expect((await s.mappings.show(f.ctx, f.connectionId))!.version).toBe(4);
       await expect(
-        s.authority.publish(f.ctx, (await s.authority.show(f.ctx))!.document, {
-          actor: 'x',
-        } as never),
+        s.authority.publish(
+          await authz(f.ctx, 'config.authority.publish'),
+          (await s.authority.show(f.ctx))!.document,
+          {} as never,
+        ),
       ).rejects.toMatchObject({ code: 'base_version_required' });
       await expect(
-        s.authority.publish(f.ctx, (await s.authority.show(f.ctx))!.document, {
-          expectedBaseVersion: 1,
-          actor: 'x',
-        }),
+        s.authority.publish(
+          await authz(f.ctx, 'config.authority.publish'),
+          (await s.authority.show(f.ctx))!.document,
+          {
+            expectedBaseVersion: 1,
+          },
+        ),
       ).rejects.toMatchObject({ code: 'concurrent_publish' });
     });
 
@@ -579,22 +598,27 @@ describe('source synchronisation (Sugar adapter, fake Sugar)', () => {
       const s = sourcesServices(c);
       // Tenant A: same name, secret configured (sugarTenant sets it).
       const a = await sugarTenant(c, fake, { prefix: 'srcseca', stopAfter: 'connection' });
-      expect((await s.connections.test(a.ctx, a.connectionId)).code).toBe('ok');
+      expect(
+        (await s.connections.test(await authz(a.ctx, 'config.source.connection'), a.connectionId))
+          .code,
+      ).toBe('ok');
       // Tenant B: same credential name, no secret of its own → its key is
       // tenant.<b>.sugar.sugar_api, never A's; the test fails closed.
-      const b = await c.h.registry.provision({
+      const b = await c.h.registry.provision(platformAuthz('config.tenant.provision'), {
         slug: `srcsecb${Date.now().toString(36)}`,
         name: 'B',
       });
       const ctxB = await c.h.contexts.forTenantId(b.id);
-      const connB = await s.connections.configure(ctxB, {
+      const connB = await s.connections.configure(await authz(ctxB, 'config.source.connection'), {
         kind: 'sugar',
         label: 'Sugar',
         config: { instanceUrl: fake.url, apiVersion: fake.version, modules: ['Accounts'] },
         credentialName: 'sugar_api',
       });
       const grantsBefore = fake.passwordGrants;
-      expect(await s.connections.test(ctxB, connB.id)).toEqual({ ok: false, code: 'auth_failed' });
+      expect(
+        await s.connections.test(await authz(ctxB, 'config.source.connection'), connB.id),
+      ).toEqual({ ok: false, code: 'auth_failed' });
       expect(fake.passwordGrants).toBe(grantsBefore);
       const refs = await c.sql<{ secret_key: string }>(
         `SELECT secret_key FROM tenant_credential_refs WHERE tenant_id = $1 AND system = 'sugar'`,
@@ -613,7 +637,7 @@ describe('source synchronisation (Sugar adapter, fake Sugar)', () => {
       const s = sourcesServices(c);
       const f = await sugarTenant(c, fake, { prefix: 'srcsecret', stopAfter: 'connection' });
       await expect(
-        s.connections.configure(f.ctx, {
+        s.connections.configure(await authz(f.ctx, 'config.source.connection'), {
           kind: 'sugar',
           label: 'Sugar',
           config: {
@@ -633,7 +657,12 @@ describe('source synchronisation (Sugar adapter, fake Sugar)', () => {
       try {
         const f = await sugarTenant(c, local, { prefix: 'srcresume' });
         const s = sourcesServices(c);
-        const started = await s.sync.start(f.ctx, f.connectionId, 'full', { enqueue: false });
+        const started = await s.sync.start(
+          await authz(f.ctx, 'data.sync.run'),
+          f.connectionId,
+          'full',
+          { enqueue: false },
+        );
         // Page 2 of the lines keeps failing with 503 beyond the adapter's retries.
         local.fail({
           match: /^GET \/RevenueLineItems$/,
@@ -641,12 +670,17 @@ describe('source synchronisation (Sugar adapter, fake Sugar)', () => {
           times: 10,
           when: (r) => r.query.get('offset') === '200',
         });
-        await expect(s.sync.execute(f.ctx, started.runId)).rejects.toMatchObject({
+        await expect(
+          s.sync.execute(await authz(f.ctx, 'canonical.source_sync'), started.runId),
+        ).rejects.toMatchObject({
           kind: 'server_error',
         });
         expect((await run(f.ctx, started.runId))[0]!.status).toBe('running');
         local.faults.length = 0;
-        const resumed = await s.sync.execute(f.ctx, started.runId);
+        const resumed = await s.sync.execute(
+          await authz(f.ctx, 'canonical.source_sync'),
+          started.runId,
+        );
         expect(resumed.status).toBe('completed');
         expect((await lines(f.ctx)).length).toBe(16 + 450);
         // Every line was created exactly once despite the re-read.
@@ -711,10 +745,18 @@ describe('source synchronisation (Sugar adapter, fake Sugar)', () => {
       const s = sourcesServices(c);
       const f = await sugarTenant(c, fake, { prefix: 'srcnoadapter', stopAfter: 'connection' });
       await expect(
-        s.connections.configure(f.ctx, { kind: 'gainsight_cs', label: 'GS', config: {} }),
+        s.connections.configure(await authz(f.ctx, 'config.source.connection'), {
+          kind: 'gainsight_cs',
+          label: 'GS',
+          config: {},
+        }),
       ).rejects.toMatchObject({ code: 'adapter_not_registered' });
       await expect(
-        s.connections.configure(f.ctx, { kind: 'hubspot', label: 'HS', config: {} }),
+        s.connections.configure(await authz(f.ctx, 'config.source.connection'), {
+          kind: 'hubspot',
+          label: 'HS',
+          config: {},
+        }),
       ).rejects.toMatchObject({ code: 'kind_not_configurable' });
       // A connection of such a kind (created outside the service) cannot start a run.
       const [{ id }] = (await c.sql<{ id: string }>(
@@ -722,7 +764,9 @@ describe('source synchronisation (Sugar adapter, fake Sugar)', () => {
          VALUES ($1, gen_random_uuid(), 'gainsight_cs', 'GS', 'enabled', 'versioned') RETURNING id::text`,
         [f.ctx.tenantId],
       )) as [{ id: string }];
-      await expect(s.sync.start(f.ctx, id, 'full', { enqueue: false })).rejects.toMatchObject({
+      await expect(
+        s.sync.start(await authz(f.ctx, 'data.sync.run'), id, 'full', { enqueue: false }),
+      ).rejects.toMatchObject({
         code: 'adapter_not_registered',
       });
     });
@@ -766,14 +810,14 @@ describe('source synchronisation (Sugar adapter, fake Sugar)', () => {
       const written = new Map<string, string>();
       subOutcomes.forEach((o, i) => {
         const [ctx, obs] = subCalls[i]!;
-        expect(ctx.tenantId).toBe(f.ctx.tenantId);
+        expect(ctx.tenant.tenantId).toBe(f.ctx.tenantId);
         // Only a `created` outcome brings a row into existence; a later
         // writer call (update, tombstone) on a row must not launder it.
         if (o.outcome === 'created') written.set(o.subscriptionId, obs.source.recordId);
       });
       const contextRefs = new Set(
         ctxCalls
-          .filter(([ctx]) => ctx.tenantId === f.ctx.tenantId)
+          .filter(([ctx]) => ctx.tenant.tenantId === f.ctx.tenantId)
           .map(([, obs]) => `${obs.ref.objectType}|${obs.ref.id}`),
       );
 
@@ -878,7 +922,11 @@ describe('source synchronisation (Sugar adapter, fake Sugar)', () => {
     it('a run started with enqueue is processed by the worker (lip-sources)', async () => {
       const s = sourcesServices(c);
       const f = await sugarTenant(c, fake, { prefix: 'srcworker' });
-      const started = await s.sync.start(f.ctx, f.connectionId, 'full');
+      const started = await s.sync.start(
+        await authz(f.ctx, 'data.sync.run'),
+        f.connectionId,
+        'full',
+      );
       await c.until(
         async () => (await run(f.ctx, started.runId))[0]?.status === 'completed',
         30_000,

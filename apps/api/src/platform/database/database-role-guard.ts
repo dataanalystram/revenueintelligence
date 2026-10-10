@@ -1,5 +1,6 @@
-import { Inject, Injectable, Logger, type OnApplicationBootstrap } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional, type OnApplicationBootstrap } from '@nestjs/common';
 import { APP_CONFIG, type AppConfig } from '../config';
+import { MetricsService } from '../metrics';
 import { PrismaService } from './prisma.service';
 
 /** The group role that holds the application's table privileges (see the M2 migration). */
@@ -49,6 +50,14 @@ export function assessRole(facts: RoleFacts, allowPrivilegedRole: boolean): Role
   return { safe: true };
 }
 
+/** A stable code for a refused role (never the role name). */
+export function roleRefusalCode(facts: RoleFacts): string {
+  if (!facts.tenancyInstalled) return 'tenancy_not_installed';
+  if (facts.isSuperuser) return 'superuser';
+  if (facts.bypassesRls) return 'bypassrls';
+  return 'not_app_role_member';
+}
+
 /**
  * Verifies at start-up (and on every readiness check until it succeeds) that
  * the process is connected with a role subject to row-level security.
@@ -63,6 +72,7 @@ export class DatabaseRoleGuard implements OnApplicationBootstrap {
   constructor(
     private readonly prisma: PrismaService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
+    @Optional() private readonly metrics?: MetricsService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -82,7 +92,22 @@ export class DatabaseRoleGuard implements OnApplicationBootstrap {
     if (this.verified) return;
     const facts = await this.readFacts();
     const assessment = assessRole(facts, this.config.database.allowPrivilegedRole);
-    if (!assessment.safe) throw new UnsafeDatabaseRoleError(assessment.reason);
+    if (!assessment.safe) {
+      // M10A1 §15: the same security-event shape and counter as the tenancy emitter
+      // (the platform layer cannot depend on modules). Codes only.
+      this.metrics?.increment('lip_security_events_total', {
+        event: 'role_guard_refused',
+        outcome: 'refused',
+      });
+      this.logger.warn({
+        msg: 'Security event',
+        security_event: true,
+        event: 'role_guard_refused',
+        outcome: 'refused',
+        reasonCode: roleRefusalCode(facts),
+      });
+      throw new UnsafeDatabaseRoleError(assessment.reason);
+    }
     if (assessment.warning) this.logger.warn(assessment.warning);
     this.verified = true;
   }

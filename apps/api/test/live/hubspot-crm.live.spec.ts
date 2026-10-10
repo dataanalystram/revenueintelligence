@@ -6,6 +6,7 @@ import type { TenantContext } from '../../src/modules/tenancy';
 import { EnvSecretProvider } from '../../src/platform/secrets';
 import { startInfrastructure, type TestInfrastructure } from '../support/containers';
 import { provisionTenant, startTenancy, type TenancyHarness } from '../support/tenancy';
+import { authz } from '../support/security';
 
 /**
  * The live account through the FULL production path (technical debt #9):
@@ -35,11 +36,15 @@ if (missing.length > 0) {
       infra = await startInfrastructure();
       h = await startTenancy(infra.config);
       tenant = await provisionTenant(h, 'hslive');
-      await h.config.configureIntegration(tenant, 'hubspot', {
+      await h.config.configureIntegration(await authz(tenant, 'config.integration'), 'hubspot', {
         access: 'read_only',
         settings: { portalId: process.env[PORTAL_VAR]!, auth: 'static_token' },
       });
-      await h.credentials.register(tenant, 'hubspot', 'access_token');
+      await h.credentials.register(
+        await authz(tenant, 'config.integration'),
+        'hubspot',
+        'access_token',
+      );
       // The tenant's own credential variable, holding the test account's key (in-process only).
       const own = EnvSecretProvider.toEnvName(`tenant.${tenant.tenantSlug}.hubspot.access_token`);
       process.env[own] = process.env[SOURCE_VAR];
@@ -103,11 +108,15 @@ if (missing.length > 0) {
 
     it('another tenant without its own credential cannot use this one', async () => {
       const other = await provisionTenant(h, 'hsliveb');
-      await h.config.configureIntegration(other, 'hubspot', {
+      await h.config.configureIntegration(await authz(other, 'config.integration'), 'hubspot', {
         access: 'read_only',
         settings: { portalId: process.env[PORTAL_VAR]! },
       });
-      await h.credentials.register(other, 'hubspot', 'access_token');
+      await h.credentials.register(
+        await authz(other, 'config.integration'),
+        'hubspot',
+        'access_token',
+      );
       const err = await h.app
         .get<CrmConnector>(CRM_CONNECTOR)
         .forTenant(other)

@@ -13,6 +13,7 @@ import {
   type TenantContext,
 } from '../../src/modules/tenancy';
 import { WEBHOOK_MAX_BODY_BYTES } from '../../src/platform/http';
+import { MetricsService } from '../../src/platform/metrics';
 import {
   APP_LOGIN,
   startInfrastructure,
@@ -23,6 +24,7 @@ import {
 import { ALL_READ_SCOPES, FakeHubSpot, sampleData } from '../support/fake-hubspot';
 import { legacyHeaders, signedHeaders, webhookEvent } from '../support/hubspot-webhooks';
 import { provisionTenant, startTenancy, type TenancyHarness } from '../support/tenancy';
+import { authz, platformAuthz } from '../support/security';
 
 /**
  * POST /webhooks/hubspot through the real API process (raw-body middleware,
@@ -59,7 +61,7 @@ describe('HubSpot webhook intake (API process)', () => {
 
   async function installed(prefix: string, portalId: number): Promise<TenantContext> {
     const t = await provisionTenant(h, prefix);
-    await h.config.configureIntegration(t, 'hubspot', {
+    await h.config.configureIntegration(await authz(t, 'config.integration'), 'hubspot', {
       access: 'read_only',
       settings: { portalId: String(portalId), auth: 'oauth' },
     });
@@ -156,19 +158,23 @@ describe('HubSpot webhook intake (API process)', () => {
 
     ok = await installed('whok', 5005);
     staticTenant = await provisionTenant(h, 'whstatic');
-    await h.config.configureIntegration(staticTenant, 'hubspot', {
-      access: 'read_only',
-      settings: { portalId: '5005' },
-    });
+    await h.config.configureIntegration(
+      await authz(staticTenant, 'config.integration'),
+      'hubspot',
+      {
+        access: 'read_only',
+        settings: { portalId: '5005' },
+      },
+    );
     amb1 = await installed('whamba', 6006);
     amb2 = await installed('whambb', 6006);
     disabled = await installed('whdis', 8008);
-    await h.config.configureIntegration(disabled, 'hubspot', {
+    await h.config.configureIntegration(await authz(disabled, 'config.integration'), 'hubspot', {
       access: 'disabled',
       settings: { portalId: '8008', auth: 'oauth' },
     });
     suspended = await installed('whsusp', 9009);
-    await h.registry.suspend(suspended.tenantId);
+    await h.registry.suspend(platformAuthz('config.tenant.status'), suspended.tenantId);
   });
 
   afterAll(async () => {
@@ -205,6 +211,31 @@ describe('HubSpot webhook intake (API process)', () => {
       expect(res.headers['cache-control']).toBe('no-store');
       const rows = await receipts(ok);
       expect(rows).toHaveLength(3);
+      // M10A1: one audit event per tenant batch, by the intake's system actor (counts only).
+      const audit = await withAdmin(
+        infra.adminUrl,
+        async (db) =>
+          (
+            await db.query<{
+              actor_kind: string;
+              actor_id: string;
+              capability: string;
+              details: unknown;
+            }>(
+              `SELECT actor_kind, actor_id, capability, details FROM tenant_audit_events
+              WHERE tenant_id = $1 AND action = 'webhook.receipts.store' ORDER BY seq DESC LIMIT 1`,
+              [ok.tenantId],
+            )
+          ).rows,
+      );
+      expect(audit).toEqual([
+        {
+          actor_kind: 'system',
+          actor_id: 'api:webhook-intake',
+          capability: 'processing.receipt',
+          details: { events: 3, stored: 3, duplicates: 0 },
+        },
+      ]);
       expect(rows.map((r) => [r.subscription_type, r.object_type_id])).toEqual([
         ['object.creation', '0-1'],
         ['object.propertyChange', '0-2'],
@@ -292,6 +323,11 @@ describe('HubSpot webhook intake (API process)', () => {
   describe('signature and freshness', () => {
     it('a wrong signature, secret or body → 401, nothing stored', async () => {
       const before = await totalReceipts();
+      const signals = () =>
+        app.get(MetricsService).total('lip_security_events_total', {
+          event: 'webhook_signature_invalid',
+        });
+      const signalsBefore = signals();
       const body = json([webhookEvent()]);
       const headers = signedHeaders({ secret: 'not-the-secret', uri: TARGET, body });
       const res = await deliver(body, { headers }).expect(401);
@@ -300,6 +336,8 @@ describe('HubSpot webhook intake (API process)', () => {
       await deliver(json([webhookEvent()]), { headers: good }).expect(401); // other body
       await deliver(body, { headers: { 'content-type': 'application/json' } }).expect(401);
       expect(await totalReceipts()).toBe(before);
+      // M10A1: each refusal is a security event (code only).
+      expect(signals() - signalsBefore).toBe(3);
     });
 
     it('stale (> 5 min) and future-dated (> 60 s) timestamps → 401', async () => {

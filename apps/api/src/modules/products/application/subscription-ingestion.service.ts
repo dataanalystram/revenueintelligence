@@ -5,9 +5,17 @@ import {
   ProductKeySchema,
   SubscriptionObservationSchema,
   type ApplyDecision,
+  type SecurityActor,
   type SubscriptionObservation,
 } from '../../domain';
-import { TenantDatabase, type TenantContext, type TenantTransaction } from '../../tenancy';
+import {
+  assertAuthorizedFor,
+  TenantDatabase,
+  type AuthorizedContext,
+  type TenantContext,
+  type TenantTransaction,
+} from '../../tenancy';
+
 import {
   SubscriptionStore,
   type SubscriptionRow,
@@ -15,6 +23,12 @@ import {
 } from '../infrastructure/subscription.store';
 import { SubscriptionQueries } from '../infrastructure/subscription.queries';
 import { ProductCatalogueService } from './product-catalogue.service';
+
+/** Subscription lines are written by source runs and by operator imports (M10A1 §4). */
+export type SubscriptionWriteContext = AuthorizedContext<
+  'canonical.source_sync' | 'canonical.import'
+>;
+const SUBSCRIPTION_WRITE = ['canonical.source_sync', 'canonical.import'] as const;
 
 export type SubscriptionCause =
   'import' | 'backfill' | 'reconciliation' | 'webhook' | 'replay' | 'resync';
@@ -29,6 +43,8 @@ export interface SubscriptionIngestMeta {
   /** M8 provenance: the producing source connection and mapping version. */
   readonly sourceConnectionId?: string;
   readonly mappingVersion?: number;
+  /** M10A1: who writes (set from the authorized context). */
+  readonly actor?: SecurityActor;
 }
 
 export type SubscriptionIngestOutcome =
@@ -85,13 +101,16 @@ export class SubscriptionIngestionService {
   }
 
   async ingest(
-    ctx: TenantContext,
+    actx: SubscriptionWriteContext,
     observation: SubscriptionObservation,
     meta: SubscriptionIngestMeta,
   ): Promise<SubscriptionIngestOutcome> {
+    assertAuthorizedFor(actx, SUBSCRIPTION_WRITE);
     const parsed = SubscriptionObservationSchema.safeParse(observation);
     if (!parsed.success) return { outcome: 'rejected', reason: 'invalid_observation' };
-    return this.db.transaction(ctx, (tx) => this.apply(tx, parsed.data, meta));
+    return this.db.transaction(actx.tenant, (tx) =>
+      this.apply(tx, parsed.data, { ...meta, actor: actx.actor }),
+    );
   }
 
   private async apply(
@@ -125,6 +144,7 @@ export class SubscriptionIngestionService {
         adapterVersion: meta.adapterVersion,
         ...(meta.sourceConnectionId ? { sourceConnectionId: meta.sourceConnectionId } : {}),
         ...(meta.mappingVersion !== undefined ? { mappingVersion: meta.mappingVersion } : {}),
+        ...(meta.actor ? { actor: meta.actor } : {}),
         correlationId: meta.correlationId,
       });
       return { outcome: 'deleted', subscriptionId: stored.id, changedFields: ['recordState'] };
@@ -187,6 +207,7 @@ export class SubscriptionIngestionService {
         adapterVersion: meta.adapterVersion,
         ...(meta.sourceConnectionId ? { sourceConnectionId: meta.sourceConnectionId } : {}),
         ...(meta.mappingVersion !== undefined ? { mappingVersion: meta.mappingVersion } : {}),
+        ...(meta.actor ? { actor: meta.actor } : {}),
         correlationId: meta.correlationId,
       });
 

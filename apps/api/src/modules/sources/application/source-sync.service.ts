@@ -49,7 +49,13 @@ import {
   type OwnershipGap,
   type SubscriptionIngestMeta,
 } from '../../products';
-import { TenantDatabase, type TenantContext } from '../../tenancy';
+import {
+  assertAuthorized,
+  AuditTrail,
+  TenantDatabase,
+  type AuthorizedContext,
+  type TenantContext,
+} from '../../tenancy';
 import { MetricsService } from '../../../platform/metrics';
 import { QueueService } from '../../../platform/queue';
 import { ConnectionNotFoundError, SourcesError, SyncRefusedError } from '../errors';
@@ -61,6 +67,7 @@ import {
 } from '../infrastructure/sources.repository';
 import { SOURCE_SYNC_JOB, SOURCES_QUEUE, sourceSyncJobId } from '../jobs';
 import { SourceConnectionsService } from './source-connections.service';
+import { AuditFailures } from '../../tenancy';
 
 export type SyncMode = 'full' | 'incremental';
 
@@ -86,6 +93,8 @@ const MAX_LISTED_IDS = 50;
 
 interface RunContext {
   readonly ctx: TenantContext;
+  /** M10A1: the run's authorization for canonical writes (source_sync actor). */
+  readonly actx: AuthorizedContext<'canonical.source_sync'>;
   readonly run: SourceRun;
   readonly connection: SourceConnection;
   readonly kind: ExternalSystem;
@@ -113,6 +122,15 @@ interface ChildSet {
   uncertain: boolean;
   deleted: boolean;
 }
+
+/** Coordinates of a held (secret-like) field value; never the value. */
+interface HeldCoordinate {
+  readonly object: string;
+  readonly recordId: string;
+  readonly field: string;
+  readonly pattern: string;
+}
+const MAX_HELD_LISTED = 100;
 
 /** Mutable run counters: counts and codes only, never values. */
 class RunState {
@@ -161,6 +179,17 @@ class RunState {
     this.quality[code] = (this.quality[code] ?? 0) + by;
   }
 
+  /**
+   * M10A1 amendment A1: a field value refused as secret-like and held. Counted
+   * under `secret_like_value` and listed by coordinates (object, record id,
+   * field, pattern code), bounded; the value itself is never part of the run.
+   */
+  hold(object: string, recordId: string, field: string, pattern: string): void {
+    this.count('secret_like_value');
+    const list = (this.detail.secret_like_held ??= []) as HeldCoordinate[];
+    if (list.length < MAX_HELD_LISTED) list.push({ object, recordId, field, pattern });
+  }
+
   snapshot(): Record<string, unknown> {
     const gapAccounts = new Set([...this.gaps.values()].map((g) => g.companyId)).size;
     return {
@@ -193,6 +222,7 @@ export class SourceSyncService {
     private readonly catalogue: ProductCatalogueService,
     private readonly gaps: OwnershipGapService,
     private readonly profiles: ProfilesRepository,
+    private readonly audit: AuditTrail,
     @Optional() @Inject(QueueService) private readonly queues?: QueueService,
     @Optional() @Inject(MetricsService) private readonly metrics?: MetricsService,
   ) {}
@@ -201,13 +231,16 @@ export class SourceSyncService {
    * Starts a run (pre-flight checks first) and, unless `enqueue` is false,
    * queues it for the worker. A connection has at most one active run.
    */
+  @AuditFailures('sync.start', 'sync_run')
   async start(
-    ctx: TenantContext,
+    actx: AuthorizedContext<'data.sync.run'>,
     connectionId: string,
     mode: SyncMode,
     options: { correlationId?: string; enqueue?: boolean; now?: Date } = {},
   ): Promise<StartedSync> {
-    const correlationId = options.correlationId ?? randomUUID();
+    assertAuthorized(actx, 'data.sync.run');
+    const ctx = actx.tenant;
+    const correlationId = options.correlationId ?? actx.correlationId ?? randomUUID();
     const started = await this.db.transaction(ctx, async (tx) => {
       const connection = await this.repo.connection(tx, connectionId);
       if (!connection) throw new ConnectionNotFoundError(connectionId);
@@ -258,6 +291,12 @@ export class SourceSyncService {
         windowSince,
         pageSize: DEFAULT_PAGE_SIZE,
       });
+      await this.audit.record(tx, actx, {
+        action: 'sync.start',
+        targetKind: 'sync_run',
+        targetRef: run.id,
+        details: { connectionId, mode, mappingVersion: mapping!.version },
+      });
       return { run, alreadyRunning: false };
     });
     if (!started.alreadyRunning && options.enqueue !== false) {
@@ -277,7 +316,12 @@ export class SourceSyncService {
    * failures are rethrown with the run still running (the job retries and
    * resumes); anything else fails the run with a stable code.
    */
-  async execute(ctx: TenantContext, runId: string): Promise<SyncResult> {
+  async execute(
+    actx: AuthorizedContext<'canonical.source_sync'>,
+    runId: string,
+  ): Promise<SyncResult> {
+    assertAuthorized(actx, 'canonical.source_sync');
+    const ctx = actx.tenant;
     const loaded = await this.db.transaction(ctx, async (tx) => {
       const run = await this.repo.run(tx, runId);
       if (!run || run.status !== 'running') return undefined;
@@ -314,6 +358,7 @@ export class SourceSyncService {
       this.preflight(loaded.connection, mapping, loaded.authority?.document);
       const rc: RunContext = {
         ctx,
+        actx,
         run,
         connection: loaded.connection,
         kind: loaded.connection.kind as ExternalSystem,
@@ -335,6 +380,19 @@ export class SourceSyncService {
       await this.checkDrift(rc, state);
       if (run.mode === 'backfill') await this.full(rc, state);
       else await this.incremental(rc, state);
+      await this.db.transaction(ctx, (tx) =>
+        this.audit.record(
+          tx,
+          actx,
+          {
+            action: 'sync.finish',
+            targetKind: 'sync_run',
+            targetRef: runId,
+            details: { status: 'completed', seen: state.seen, changed: state.changed },
+          },
+          'completed',
+        ),
+      );
       this.metrics?.increment('lip_source_runs', {
         kind: rc.kind,
         mode: run.mode,
@@ -345,8 +403,8 @@ export class SourceSyncService {
       if (isConnectorError(err) && err.retryable) throw err;
       const code = errorCode(err);
       state.count(code === 'schema_drift' || code === 'unstable_read' ? code : 'run_failed');
-      await this.db.transaction(ctx, (tx) =>
-        this.repo.finishRun(tx, runId, {
+      await this.db.transaction(ctx, async (tx) => {
+        await this.repo.finishRun(tx, runId, {
           status: 'failed',
           errorCode: code,
           quality: state.snapshot(),
@@ -354,8 +412,20 @@ export class SourceSyncService {
           changed: state.changed,
           skipped: state.skipped,
           failed: state.failed,
-        }),
-      );
+        });
+        await this.audit.record(
+          tx,
+          actx,
+          {
+            action: 'sync.finish',
+            targetKind: 'sync_run',
+            targetRef: runId,
+            details: { status: 'failed', code },
+          },
+          'failed',
+          'operation_failed',
+        );
+      });
       this.metrics?.increment('lip_source_runs', {
         kind: loaded.connection?.kind ?? 'unknown',
         mode: run.mode,
@@ -368,10 +438,22 @@ export class SourceSyncService {
   }
 
   /** Marks a run failed (dead-lettered job); nothing else changes. */
-  async abandon(ctx: TenantContext, runId: string, code: string): Promise<void> {
-    await this.db.transaction(ctx, async (tx) => {
+  @AuditFailures('sync.abandon', 'sync_run')
+  async abandon(
+    actx: AuthorizedContext<'data.sync.run'>,
+    runId: string,
+    code: string,
+  ): Promise<void> {
+    assertAuthorized(actx, 'data.sync.run');
+    await this.db.transaction(actx.tenant, async (tx) => {
       const run = await this.repo.run(tx, runId);
       if (!run || run.status !== 'running') return;
+      await this.audit.record(tx, actx, {
+        action: 'sync.abandon',
+        targetKind: 'sync_run',
+        targetRef: runId,
+        details: { code },
+      });
       await this.repo.finishRun(tx, runId, {
         status: 'failed',
         errorCode: code,
@@ -508,7 +590,7 @@ export class SourceSyncService {
             continue;
           }
           const out = await this.subscriptions.ingest(
-            rc.ctx,
+            rc.actx,
             {
               presence: 'absent',
               source: { system: rc.kind, objectType: obj.source, recordId },
@@ -544,6 +626,7 @@ export class SourceSyncService {
       retired = 0;
       for (const [object, r] of retire) {
         retired += await this.context.retireAbsentWithin(
+          rc.actx,
           tx,
           {
             system: rc.kind,
@@ -733,7 +816,9 @@ export class SourceSyncService {
         continue;
       }
       result.quality.forEach((q) => state.count(q));
-      await this.context.ingest(rc.ctx, result.observation, this.contextMeta(rc));
+      const ingested = await this.context.ingest(rc.actx, result.observation, this.contextMeta(rc));
+      for (const h of ingested.held ?? [])
+        state.hold(obj.source, result.observation.ref.id, h.field, h.code);
       if (obj.entity === 'account') state.knownAccounts.add(result.observation.ref.id);
     }
     this.metrics?.increment(
@@ -923,7 +1008,7 @@ export class SourceSyncService {
         case 'ingest': {
           result.quality.forEach((q) => state.count(q));
           const out = await this.subscriptions.ingest(
-            rc.ctx,
+            rc.actx,
             result.observation,
             this.lineMeta(rc),
           );
@@ -1422,7 +1507,7 @@ export class SourceSyncService {
           const key = `${object}|${id}`;
           if (!mayTombstone(key, state.holdingIds, state.seenButRejected)) continue;
           const out = await this.subscriptions.ingest(
-            rc.ctx,
+            rc.actx,
             {
               presence: 'absent',
               source: { system: rc.kind, objectType: object, recordId: id },
@@ -1485,6 +1570,7 @@ export class SourceSyncService {
       checkpointId: rc.run.id,
       adapterVersion: rc.connector.capabilities().adapterVersion,
       mappingVersion: rc.mappingVersion,
+      actor: rc.actx.actor,
     };
   }
 }

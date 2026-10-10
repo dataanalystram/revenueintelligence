@@ -6,6 +6,7 @@ import type { TenantContext } from '../../src/modules/tenancy';
 import { startContextHarness, startWorkerApp, type ContextHarness } from '../support/context';
 import { QueueService } from '../../src/platform/queue';
 import { RECEIPTS_STORED_LISTENER, type ReceiptsStoredListener } from '../../src/modules/crm';
+import { authz, platformAuthz } from '../support/security';
 
 /**
  * M6 receipt processing end to end (ADR 0013/0014): durable receipt → job →
@@ -290,9 +291,9 @@ describe('context processing: webhook receipts → canonical context', () => {
         await admin.query('BEGIN');
         await admin.query('LOCK TABLE tenant_context_changes IN SHARE MODE');
         ingestions = pairs.flatMap((n) =>
-          ['a', 'b'].map((side) =>
+          ['a', 'b'].map(async (side) =>
             c.ingestion.ingest(
-              a,
+              await authz(a, 'canonical.source_sync'),
               {
                 kind: 'person',
                 presence: 'present',
@@ -344,7 +345,7 @@ describe('context processing: webhook receipts → canonical context', () => {
         await admin.query('BEGIN');
         await admin.query('LOCK TABLE tenant_source_relationships IN SHARE MODE');
         personDone = c.ingestion.ingest(
-          a,
+          await authz(a, 'canonical.source_sync'),
           {
             kind: 'person',
             presence: 'present',
@@ -373,7 +374,7 @@ describe('context processing: webhook receipts → canonical context', () => {
         let companyFinished = false;
         companyDone = c.ingestion
           .ingest(
-            a,
+            await authz(a, 'canonical.source_sync'),
             {
               kind: 'company',
               presence: 'present',
@@ -482,12 +483,15 @@ describe('context processing: webhook receipts → canonical context', () => {
         correlationId: randomUUID(),
       });
       expect(dry).toMatchObject({ dryRun: true, matched: 1, replayed: 0 });
-      const res = await c.operations.replayDeadLetters(a, {
-        ids: [dl!.id as string],
-        limit: 10,
-        dryRun: false,
-        correlationId: randomUUID(),
-      });
+      const res = await c.operations.replayDeadLetters(
+        await authz(a, 'processing.dead_letter.resolve'),
+        {
+          ids: [dl!.id as string],
+          limit: 10,
+          dryRun: false,
+          correlationId: randomUUID(),
+        },
+      );
       expect(res).toMatchObject({ replayed: 1 });
       expect((await c.waitForReceipt(a, k!)).processing_status).toBe('processed');
       expect(await personRef(a, '103')).toBeDefined();
@@ -600,7 +604,7 @@ describe('context processing: webhook receipts → canonical context', () => {
         ],
         false,
       );
-      await c.h.registry.suspend(s.tenantId);
+      await c.h.registry.suspend(platformAuthz('config.tenant.status'), s.tenantId);
       await c.queues.add(
         QUEUES.receipts,
         JOBS.receipt,
@@ -703,7 +707,7 @@ describe('context processing: webhook receipts → canonical context', () => {
       };
       await expect(
         c.ingestion.ingest(
-          a,
+          await authz(a, 'canonical.source_sync'),
           observation,
           { cause: 'resync', correlationId: randomUUID() },
           {
@@ -736,8 +740,11 @@ describe('context processing: webhook receipts → canonical context', () => {
         fields: { name: 'Concurrent School' },
       };
       const results = await Promise.all(
-        Array.from({ length: 6 }, () =>
-          c.ingestion.ingest(a, obs, { cause: 'resync', correlationId: randomUUID() }),
+        Array.from({ length: 6 }, async () =>
+          c.ingestion.ingest(await authz(a, 'canonical.source_sync'), obs, {
+            cause: 'resync',
+            correlationId: randomUUID(),
+          }),
         ),
       );
       expect(results.filter((r) => r.decision === 'create')).toHaveLength(1);
@@ -754,7 +761,7 @@ describe('context processing: webhook receipts → canonical context', () => {
       const base = { kind: 'company' as const, presence: 'present' as const, ref };
       const meta = { cause: 'resync' as const, correlationId: randomUUID() };
       await c.ingestion.ingest(
-        a,
+        await authz(a, 'canonical.source_sync'),
         {
           ...base,
           observedAt: new Date(),
@@ -764,7 +771,7 @@ describe('context processing: webhook receipts → canonical context', () => {
         meta,
       );
       const r = await c.ingestion.ingest(
-        a,
+        await authz(a, 'canonical.source_sync'),
         {
           ...base,
           observedAt: new Date(),

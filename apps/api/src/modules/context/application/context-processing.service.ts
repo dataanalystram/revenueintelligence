@@ -10,13 +10,18 @@ import {
   type ReceiptStatus,
   type SourceReceipt,
 } from '../../crm';
-import type { ExternalRef } from '../../domain';
+import { systemActor, type ExternalRef } from '../../domain';
 import {
   TenantContextService,
   TenantDatabase,
   TenantRegistryService,
+  WriteAuthorizer,
+  type AuthorizedContext,
   type TenantContext,
 } from '../../tenancy';
+
+/** The worker's actor for canonical writes driven by webhooks and subject syncs (M10A1). */
+const WORKER = systemActor('worker');
 import { classifyFailure, toJobError } from '../errors';
 import { JOBS, ReceiptJobSchema, SubjectJobSchema, type Cause } from '../jobs';
 import {
@@ -52,8 +57,20 @@ export class ContextProcessingService {
     private readonly jobs: ContextJobs,
     private readonly bulk: BulkSyncService,
     private readonly metrics: MetricsService,
+    private readonly authorizer: WriteAuthorizer,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
+
+  /** System authorization for canonical writes of one job (allowed by policy v1; not audited per record). */
+  private writeAs(
+    ctx: TenantContext,
+    correlationId: string,
+  ): Promise<AuthorizedContext<'canonical.source_sync'>> {
+    return this.authorizer.authorize(ctx, WORKER, 'canonical.source_sync', {
+      action: 'context.receipts.process',
+      correlationId,
+    });
+  }
 
   /** `receipt.process`: one durable receipt → read-back → canonical context. */
   async processReceipt(job: QueueJob<unknown>): Promise<void> {
@@ -76,7 +93,7 @@ export class ContextProcessingService {
       receiptDeliveryKey: receipt.deliveryKey,
     };
     try {
-      await this.handleReceipt(ctx, receipt, meta);
+      await this.handleReceipt(await this.writeAs(ctx, meta.correlationId), receipt, meta);
     } catch (err) {
       await this.markRetrying(ctx, receipt.deliveryKey);
       throw toJobError(err);
@@ -84,10 +101,11 @@ export class ContextProcessingService {
   }
 
   private async handleReceipt(
-    ctx: TenantContext,
+    actx: AuthorizedContext<'canonical.source_sync'>,
     receipt: SourceReceipt,
     meta: { cause: Cause; correlationId: string; receiptDeliveryKey: string },
   ): Promise<void> {
+    const ctx = actx.tenant;
     const plan = await this.receipts.plan(ctx, receipt);
     if (plan.action === 'skip') {
       await this.db.transaction(ctx, (tx) =>
@@ -108,7 +126,7 @@ export class ContextProcessingService {
       const results: IngestResult[] = [];
       for (const [i, obs] of observations.entries()) {
         const last = i === observations.length - 1;
-        const result = await this.ingestion.ingest(ctx, obs, meta, {
+        const result = await this.ingestion.ingest(actx, obs, meta, {
           ...(last
             ? {
                 afterApply: async (tx, r) => {
@@ -132,10 +150,10 @@ export class ContextProcessingService {
       }
     } else {
       const survivorObs = await observeSubject(reader, plan.kind, plan.survivorId);
-      const survivor = await this.ingestion.ingest(ctx, survivorObs, meta);
+      const survivor = await this.ingestion.ingest(actx, survivorObs, meta);
       unknown.push(...survivor.unknownCompanies);
       await this.ingestion.ingestMerge(
-        ctx,
+        actx,
         {
           kind: plan.kind,
           survivor: reader.refFor(plan.kind, plan.survivorId),
@@ -161,7 +179,8 @@ export class ContextProcessingService {
     try {
       const reader = await this.readers.forTenant(ctx);
       const obs = await observeSubject(reader, data.kind, data.externalId);
-      const result = await this.ingestion.ingest(ctx, obs, {
+      const actx = await this.writeAs(ctx, data.correlationId);
+      const result = await this.ingestion.ingest(actx, obs, {
         cause: data.cause,
         correlationId: data.correlationId,
       });

@@ -21,6 +21,7 @@ import { EnvSecretProvider, Secret } from '../../src/platform/secrets';
 import { startInfrastructure, withAdmin, type TestInfrastructure } from '../support/containers';
 import { ALL_READ_SCOPES, FakeHubSpot, sampleData } from '../support/fake-hubspot';
 import { provisionTenant, startTenancy, type TenancyHarness } from '../support/tenancy';
+import { authz } from '../support/security';
 
 /**
  * HubSpot OAuth end to end (ADR 0010) against PostgreSQL (forced RLS) and the
@@ -58,7 +59,7 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
   const connector = (x: TenancyHarness = h) => x.app.get(HubSpotConnector);
 
   async function configureOAuth(ctx: TenantContext, portalId: string): Promise<void> {
-    await h.config.configureIntegration(ctx, 'hubspot', {
+    await h.config.configureIntegration(await authz(ctx, 'config.integration'), 'hubspot', {
       access: 'read_only',
       settings: { portalId, auth: 'oauth' },
     });
@@ -66,7 +67,7 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
 
   /** Walks the install exactly as a browser would: install URL → consent redirect → callback. */
   async function install(ctx: TenantContext) {
-    const { url } = await oauth().installUrl(ctx);
+    const { url } = await oauth().installUrl(await authz(ctx, 'config.oauth.install'));
     // On HubSpot's generic consent page the admin picks the account: the tenant's own.
     const integration = await h.config.getIntegration(ctx, 'hubspot');
     fake.configureOAuth({ consentPortalId: Number(integration.settings.portalId) });
@@ -174,7 +175,7 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
     it('targets the tenant’s configured account with read-only scopes and a signed state', async () => {
       const t = await provisionTenant(h, 'oaurl');
       await configureOAuth(t, '3003');
-      const { url, expiresAt } = await oauth().installUrl(t);
+      const { url, expiresAt } = await oauth().installUrl(await authz(t, 'config.oauth.install'));
       const u = new URL(url);
       // HubSpot's generic consent path (as on the deployed app's page); the account is
       // enforced after the code exchange, not by the path.
@@ -197,11 +198,13 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
 
     it('is refused for a tenant not configured for OAuth', async () => {
       const t = await provisionTenant(h, 'oanotoauth');
-      await h.config.configureIntegration(t, 'hubspot', {
+      await h.config.configureIntegration(await authz(t, 'config.integration'), 'hubspot', {
         access: 'read_only',
         settings: { portalId: '3003' },
       });
-      expect((await hubspotRejection(oauth().installUrl(t))).kind).toBe('not_configured');
+      expect(
+        (await hubspotRejection(oauth().installUrl(await authz(t, 'config.oauth.install')))).kind,
+      ).toBe('not_configured');
     });
   });
 
@@ -219,14 +222,16 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
       const access = grant.accessToken!.token.reveal();
       expect(refresh).toMatch(/^refresh-/);
       expect(row.account_id).toBe('3003');
-      expect(row.refresh_token_enc).toMatch(/^v1:[A-Za-z0-9_-]{38,}$/);
-      expect(row.access_token_enc).toMatch(/^v1:[A-Za-z0-9_-]{38,}$/);
+      expect(row.refresh_token_enc).toMatch(/^v2:legacy:[A-Za-z0-9_-]{38,}$/);
+      expect(row.access_token_enc).toMatch(/^v2:legacy:[A-Za-z0-9_-]{38,}$/);
       const everything = JSON.stringify(row);
       expect(everything).not.toContain(refresh);
       expect(everything).not.toContain(access);
       // Not merely encoded: the decoded payload does not contain the token either.
       for (const enc of [row.refresh_token_enc, row.access_token_enc!]) {
-        const decoded = Buffer.from(enc.slice(3), 'base64url').toString('latin1');
+        const decoded = Buffer.from(enc.replace(/^v2:[a-z0-9-]+:/, ''), 'base64url').toString(
+          'latin1',
+        );
         expect(decoded).not.toContain(refresh);
         expect(decoded).not.toContain(access);
       }
@@ -530,6 +535,27 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
         await oauth().accessToken(t, '3003');
         const newRefresh = (await grants().get(t, 'hubspot'))!.refreshToken.reveal();
         expect(newRefresh).not.toBe(oldRefresh);
+        // M10A1: the refresh is authorized for the system actor and audited (facts only).
+        const audit = await withAdmin(
+          infra.adminUrl,
+          async (db) =>
+            (
+              await db.query<{ actor_kind: string; actor_id: string; details: unknown; d: string }>(
+                `SELECT actor_kind, actor_id, details, row_to_json(e)::text AS d FROM tenant_audit_events e
+                WHERE tenant_id = $1 AND action = 'oauth.grant.refresh'`,
+                [t.tenantId],
+              )
+            ).rows,
+        );
+        expect(audit.map(({ d: _d, ...r }) => r)).toEqual([
+          {
+            actor_kind: 'system',
+            actor_id: 'oauth-refresh',
+            details: { rotated: true },
+          },
+        ]);
+        expect(audit[0]!.d).not.toContain(newRefresh);
+        expect(audit[0]!.d).not.toContain(oldRefresh);
         await expireAccessToken(t);
         await expect(oauth().accessToken(t, '3003')).resolves.toBeInstanceOf(Secret); // the new one works
       } finally {
@@ -546,7 +572,9 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
       const outcomesBefore = oauth().refreshOutcomes().length;
 
       // Without rotation (the fake then returns no refresh_token on refresh).
-      await expect(oauth().expireStoredAccessToken(t)).resolves.toBe(true);
+      await expect(
+        oauth().expireStoredAccessToken(await authz(t, 'config.integration')),
+      ).resolves.toBe(true);
       expect(fake.oauthCalls.refreshToken).toBe(refreshesBefore); // expiring calls nobody
       const token = await oauth().accessToken(t, '3003');
       expect(fake.oauthCalls.refreshToken).toBe(refreshesBefore + 1);
@@ -560,7 +588,7 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
       // With rotation.
       fake.configureOAuth({ rotateRefreshTokens: true });
       try {
-        await oauth().expireStoredAccessToken(t);
+        await oauth().expireStoredAccessToken(await authz(t, 'config.integration'));
         await oauth().accessToken(t, '3003');
       } finally {
         fake.configureOAuth({ rotateRefreshTokens: false });
@@ -586,7 +614,9 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
       const t = await provisionTenant(h, 'oaexpirenone');
       await configureOAuth(t, '3003');
       const calls = fake.oauthCalls.refreshToken;
-      await expect(oauth().expireStoredAccessToken(t)).resolves.toBe(false);
+      await expect(
+        oauth().expireStoredAccessToken(await authz(t, 'config.integration')),
+      ).resolves.toBe(false);
       expect(fake.oauthCalls.refreshToken).toBe(calls);
       expect(await tokenRow(t)).toBeUndefined();
     });
@@ -632,7 +662,7 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
       const first = fake.requests.at(-1)!.authorization!.slice('Bearer '.length);
 
       // The customer reinstalls; the callback runs in another API instance (h2).
-      const { url } = await oauth(h2).installUrl(t);
+      const { url } = await oauth(h2).installUrl(await authz(t, 'config.oauth.install'));
       const back = new URL((await fetch(url, { redirect: 'manual' })).headers.get('location')!);
       await oauth(h2).completeInstall({
         code: back.searchParams.get('code')!,
@@ -691,11 +721,11 @@ describe('HubSpot OAuth (tenant-scoped, encrypted, single-use state)', () => {
   describe('static Service Key tenants are unchanged', () => {
     it('reads with the tenant credential, and never touches OAuth', async () => {
       const t = await provisionTenant(h, 'oastatic');
-      await h.config.configureIntegration(t, 'hubspot', {
+      await h.config.configureIntegration(await authz(t, 'config.integration'), 'hubspot', {
         access: 'read_only',
         settings: { portalId: '1001' },
       });
-      await h.credentials.register(t, 'hubspot', 'access_token');
+      await h.credentials.register(await authz(t, 'config.integration'), 'hubspot', 'access_token');
       setEnv(
         EnvSecretProvider.toEnvName(`tenant.${t.tenantSlug}.hubspot.access_token`),
         STATIC_TOKEN,
