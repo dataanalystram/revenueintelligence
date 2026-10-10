@@ -1,6 +1,7 @@
 # ADR 0026: Security foundation — authorized writes, hash-chained audit, governance manifests, key ids (Milestone 10A1)
 
-- Status: **accepted; implemented in M10A1** (pending independent review and owner approval of the M10A1 PR)
+- Status: **accepted and implemented — M10A1 CLOSED on merge of its closure record** (PR #22, merge `8a26171`,
+  reviewed head `651f444`; independent review `PASS WITH FINDINGS`)
 - Date: 2026-10-09
 - Plan: [M10A1 plan](../milestones/M10A1-security-foundation-plan.md) (approved, PR #21, merge `08260fe`),
   owner decisions Q1–Q6 and the ingestion amendment A1

@@ -1,6 +1,8 @@
 # M10A1 — Security Foundation (record)
 
-- Status: **implemented and verified; awaiting independent review and owner approval** (do not start M10A2)
+- Status: **CLOSED on merge of this closure record.** Owner-approved and merged to `main` (PR #22, merge
+  `8a26171`, reviewed head `651f444`); independent review `PASS WITH FINDINGS`; see [Closure](#closure). M10A2
+  starts only after this record is merged, plan first.
 - Plan: [M10A1 plan](M10A1-security-foundation-plan.md) (approved, PR #21, merge `08260fe`); owner decisions
   Q1–Q6, amendments A1 (ingestion) and A2 (chain concurrency)
 - ADR: [0026 Security foundation](../adr/0026-security-foundation.md)
@@ -195,3 +197,52 @@ other mutation runs had been on clean, committed trees.
 tech debt #15 (privacy decision; purge execution stays disabled), #62, #63, #64; live Chargebee mutations
 M09/M10 not run; V6, V9, V10, V11; Chargebee incremental sync disabled; live Sugar pending; authenticated operator
 identity (M15).
+
+## Closure
+
+| Item                      | Value                                                                                                                                                                                                                                 |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Owner approval            | 2026-10-10: "M10A1 is approved for merge" for PR #22 at reviewed head `651f4449825409be3d55661850bbc35f8ff626fa`                                                                                                                      |
+| Pre-merge checks          | head exactly `651f444…`; base `main` unchanged at `08260fe` (the PR's base, so the reviewed diff stood); CI green on that head; no reviews, review comments or issue comments                                                         |
+| Merge                     | head-pinned merge (`sha=651f444…`, merge commit): **`8a26171321478e2a9d71047906f7be2f127e97dc`**                                                                                                                                      |
+| CI on the reviewed head   | Lint, typecheck, boundaries, unit tests ✓; Integration tests (Testcontainers) ✓; Runtime verification ✓; Docker images build and start ✓                                                                                              |
+| Final local verification  | `pnpm verify` on `5dd1b5e` (unit 959/959, integration 497/497, dependency-cruiser clean); fresh clone of `5dd1b5e` green (verify + runtime 175/175); `pnpm verify:docker` 29/29; `651f444` differs from `5dd1b5e` only in this record |
+| Live (read-only)          | Chargebee TEST site baseline: 2 passed, identical to the post-M08 baseline; approved secrets only; no key in report or log                                                                                                            |
+| Mutation proofs           | SM1–SM18, RM1–RM4, RMm2, RMm3, RMa: each failed for the stated reason and was restored clean                                                                                                                                          |
+| No changes after approval | none: the merged tree is the reviewed head                                                                                                                                                                                            |
+
+**Independent review result: `PASS WITH FINDINGS`.**
+
+- **Major findings — all fixed** (first review: FAIL, four majors, no blocker; confirmed fixed by the re-review):
+  - M1 `failed` audit events after authorization;
+  - M2 webhook intake (`processing.receipt`) and token refresh (`config.oauth.grant`) authorized and audited;
+  - M3 secret-like refusal on product models and provisioning;
+  - M4 retirement change records carry the source-sync actor.
+- **Minor findings fixed:** m2 (purge verifies the chain first), m3 (closed-set CHECKs), m5 (secret-like keys),
+  m6 (bounded coalescing map), m7 (`recordPlatform` asserts), m8 (evidence completed), m-a (stale reason code),
+  m-b (a broken chain is not extended), m-c (nested failures recorded once), m-d (only recording evaluations).
+- **Minor findings accepted and documented (not changed):**
+  - m1: the profile-purge audit event follows the owner-path purge transaction, and `installUrl` issues the
+    (expiring, single-use) state before auditing it — neither is atomic with its change;
+  - m4: the A1 "required or identity-bearing field → record rejected" branch is not applicable today (every held
+    field is nullable and not identity-bearing);
+  - m-e: webhook intake takes the tenant's audit-chain lock per batch (fail closed; audit volume grows with
+    webhook batches);
+  - m-f: the purge verifies the chain before taking the lock, in a separate session (usable only by the schema
+    owner).
+
+**Open limitations and tech debt (preserved, unchanged):**
+
+- tech debt #15 — formal privacy/retention policy; audit purge **execution stays disabled**
+  (`AUDIT_PURGE_EXECUTION_APPROVED = false`);
+- tech debt #62, #63, #64;
+- authenticated operator identity (M15) — operator assurance stays `asserted`; the nine operator-id columns stay
+  `tbc` (restricted);
+- live Chargebee mutations M09/M10 not run; V6, V9, V10, V11 open; Chargebee incremental sync disabled;
+- live Sugar verification pending;
+- security events `audit_write_failed`, `credential_resolution_failed`, `token_decrypt_failed` are emitted but not
+  directly asserted by tests;
+- no compliance (SOC 2, GDPR, HIPAA, legal-retention) claim is made.
+
+**Next:** M10A2 — Canonical Versioning & Governance Foundation. A detailed implementation plan is returned for
+owner approval before any schema or code change; nothing of M10A2 starts before this closure record is merged.
