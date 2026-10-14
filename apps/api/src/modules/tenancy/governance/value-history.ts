@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   decideValueHistory,
+  jsonbTextBytes,
   policyAllowsValues,
   valueHistoryColumn,
   VALUE_HISTORY_MAX_BYTES,
@@ -70,7 +71,7 @@ export async function recordValueHistory(
       oldValue = jsonValue(change.oldValue);
       newValue = jsonValue(change.newValue);
       for (const v of [oldValue, newValue]) {
-        if (JSON.stringify(v).length > VALUE_HISTORY_MAX_BYTES) {
+        if (jsonbTextBytes(v) > VALUE_HISTORY_MAX_BYTES) {
           throw new Error(`value history: ${input.entityKind}.${change.field} exceeds 4 KB`);
         }
       }

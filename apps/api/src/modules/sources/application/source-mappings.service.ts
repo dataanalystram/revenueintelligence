@@ -8,6 +8,7 @@ import {
   MAPPING_RETIRE_REASONS,
   type MappingRetireReason,
   MappingDocumentSchema,
+  MappingDraftValidationStampSchema,
   PROFILE_FRESHNESS,
   SourceProfileSettingsSchema,
   SourceSchemaSchema,
@@ -380,6 +381,8 @@ export class SourceMappingsService {
         acknowledgements,
       });
       if (!validation.ok) throw new MappingInvalidError(validation.errors);
+      // M10A2 review m7: validation refuses what publication would refuse.
+      await this.refuseDisabledModuleTargets(tx, validation.document);
       const canonicalVersion = await adoptedCanonicalVersion(tx);
       const row = await db.tenantSourceMappingDraft.update({
         where: { tenantId_connectionId: { tenantId: tx.tenantId, connectionId } },
@@ -446,10 +449,12 @@ export class SourceMappingsService {
       }
       return row;
     });
-    const stamp = draft.validation as {
-      contentHash: string;
-      acknowledgements?: Acknowledgement[];
-    };
+    // M10A2 review m8: the stamp is read back from jsonb, so parse it (fail closed).
+    const parsedStamp = MappingDraftValidationStampSchema.safeParse(draft.validation);
+    if (!parsedStamp.success) {
+      throw new SourcesError('mapping_not_validated', 'The validation stamp is malformed');
+    }
+    const stamp = parsedStamp.data;
     const published = await this.publish(actx, connectionId, draft.document, {
       expectedBaseVersion,
       expectedContentHash: stamp.contentHash,
@@ -538,6 +543,12 @@ export class SourceMappingsService {
     );
   }
 
+  /**
+   * A stored mapping version: the given version, or — with no version — the
+   * connection's published one (M10A2 review m7), read through the lifecycle
+   * like sync and reports; a retired or superseded highest version is not
+   * what `show` reports as current.
+   */
   async show(
     ctx: TenantContext,
     connectionId: string,
@@ -545,7 +556,7 @@ export class SourceMappingsService {
   ): Promise<(Omit<StoredMappingVersion, 'document'> & { document: MappingDocument }) | undefined> {
     const row = await this.db.transaction(ctx, (tx) =>
       version === undefined
-        ? this.repo.latestMapping(tx, connectionId)
+        ? this.repo.publishedMapping(tx, connectionId)
         : this.repo.mappingVersion(tx, connectionId, version),
     );
     return row ? { ...row, document: MappingDocumentSchema.parse(row.document) } : undefined;
