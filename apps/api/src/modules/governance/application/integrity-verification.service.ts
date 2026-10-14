@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import {
   canonicalHash,
   ENTITY_INDEX_SOURCES,
+  evidenceRelationAllowed,
   INTEGRITY_MAX_FINDINGS,
   integrityCounts,
   integrityOutcome,
   type EntityIndexKind,
+  type EvidenceRelation,
   type IntegrityFinding,
   type IntegrityOutcome,
 } from '../../domain';
@@ -22,6 +24,7 @@ import {
   type TenantContext,
   type TenantTransaction,
 } from '../../tenancy';
+import { EVIDENCE_RELATION_CATALOGUE } from './evidence-link.writer';
 
 /** Clock-skew tolerance past a purge anchor's cutoff (audit_reference_missing exemption). */
 const AUDIT_PURGE_SKEW_MS = 5 * 60 * 1000;
@@ -49,6 +52,7 @@ export class IntegrityVerificationService {
     readonly audit: AuditTrail,
     private readonly events: SecurityEventsService,
     private readonly privileges: PrivilegeManifestCheck,
+    @Inject(EVIDENCE_RELATION_CATALOGUE) private readonly relations: readonly EvidenceRelation[],
   ) {}
 
   /** Dry run: the report only, nothing recorded. */
@@ -294,6 +298,144 @@ export class IntegrityVerificationService {
       'mapping_lifecycle_invalid',
       lifecycle.map((r) => r.ref),
     );
+
+    // M10B plan §11 (ADR 0028).
+    await this.referenceChecks(tx, add);
     return findings;
+  }
+
+  private async referenceChecks(
+    tx: TenantTransaction,
+    add: (check: IntegrityFinding['check'], refs: readonly string[]) => void,
+  ): Promise<void> {
+    const db = tenantClient(tx);
+    const triple = (s: string, o: string, e: string) => `${s}:${o}:${e}`;
+
+    // 7. Declared product references = the externalRefs of the latest published
+    // model, both directions, same key (the projection never drifts from the model).
+    const latest = await db.tenantProductModel.findFirst({
+      orderBy: { version: 'desc' },
+      select: { document: true },
+    });
+    const doc = latest?.document as {
+      products?: {
+        key: string;
+        externalRefs?: { system: string; objectType: string; id: string }[];
+      }[];
+    } | null;
+    const declared = new Map<string, string>();
+    for (const p of doc?.products ?? []) {
+      for (const r of p.externalRefs ?? [])
+        declared.set(triple(r.system, r.objectType, r.id), p.key);
+    }
+    const active = await db.tenantSourceReference.findMany({
+      where: { origin: 'declared', state: 'active' },
+      select: { system: true, objectType: true, externalId: true, entityKey: true },
+    });
+    const stored = new Map(
+      active.map((r) => [triple(r.system, r.objectType, r.externalId), r.entityKey]),
+    );
+    const drift: string[] = [];
+    for (const [t, key] of declared) if (stored.get(t) !== key) drift.push(t);
+    for (const t of stored.keys()) if (!declared.has(t)) drift.push(t);
+    add('declared_reference_drift', [...new Set(drift)].sort().slice(0, INTEGRITY_MAX_FINDINGS));
+
+    // 8. One (system, object_type, external_id) lives in at most one store.
+    const ambiguous = await db.$queryRaw<{ ref: string }[]>`
+      SELECT system || ':' || object_type || ':' || external_id AS ref
+        FROM source_reference_index WHERE tenant_id = ${tx.tenantId}::uuid
+       GROUP BY system, object_type, external_id HAVING count(DISTINCT store) > 1
+       ORDER BY 1 LIMIT ${INTEGRITY_MAX_FINDINGS}`;
+    add(
+      'source_reference_ambiguous',
+      ambiguous.map((r) => r.ref),
+    );
+
+    // 9. last_change_id names a change record of the same triple and entity.
+    const mismatch = await db.$queryRaw<{ ref: string }[]>`
+      SELECT r.id::text AS ref FROM tenant_source_references r
+        JOIN tenant_context_changes c ON c.tenant_id = r.tenant_id AND c.id = r.last_change_id
+       WHERE c.source_system <> r.system OR c.source_object_type <> r.object_type
+          OR c.source_record_id <> r.external_id OR c.entity_kind <> r.entity_kind
+          OR c.entity_id IS DISTINCT FROM r.entity_id OR c.entity_key IS DISTINCT FROM r.entity_key
+       ORDER BY 1 LIMIT ${INTEGRITY_MAX_FINDINGS}`;
+    add(
+      'source_reference_change_mismatch',
+      mismatch.map((r) => r.ref),
+    );
+
+    // 10. Every link's relation is in the code catalogue (catches raw-SQL writes).
+    // Distinct relation tuples first (no set id, so no bound can hide a late
+    // set; the columns are CHECK-constrained, so the tuple set is small), the
+    // catalogue filter in code, then up to INTEGRITY_MAX_FINDINGS set ids of
+    // the unknown tuples only.
+    const tuples = await db.$queryRaw<
+      { subject_kind: string; evidence_type: string; evidence_kind: string | null; role: string }[]
+    >`SELECT DISTINCT subject_kind, evidence_type, evidence_kind, role FROM tenant_evidence_links`;
+    const unknown = tuples.filter(
+      (r) =>
+        !evidenceRelationAllowed(this.relations, r.subject_kind, {
+          evidenceType: r.evidence_type,
+          evidenceKind: r.evidence_kind,
+          role: r.role,
+        }),
+    );
+    let unknownSets: { ref: string }[] = [];
+    if (unknown.length > 0) {
+      const params: string[] = [];
+      const where = unknown
+        .map((r) => {
+          params.push(r.subject_kind, r.evidence_type, r.evidence_kind ?? '', r.role);
+          const n = params.length;
+          return `(subject_kind = $${n - 3} AND evidence_type = $${n - 2} AND coalesce(evidence_kind, '') = $${n - 1} AND role = $${n})`;
+        })
+        .join(' OR ');
+      unknownSets = await db.$queryRawUnsafe<{ ref: string }[]>(
+        `SELECT DISTINCT link_set_id::text AS ref FROM tenant_evidence_links WHERE ${where} ORDER BY 1 LIMIT ${INTEGRITY_MAX_FINDINGS}`,
+        ...params,
+      );
+    }
+    add(
+      'evidence_relation_unknown',
+      unknownSets.map((r) => r.ref),
+    );
+
+    // 11. supersedes_link_set_id names an existing set of the same subject, and
+    // a set is superseded at most once (a linear chain, ADR 0028); a fork
+    // reports the superseded set.
+    const supersession = await db.$queryRaw<{ ref: string }[]>`
+      SELECT l.link_set_id::text AS ref FROM tenant_evidence_links l
+       WHERE l.supersedes_link_set_id IS NOT NULL AND NOT EXISTS (
+         SELECT 1 FROM tenant_evidence_links p
+          WHERE p.tenant_id = l.tenant_id AND p.link_set_id = l.supersedes_link_set_id
+            AND p.subject_kind = l.subject_kind
+            AND p.subject_id IS NOT DISTINCT FROM l.subject_id
+            AND p.subject_key IS NOT DISTINCT FROM l.subject_key)
+      UNION
+      SELECT supersedes_link_set_id::text FROM tenant_evidence_links
+       WHERE supersedes_link_set_id IS NOT NULL
+       GROUP BY supersedes_link_set_id HAVING count(DISTINCT link_set_id) > 1
+       ORDER BY 1 LIMIT ${INTEGRITY_MAX_FINDINGS}`;
+    add(
+      'evidence_supersession_invalid',
+      supersession.map((r) => r.ref),
+    );
+
+    // 12. The view returns every row of every store, nothing copied or lost.
+    const parity = await db.$queryRaw<{ ref: string }[]>`
+      WITH expected AS (
+        SELECT 'company_external_refs' AS store, count(*) AS n FROM company_external_refs
+        UNION ALL SELECT 'person_external_refs', count(*) FROM person_external_refs
+        UNION ALL SELECT 'tenant_subscriptions', count(*) FROM tenant_subscriptions
+        UNION ALL SELECT 'tenant_source_references', count(*) FROM tenant_source_references
+      ), actual AS (
+        SELECT store, count(*) AS n FROM source_reference_index GROUP BY store
+      )
+      SELECT e.store AS ref FROM expected e LEFT JOIN actual a USING (store)
+       WHERE e.n <> coalesce(a.n, 0) ORDER BY 1`;
+    add(
+      'source_reference_index_parity',
+      parity.map((r) => r.ref),
+    );
   }
 }

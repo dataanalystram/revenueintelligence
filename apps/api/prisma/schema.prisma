@@ -63,6 +63,8 @@ model Tenant {
   entityIndex          TenantEntityIndex[]
   valueHistory         TenantValueHistory[]
   integrityRuns        TenantIntegrityRun[]
+  sourceReferences     TenantSourceReference[]
+  evidenceLinks        TenantEvidenceLink[]
 
   @@unique([id, slug])
   @@map("tenants")
@@ -85,6 +87,7 @@ model ConnectorKind {
   syncCheckpoints     TenantSyncCheckpoint[]
   subscriptions       TenantSubscription[]
   sourceConnections   TenantSourceConnection[]
+  sourceReferences    TenantSourceReference[]
 
   @@map("connector_kinds")
 }
@@ -290,6 +293,8 @@ model TenantProductModel {
 
   tenant    Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   snapshots TenantEligibilitySnapshot[]
+  declaredReferences TenantSourceReference[] @relation("SourceReferenceDeclaredIn")
+  retiredReferences  TenantSourceReference[] @relation("SourceReferenceRetiredByModel")
 
   @@id([tenantId, version])
   @@index([tenantId, effectiveFrom])
@@ -493,9 +498,12 @@ model PersonExternalRef {
 model TenantContextChange {
   tenantId           String    @map("tenant_id") @db.Uuid
   id                 String    @db.Uuid
-  /// company | person
+  /// company | person | subscription | product (M10B)
   entityKind         String    @map("entity_kind")
-  entityId           String    @map("entity_id") @db.Uuid
+  /// exactly one of entity_id / entity_key (M10B: products are key-identified)
+  entityId           String?   @map("entity_id") @db.Uuid
+  /// M10B: the product key when entity_kind = 'product'
+  entityKey          String?   @map("entity_key")
   /// created | updated | state_changed | merged | ref_added | relationship_changed
   changeType         String    @map("change_type")
   changedFields      String[]  @default([]) @map("changed_fields")
@@ -534,12 +542,16 @@ model TenantContextChange {
   tenant       Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   canonical    CanonicalModelVersion?      @relation(fields: [canonicalVersion], references: [version], onDelete: Restrict, onUpdate: Restrict)
   valueHistory TenantValueHistory[]
+  sourceReferences  TenantSourceReference[] @relation("SourceReferenceLastChange")
+  evidenceCitations TenantEvidenceLink[]    @relation("EvidenceLinkEvidenceChange")
+  evidenceLinkSets  TenantEvidenceLink[]    @relation("EvidenceLinkChange")
   source       ConnectorKind               @relation(fields: [sourceSystem], references: [kind], onDelete: Restrict, onUpdate: Restrict)
   connection   TenantSourceConnection?     @relation(fields: [tenantId, sourceConnectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
   mapping      TenantSourceMappingVersion? @relation(fields: [tenantId, sourceConnectionId, mappingVersion], references: [tenantId, connectionId, version], onDelete: Restrict, onUpdate: Restrict)
 
   @@id([tenantId, id])
   @@index([tenantId, entityKind, entityId, ingestedAt])
+  @@index([tenantId, entityKind, entityKey, ingestedAt])
   @@index([tenantId, ingestedAt])
   @@map("tenant_context_changes")
 }
@@ -673,6 +685,7 @@ model TenantSyncCheckpoint {
   mapping     TenantSourceMappingVersion? @relation(fields: [tenantId, sourceConnectionId, mappingVersion], references: [tenantId, connectionId, version], onDelete: Restrict, onUpdate: Restrict)
   profiles    TenantSourceProfile[]
   retiredRefs CompanyExternalRef[]
+  retiredSourceReferences TenantSourceReference[]
 
   @@id([tenantId, id])
   @@unique([tenantId, activeKey])
@@ -711,6 +724,7 @@ model TenantEligibilitySnapshot {
   product          TenantProduct      @relation(fields: [tenantId, productKey], references: [tenantId, key], onDelete: Restrict, onUpdate: Restrict)
   model            TenantProductModel @relation(fields: [tenantId, modelVersion], references: [tenantId, version], onDelete: Restrict, onUpdate: Restrict)
 
+  evidenceCitations TenantEvidenceLink[]
   @@id([tenantId, id])
   @@index([tenantId, evaluatedCompanyId, productKey, evaluatedAt])
   @@index([tenantId, requestedCompanyId])
@@ -754,6 +768,7 @@ model TenantSourceConnection {
   profiles                   TenantSourceProfile[]
   profilePurges              TenantSourceProfilePurge[]
   mappingDrafts              TenantSourceMappingDraft[]
+  sourceReferences           TenantSourceReference[]
   authorityAccountProfile    TenantSourceAuthorityVersion[] @relation("AuthorityAccountProfile")
   authorityPersonProfile     TenantSourceAuthorityVersion[] @relation("AuthorityPersonProfile")
   authoritySubscriptionLines TenantSourceAuthorityVersion[] @relation("AuthoritySubscriptionLines")
@@ -1051,6 +1066,7 @@ model CanonicalModelVersion {
   registryVersions  TenantRegistryVersion[]
   contextChanges    TenantContextChange[]
   mappingVersions   TenantSourceMappingVersion[]
+  evidenceLinks     TenantEvidenceLink[]
 
   @@unique([major, minor])
   @@map("canonical_model_versions")
@@ -1208,6 +1224,12 @@ model TenantEntityIndex {
   tenant       Tenant               @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   historyById  TenantValueHistory[] @relation("ValueHistoryEntityId")
   historyByKey TenantValueHistory[] @relation("ValueHistoryEntityKey")
+  sourceRefsById       TenantSourceReference[] @relation("SourceReferenceEntityId")
+  sourceRefsByKey      TenantSourceReference[] @relation("SourceReferenceEntityKey")
+  evidenceSubjectById  TenantEvidenceLink[]    @relation("EvidenceSubjectId")
+  evidenceSubjectByKey TenantEvidenceLink[]    @relation("EvidenceSubjectKey")
+  evidenceCitedById    TenantEvidenceLink[]    @relation("EvidenceEntityId")
+  evidenceCitedByKey   TenantEvidenceLink[]    @relation("EvidenceEntityKey")
 
   @@id([tenantId, id])
   @@unique([tenantId, kind, entityId])
@@ -1316,4 +1338,111 @@ model TenantIntegrityRun {
   @@id([tenantId, id])
   @@index([tenantId, finishedAt])
   @@map("tenant_integrity_runs")
+}
+
+/// M10B (ADR 0028): generic source references for non-legacy entity kinds,
+/// anchored in the entity index (products by key, D3). Company / person
+/// references stay in their legacy stores (exposed through the
+/// source_reference_index view). References change state, never disappear.
+model TenantSourceReference {
+  tenantId               String    @map("tenant_id") @db.Uuid
+  id                     String    @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  system                 String
+  /// recorded, not part of the key (Q10)
+  connectionId           String?   @map("connection_id") @db.Uuid
+  objectType             String    @map("object_type")
+  externalId             String    @map("external_id")
+  /// GENERIC_REFERENCE_KINDS (M10B: product); legacy kinds refused by CHECK
+  entityKind             String    @map("entity_kind")
+  entityId               String?   @map("entity_id") @db.Uuid
+  entityKey              String?   @map("entity_key")
+  /// observed | declared
+  origin                 String
+  declaredInModelVersion Int?      @map("declared_in_model_version")
+  /// active | retired | deleted | merged
+  state                  String    @default("active")
+  mergedIntoExternalId   String?   @map("merged_into_external_id")
+  firstSeenAt            DateTime  @default(now()) @map("first_seen_at") @db.Timestamptz(3)
+  lastSeenAt             DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(3)
+  sourceCreatedAt        DateTime? @map("source_created_at") @db.Timestamptz(3)
+  sourceUpdatedAt        DateTime? @map("source_updated_at") @db.Timestamptz(3)
+  deletedAt              DateTime? @map("deleted_at") @db.Timestamptz(3)
+  retiredAt              DateTime? @map("retired_at") @db.Timestamptz(3)
+  retiredByRunId         String?   @map("retired_by_run_id") @db.Uuid
+  retiredByModelVersion  Int?      @map("retired_by_model_version")
+  /// SHA-256 of the last applied observation (idempotency; no values)
+  fieldHash              String?   @map("field_hash")
+  lastChangeId           String?   @map("last_change_id") @db.Uuid
+  createdAt              DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt              DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  tenant         Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  connector      ConnectorKind           @relation(fields: [system], references: [kind], onDelete: Restrict, onUpdate: Restrict)
+  connection     TenantSourceConnection? @relation(fields: [tenantId, connectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  byEntityId     TenantEntityIndex?      @relation("SourceReferenceEntityId", fields: [tenantId, entityKind, entityId], references: [tenantId, kind, entityId], onDelete: Restrict, onUpdate: Restrict)
+  byEntityKey    TenantEntityIndex?      @relation("SourceReferenceEntityKey", fields: [tenantId, entityKind, entityKey], references: [tenantId, kind, entityKey], onDelete: Restrict, onUpdate: Restrict)
+  declaredIn     TenantProductModel?     @relation("SourceReferenceDeclaredIn", fields: [tenantId, declaredInModelVersion], references: [tenantId, version], onDelete: Restrict, onUpdate: Restrict)
+  retiredByModel TenantProductModel?     @relation("SourceReferenceRetiredByModel", fields: [tenantId, retiredByModelVersion], references: [tenantId, version], onDelete: Restrict, onUpdate: Restrict)
+  retiredByRun   TenantSyncCheckpoint?   @relation(fields: [tenantId, retiredByRunId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  lastChange     TenantContextChange?    @relation("SourceReferenceLastChange", fields: [tenantId, lastChangeId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, id])
+  @@unique([tenantId, system, objectType, externalId])
+  @@index([tenantId, entityKind, entityId])
+  @@index([tenantId, entityKind, entityKey])
+  @@index([tenantId, system, objectType, state])
+  @@map("tenant_source_references")
+}
+
+/// M10B (ADR 0028): immutable evidence links. One link set = everything one
+/// write of one subject cites; re-derivation writes a new set that supersedes
+/// the old one. Append-only by privilege and trigger.
+model TenantEvidenceLink {
+  tenantId            String   @map("tenant_id") @db.Uuid
+  id                  String   @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  linkSetId           String   @map("link_set_id") @db.Uuid
+  ordinal             Int      @db.SmallInt
+  subjectKind         String   @map("subject_kind")
+  subjectId           String?  @map("subject_id") @db.Uuid
+  subjectKey          String?  @map("subject_key")
+  /// entity | change_record | eligibility_snapshot
+  evidenceType        String   @map("evidence_type")
+  evidenceKind        String?  @map("evidence_kind")
+  evidenceId          String?  @map("evidence_id") @db.Uuid
+  evidenceKey         String?  @map("evidence_key")
+  evidenceChangeId    String?  @map("evidence_change_id") @db.Uuid
+  evidenceSnapshotId  String?  @map("evidence_snapshot_id") @db.Uuid
+  /// supports | contradicts | derived_from | context
+  role                String
+  weight              Decimal? @db.Decimal(5, 4)
+  /// source_provided | deterministic | ai_derived | human
+  origin              String
+  /// {key, version, inputs_hash}; required iff origin is derived
+  derivation          Json?
+  supersedesLinkSetId String?  @map("supersedes_link_set_id") @db.Uuid
+  changeId            String?  @map("change_id") @db.Uuid
+  canonicalVersion    String   @map("canonical_version")
+  actorKind           String   @map("actor_kind")
+  actorId             String   @map("actor_id")
+  actorAssurance      String   @map("actor_assurance")
+  correlationId       String   @map("correlation_id") @db.Uuid
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  tenant           Tenant                     @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  subjectById      TenantEntityIndex?         @relation("EvidenceSubjectId", fields: [tenantId, subjectKind, subjectId], references: [tenantId, kind, entityId], onDelete: Restrict, onUpdate: Restrict)
+  subjectByKey     TenantEntityIndex?         @relation("EvidenceSubjectKey", fields: [tenantId, subjectKind, subjectKey], references: [tenantId, kind, entityKey], onDelete: Restrict, onUpdate: Restrict)
+  evidenceById     TenantEntityIndex?         @relation("EvidenceEntityId", fields: [tenantId, evidenceKind, evidenceId], references: [tenantId, kind, entityId], onDelete: Restrict, onUpdate: Restrict)
+  evidenceByKey    TenantEntityIndex?         @relation("EvidenceEntityKey", fields: [tenantId, evidenceKind, evidenceKey], references: [tenantId, kind, entityKey], onDelete: Restrict, onUpdate: Restrict)
+  evidenceChange   TenantContextChange?       @relation("EvidenceLinkEvidenceChange", fields: [tenantId, evidenceChangeId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  evidenceSnapshot TenantEligibilitySnapshot? @relation(fields: [tenantId, evidenceSnapshotId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  change           TenantContextChange?       @relation("EvidenceLinkChange", fields: [tenantId, changeId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  canonical        CanonicalModelVersion      @relation(fields: [canonicalVersion], references: [version], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, id])
+  @@unique([tenantId, linkSetId, ordinal])
+  @@index([tenantId, subjectKind, subjectId])
+  @@index([tenantId, subjectKind, subjectKey])
+  @@index([tenantId, evidenceKind, evidenceId])
+  @@index([tenantId, evidenceChangeId])
+  @@map("tenant_evidence_links")
 }

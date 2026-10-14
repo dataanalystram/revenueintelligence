@@ -10,6 +10,11 @@ export {
   type AdoptionResult,
 } from './application/canonical-adoption.service';
 export {
+  EVIDENCE_RELATION_CATALOGUE,
+  EvidenceLinkWriter,
+  type EvidenceLinkSetWritten,
+} from './application/evidence-link.writer';
+export {
   IntegrityVerificationService,
   type IntegrityReport,
 } from './application/integrity-verification.service';
@@ -26,5 +31,25 @@ export {
   type RegistryPublished,
   type RegistryPublishInput,
 } from './application/registry.service';
+export {
+  ProvenanceQueryService,
+  type ProvenanceField,
+  type ProvenanceLinkSet,
+  type ProvenanceQuery,
+  type ProvenanceReference,
+  type ProvenanceReport,
+} from './application/provenance-query.service';
+export {
+  GENERIC_REFERENCES_MIN_VERSION,
+  SourceReferenceService,
+  type DeclaredProductModel,
+  type DeclaredReferenceTransitions,
+  type ReferenceMergeInput,
+  type ReferenceObservationInput,
+  type ReferenceObservationResult,
+  type ReferenceWriteMeta,
+  type RetireAbsentReferencesInput,
+  type SourceTriple,
+} from './application/source-reference.service';
 export * from './errors';
 export { GovernanceModule } from './governance.module';

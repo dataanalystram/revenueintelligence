@@ -197,7 +197,9 @@ export class ContextStore {
     system: string,
     objectType: string,
     notSeenSince: Date,
-  ): Promise<{ readonly externalId: string; readonly canonicalId: string }[]> {
+  ): Promise<
+    { readonly externalId: string; readonly canonicalId: string; readonly lastSeenAt: Date }[]
+  > {
     const rows = await tenantClient(tx).companyExternalRef.findMany({
       where: {
         tenantId: tx.tenantId,
@@ -206,10 +208,14 @@ export class ContextStore {
         state: 'active',
         lastSeenAt: { lte: notSeenSince },
       },
-      select: { externalId: true, companyId: true },
+      select: { externalId: true, companyId: true, lastSeenAt: true },
       orderBy: { externalId: 'asc' },
     });
-    return rows.map((r) => ({ externalId: r.externalId, canonicalId: r.companyId }));
+    return rows.map((r) => ({
+      externalId: r.externalId,
+      canonicalId: r.companyId,
+      lastSeenAt: r.lastSeenAt,
+    }));
   }
 
   /** M9B: `active` → `retired`, with the retiring run (no other state is touched). */

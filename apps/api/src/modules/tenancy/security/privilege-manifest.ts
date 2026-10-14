@@ -51,12 +51,18 @@ export const PRIVILEGE_MANIFEST: Readonly<Record<string, readonly TablePrivilege
   // M10A2: read-only view of the current lifecycle state (security invoker).
   tenant_source_mapping_states: READ,
   tenant_integrity_runs: APPEND,
+  // M10B: evidence links are append-only (plus the app_refuse_change trigger).
+  tenant_evidence_links: APPEND,
+  // M10B: read-only security-invoker view over every source-reference store.
+  source_reference_index: READ,
   // Catalogue rows retire, never disappear; profile runs move through states.
   tenant_products: APPEND_UPDATE,
   tenant_source_profile_runs: APPEND_UPDATE,
   // M10A2: module settings and registry entries are never deleted (F4, X1).
   tenant_module_settings: APPEND_UPDATE,
   tenant_registry_entries: APPEND_UPDATE,
+  // M10B: source references change state, never disappear (E5 §2).
+  tenant_source_references: APPEND_UPDATE,
   companies: DML,
   company_external_refs: DML,
   person_external_refs: DML,

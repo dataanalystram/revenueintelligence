@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
-import { compareCanonicalVersion, decideAdoption, type CanonicalVersionStatus } from '../../domain';
+import {
+  canonicalFeatureChanges,
+  compareCanonicalVersion,
+  decideAdoption,
+  type CanonicalVersionStatus,
+} from '../../domain';
 import {
   AuditFailures,
   AuditTrail,
@@ -26,6 +31,13 @@ export interface AdoptionImpact {
   readonly registriesAboveTarget: number;
   /** Mapping versions validated against a version above the target. */
   readonly mappingsAboveTarget: number;
+  /** M10B plan §7: what the target enables beyond the current version (forward adoption). */
+  readonly enables: readonly string[];
+  /**
+   * What a rollback withdraws: data is kept and stays readable; writers refuse
+   * new writes of these with `canonical_version_too_low`.
+   */
+  readonly disables: readonly string[];
 }
 
 export interface AdoptionResult {
@@ -163,6 +175,7 @@ export class CanonicalAdoptionService {
       registriesAboveTarget: registries.filter((r) => above(r.canonicalVersionMin)).length,
       // Q7: a NULL on a pre-M10A2 mapping version means 0.1.
       mappingsAboveTarget: mappings.filter((m) => above(m.canonicalVersionMin ?? '0.1')).length,
+      ...(known ? canonicalFeatureChanges(head.version, target) : { enables: [], disables: [] }),
     };
   }
 }

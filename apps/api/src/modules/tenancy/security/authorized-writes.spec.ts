@@ -51,6 +51,26 @@ const SERVICES: readonly ServiceSpec[] = [
     writes: ['record'],
     reads: ['verify'],
   },
+  // M10B (ADR 0028).
+  {
+    file: 'governance/application/source-reference.service.ts',
+    className: 'SourceReferenceService',
+    writes: ['observe', 'retireAbsentWithin', 'merge', 'applyDeclaredProductReferences'],
+    reads: [],
+  },
+  {
+    file: 'governance/application/evidence-link.writer.ts',
+    className: 'EvidenceLinkWriter',
+    writes: ['write'],
+    reads: [],
+  },
+  {
+    // The read model writes one provenance.read audit event per call.
+    file: 'governance/application/provenance-query.service.ts',
+    className: 'ProvenanceQueryService',
+    writes: ['show'],
+    reads: [],
+  },
   {
     file: 'tenancy/application/tenant-config.service.ts',
     className: 'TenantConfigService',

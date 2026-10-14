@@ -16,13 +16,14 @@ See [docs/architecture.md](docs/architecture.md) for the design and
 
 ## Status
 
-| Milestone                                           | State                                                                                                                    |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| M0 — Repository / infrastructure foundation         | ✅ Approved — [record](docs/milestones/M00-foundation.md)                                                                |
-| M1 — Canonical domain model                         | ✅ Approved — [record](docs/milestones/M01-canonical-domain-model.md)                                                    |
-| M2 — Tenants and data isolation                     | ✅ Approved — [record](docs/milestones/M02-tenancy-data-isolation.md)                                                    |
-| M3 — HubSpot developer environment / read connector | ✅ Complete incl. live validation, awaiting review — [record](docs/milestones/M03-hubspot-test-environment.md)           |
-| M10A2 — Canonical versioning & governance           | 🔍 Implementation in review (PR #2 → `integration`) — [record](docs/milestones/M10A2-canonical-versioning-governance.md) |
+| Milestone                                           | State                                                                                                                                          |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| M0 — Repository / infrastructure foundation         | ✅ Approved — [record](docs/milestones/M00-foundation.md)                                                                                      |
+| M1 — Canonical domain model                         | ✅ Approved — [record](docs/milestones/M01-canonical-domain-model.md)                                                                          |
+| M2 — Tenants and data isolation                     | ✅ Approved — [record](docs/milestones/M02-tenancy-data-isolation.md)                                                                          |
+| M3 — HubSpot developer environment / read connector | ✅ Complete incl. live validation, awaiting review — [record](docs/milestones/M03-hubspot-test-environment.md)                                 |
+| M10A2 — Canonical versioning & governance           | 🔍 Implementation in review (PR #2 → `integration`) — [record](docs/milestones/M10A2-canonical-versioning-governance.md)                       |
+| M10B — Generic SourceReference + EvidenceLink       | 🔍 Implementation ready for review (PR #5 → `integration`, canonical `0.2`) — [record](docs/milestones/M10B-source-reference-evidence-link.md) |
 
 ## Stack
 

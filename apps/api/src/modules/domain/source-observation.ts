@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { EmailAddressSchema, type EmailAddress } from './email';
+import { decideReferenceObservation } from './canonical/source-reference';
 import type { ExternalRef, ExternalRefState } from './external-ref';
 
 /**
@@ -179,40 +180,8 @@ export function decideApplyWithHash(
   },
   hash: string | undefined,
 ): ApplyDecision {
-  if (!stored) return observation.presence === 'present' ? 'create' : 'not_found';
-
-  if (observation.presence === 'absent') {
-    if (stored.state === 'deleted' || stored.state === 'merged' || stored.state === 'retired') {
-      return 'unchanged';
-    }
-    if (stored.lastSeenAt && observation.observedAt <= stored.lastSeenAt) return 'stale';
-    return 'delete';
-  }
-
-  if (stored.state === 'merged') return 'stale';
-  if (stored.state === 'deleted') {
-    return stored.deletedAt && observation.observedAt > stored.deletedAt ? 'restore' : 'stale';
-  }
-  if (stored.state === 'retired') {
-    // A read from before the retirement cannot undo it; a later one always does.
-    return stored.retiredAt && observation.observedAt > stored.retiredAt ? 'restore' : 'stale';
-  }
-
-  if (stored.sourceUpdatedAt && observation.sourceUpdatedAt) {
-    if (observation.sourceUpdatedAt < stored.sourceUpdatedAt) return 'stale';
-    if (
-      observation.sourceUpdatedAt.getTime() === stored.sourceUpdatedAt.getTime() &&
-      hash === stored.fieldHash
-    ) {
-      return 'unchanged';
-    }
-    return 'apply';
-  }
-  if (stored.sourceUpdatedAt && !observation.sourceUpdatedAt) {
-    // Without a source time, only a read newer than the last one may change data.
-    if (stored.lastSeenAt && observation.observedAt <= stored.lastSeenAt) return 'stale';
-  }
-  return hash === stored.fieldHash ? 'unchanged' : 'apply';
+  // M10B (plan §2.4, Q9): the shared reference lifecycle rule.
+  return decideReferenceObservation(stored, observation, hash);
 }
 
 /** The primary company link, or undefined when there is none or it is ambiguous. */

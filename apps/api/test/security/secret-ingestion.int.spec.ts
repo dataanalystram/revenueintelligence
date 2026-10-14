@@ -192,10 +192,13 @@ describe('S22: secret-shaped source values are held, recorded and never persiste
     expect.soft(stored!.quality).toMatchObject({ secret_like_value: 1 });
 
     // Change records written by the runs carry the source-sync actor (M10A1).
+    // M10B (plan §6, Q8): the product-model publish of the setup writes
+    // operator-authored product-reference change records; they are not the runs'.
     expect
       .soft(
         await c.sql<{ actor_kind: string | null; actor_assurance: string | null }>(
-          `SELECT DISTINCT actor_kind, actor_assurance FROM tenant_context_changes WHERE tenant_id = $1`,
+          `SELECT DISTINCT actor_kind, actor_assurance FROM tenant_context_changes
+            WHERE tenant_id = $1 AND entity_kind <> 'product'`,
           [f.ctx.tenantId],
         ),
       )

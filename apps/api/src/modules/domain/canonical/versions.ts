@@ -56,8 +56,35 @@ export interface CanonicalVersionEntry {
 }
 
 export const CANONICAL_VERSIONS: readonly CanonicalVersionEntry[] = [
-  { version: '0.1', status: 'current', adr: '0027' },
+  { version: '0.1', status: 'supported', adr: '0027' },
+  // M10B (ADR 0028): generic source references, evidence links, key-identified change records.
+  { version: '0.2', status: 'current', adr: '0028' },
 ];
+
+/**
+ * What each canonical version enables for a tenant that adopts it (M10B plan
+ * §7): the adoption dry run lists the features gained (forward) or withdrawn
+ * (rollback) between the adopted and the target version. Codes only.
+ */
+export const CANONICAL_VERSION_FEATURES: Readonly<Record<string, readonly string[]>> = {
+  '0.1': [],
+  '0.2': ['observed_generic_source_references', 'evidence_links', 'key_identified_change_records'],
+};
+
+/** Features enabled by versions in (from, to] when moving forward, or withdrawn when moving back. */
+export function canonicalFeatureChanges(
+  from: string,
+  to: string,
+): { readonly enables: readonly string[]; readonly disables: readonly string[] } {
+  const cmp = compareCanonicalVersion(to, from);
+  if (cmp === 0) return { enables: [], disables: [] };
+  const [lo, hi] = cmp > 0 ? [from, to] : [to, from];
+  const between = Object.keys(CANONICAL_VERSION_FEATURES)
+    .filter((v) => compareCanonicalVersion(v, lo) > 0 && compareCanonicalVersion(v, hi) <= 0)
+    .sort(compareCanonicalVersion)
+    .flatMap((v) => CANONICAL_VERSION_FEATURES[v] ?? []);
+  return cmp > 0 ? { enables: between, disables: [] } : { enables: [], disables: between };
+}
 
 export function currentCanonicalVersion(): string {
   const current = CANONICAL_VERSIONS.filter((v) => v.status === 'current');
@@ -70,23 +97,38 @@ export function isAdoptableStatus(status: CanonicalVersionStatus): boolean {
   return status === 'current' || status === 'supported';
 }
 
-/**
- * The vocabulary a version's rows are tied to: entity-index kinds, module keys
- * and the change-record vocabulary. Its hash is stored as `catalogue_hash`.
- */
-export function canonicalCatalogueHash(catalogue: {
+/** The vocabulary a canonical version is tied to (the input of its `catalogue_hash`). */
+export interface CanonicalCatalogue {
   readonly entityKinds: readonly string[];
   readonly moduleKeys: readonly string[];
   readonly changeTypes: readonly string[];
   readonly causes: readonly string[];
   readonly origins: readonly string[];
-}): string {
+  /** M10B (0.2): optional members, hashed only when present (Q19), so 0.1's stored hash is unchanged. */
+  readonly changeEntityKinds?: readonly string[];
+  readonly genericReferenceKinds?: readonly string[];
+  readonly evidenceTypes?: readonly string[];
+  readonly evidenceRoles?: readonly string[];
+}
+
+/**
+ * The vocabulary a version's rows are tied to: entity-index kinds, module keys
+ * and the change-record vocabulary (0.2 adds the change entity kinds, generic
+ * reference kinds, evidence types and roles). Its hash is stored as
+ * `catalogue_hash`. Absent optional members are not hashed (Q19).
+ */
+export function canonicalCatalogueHash(catalogue: CanonicalCatalogue): string {
+  const sorted = (xs: readonly string[] | undefined) => (xs ? [...xs].sort() : undefined);
   return canonicalHash({
-    entityKinds: [...catalogue.entityKinds].sort(),
-    moduleKeys: [...catalogue.moduleKeys].sort(),
-    changeTypes: [...catalogue.changeTypes].sort(),
-    causes: [...catalogue.causes].sort(),
-    origins: [...catalogue.origins].sort(),
+    entityKinds: sorted(catalogue.entityKinds),
+    moduleKeys: sorted(catalogue.moduleKeys),
+    changeTypes: sorted(catalogue.changeTypes),
+    causes: sorted(catalogue.causes),
+    origins: sorted(catalogue.origins),
+    changeEntityKinds: sorted(catalogue.changeEntityKinds),
+    genericReferenceKinds: sorted(catalogue.genericReferenceKinds),
+    evidenceTypes: sorted(catalogue.evidenceTypes),
+    evidenceRoles: sorted(catalogue.evidenceRoles),
   });
 }
 

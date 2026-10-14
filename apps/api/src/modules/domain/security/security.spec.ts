@@ -62,6 +62,9 @@ describe('security policy (S1)', () => {
     expect(POLICY['config.oauth.grant']).toEqual(['system']);
     expect(POLICY['data.sync.run']).toEqual(['operator', 'system']);
     expect(POLICY['canonical.human_entry']).toEqual([]);
+    // M10B (policy v3): provenance reads are operator-only; evidence links system-only.
+    expect(POLICY['data.provenance.read']).toEqual(['operator']);
+    expect(POLICY['canonical.evidence.link']).toEqual(['system']);
     const operatorOnly = CAPABILITIES.filter(
       (c) => c.startsWith('config.') && c !== 'config.oauth.grant',
     );

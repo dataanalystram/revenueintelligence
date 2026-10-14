@@ -1,9 +1,13 @@
 /**
  * Change-record vocabulary (M10A2 plan §9, E5 §3). The database CHECKs equal
  * these lists (schema guard). Entity kinds are widened by each sub-milestone
- * with its entity.
+ * with its entity (M10B: `product`, key-identified).
  */
-export const CHANGE_ENTITY_KINDS = ['company', 'person', 'subscription'] as const;
+export const CHANGE_ENTITY_KINDS = ['company', 'person', 'subscription', 'product'] as const;
+export type ChangeEntityKind = (typeof CHANGE_ENTITY_KINDS)[number];
+
+/** M10B: change records of these kinds name the entity by `entity_key` (D3), every other kind by `entity_id`. */
+export const KEY_IDENTIFIED_CHANGE_KINDS: readonly ChangeEntityKind[] = ['product'];
 
 export const CHANGE_TYPES = [
   'created',

@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { GovernanceModule } from '../governance';
 import { IdentityModule } from '../identity';
 import { TenancyModule } from '../tenancy';
 import { EligibilityService } from './application/eligibility.service';
@@ -20,7 +21,7 @@ import { SubscriptionStore } from './infrastructure/subscription.store';
  * `SubscriptionIngestionService`; the evaluator itself is pure domain code.
  */
 @Module({
-  imports: [TenancyModule, IdentityModule],
+  imports: [TenancyModule, IdentityModule, GovernanceModule],
   providers: [
     ProductModelStore,
     SubscriptionStore,

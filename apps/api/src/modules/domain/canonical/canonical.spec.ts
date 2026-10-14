@@ -17,6 +17,8 @@ import {
   MODULE_KEYS,
   REGISTRY_KINDS,
   AVAILABLE_REGISTRY_KINDS,
+  canonicalCatalogueFor,
+  canonicalCatalogueHash,
   compareCanonicalVersion,
   currentCanonicalVersion,
   decideAdoption,
@@ -97,10 +99,23 @@ describe('V1: canonical versions', () => {
     );
   });
 
-  it('the catalogue holds exactly one current version, 0.1, introduced by ADR 0027, and nothing at 1.0 or above', () => {
-    expect(currentCanonicalVersion()).toBe('0.1');
-    expect(CANONICAL_VERSIONS).toEqual([{ version: '0.1', status: 'current', adr: '0027' }]);
+  it('the catalogue holds exactly one current version, 0.2 (ADR 0028), 0.1 supported (ADR 0027), and nothing at 1.0 or above', () => {
+    expect(currentCanonicalVersion()).toBe('0.2');
+    expect(CANONICAL_VERSIONS).toEqual([
+      { version: '0.1', status: 'supported', adr: '0027' },
+      { version: '0.2', status: 'current', adr: '0028' },
+    ]);
     for (const v of CANONICAL_VERSIONS) expect(parseCanonicalVersion(v.version).major).toBe(0);
+  });
+
+  it('M10B Q19: the stored 0.1 catalogue hash is reproduced unchanged; 0.2 hashes the new members', () => {
+    expect(canonicalCatalogueHash(canonicalCatalogueFor('0.1'))).toBe(
+      '2fd4f7e575633de7cac4aea394a71c73adc9b73e5e18b67c0b0ee404572faf5b',
+    );
+    expect(canonicalCatalogueHash(canonicalCatalogueFor('0.2'))).toBe(
+      'db7c0fc245cae469e8cddae88b89077c017805c7b87586b9d3e71f1936c96c98',
+    );
+    expect(() => canonicalCatalogueFor('0.3')).toThrow(/no catalogue/);
   });
 });
 
