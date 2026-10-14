@@ -122,9 +122,16 @@ describe('M10A2 V15: mapping lifecycle (fake Sugar)', () => {
     expect(validated.draft.state).toBe('validated');
     expect(validated.report.ok).toBe(true);
 
-    // Any edit returns the working copy to draft (database trigger).
-    const edited = await s().mappings.saveDraft(await draftAuth(), f.connectionId, doc, 1);
-    expect(edited).toMatchObject({ state: 'draft', version: 2 });
+    // Re-saving identical content keeps the validation (the trigger compares the document).
+    const resaved = await s().mappings.saveDraft(await draftAuth(), f.connectionId, doc, 1);
+    expect(resaved).toMatchObject({ state: 'validated', version: 2 });
+    // Any edit returns the working copy to draft (database trigger) ...
+    const changed = { ...(doc as Record<string, unknown>), note: 'edited in V15' };
+    const edited = await s().mappings.saveDraft(await draftAuth(), f.connectionId, changed, 2);
+    expect(edited).toMatchObject({ state: 'draft', version: 3 });
+    // ... and so does restoring the original content: it must be validated again.
+    const restored = await s().mappings.saveDraft(await draftAuth(), f.connectionId, doc, 3);
+    expect(restored).toMatchObject({ state: 'draft', version: 4 });
     await expect(
       s().mappings.publishDraft(await publishAuth(), f.connectionId, 2),
     ).rejects.toMatchObject({ code: 'mapping_not_validated' });
@@ -133,7 +140,13 @@ describe('M10A2 V15: mapping lifecycle (fake Sugar)', () => {
       { version: 2, state: 'published' },
     ]);
 
-    await s().mappings.validateDraft(await draftAuth(), f.connectionId, 2, {
+    // A stale draft version is refused by validation too.
+    await expect(
+      s().mappings.validateDraft(await draftAuth(), f.connectionId, 3, {
+        acknowledgements: needed,
+      }),
+    ).rejects.toMatchObject({ code: 'stale_base_version' });
+    await s().mappings.validateDraft(await draftAuth(), f.connectionId, 4, {
       acknowledgements: needed,
     });
     // A stale publication base is refused even with a validated draft.
