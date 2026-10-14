@@ -192,7 +192,6 @@ export function decideRetirement(
   if (ref.origin === 'declared') return { retire: false, reason: 'declared' };
   if (ref.state !== 'active') return { retire: false, reason: 'not_active' };
   if (run.seen.has(ref.externalId)) return { retire: false, reason: 'seen' };
-  if (run.rejected?.has(ref.externalId)) return { retire: false, reason: 'rejected' };
   if (run.protectedIds?.has(ref.externalId)) return { retire: false, reason: 'protected' };
   if (ref.lastSeenAt && ref.lastSeenAt > run.observedAt) {
     return { retire: false, reason: 'seen_after_run' };
