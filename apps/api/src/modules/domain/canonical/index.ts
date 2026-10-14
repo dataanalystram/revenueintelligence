@@ -2,6 +2,7 @@ export * from './change-record';
 export * from './data-policy';
 export * from './entity-index';
 export * from './integrity';
+export * from './json-size';
 export * from './mapping-lifecycle';
 export * from './modules';
 export * from './registry';

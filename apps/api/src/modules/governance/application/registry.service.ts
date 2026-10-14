@@ -5,6 +5,7 @@ import {
   DATA_POLICY_ENTRY_KEY,
   DATA_POLICY_SCHEMA_VERSION,
   DataPolicyDocumentSchema,
+  jsonbTextBytes,
   REGISTRY_DOCUMENT_MAX_BYTES,
   REGISTRY_KINDS,
   registryContentHash,
@@ -315,7 +316,7 @@ export class RegistryService {
     kind: RegistryKind,
     raw: unknown,
   ): { ok: true; value: ParsedDocument } | { ok: false; issues: string[] } {
-    if (JSON.stringify(raw ?? null).length > REGISTRY_DOCUMENT_MAX_BYTES) {
+    if (jsonbTextBytes(raw ?? null) > REGISTRY_DOCUMENT_MAX_BYTES) {
       return { ok: false, issues: ['document_too_large'] };
     }
     if (kind !== 'data_policy') return { ok: false, issues: ['registry_kind_not_available'] };
