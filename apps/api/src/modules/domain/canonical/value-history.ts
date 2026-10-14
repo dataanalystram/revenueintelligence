@@ -9,6 +9,15 @@ import { effectiveSensitivity } from '../security/classification';
 export const VALUE_HISTORY_FIELDS = {
   company: {
     name: { table: 'companies', column: 'name' },
+    // M10C: the M10 §10 initial field "Account parent_account_id" (full history).
+    parent_company_id: { table: 'companies', column: 'parent_company_id' },
+  },
+  // M10C: personal fields, value-free unless a published data policy allows values (Q15).
+  person_affiliation: {
+    status: { table: 'tenant_person_affiliations', column: 'status' },
+    starts_at: { table: 'tenant_person_affiliations', column: 'starts_at' },
+    ends_at: { table: 'tenant_person_affiliations', column: 'ends_at' },
+    role_codes: { table: 'tenant_person_affiliations', column: 'role_codes' },
   },
   subscription: {
     state: { table: 'tenant_subscriptions', column: 'state' },

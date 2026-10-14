@@ -1,3 +1,4 @@
+export * from './account-structure';
 export * from './catalogue';
 export * from './change-record';
 export * from './data-policy';
