@@ -136,7 +136,9 @@ export class IntegrityVerificationService {
     const add = (check: IntegrityFinding['check'], refs: readonly string[]) =>
       refs.forEach((ref) => findings.push({ check, ref }));
 
-    // 1. Entity index ↔ entity tables, both directions, per kind, tenant equality explicit.
+    // 1. Entity index ↔ entity tables, both directions, per kind. There is no FK
+    // between them: tenant equality comes from the index triggers copying
+    // NEW.tenant_id, and under RLS a planted cross-tenant row is an orphan here.
     for (const [kind, src] of Object.entries(ENTITY_INDEX_SOURCES) as [
       EntityIndexKind,
       (typeof ENTITY_INDEX_SOURCES)[EntityIndexKind],
@@ -156,9 +158,9 @@ export class IntegrityVerificationService {
         'entity_index_missing',
         missing.map((r) => `${kind}:${r.ref}`),
       );
-      const orphans = await db.$queryRawUnsafe<{ ref: string; tenant_ok: boolean }[]>(
-        `SELECT i.${idCol}::text AS ref, i.tenant_id = $1::uuid AS tenant_ok FROM tenant_entity_index i
-          WHERE i.kind = $2 AND NOT EXISTS (
+      const orphans = await db.$queryRawUnsafe<{ ref: string }[]>(
+        `SELECT i.${idCol}::text AS ref FROM tenant_entity_index i
+          WHERE i.tenant_id = $1::uuid AND i.kind = $2 AND NOT EXISTS (
             SELECT 1 FROM "${src.table}" e
              WHERE e.tenant_id = i.tenant_id AND e."${src.column}"${cast} = i.${idCol})
           ORDER BY 1 LIMIT ${INTEGRITY_MAX_FINDINGS}`,
@@ -167,11 +169,7 @@ export class IntegrityVerificationService {
       );
       add(
         'entity_index_orphan',
-        orphans.filter((r) => r.tenant_ok).map((r) => `${kind}:${r.ref}`),
-      );
-      add(
-        'entity_index_tenant_mismatch',
-        orphans.filter((r) => !r.tenant_ok).map((r) => `${kind}:${r.ref}`),
+        orphans.map((r) => `${kind}:${r.ref}`),
       );
     }
 

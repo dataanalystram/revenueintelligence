@@ -911,7 +911,7 @@ describe('M10A2 canonical versioning and governance', () => {
   });
 
   describe('V17: integrity verification', () => {
-    it('a clean tenant passes; planted orphan, missing row and tenant mismatch are found, raised and never repaired', async () => {
+    it('a clean tenant passes; planted orphan, missing row and cross-tenant index row (an orphan in A only) are found, raised and never repaired', async () => {
       const a = await c.tenant('inta', 1001);
       const b = await c.tenant('intb', 2002);
       await companyOf(a, '951');

@@ -45,6 +45,8 @@ wins). The M10 plan (D1–D6, F1–F5) requires all of these before the first ca
    rights on the index only (an RLS policy scoped to that role allows its insert/delete); identity updates are
    refused; the app role can read but never write it. Polymorphic columns reference the index by `(tenant_id, id)`
    or `(tenant_id, key)`, so a cross-tenant reference is impossible even with raw SQL.
+   There is **no FK between the index and the entity tables**: tenant equality of an index row with its entity comes
+   from the index trigger copying `NEW.tenant_id`, which the entity insert already passed under RLS.
 6. **Value history.** One append-only table, written by the single writers in the same transaction as the
    projection and change record, for the seven fields of Q14; anchored in the index with `ON DELETE RESTRICT`
    (Q15). Columns classified sensitive produce value-free rows unless the data policy allows values.
@@ -60,7 +62,7 @@ wins). The M10 plan (D1–D6, F1–F5) requires all of these before the first ca
    current. Sync reads the **published** version; with none (e.g. after retirement) it is refused
    `mapping_not_published`. The legacy `mappings-publish --file` path is kept (validate + publish in one
    transaction). The lifecycle is backfilled as "latest wins".
-9. **Integrity verification.** Per-tenant, read-only checks (orphans, missing index rows, tenant mismatch,
+9. **Integrity verification.** Per-tenant, read-only checks (orphans, missing index rows,
    adoption/module/lifecycle consistency, privilege manifest, missing audit references); with `--execute` the run
    is recorded (append-only) with one audit event; findings raise a security event and are never repaired. The CLI
    exists; the worker job and automatic schedule are deferred (see Consequences).
@@ -76,8 +78,9 @@ wins). The M10 plan (D1–D6, F1–F5) requires all of these before the first ca
 ## Consequences
 
 - M10B can publish `0.2` and its first entity on top of adoption, modules, index and history.
-- A tenant mismatch planted by the owner surfaces in integrity verification as an orphan plus a missing index row
-  (the composite FK makes a "pure" mismatch impossible); recorded as a deviation.
+- There is no dedicated tenant-mismatch check: under RLS it could never fire. A cross-tenant index row planted by the
+  owner (bypassing the trigger) surfaces as an `entity_index_orphan` in the tenant that holds the index row only;
+  the other tenant stays clean. Recorded as a deviation.
 - `tenant_context_changes` predates the index; its entity columns are a historical log that outlives physical
   deletes and are exempt from the polymorphic-FK guard (with actor columns, which name an actor, not an entity).
 - Deferred: the integrity worker job (the automatic schedule is off until M10M anyway); mutation proofs VM1–VM22;
