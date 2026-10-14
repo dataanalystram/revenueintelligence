@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { Module, type INestApplicationContext } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import { GovernanceModule, IntegrityVerificationService } from '../modules/governance';
 import { SecurityOperationsService, TenancyModule, TenantContextService } from '../modules/tenancy';
 import { loadConfig } from '../platform/config';
 import { PlatformModule } from '../platform/platform.module';
@@ -18,6 +19,7 @@ import { authorizeOperator } from './operator';
  *   pnpm --filter @lip/api security:rekey        --tenant <slug> [--actor <id> --execute]
  *   pnpm --filter @lip/api security:audit-verify --tenant <slug> --actor <id>   (exit 3 if the chain is broken)
  *   pnpm --filter @lip/api security:audit-purge  --tenant <slug> [--actor <id> --execute]
+ *   pnpm --filter @lip/api security:integrity-verify --tenant <slug> [--actor <id> --execute]   (exit 3 on findings)
  *
  * `--actor` (or LIP_OPERATOR_ID) is required for every `--execute` and for the
  * audit read (owner decision Q1); it is recorded as asserted, not authenticated.
@@ -27,11 +29,17 @@ import { authorizeOperator } from './operator';
  * PLATFORM_TOKEN_ENCRYPTION_KEY_ID=<kid> and list the old id in
  * PLATFORM_TOKEN_ENCRYPTION_PREVIOUS_KEY_IDS → `security:rekey --execute` per
  * tenant → `security:key-usage` shows 0 for the old id → remove the old key.
+ * The audit-purge report reads the security_audit retention from the tenant's
+ * published data policy (M10A2), else the product default.
+ * Integrity verification (M10A2, ADR 0027) is read-only on canonical data:
+ * without `--execute` it reports; with `--execute` it also records the run
+ * (one audit event). Findings are never repaired (forward-fix only); the
+ * automatic schedule stays off until M10M.
  */
 async function withSecurity<T>(work: (app: INestApplicationContext) => Promise<T>): Promise<T> {
   const config = loadConfig();
 
-  @Module({ imports: [PlatformModule.forRoot(config), TenancyModule] })
+  @Module({ imports: [PlatformModule.forRoot(config), TenancyModule, GovernanceModule] })
   class SecurityCliModule {}
 
   const app = await NestFactory.createApplicationContext(SecurityCliModule, {
@@ -108,9 +116,24 @@ async function main(): Promise<void> {
             : ctx,
           { execute: values.execute, ownerDatabaseUrl: process.env.MIGRATION_DATABASE_URL },
         );
+      case 'integrity-verify': {
+        const integrity = app.get(IntegrityVerificationService);
+        const report = values.execute
+          ? await integrity.record(
+              await authorizeOperator(app, ctx, 'security.integrity.run', {
+                actorFlag: values.actor,
+                action: 'integrity.verify',
+                targetKind: 'integrity_run',
+                correlationId,
+              }),
+            )
+          : await integrity.verify(ctx);
+        if (report.outcome !== 'passed') exitCode = 3;
+        return { dryRun: !values.execute, ...report };
+      }
       default:
         throw new Error(
-          'Usage: security <key-usage|rekey|audit-verify|audit-purge> --tenant <slug> [--actor <id>] [--execute]',
+          'Usage: security <key-usage|rekey|audit-verify|audit-purge|integrity-verify> --tenant <slug> [--actor <id>] [--execute]',
         );
     }
   });

@@ -65,6 +65,19 @@ import { authorizeOperator } from './operator';
  *   sources mappings-draft   --tenant <slug> --connection <id|kind> --from-profile [--out <file>]
  *   sources profile-purge    --tenant <slug> --connection <id|kind> --object A --keep 10 [--execute]
  *                            (schema owner credentials: MIGRATION_DATABASE_URL; the app role is refused)
+ *
+ * Mapping lifecycle (M10A2, ADR 0027): drafts are optional (`mappings-publish` stays
+ * "validate + publish" in one transaction); published content is never changed.
+ *   sources mapping-draft-save     --tenant <slug> --connection <id|kind> --file <mapping.json>
+ *                                  --draft-version <n> (0 for a new draft) [--actor <id>] [--execute]
+ *   sources mapping-draft-validate --tenant <slug> --connection <id|kind> --draft-version <n> [--actor <id>] [--execute]
+ *   sources mapping-draft-publish  --tenant <slug> --connection <id|kind> --based-on <version> [--actor <id>] [--execute]
+ *   sources mapping-draft-discard  --tenant <slug> --connection <id|kind> [--actor <id>] [--execute]
+ *   sources mapping-draft-show     --tenant <slug> --connection <id|kind>
+ *   sources mapping-states         --tenant <slug> --connection <id|kind>
+ *   sources mapping-retire         --tenant <slug> --connection <id|kind> --version <n>
+ *                                  --reason connection_disabled|canonical_version_unsupported|operator_retired
+ *                                  [--actor <id>] [--execute]
  * mappings-publish/validate also take `--ack <findingId>:<reasonCode>` (repeatable) and
  * `--profile-override <reason>`, which is always refused in M9A (no authenticated operator).
  * authority-publish takes `--accept-proof <connectionId>:<reason>` (stable_snapshot only).
@@ -163,6 +176,8 @@ async function main(): Promise<void> {
       'from-profile': { type: 'boolean', default: false },
       out: { type: 'string' },
       keep: { type: 'string' },
+      'draft-version': { type: 'string' },
+      reason: { type: 'string' },
     },
   });
   if (!values.tenant) throw new Error('--tenant <slug> is required');
@@ -318,6 +333,103 @@ async function main(): Promise<void> {
             .get(SourceMappingsService)
             .show(ctx, conn.id, int(values.version, 'version'));
           return shown ? { ...shown } : { found: false };
+        }
+        case 'mapping-draft-save': {
+          const conn = await connection(ctx);
+          const document = readJson(values.file);
+          const draftVersion = int(values['draft-version'], 'draft-version');
+          if (draftVersion === undefined) {
+            throw new Error('--draft-version <n> is required (0 for a new draft)');
+          }
+          if (!execute) return { dryRun: true, connection: conn.id, draftVersion };
+          const auth = await op(
+            'config.mapping.draft',
+            'mapping.draft.save',
+            'mapping_draft',
+            conn.id,
+          );
+          return {
+            draft: await app
+              .get(SourceMappingsService)
+              .saveDraft(auth, conn.id, document, draftVersion),
+          };
+        }
+        case 'mapping-draft-validate': {
+          const conn = await connection(ctx);
+          const draftVersion = int(values['draft-version'], 'draft-version');
+          if (draftVersion === undefined) throw new Error('--draft-version <n> is required');
+          if (!execute) {
+            const draft = await app.get(SourceMappingsService).showDraft(ctx, conn.id);
+            return { dryRun: true, draft: draft ?? null };
+          }
+          const auth = await op(
+            'config.mapping.draft',
+            'mapping.draft.validate',
+            'mapping_draft',
+            conn.id,
+          );
+          const validated = await app
+            .get(SourceMappingsService)
+            .validateDraft(auth, conn.id, draftVersion);
+          return { draft: validated.draft, ok: validated.report.ok };
+        }
+        case 'mapping-draft-publish': {
+          const conn = await connection(ctx);
+          const basedOn = int(values['based-on'], 'based-on');
+          if (basedOn === undefined) throw new Error('--based-on <version> is required');
+          if (!execute) {
+            const draft = await app.get(SourceMappingsService).showDraft(ctx, conn.id);
+            return { dryRun: true, draft: draft ?? null };
+          }
+          const auth = await op('config.mapping.publish', 'mapping.publish', 'mapping', conn.id);
+          return {
+            published: await app.get(SourceMappingsService).publishDraft(auth, conn.id, basedOn),
+          };
+        }
+        case 'mapping-draft-discard': {
+          const conn = await connection(ctx);
+          if (!execute) return { dryRun: true, connection: conn.id };
+          const auth = await op(
+            'config.mapping.draft',
+            'mapping.draft.discard',
+            'mapping_draft',
+            conn.id,
+          );
+          return await app.get(SourceMappingsService).discardDraft(auth, conn.id);
+        }
+        case 'mapping-draft-show': {
+          const conn = await connection(ctx);
+          const draft = await app.get(SourceMappingsService).showDraft(ctx, conn.id);
+          return draft ? { draft } : { found: false };
+        }
+        case 'mapping-states': {
+          const conn = await connection(ctx);
+          return { states: await app.get(SourceMappingsService).states(ctx, conn.id) };
+        }
+        case 'mapping-retire': {
+          const conn = await connection(ctx);
+          const version = int(values.version, 'version');
+          if (version === undefined) throw new Error('--version <n> is required');
+          const reason = values.reason;
+          if (
+            reason !== 'connection_disabled' &&
+            reason !== 'canonical_version_unsupported' &&
+            reason !== 'operator_retired'
+          ) {
+            throw new Error(
+              '--reason connection_disabled|canonical_version_unsupported|operator_retired is required',
+            );
+          }
+          if (!execute) return { dryRun: true, connection: conn.id, version, reason };
+          const auth = await op(
+            'config.mapping.retire',
+            'mapping.retire',
+            'mapping',
+            `${conn.id}/v${version}`,
+          );
+          return {
+            retired: await app.get(SourceMappingsService).retire(auth, conn.id, version, reason),
+          };
         }
         case 'authority-show': {
           const shown = await app.get(SourceAuthorityService).show(ctx);
@@ -475,7 +587,7 @@ async function main(): Promise<void> {
         }
         default:
           throw new Error(
-            'Usage: sources <list|configure|test|schema|mappings-validate|mappings-preview|mappings-publish|mappings-show|mappings-draft|authority-show|authority-publish|sync-full|sync-incremental|sync-status|report|profile-run|profile-status|profile-show|profile-findings|profile-drift|profile-purge> --tenant <slug> [...]',
+            'Usage: sources <list|configure|test|schema|mappings-validate|mappings-preview|mappings-publish|mappings-show|mappings-draft|mapping-draft-save|mapping-draft-validate|mapping-draft-publish|mapping-draft-discard|mapping-draft-show|mapping-states|mapping-retire|authority-show|authority-publish|sync-full|sync-incremental|sync-status|report|profile-run|profile-status|profile-show|profile-findings|profile-drift|profile-purge> --tenant <slug> [...]',
           );
       }
     } catch (error) {
