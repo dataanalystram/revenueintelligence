@@ -97,7 +97,7 @@ export const CLASSIFICATION_MANIFEST: Readonly<
       categories: ['operational'],
       kind: 'code',
       retention: 'canonical_lifecycle',
-      history: 'full',
+      history: 'none',
     },
     created_at: {
       sensitivity: 'internal',

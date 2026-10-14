@@ -270,4 +270,24 @@ describe('M10A2 V15: mapping lifecycle (fake Sugar)', () => {
       await client.end();
     }
   });
+
+  it('the app role can never write a migration-actor (backfill) lifecycle row', async () => {
+    const client = new Client({ connectionString: c.appUrl });
+    await client.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`SELECT set_config('app.current_tenant', $1, true)`, [f.ctx.tenantId]);
+      await expect(
+        client.query(
+          `INSERT INTO tenant_source_mapping_lifecycle
+             (tenant_id, connection_id, version, seq, state, actor_kind, actor_id, actor_assurance)
+           VALUES ($1, $2, 1, 1, 'published', 'system', 'system:migration:m10a2', 'system')`,
+          [f.ctx.tenantId, f.connectionId],
+        ),
+      ).rejects.toThrow(/mapping lifecycle backfill rows are written by the migration only/);
+      await client.query('ROLLBACK');
+    } finally {
+      await client.end();
+    }
+  });
 });
