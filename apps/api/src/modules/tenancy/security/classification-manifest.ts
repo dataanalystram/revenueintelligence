@@ -19,6 +19,46 @@ const OPERATOR_ID_TBC = {
   owner: 'platform owner (Wigmore)',
 } as const;
 
+/** Compact constructors for the M10A2 entries (same shape as the entries above). */
+type Retention = ColumnClassification['retention'];
+const op = (kind: ColumnClassification['kind'], retention: Retention): ColumnClassification => ({
+  sensitivity: 'internal',
+  categories: ['operational'],
+  kind,
+  retention,
+  history: 'none',
+});
+const operatorId = (retention: Retention): ColumnClassification => ({
+  sensitivity: 'restricted',
+  categories: ['operational'],
+  kind: 'identifier',
+  retention,
+  history: 'none',
+  tbc: OPERATOR_ID_TBC,
+});
+const actorColumns = (retention: Retention) => ({
+  actor_kind: op('code', retention),
+  actor_id: operatorId(retention),
+  actor_assurance: op('code', retention),
+});
+const updatedByColumns = (retention: Retention) => ({
+  updated_by_kind: op('code', retention),
+  updated_by_id: operatorId(retention),
+  updated_by_assurance: op('code', retention),
+});
+/** Recorded values of catalogued fields: may hold commercial, financial or (later) personal data. */
+const historyValue: ColumnClassification = {
+  sensitivity: 'confidential',
+  categories: ['commercial', 'financial', 'personal'],
+  kind: 'json',
+  retention: 'canonical_lifecycle',
+  history: 'none',
+  subject: { entity: 'person', action: 'erase' },
+};
+const CV: Retention = 'configuration_version';
+const CL: Retention = 'canonical_lifecycle';
+const SA: Retention = 'security_audit';
+
 export const CLASSIFICATION_MANIFEST: Readonly<
   Record<string, Readonly<Record<string, ColumnClassification>>>
 > = {
@@ -43,7 +83,7 @@ export const CLASSIFICATION_MANIFEST: Readonly<
       categories: ['commercial'],
       kind: 'free_text',
       retention: 'canonical_lifecycle',
-      history: 'value_free',
+      history: 'full',
     },
     domains: {
       sensitivity: 'internal',
@@ -57,7 +97,7 @@ export const CLASSIFICATION_MANIFEST: Readonly<
       categories: ['operational'],
       kind: 'code',
       retention: 'canonical_lifecycle',
-      history: 'none',
+      history: 'full',
     },
     created_at: {
       sensitivity: 'internal',
@@ -778,6 +818,11 @@ export const CLASSIFICATION_MANIFEST: Readonly<
       retention: 'operational_diagnostics',
       history: 'none',
     },
+    origin: op('code', 'operational_diagnostics'),
+    derivation: op('json', 'operational_diagnostics'),
+    canonical_version: op('code', 'operational_diagnostics'),
+    schema_snapshot_hash: op('hash', 'operational_diagnostics'),
+    transforms: op('code', 'operational_diagnostics'),
   },
   tenant_credential_refs: {
     tenant_id: {
@@ -1928,6 +1973,7 @@ export const CLASSIFICATION_MANIFEST: Readonly<
       retention: 'configuration_version',
       history: 'none',
     },
+    canonical_version_min: op('code', 'configuration_version'),
   },
   tenant_source_profile_findings: {
     tenant_id: {
@@ -2433,35 +2479,35 @@ export const CLASSIFICATION_MANIFEST: Readonly<
       categories: ['commercial'],
       kind: 'reference',
       retention: 'canonical_lifecycle',
-      history: 'none',
+      history: 'full',
     },
     state: {
       sensitivity: 'internal',
       categories: ['commercial'],
       kind: 'code',
       retention: 'canonical_lifecycle',
-      history: 'none',
+      history: 'full',
     },
     starts_at: {
       sensitivity: 'internal',
       categories: ['commercial'],
       kind: 'timestamp',
       retention: 'canonical_lifecycle',
-      history: 'none',
+      history: 'full',
     },
     ends_at: {
       sensitivity: 'internal',
       categories: ['commercial'],
       kind: 'timestamp',
       retention: 'canonical_lifecycle',
-      history: 'none',
+      history: 'full',
     },
     quantity: {
       sensitivity: 'internal',
       categories: ['commercial'],
       kind: 'number',
       retention: 'canonical_lifecycle',
-      history: 'none',
+      history: 'full',
     },
     source_system: {
       sensitivity: 'internal',
@@ -3008,6 +3054,154 @@ export const CLASSIFICATION_MANIFEST: Readonly<
       retention: 'configuration_version',
       history: 'none',
     },
+  },
+  // ---------------------------------------------------------------------------
+  // M10A2 (ADR 0027)
+  // ---------------------------------------------------------------------------
+  canonical_model_versions: {
+    version: op('code', CV),
+    major: op('number', CV),
+    minor: op('number', CV),
+    status: op('code', CV),
+    released_at: op('timestamp', CV),
+    catalogue_hash: op('hash', CV),
+    adr: op('reference', CV),
+  },
+  canonical_modules: {
+    module_key: op('code', CV),
+    title: op('free_text', CV),
+    available: op('boolean', CV),
+    minimum_canonical_version: op('code', CV),
+    depends_on: op('code', CV),
+    config_schema_version: op('number', CV),
+  },
+  tenant_canonical_adoptions: {
+    tenant_id: op('identifier', CV),
+    id: op('identifier', CV),
+    seq: op('number', CV),
+    version: op('code', CV),
+    previous_version: op('code', CV),
+    reason: op('code', CV),
+    adopted_at: op('timestamp', CV),
+    ...actorColumns(CV),
+    correlation_id: op('identifier', CV),
+    audit_event_id: op('reference', CV),
+    migration_run_id: op('reference', CV),
+  },
+  tenant_module_settings: {
+    tenant_id: op('identifier', CV),
+    module_key: op('code', CV),
+    enabled: op('boolean', CV),
+    config: op('json', CV),
+    version: op('number', CV),
+    updated_at: op('timestamp', CV),
+    ...updatedByColumns(CV),
+  },
+  tenant_module_setting_events: {
+    tenant_id: op('identifier', CV),
+    id: op('identifier', CV),
+    seq: op('number', CV),
+    module_key: op('code', CV),
+    from_enabled: op('boolean', CV),
+    to_enabled: op('boolean', CV),
+    from_config_hash: op('hash', CV),
+    to_config_hash: op('hash', CV),
+    base_version: op('number', CV),
+    ...actorColumns(CV),
+    reason_code: op('code', CV),
+    occurred_at: op('timestamp', CV),
+    audit_event_id: op('reference', CV),
+  },
+  tenant_registry_versions: {
+    tenant_id: op('identifier', CV),
+    kind: op('code', CV),
+    version: op('number', CV),
+    base_version: op('number', CV),
+    document: op('json', CV),
+    document_schema_version: op('number', CV),
+    content_hash: op('hash', CV),
+    canonical_version_min: op('code', CV),
+    effective_from: op('timestamp', CV),
+    published_at: op('timestamp', CV),
+    ...actorColumns(CV),
+    correlation_id: op('identifier', CV),
+    audit_event_id: op('reference', CV),
+  },
+  tenant_registry_entries: {
+    tenant_id: op('identifier', CV),
+    id: op('identifier', CV),
+    kind: op('code', CV),
+    key: op('code', CV),
+    status: op('code', CV),
+    definition: op('json', CV),
+    introduced_in: op('number', CV),
+    last_changed_in: op('number', CV),
+    sensitivity: op('code', CV),
+    categories: op('code', CV),
+    updated_at: op('timestamp', CV),
+  },
+  tenant_entity_index: {
+    tenant_id: op('identifier', CL),
+    id: op('identifier', CL),
+    kind: op('code', CL),
+    entity_id: op('reference', CL),
+    entity_key: op('reference', CL),
+    created_at: op('timestamp', CL),
+  },
+  tenant_value_history: {
+    tenant_id: op('identifier', CL),
+    id: op('identifier', CL),
+    entity_kind: op('code', CL),
+    entity_id: op('reference', CL),
+    entity_key: op('reference', CL),
+    field: op('code', CL),
+    values_recorded: op('boolean', CL),
+    old_value: historyValue,
+    new_value: historyValue,
+    effective_at: op('timestamp', CL),
+    recorded_at: op('timestamp', CL),
+    change_id: op('reference', CL),
+    retention_class: op('code', CL),
+    policy_version: op('number', CL),
+    ...actorColumns(CL),
+  },
+  tenant_source_mapping_drafts: {
+    tenant_id: op('identifier', CV),
+    connection_id: op('reference', CV),
+    id: op('identifier', CV),
+    state: op('code', CV),
+    document: op('json', CV),
+    content_hash: op('hash', CV),
+    version: op('number', CV),
+    validated_snapshot_hash: op('hash', CV),
+    validated_authority_version: op('number', CV),
+    validated_canonical_version: op('code', CV),
+    validation: op('json', CV),
+    ...updatedByColumns(CV),
+    updated_at: op('timestamp', CV),
+  },
+  tenant_source_mapping_lifecycle: {
+    tenant_id: op('identifier', CV),
+    connection_id: op('reference', CV),
+    version: op('number', CV),
+    seq: op('number', CV),
+    state: op('code', CV),
+    occurred_at: op('timestamp', CV),
+    ...actorColumns(CV),
+    reason_code: op('code', CV),
+    audit_event_id: op('reference', CV),
+  },
+  tenant_integrity_runs: {
+    tenant_id: op('identifier', SA),
+    id: op('identifier', SA),
+    started_at: op('timestamp', SA),
+    finished_at: op('timestamp', SA),
+    outcome: op('code', SA),
+    checks: op('json', SA),
+    findings: op('json', SA),
+    ...actorColumns(SA),
+    correlation_id: op('identifier', SA),
+    audit_event_id: op('reference', SA),
   },
 };
 
