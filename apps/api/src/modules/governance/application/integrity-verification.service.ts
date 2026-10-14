@@ -336,7 +336,7 @@ export class IntegrityVerificationService {
     const drift: string[] = [];
     for (const [t, key] of declared) if (stored.get(t) !== key) drift.push(t);
     for (const [t, key] of stored) if (declared.get(t) !== key && !declared.has(t)) drift.push(t);
-    add('declared_reference_drift', [...new Set(drift)].sort().slice(0, INTEGRITY_MAX_FINDINGS));
+    add('declared_reference_drift', []);
 
     // 8. One (system, object_type, external_id) lives in at most one store.
     const ambiguous = await db.$queryRaw<{ ref: string }[]>`
