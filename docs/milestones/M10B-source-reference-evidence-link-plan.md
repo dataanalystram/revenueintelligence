@@ -242,6 +242,8 @@ object_type, external_id)` present in more than one store (`source_reference_amb
   `changed_fields = ['source_reference']`, source triple = the reference, `cause = 'human'`, `origin = 'human'`,
   actor = the publishing operator, `adapter = 'product-model'`, `adapter_version` = the model version,
   `canonical_version` = the tenant's adopted version.
+  _Implementation note (M10B record D1, ADR 0028): the adapter is named `product_model` — the existing adapter
+  CHECK `^[a-z0-9_]{1,32}$` refuses `product-model`._
 - The backfill (§8) writes **no** change records: a migration must not fabricate provenance; the model version row
   (`declared_in_model_version`) is the provenance of a backfilled row, and `last_change_id` stays NULL.
 - The table stays append-only and stays exempt from the polymorphic-FK guard (ADR 0027 D2).
