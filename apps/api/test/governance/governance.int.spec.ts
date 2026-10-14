@@ -19,6 +19,7 @@ import {
 import {
   AuthorizationDeniedError,
   SecurityEventsService,
+  SecurityOperationsService,
   TenantDatabase,
   tenantRetention,
   type TenantContext,
@@ -537,6 +538,38 @@ describe('M10A2 canonical versioning and governance', () => {
       });
       expect(resolved.raw_rejected_value).toEqual({ kind: 'disabled', source: 'default' });
       expect(AUDIT_PURGE_EXECUTION_APPROVED).toBe(false);
+    });
+
+    it('V9: the audit-purge report reads the security_audit retention from the published policy', async () => {
+      const t = await c.tenant('regpurge', 1001);
+      const ops = c.app.get(SecurityOperationsService);
+      await expect(ops.purge(t, { execute: false })).resolves.toMatchObject({
+        dryRun: true,
+        retentionDays: 365,
+        retentionSource: 'default',
+        policyVersion: null,
+      });
+      const doc = policy({ retention: { security_audit: { days: 400 } } });
+      const dry = await registry().dryRun(t, 'data_policy', doc);
+      await registry().publishDataPolicy(await authz(t, 'config.data_policy.publish'), {
+        document: doc,
+        expectedBaseVersion: 0,
+        expectedContentHash: dry.contentHash!,
+      });
+      const now = new Date();
+      const report = await ops.purge(t, { execute: false, now });
+      expect(report).toMatchObject({
+        dryRun: true,
+        retentionDays: 400,
+        retentionSource: 'policy',
+        policyVersion: 1,
+        purged: 0,
+      });
+      expect(new Date(report.cutoff).getTime()).toBe(now.getTime() - 400 * 86_400_000);
+      // Execution stays refused whatever the policy says.
+      await expect(
+        ops.purge(await authz(t, 'data.purge'), { execute: true }),
+      ).rejects.toMatchObject({ code: 'audit_purge_disabled' });
     });
 
     it('V18: secret-like values in a registry document are refused (audited denied)', async () => {

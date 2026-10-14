@@ -3,11 +3,10 @@ import { Client } from 'pg';
 import {
   AUDIT_GENESIS_HASH,
   AUDIT_PURGE_EXECUTION_APPROVED,
-  RETENTION_DEFAULTS,
-  retentionCutoff,
   type ChainVerdict,
 } from '../../domain';
 import { TenancyError } from '../errors';
+import { tenantRetention } from '../governance/data-policy';
 import { EncryptedDatabaseOAuthGrantStore } from '../infrastructure/encrypted-oauth-grant.store';
 import { TenantDatabase, advisoryLockKey, tenantClient } from '../infrastructure/tenant-database';
 import type { TenantContext } from '../tenant-context';
@@ -49,6 +48,10 @@ export class AuditPurgeRefusedError extends TenancyError {
 export interface AuditPurgeReport {
   readonly dryRun: boolean;
   readonly retentionDays: number;
+  /** M10A2: where the retention came from (the tenant's data policy or the product default). */
+  readonly retentionSource: 'policy' | 'default';
+  /** M10A2: the data-policy version that set it (null for the product default). */
+  readonly policyVersion: number | null;
   readonly cutoff: string;
   readonly totalEvents: number;
   readonly eligibleEvents: number;
@@ -182,11 +185,24 @@ export class SecurityOperationsService {
     },
   ): Promise<AuditPurgeReport> {
     const now = options.now ?? new Date();
-    const cutoff = retentionCutoff('security_audit', now)!;
-    const retention = RETENTION_DEFAULTS.security_audit;
-    const retentionDays = retention.kind === 'days' ? retention.days : 0;
+    const ctx = target instanceof AuthorizedContext ? target.tenant : target;
+    // M10A2: the tenant's published data policy ?? the product default (RetentionPolicyProvider).
+    const { retentionDays, retentionSource, policyVersion } = await this.db.transaction(
+      ctx,
+      async (tx) => {
+        const resolved = await tenantRetention(tx);
+        const audit = resolved.security_audit;
+        // security_audit is a `days` class by product default and by data-policy schema.
+        if (audit.kind !== 'days') throw new Error('security_audit retention must be in days');
+        return {
+          retentionDays: audit.days,
+          retentionSource: audit.source,
+          policyVersion: audit.source === 'policy' ? resolved.policyVersion : null,
+        };
+      },
+    );
+    const cutoff = new Date(now.getTime() - retentionDays * 86_400_000);
     if (!options.execute) {
-      const ctx = target instanceof AuthorizedContext ? target.tenant : target;
       return this.db.transaction(ctx, async (tx) => {
         const client = tenantClient(tx);
         const totalEvents = await client.tenantAuditEvent.count();
@@ -203,6 +219,8 @@ export class SecurityOperationsService {
         return {
           dryRun: true,
           retentionDays,
+          retentionSource,
+          policyVersion,
           cutoff: cutoff.toISOString(),
           totalEvents,
           eligibleEvents: eligible._count._all,
@@ -233,7 +251,10 @@ export class SecurityOperationsService {
     if (!(await this.audit.verify(actx.tenant)).ok) {
       throw new AuditPurgeRefusedError('audit_chain_broken');
     }
-    return this.executePurge(actx, options.ownerDatabaseUrl, cutoff, retentionDays);
+    return this.executePurge(actx, options.ownerDatabaseUrl, cutoff, retentionDays, {
+      retentionSource,
+      policyVersion,
+    });
   }
 
   private async executePurge(
@@ -241,6 +262,7 @@ export class SecurityOperationsService {
     ownerDatabaseUrl: string,
     cutoff: Date,
     retentionDays: number,
+    source: Pick<AuditPurgeReport, 'retentionSource' | 'policyVersion'>,
   ): Promise<AuditPurgeReport> {
     const tenantId = actx.tenant.tenantId;
     const client = new Client({ connectionString: ownerDatabaseUrl });
@@ -366,6 +388,7 @@ export class SecurityOperationsService {
         return {
           dryRun: false,
           retentionDays,
+          ...source,
           cutoff: cutoff.toISOString(),
           totalEvents: total.rows[0]!.n,
           eligibleEvents: eligible.n,
