@@ -176,7 +176,8 @@ cg_no_values() {
   local count=0 breakdown
   [ -n "$values" ] && count="$(printf '%s\n' "$values" | wc -l | tr -d ' ')"
   breakdown="$(cg_sql "SELECT entity_kind || '.' || field || ' values_recorded=' || values_recorded || ': ' || count(*)
-                        FROM tenant_value_history WHERE tenant_id = '$tid' GROUP BY 1 ORDER BY 1")" || return 1
+                        FROM tenant_value_history WHERE tenant_id = '$tid'
+                        GROUP BY entity_kind, field, values_recorded ORDER BY 1")" || return 1
   echo "    value-history rows: ${breakdown:-none}"
   echo "    value-history free-text values searched: $count (plus 2 fixture names)"
   printf '%s\n' 'Fixture Account' 'Fixture Line' >"$CG_OUT/value-probes.txt"
