@@ -12,6 +12,8 @@ import {
   CHANGE_ORIGINS,
   CHANGE_TYPES,
   ENTITY_INDEX_KINDS,
+  ENTITY_INDEX_KINDS_0_1,
+  IDENTITY_CONFLICT_KINDS,
   ENTITY_INDEX_SOURCES,
   MODULE_KEYS,
   REGISTRY_KINDS,
@@ -135,8 +137,18 @@ const m10a1MigrationsConfig = (dir: string) => migrationsBefore(dir, '20261215')
 const M10B_MIGRATIONS = ['20261229120000_m10b_source_references_evidence'];
 const M10B_DOWN = resolve(`prisma/rollback/${M10B_MIGRATIONS[0]}.down.sql`);
 
-/** Rolls M10B back; every M10A2 and older down-script runs after this. */
+/** M10C migration (account hierarchy, person–account affiliation, canonical 0.3). */
+const M10C_MIGRATIONS = ['20270105120000_m10c_account_hierarchy_affiliation'];
+const M10C_DOWN = resolve(`prisma/rollback/${M10C_MIGRATIONS[0]}.down.sql`);
+
+/** Rolls M10C back; every M10B and older down-script runs after this. */
+async function rollbackM10C(url: string): Promise<void> {
+  await withAdmin(url, (db) => db.query(readFileSync(M10C_DOWN, 'utf8')));
+}
+
+/** Rolls M10C, then M10B back; every M10A2 and older down-script runs after this. */
 async function rollbackM10B(url: string): Promise<void> {
+  await rollbackM10C(url);
   await withAdmin(url, (db) => db.query(readFileSync(M10B_DOWN, 'utf8')));
 }
 
@@ -181,6 +193,7 @@ const POST_M7_DOWNS = [
   ...M10A1_MIGRATIONS,
   ...M10A2_MIGRATIONS,
   ...M10B_MIGRATIONS,
+  ...M10C_MIGRATIONS,
 ]
   .reverse()
   .map((name) => resolve(`prisma/rollback/${name}.down.sql`));
@@ -235,6 +248,7 @@ describe('database migrations and schema guard', () => {
         ...M10A1_MIGRATIONS,
         ...M10A2_MIGRATIONS,
         ...M10B_MIGRATIONS,
+        ...M10C_MIGRATIONS,
       ]);
       expect(rows.every((r) => r.finished_at !== null)).toBe(true);
     });
@@ -489,7 +503,7 @@ describe('database migrations and schema guard', () => {
       );
       expect(rows.find((r) => r.version === '0.1')!.catalogue_hash).toBe(
         canonicalCatalogueHash({
-          entityKinds: ENTITY_INDEX_KINDS,
+          entityKinds: ENTITY_INDEX_KINDS_0_1,
           moduleKeys: MODULE_KEYS,
           changeTypes: CHANGE_TYPES,
           causes: CHANGE_CAUSES,
@@ -546,6 +560,10 @@ describe('database migrations and schema guard', () => {
       );
       expect(await checkValues('tenant_context_changes_origin_valid')).toEqual(
         [...CHANGE_ORIGINS].sort(),
+      );
+      // M10C closed set (interim data-quality kinds, plan §2.6).
+      expect(await checkValues('tenant_identity_conflicts_kind_valid')).toEqual(
+        [...IDENTITY_CONFLICT_KINDS].sort(),
       );
       // M10B closed sets.
       expect(await checkValues('tenant_context_changes_entity_kind_valid')).toEqual(
@@ -2588,9 +2606,11 @@ INSERT INTO tenant_subscriptions (tenant_id, id, company_id, product_key, state,
             )
           ).rows,
       );
+      // M10C sits on top: 0.2 is supported and 0.3 current once every migration applied.
       expect(versions).toEqual([
         { version: '0.1', status: 'supported' },
-        { version: '0.2', status: 'current' },
+        { version: '0.2', status: 'supported' },
+        { version: '0.3', status: 'current' },
       ]);
       await expect(migrate(url)).resolves.toMatch(/No pending migrations/);
       expect(await backfilled(url)).toEqual(BACKFILL);
@@ -2601,6 +2621,8 @@ INSERT INTO tenant_subscriptions (tenant_id, id, company_id, product_key, state,
       const url = await m10a2Database('m10b_down_db');
       await migrate(url);
       const latest = await schemaSnapshot(url);
+      // M10C sits on top of M10B: its (data-free) rollback runs first.
+      await rollbackM10C(url);
       const down = readFileSync(M10B_DOWN, 'utf8');
       const ON = 'SET session_replication_role = replica;';
       const OFF = 'SET session_replication_role = origin;';

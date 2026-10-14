@@ -160,7 +160,7 @@ describe('M10B evidence links and provenance', () => {
           link_set_id: first.linkSetId,
           subject_id: subject,
           origin: 'deterministic',
-          canonical_version: '0.2',
+          canonical_version: '0.3',
           actor_kind: 'system',
           supersedes_link_set_id: null,
         });
@@ -283,6 +283,11 @@ describe('M10B evidence links and provenance', () => {
       const subject = await companyOf(t, '8201');
       const evidence = await companyOf(t, '8202');
       const change = await changeOf(t, evidence);
+      // M10C: new tenants adopt 0.3; rollback goes one MINOR at a time (0.3 → 0.2 → 0.1).
+      await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
+        target: '0.2',
+        expectedCurrent: '0.3',
+      });
       await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
         target: '0.1',
         expectedCurrent: '0.2',
@@ -463,7 +468,7 @@ describe('M10B evidence links and provenance', () => {
         source: { system: 'hubspot', objectType: 'companies', recordId: '8501' },
         cause: 'webhook',
         origin: 'source_provided',
-        canonicalVersion: '0.2',
+        canonicalVersion: '0.3',
         actor: { kind: 'source_sync' },
       });
       for (const h of report.field!.history) {

@@ -99,23 +99,30 @@ describe('V1: canonical versions', () => {
     );
   });
 
-  it('the catalogue holds exactly one current version, 0.2 (ADR 0028), 0.1 supported (ADR 0027), and nothing at 1.0 or above', () => {
-    expect(currentCanonicalVersion()).toBe('0.2');
+  it('the catalogue holds exactly one current version, 0.3 (ADR 0029), 0.1 / 0.2 supported (ADR 0027 / 0028), and nothing at 1.0 or above', () => {
+    expect(currentCanonicalVersion()).toBe('0.3');
     expect(CANONICAL_VERSIONS).toEqual([
       { version: '0.1', status: 'supported', adr: '0027' },
-      { version: '0.2', status: 'current', adr: '0028' },
+      { version: '0.2', status: 'supported', adr: '0028' },
+      { version: '0.3', status: 'current', adr: '0029' },
     ]);
     for (const v of CANONICAL_VERSIONS) expect(parseCanonicalVersion(v.version).major).toBe(0);
   });
 
-  it('M10B Q19: the stored 0.1 catalogue hash is reproduced unchanged; 0.2 hashes the new members', () => {
+  it('M10B Q19 / M10C: the stored 0.1 and 0.2 catalogue hashes are reproduced unchanged; 0.3 hashes the new members', () => {
     expect(canonicalCatalogueHash(canonicalCatalogueFor('0.1'))).toBe(
       '2fd4f7e575633de7cac4aea394a71c73adc9b73e5e18b67c0b0ee404572faf5b',
     );
     expect(canonicalCatalogueHash(canonicalCatalogueFor('0.2'))).toBe(
       'db7c0fc245cae469e8cddae88b89077c017805c7b87586b9d3e71f1936c96c98',
     );
-    expect(() => canonicalCatalogueFor('0.3')).toThrow(/no catalogue/);
+    // M10C (ADR 0029): pinned in migration 20270105120000_m10c_account_hierarchy_affiliation.
+    expect(canonicalCatalogueHash(canonicalCatalogueFor('0.3'))).toBe(
+      '70db9aa697147cf1d0d63e93a923ed8714b78da32550aaefe5699597e26eb069',
+    );
+    expect(canonicalCatalogueFor('0.3').entityKinds).toContain('person_affiliation');
+    expect(canonicalCatalogueFor('0.2').entityKinds).not.toContain('person_affiliation');
+    expect(() => canonicalCatalogueFor('0.4')).toThrow(/no catalogue/);
   });
 });
 

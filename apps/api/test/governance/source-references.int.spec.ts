@@ -202,7 +202,7 @@ describe('M10B generic source references', () => {
           cause: 'human',
           origin: 'human',
           actor_kind: 'operator',
-          canonical_version: '0.2',
+          canonical_version: '0.3',
         });
       }
       for (const row of r) expect(added.map((ch) => ch.id)).toContain(row.last_change_id);
@@ -723,6 +723,11 @@ describe('M10B generic source references', () => {
         `SELECT module_key, enabled, version FROM tenant_module_settings WHERE tenant_id = $1 ORDER BY 1`,
         [t.tenantId],
       );
+      // M10C: new tenants adopt 0.3; rollback goes one MINOR at a time (0.3 → 0.2 → 0.1).
+      await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
+        target: '0.2',
+        expectedCurrent: '0.3',
+      });
       await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
         target: '0.1',
         expectedCurrent: '0.2',
