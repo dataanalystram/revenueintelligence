@@ -132,6 +132,7 @@ cg_retire() {
   cg_cli sources mapping-states --tenant "$CG_SOURCES" --connection sugar >"$CG_OUT/states.json" || return 1
   version="$(cg_published "$CG_OUT/states.json")"
   [ -n "$version" ] || return 1
+  CG_RETIRED="$version"
   cg_cli sources mapping-retire --tenant "$CG_SOURCES" --connection sugar --version "$version" --reason operator_retired >"$CG_OUT/retire-dry.json" || return 1
   grep -q '"dryRun": true' "$CG_OUT/retire-dry.json" || return 1
   cg_cli sources mapping-states --tenant "$CG_SOURCES" --connection sugar >"$CG_OUT/states-dry.json" || return 1
@@ -145,3 +146,31 @@ cg_retire() {
   [ "$code" -ne 0 ] && grep -q 'mapping_not_published\|No published mapping' "$CG_OUT/sync-refused.json" "$CG_OUT/sync-refused.err"
 }
 check "mapping retire (dry run writes nothing) → no published version → sync refused (mapping_not_published)" cg_retire
+
+# Leaves script 70's Sugar connection as it found it: the retired document is
+# published again as a new version (a retired version is never revived).
+cg_republish() {
+  [ -n "${CG_RETIRED:-}" ] && [ -n "${SC_ACK:-}" ] || return 1
+  cg_cli sources mappings-publish --tenant "$CG_SOURCES" --connection sugar --file "$SC_OUT/mapping-full.json" --ack "$SC_ACK" \
+    --based-on "$CG_RETIRED" --actor runtime-canon --execute >"$CG_OUT/republish.json" || return 1
+  cg_cli sources mapping-states --tenant "$CG_SOURCES" --connection sugar >"$CG_OUT/states-republished.json" || return 1
+  [ "$(cg_published "$CG_OUT/states-republished.json")" = "$((CG_RETIRED + 1))" ]
+}
+check "the retired Sugar mapping is published again as a new version (connection left published)" cg_republish
+
+# V23: value history records source values (script 70's sync); none may reach
+# a process log or CLI output. The probe values are read from the history
+# itself (free-text strings only, not enum codes, ids or timestamps) plus the
+# fixture names script 70 already guards.
+cg_no_values() {
+  local tid values
+  tid="$(cg_sql "SELECT id FROM tenants WHERE slug = '$CG_SOURCES'")" || return 1
+  values="$(cg_sql "SELECT DISTINCT v #>> '{}' FROM tenant_value_history h, LATERAL (VALUES (h.old_value), (h.new_value)) AS x(v)
+                     WHERE h.tenant_id = '$tid' AND h.values_recorded AND jsonb_typeof(v) = 'string'
+                       AND length(v #>> '{}') >= 6 AND (v #>> '{}') ~ '[A-Z ]' AND (v #>> '{}') !~ '^[0-9:TZ.+-]+$'")" || return 1
+  printf '%s\n' 'Fixture Account' 'Fixture Line' >"$CG_OUT/value-probes.txt"
+  [ -n "$values" ] && printf '%s\n' "$values" >>"$CG_OUT/value-probes.txt"
+  ! grep -rqF -f "$CG_OUT/value-probes.txt" "$WORK/api.log" "$WORK/worker.log" "${SC_WORKER_LOG:-/dev/null}" \
+    --exclude=value-probes.txt "$CG_OUT" 2>/dev/null
+}
+check "no value-history value (or fixture name) in the API, worker or CLI logs" cg_no_values
