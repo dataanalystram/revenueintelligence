@@ -415,14 +415,20 @@ describe('value history decision (restricted history, control 12)', () => {
     ...over,
   });
 
-  it('the field catalogue is the six M10A2 fields (Q14, without company.customer_status), none of them a person field', () => {
+  it('the field catalogue is the six M10A2 fields (Q14, without company.customer_status) plus the M10C fields, none of them a person field', () => {
     expect(valueHistoryPairs().map((p) => `${p.entityKind}.${p.field}`)).toEqual([
       'company.name',
+      // M10C: parent_account_id (full) and the affiliation fields (value-free, Q15).
+      'company.parent_company_id',
       'subscription.state',
       'subscription.starts_at',
       'subscription.ends_at',
       'subscription.product_key',
       'subscription.quantity',
+      'person_affiliation.status',
+      'person_affiliation.starts_at',
+      'person_affiliation.ends_at',
+      'person_affiliation.role_codes',
     ]);
   });
 
@@ -489,7 +495,17 @@ describe('value history decision (restricted history, control 12)', () => {
 
 describe('entity index, change records, lifecycle and integrity vocabulary', () => {
   it('every index kind names its table and identity column (products by key, D3)', () => {
-    expect(ENTITY_INDEX_KINDS).toEqual(['company', 'person', 'product', 'subscription']);
+    expect(ENTITY_INDEX_KINDS).toEqual([
+      'company',
+      'person',
+      'product',
+      'subscription',
+      'person_affiliation',
+    ]);
+    expect(ENTITY_INDEX_SOURCES.person_affiliation).toEqual({
+      table: 'tenant_person_affiliations',
+      column: 'id',
+    });
     expect(ENTITY_INDEX_SOURCES.product).toEqual({ table: 'tenant_products', column: 'key' });
   });
 
