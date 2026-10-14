@@ -2482,6 +2482,197 @@ INSERT INTO tenant_subscriptions (tenant_id, id, company_id, product_key, state,
     });
   });
 
+  describe('M10B source references and evidence migration (on M10A2 data)', () => {
+    const tA = 'b10b0000-0000-4b10-8b10-00000000000a';
+    const tB = 'b10b0000-0000-4b10-8b10-00000000000b';
+    const tC = 'b10b0000-0000-4b10-8b10-00000000000c';
+    const ref = (id: string) =>
+      `{"system": "sugar", "objectType": "ProductTemplates", "id": "${id}"}`;
+    const model = (products: string) => `{"products": [${products}], "relationships": []}`;
+    /** A: two model versions (the latest declares 3 refs); B: one (1 ref); C: no model. */
+    const SEED = `INSERT INTO tenants (id, slug, name, updated_at) VALUES
+  ('${tA}', 'mbtena', 'A', now()), ('${tB}', 'mbtenb', 'B', now()), ('${tC}', 'mbtenc', 'C', now());
+INSERT INTO tenant_products (tenant_id, key, name, updated_at) VALUES
+  ('${tA}', 'core', 'Core', now()), ('${tA}', 'suite', 'Suite', now()), ('${tA}', 'addon', 'Addon', now()),
+  ('${tB}', 'core', 'Core', now()), ('${tB}', 'plain', 'Plain', now()), ('${tC}', 'core', 'Core', now());
+INSERT INTO tenant_product_models (tenant_id, version, document, content_hash, effective_from, published_by) VALUES
+  ('${tA}', 1, '${model(`{"key": "core", "name": "Core", "externalRefs": [${ref('a1')}, ${ref('a2')}]}`)}', repeat('1', 64), now(), 'test'),
+  ('${tA}', 2, '${model(`{"key": "core", "name": "Core", "externalRefs": [${ref('a1')}]}, {"key": "suite", "name": "Suite", "externalRefs": [${ref('a3')}, ${ref('a4')}]}, {"key": "addon", "name": "Addon"}`)}', repeat('2', 64), now(), 'test'),
+  ('${tB}', 1, '${model(`{"key": "core", "name": "Core", "externalRefs": [${ref('b1')}]}, {"key": "plain", "name": "Plain"}`)}', repeat('3', 64), now(), 'test');
+INSERT INTO companies (id, tenant_id, name, created_at, updated_at) VALUES
+  ('b10b0000-2222-4b10-8b10-00000000000a', '${tA}', 'School A', now(), now());
+INSERT INTO tenant_subscriptions (tenant_id, id, company_id, product_key, state, source_system, source_object_type, source_record_id, observed_at) VALUES
+  ('${tA}', 'b10b0000-4444-4b10-8b10-00000000000a', 'b10b0000-2222-4b10-8b10-00000000000a', 'core', 'active', 'import', 'subscriptions', 'r1', now());`;
+    const BACKFILL = [
+      { tenant_id: tA, external_id: 'a1', entity_key: 'core', declared_in_model_version: 2 },
+      { tenant_id: tA, external_id: 'a3', entity_key: 'suite', declared_in_model_version: 2 },
+      { tenant_id: tA, external_id: 'a4', entity_key: 'suite', declared_in_model_version: 2 },
+      { tenant_id: tB, external_id: 'b1', entity_key: 'core', declared_in_model_version: 1 },
+    ];
+    const backfilled = (url: string) =>
+      withAdmin(
+        url,
+        async (db) =>
+          (
+            await db.query(
+              `SELECT tenant_id::text, external_id, entity_key, declared_in_model_version FROM tenant_source_references
+              ORDER BY tenant_id, external_id`,
+            )
+          ).rows,
+      );
+
+    /** A database at the M10A2 state (optionally holding SEED). */
+    async function m10a2Database(name: string, seed = true): Promise<string> {
+      const url = await createDatabase(pg, name);
+      const dir = resolve(`test/.tmp/${name}`);
+      try {
+        await migrate(url, ['--config', migrationsBefore(dir, '20261229')]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+      if (seed) await withAdmin(url, (db) => db.query(SEED));
+      return url;
+    }
+
+    it('V3: declared rows equal the latest model per tenant; no model → none; legacy stores not copied; view parity; rerun is a no-op', async () => {
+      const url = await m10a2Database('m10b_on_m10a2');
+      const output = await migrate(url);
+      for (const name of M10B_MIGRATIONS) expect(output).toMatch(new RegExp(name));
+      expect(await backfilled(url)).toEqual(BACKFILL);
+      const rows = await withAdmin(
+        url,
+        async (db) =>
+          (
+            await db.query<{ n: number }>(
+              `SELECT count(*)::int AS n FROM tenant_source_references r
+               JOIN tenant_product_models m ON m.tenant_id = r.tenant_id AND m.version = r.declared_in_model_version
+              WHERE r.origin = 'declared' AND r.state = 'active' AND r.entity_kind = 'product'
+                AND r.last_change_id IS NULL AND r.entity_id IS NULL AND r.first_seen_at = m.published_at
+                AND r.system = 'sugar' AND r.object_type = 'ProductTemplates'`,
+            )
+          ).rows,
+      );
+      expect(rows).toEqual([{ n: BACKFILL.length }]);
+      // No company / person / subscription triple is copied; no change record written.
+      const copies = await withAdmin(
+        url,
+        async (db) =>
+          (
+            await db.query(
+              `SELECT (SELECT count(*)::int FROM tenant_source_references WHERE entity_kind <> 'product') AS legacy,
+                    (SELECT count(*)::int FROM tenant_source_references WHERE tenant_id = '${tC}') AS no_model,
+                    (SELECT count(*)::int FROM tenant_context_changes) AS changes`,
+            )
+          ).rows,
+      );
+      expect(copies).toEqual([{ legacy: 0, no_model: 0, changes: 0 }]);
+      const parity = await withAdmin(
+        url,
+        async (db) =>
+          (
+            await db.query(
+              `SELECT store, count(*)::int AS n FROM source_reference_index GROUP BY 1 ORDER BY 1`,
+            )
+          ).rows,
+      );
+      expect(parity).toEqual([
+        { store: 'tenant_source_references', n: BACKFILL.length },
+        { store: 'tenant_subscriptions', n: 1 },
+      ]);
+      const versions = await withAdmin(
+        url,
+        async (db) =>
+          (await db.query(`SELECT version, status FROM canonical_model_versions ORDER BY 1`)).rows,
+      );
+      expect(versions).toEqual([
+        { version: '0.1', status: 'supported' },
+        { version: '0.2', status: 'current' },
+      ]);
+      await expect(migrate(url)).resolves.toMatch(/No pending migrations/);
+      expect(await backfilled(url)).toEqual(BACKFILL);
+    });
+
+    it('V22: the down-script refuses each M10B-only data class (changing nothing), then restores exactly the M10A2 schema, and M10B re-applies', async () => {
+      const before = await m10a2Database('m10b_before_db', false);
+      const url = await m10a2Database('m10b_down_db');
+      await migrate(url);
+      const latest = await schemaSnapshot(url);
+      const down = readFileSync(M10B_DOWN, 'utf8');
+      const ON = 'SET session_replication_role = replica;';
+      const OFF = 'SET session_replication_role = origin;';
+      const refusals: [string, string, RegExp][] = [
+        [
+          `INSERT INTO tenant_source_references (tenant_id, system, object_type, external_id, entity_kind, entity_key, origin)
+           VALUES ('${tA}', 'sugar', 'ProductTemplates', 'obs-1', 'product', 'core', 'observed')`,
+          `DELETE FROM tenant_source_references WHERE origin = 'observed'`,
+          /refusing rollback: 1 observed source references exist/,
+        ],
+        [
+          `UPDATE tenant_source_references SET state = 'retired', retired_at = now(), retired_by_model_version = 2
+            WHERE external_id = 'a4'`,
+          `UPDATE tenant_source_references SET state = 'active', retired_at = NULL, retired_by_model_version = NULL
+            WHERE external_id = 'a4'`,
+          /refusing rollback: 1 source references changed after the backfill/,
+        ],
+        [
+          `${ON} INSERT INTO tenant_evidence_links (tenant_id, link_set_id, ordinal, subject_kind, subject_key, evidence_type,
+             evidence_change_id, role, origin, canonical_version, actor_kind, actor_id, actor_assurance, correlation_id)
+           VALUES ('${tA}', gen_random_uuid(), 0, 'product', 'core', 'change_record', gen_random_uuid(), 'supports', 'human',
+             '0.2', 'system', 'test', 'system', gen_random_uuid()); ${OFF}`,
+          `DELETE FROM tenant_evidence_links`,
+          /refusing rollback: 1 evidence links exist/,
+        ],
+        [
+          `${ON} INSERT INTO tenant_context_changes (tenant_id, id, entity_kind, entity_key, change_type, source_system,
+             source_object_type, source_record_id, cause, adapter, adapter_version, correlation_id)
+           VALUES ('${tA}', gen_random_uuid(), 'product', 'core', 'ref_added', 'sugar', 'ProductTemplates', 'a1', 'human',
+             'product_model', '2', gen_random_uuid()); ${OFF}`,
+          `DELETE FROM tenant_context_changes`,
+          /refusing rollback: 1 product change records exist/,
+        ],
+        [
+          `${ON} INSERT INTO tenant_canonical_adoptions (tenant_id, id, seq, version, previous_version, reason,
+             actor_kind, actor_id, actor_assurance, correlation_id, audit_event_id)
+           VALUES ('${tA}', gen_random_uuid(), 1, '0.2', NULL, 'new_tenant', 'system', 'test', 'system',
+             gen_random_uuid(), gen_random_uuid()); ${OFF}`,
+          `DELETE FROM tenant_canonical_adoptions WHERE version = '0.2'`,
+          /refusing rollback: 1 adoptions of canonical 0.2 exist/,
+        ],
+        [
+          `${ON} INSERT INTO tenant_audit_events (tenant_id, id, seq, occurred_at, actor_kind, actor_id, actor_assurance,
+             capability, action, outcome, correlation_id, policy_version, details, prev_hash, hash)
+           VALUES ('${tA}', gen_random_uuid(), 1, now(), 'operator', 'ops', 'asserted', 'data.provenance.read',
+             'provenance.read', 'allowed', gen_random_uuid(), 1, '{}', repeat('0', 64), repeat('a', 64)); ${OFF}`,
+          `DELETE FROM tenant_audit_events WHERE action = 'provenance.read'`,
+          /refusing rollback: 1 audit events use M10B capabilities or actions/,
+        ],
+      ];
+      for (const [plant, cleanup, message] of refusals) {
+        await withAdmin(url, (db) => db.query(plant));
+        const snapshot = await schemaSnapshot(url);
+        await expect(
+          withAdmin(url, (db) => db.query(down)),
+          String(message),
+        ).rejects.toThrow(message);
+        expect(await schemaSnapshot(url)).toEqual(snapshot);
+        expect(await backfilled(url)).toEqual(BACKFILL);
+        await withAdmin(url, (db) => db.query(`${ON} ${cleanup}; ${OFF}`));
+      }
+      await withAdmin(url, (db) => db.query(down));
+      expect(await schemaSnapshot(url)).toEqual(await schemaSnapshot(before));
+      const versions = await withAdmin(
+        url,
+        async (db) =>
+          (await db.query(`SELECT version, status FROM canonical_model_versions ORDER BY 1`)).rows,
+      );
+      expect(versions).toEqual([{ version: '0.1', status: 'current' }]);
+      const output = await migrate(url);
+      for (const name of M10B_MIGRATIONS) expect(output).toMatch(new RegExp(name));
+      expect(await schemaSnapshot(url)).toEqual(latest);
+      expect(await backfilled(url)).toEqual(BACKFILL);
+    });
+  });
+
   describe('upgrading from the Milestone 1 state', () => {
     it('applies cleanly to a database last deployed at M1, where ops had already created the roles', async () => {
       const url = await createDatabase(pg, 'm1_db');
