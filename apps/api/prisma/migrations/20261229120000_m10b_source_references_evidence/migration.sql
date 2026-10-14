@@ -125,10 +125,8 @@ ALTER TABLE "tenant_source_references" ADD CONSTRAINT "tenant_source_references_
 ALTER TABLE "tenant_source_references" ADD CONSTRAINT "tenant_source_references_tenant_id_connection_id_fkey" FOREIGN KEY ("tenant_id", "connection_id") REFERENCES "tenant_source_connections"("tenant_id", "id") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
-ALTER TABLE "tenant_source_references" ADD CONSTRAINT "tenant_source_references_tenant_id_entity_kind_entity_id_fkey" FOREIGN KEY ("tenant_id", "entity_kind", "entity_id") REFERENCES "tenant_entity_index"("tenant_id", "kind", "entity_id") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
-ALTER TABLE "tenant_source_references" ADD CONSTRAINT "tenant_source_references_tenant_id_entity_kind_entity_key_fkey" FOREIGN KEY ("tenant_id", "entity_kind", "entity_key") REFERENCES "tenant_entity_index"("tenant_id", "kind", "entity_key") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
 ALTER TABLE "tenant_source_references" ADD CONSTRAINT "tenant_source_references_tenant_id_declared_in_model_versi_fkey" FOREIGN KEY ("tenant_id", "declared_in_model_version") REFERENCES "tenant_product_models"("tenant_id", "version") ON DELETE RESTRICT ON UPDATE RESTRICT;
