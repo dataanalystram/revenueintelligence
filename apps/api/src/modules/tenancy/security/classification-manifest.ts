@@ -55,6 +55,18 @@ const historyValue: ColumnClassification = {
   history: 'none',
   subject: { entity: 'person', action: 'erase' },
 };
+/** M10C: a person's affiliation fact — personal, linked to the person subject. */
+const affiliationFact = (
+  kind: ColumnClassification['kind'],
+  history: ColumnClassification['history'],
+): ColumnClassification => ({
+  sensitivity: 'confidential',
+  categories: ['personal'],
+  kind,
+  retention: 'canonical_lifecycle',
+  history,
+  subject: { entity: 'person', action: 'erase' },
+});
 const CV: Retention = 'configuration_version';
 const CL: Retention = 'canonical_lifecycle';
 const SA: Retention = 'security_audit';
@@ -127,6 +139,15 @@ export const CLASSIFICATION_MANIFEST: Readonly<
       retention: 'canonical_lifecycle',
       history: 'none',
     },
+    // M10C: canonical parent_account_id — not sensitive (F3), full value history (M10 §10).
+    parent_company_id: {
+      sensitivity: 'internal',
+      categories: ['operational'],
+      kind: 'reference',
+      retention: 'canonical_lifecycle',
+      history: 'full',
+    },
+    parent_company_origin: op('code', CL),
   },
   company_external_refs: {
     tenant_id: {
@@ -1786,6 +1807,8 @@ export const CLASSIFICATION_MANIFEST: Readonly<
       retention: 'configuration_version',
       history: 'none',
     },
+    // M10C: who may write the account hierarchy.
+    account_hierarchy_connection_id: op('reference', CV),
     content_hash: {
       sensitivity: 'internal',
       categories: ['operational'],
@@ -3289,6 +3312,49 @@ export const CLASSIFICATION_MANIFEST: Readonly<
     last_seen_at: op('timestamp', CL),
     source_updated_at: op('timestamp', CL),
     retired_at: op('timestamp', CL),
+  },
+  // M10C: affiliations are personal data about the person (plan §12, §18): the
+  // affiliation facts are confidential / personal, value-free in history (Q15),
+  // linked to the person subject for future export / erasure hooks.
+  tenant_person_affiliations: {
+    tenant_id: op('identifier', CL),
+    id: op('identifier', CL),
+    person_id: affiliationFact('reference', 'none'),
+    company_id: op('reference', CL),
+    status: affiliationFact('code', 'value_free'),
+    role_codes: affiliationFact('code', 'value_free'),
+    starts_at: affiliationFact('timestamp', 'value_free'),
+    ends_at: affiliationFact('timestamp', 'value_free'),
+    ended_at: affiliationFact('timestamp', 'none'),
+    end_reason: affiliationFact('code', 'none'),
+    merged_into_id: op('reference', CL),
+    origin: op('code', CL),
+    field_hash: op('hash', CL),
+    last_change_id: op('reference', CL),
+    created_at: op('timestamp', CL),
+    updated_at: op('timestamp', CL),
+  },
+  // M10C: security-invoker views (no storage of their own).
+  account_hierarchy_paths: {
+    tenant_id: op('identifier', CL),
+    company_id: op('reference', CL),
+    parent_company_id: op('reference', CL),
+    root_company_id: op('reference', CL),
+    depth: op('number', CL),
+  },
+  person_affiliation_index: {
+    tenant_id: op('identifier', CL),
+    id: op('identifier', CL),
+    person_id: affiliationFact('reference', 'none'),
+    company_id: op('reference', CL),
+    status: affiliationFact('code', 'none'),
+    role_codes: affiliationFact('code', 'none'),
+    starts_at: affiliationFact('timestamp', 'none'),
+    ends_at: affiliationFact('timestamp', 'none'),
+    ended_at: affiliationFact('timestamp', 'none'),
+    end_reason: affiliationFact('code', 'none'),
+    origin: op('code', CL),
+    is_primary: affiliationFact('boolean', 'none'),
   },
 };
 

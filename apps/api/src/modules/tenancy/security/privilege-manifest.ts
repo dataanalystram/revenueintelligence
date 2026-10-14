@@ -55,6 +55,9 @@ export const PRIVILEGE_MANIFEST: Readonly<Record<string, readonly TablePrivilege
   tenant_evidence_links: APPEND,
   // M10B: read-only security-invoker view over every source-reference store.
   source_reference_index: READ,
+  // M10C: read-only security-invoker views over the account structure.
+  account_hierarchy_paths: READ,
+  person_affiliation_index: READ,
   // Catalogue rows retire, never disappear; profile runs move through states.
   tenant_products: APPEND_UPDATE,
   tenant_source_profile_runs: APPEND_UPDATE,
@@ -63,6 +66,8 @@ export const PRIVILEGE_MANIFEST: Readonly<Record<string, readonly TablePrivilege
   tenant_registry_entries: APPEND_UPDATE,
   // M10B: source references change state, never disappear (E5 §2).
   tenant_source_references: APPEND_UPDATE,
+  // M10C: affiliations end, never disappear (plan §3.1).
+  tenant_person_affiliations: APPEND_UPDATE,
   companies: DML,
   company_external_refs: DML,
   person_external_refs: DML,
