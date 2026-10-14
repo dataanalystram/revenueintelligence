@@ -20,7 +20,6 @@ import {
   TenantDatabase,
   type AuthorizedContext,
   type TenantContext,
-  type TenantJsonInput,
   type TenantTransaction,
 } from '../../tenancy';
 

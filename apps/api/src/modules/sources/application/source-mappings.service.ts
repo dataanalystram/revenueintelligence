@@ -29,7 +29,6 @@ import {
   tenantClient,
   type AuthorizedContext,
   type TenantContext,
-  type TenantJsonInput,
   type TenantTransaction,
 } from '../../tenancy';
 import {
