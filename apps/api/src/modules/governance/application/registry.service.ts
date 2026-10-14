@@ -38,7 +38,7 @@ export interface RegistryPublishInput {
   /** The content hash printed by the dry run (Q11: what is published is what was reviewed). */
   readonly expectedContentHash: string;
   readonly document: unknown;
-  readonly effectiveFrom?: Date;
+  // M10A2 review m9: no `effectiveFrom` — a policy is effective from its publication.
 }
 
 export interface RegistryDryRun {
@@ -249,7 +249,8 @@ export class RegistryService {
           documentSchemaVersion: parsed.value.schemaVersion,
           contentHash,
           canonicalVersionMin,
-          effectiveFrom: input.effectiveFrom ?? new Date(),
+          // M10A2 review m9: effective from publication; callers cannot backdate or schedule it.
+          effectiveFrom: new Date(),
           actorKind: actx.actor.kind,
           actorId: actx.actor.id,
           actorAssurance: actx.actor.assurance,
