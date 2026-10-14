@@ -393,10 +393,9 @@ describe('value history decision (restricted history, control 12)', () => {
     ...over,
   });
 
-  it('the field catalogue is the seven M10A2 fields (Q14), none of them a person field', () => {
+  it('the field catalogue is the six M10A2 fields (Q14, without company.customer_status), none of them a person field', () => {
     expect(valueHistoryPairs().map((p) => `${p.entityKind}.${p.field}`)).toEqual([
       'company.name',
-      'company.customer_status',
       'subscription.state',
       'subscription.starts_at',
       'subscription.ends_at',

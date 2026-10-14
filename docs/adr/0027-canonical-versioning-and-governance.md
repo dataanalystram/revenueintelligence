@@ -46,8 +46,9 @@ wins). The M10 plan (D1–D6, F1–F5) requires all of these before the first ca
    refused; the app role can read but never write it. Polymorphic columns reference the index by `(tenant_id, id)`
    or `(tenant_id, key)`, so a cross-tenant reference is impossible even with raw SQL.
 6. **Value history.** One append-only table, written by the single writers in the same transaction as the
-   projection and change record, for the seven fields of Q14; anchored in the index with `ON DELETE RESTRICT`
-   (Q15). Columns classified sensitive produce value-free rows unless the data policy allows values.
+   projection and change record, for six fields: `company.name` and `subscription.state`, `starts_at`,
+   `ends_at`, `product_key`, `quantity` (Q14 as amended at review: `company.customer_status` has no value history
+   and keeps manifest history `none`); anchored in the index with `ON DELETE RESTRICT` (Q15). Columns classified sensitive produce value-free rows unless the data policy allows values.
 7. **Richer change records.** Origin, derivation, canonical version, schema snapshot hash and the transforms
    **declared** by the mapping field (ADR 0020 closed set); change-type and cause CHECKs widened to the E5 sets
    (Q18).

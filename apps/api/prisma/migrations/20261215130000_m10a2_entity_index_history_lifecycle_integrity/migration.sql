@@ -319,7 +319,7 @@ CREATE TRIGGER "tenant_subscriptions_identity_immutable" BEFORE UPDATE OF "id" O
 -- ---------------------------------------------------------------------------
 ALTER TABLE "tenant_value_history"
   ADD CONSTRAINT "tenant_value_history_one_identity" CHECK (("entity_id" IS NULL) <> ("entity_key" IS NULL)),
-  ADD CONSTRAINT "tenant_value_history_field_valid" CHECK (("entity_kind", "field") IN (('company', 'name'), ('company', 'customer_status'), ('subscription', 'state'), ('subscription', 'starts_at'), ('subscription', 'ends_at'), ('subscription', 'product_key'), ('subscription', 'quantity'))),
+  ADD CONSTRAINT "tenant_value_history_field_valid" CHECK (("entity_kind", "field") IN (('company', 'name'), ('subscription', 'state'), ('subscription', 'starts_at'), ('subscription', 'ends_at'), ('subscription', 'product_key'), ('subscription', 'quantity'))),
   ADD CONSTRAINT "tenant_value_history_value_free" CHECK ("values_recorded" OR ("old_value" IS NULL AND "new_value" IS NULL)),
   ADD CONSTRAINT "tenant_value_history_policy_only_with_values" CHECK ("policy_version" IS NULL OR "values_recorded"),
   ADD CONSTRAINT "tenant_value_history_value_size" CHECK (("old_value" IS NULL OR octet_length("old_value"::text) <= 4096) AND ("new_value" IS NULL OR octet_length("new_value"::text) <= 4096)),
