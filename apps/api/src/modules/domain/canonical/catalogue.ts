@@ -18,6 +18,10 @@ export function canonicalCatalogueFor(version: string): CanonicalCatalogue {
     changeTypes: CHANGE_TYPES,
     causes: CHANGE_CAUSES,
     origins: CHANGE_ORIGINS,
+    changeEntityKinds: CHANGE_ENTITY_KINDS,
+    genericReferenceKinds: GENERIC_REFERENCE_KINDS,
+    evidenceTypes: EVIDENCE_TYPES,
+    evidenceRoles: EVIDENCE_ROLES,
   };
   switch (version) {
     case '0.1':
