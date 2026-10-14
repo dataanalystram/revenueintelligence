@@ -2,7 +2,7 @@
  * The application role's exact table privileges (M10A1 plan §8). The schema
  * guard compares every table and every privilege (`SELECT`, `INSERT`, `UPDATE`,
  * `DELETE`, `TRUNCATE`, `REFERENCES`, `TRIGGER`) of `lip_app` with this
- * manifest; a new table without an entry fails. `TRUNCATE`, `REFERENCES` and
+ * manifest (views included); a new table or view without an entry fails. `TRUNCATE`, `REFERENCES` and
  * `TRIGGER` are never granted.
  */
 export const TABLE_PRIVILEGES = [
@@ -48,6 +48,8 @@ export const PRIVILEGE_MANIFEST: Readonly<Record<string, readonly TablePrivilege
   tenant_registry_versions: APPEND,
   tenant_value_history: APPEND,
   tenant_source_mapping_lifecycle: APPEND,
+  // M10A2: read-only view of the current lifecycle state (security invoker).
+  tenant_source_mapping_states: READ,
   tenant_integrity_runs: APPEND,
   // Catalogue rows retire, never disappear; profile runs move through states.
   tenant_products: APPEND_UPDATE,

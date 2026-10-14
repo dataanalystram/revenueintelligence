@@ -371,7 +371,7 @@ describe('database migrations and schema guard', () => {
                   has_table_privilege('lip_app', c.oid, p.privilege) AS granted
              FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
             CROSS JOIN unnest($1::text[]) AS p(privilege)
-            WHERE n.nspname = 'public' AND c.relkind = 'r'
+            WHERE n.nspname = 'public' AND c.relkind IN ('r', 'v')
             ORDER BY 1, 2`,
           [[...TABLE_PRIVILEGES]],
         ),

@@ -38,7 +38,7 @@ export class PrivilegeManifestCheck implements OnApplicationBootstrap {
              has_table_privilege(current_user, c.oid, p.privilege) AS granted
         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
        CROSS JOIN unnest(${[...TABLE_PRIVILEGES]}::text[]) AS p(privilege)
-       WHERE n.nspname = 'public' AND c.relkind = 'r'`;
+       WHERE n.nspname = 'public' AND c.relkind IN ('r', 'v')`;
     const actual = new Map<string, Set<string>>();
     for (const r of rows) {
       if (!actual.has(r.table)) actual.set(r.table, new Set());
