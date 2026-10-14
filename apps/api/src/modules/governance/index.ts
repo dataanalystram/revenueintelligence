@@ -26,5 +26,17 @@ export {
   type RegistryPublished,
   type RegistryPublishInput,
 } from './application/registry.service';
+export {
+  GENERIC_REFERENCES_MIN_VERSION,
+  SourceReferenceService,
+  type DeclaredProductModel,
+  type DeclaredReferenceTransitions,
+  type ReferenceMergeInput,
+  type ReferenceObservationInput,
+  type ReferenceObservationResult,
+  type ReferenceWriteMeta,
+  type RetireAbsentReferencesInput,
+  type SourceTriple,
+} from './application/source-reference.service';
 export * from './errors';
 export { GovernanceModule } from './governance.module';

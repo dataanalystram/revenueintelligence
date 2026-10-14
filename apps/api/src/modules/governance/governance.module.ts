@@ -4,10 +4,12 @@ import { CanonicalAdoptionService } from './application/canonical-adoption.servi
 import { IntegrityVerificationService } from './application/integrity-verification.service';
 import { ModuleGate, ModuleSettingsService } from './application/module-settings.service';
 import { RegistryService } from './application/registry.service';
+import { SourceReferenceService } from './application/source-reference.service';
 
 /**
  * Canonical governance (M10A2, ADR 0027): canonical adoption, module
- * enablement, governed registries (data policy) and integrity verification.
+ * enablement, governed registries (data policy) and integrity verification;
+ * M10B (ADR 0028): the generic source-reference writer.
  */
 @Module({
   imports: [TenancyModule],
@@ -17,6 +19,7 @@ import { RegistryService } from './application/registry.service';
     ModuleGate,
     RegistryService,
     IntegrityVerificationService,
+    SourceReferenceService,
   ],
   exports: [
     CanonicalAdoptionService,
@@ -24,6 +27,7 @@ import { RegistryService } from './application/registry.service';
     ModuleGate,
     RegistryService,
     IntegrityVerificationService,
+    SourceReferenceService,
   ],
 })
 export class GovernanceModule {}

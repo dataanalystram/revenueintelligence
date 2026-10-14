@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { SourceReferenceService } from '../../governance';
 import {
   indexProductModel,
   validateProductModel,
@@ -98,6 +99,7 @@ export class ProductCatalogueService {
     private readonly store: ProductModelStore,
     private readonly audit: AuditTrail,
     private readonly authorizer: WriteAuthorizer,
+    private readonly references: SourceReferenceService,
   ) {}
 
   /** Dry run: full validation against the latest version, nothing written. */
@@ -167,11 +169,25 @@ export class ProductCatalogueService {
         publishedBy: actx.actor.id,
       });
       await this.store.upsertProjection(tx, v.document, version);
+      // M10B plan §2.3 (Q3): the declared product-reference projection, in the
+      // publish transaction, after the product projection (the index FK).
+      const references = await this.references.applyDeclaredProductReferences(actx, tx, {
+        version,
+        products: v.document.products,
+      });
       await this.audit.record(tx, actx, {
         action: 'product_model.publish',
         targetKind: 'product_model',
         targetRef: `v${version}`,
-        details: { version, baseVersion: latestVersion, contentHash: v.contentHash },
+        details: {
+          version,
+          baseVersion: latestVersion,
+          contentHash: v.contentHash,
+          referencesAdded: references.added,
+          referencesRetired: references.retired,
+          referencesReactivated: references.reactivated,
+          referencesRepointed: references.repointed,
+        },
       });
       return { version, contentHash: v.contentHash, effectiveFrom, warnings: v.warnings };
     });
