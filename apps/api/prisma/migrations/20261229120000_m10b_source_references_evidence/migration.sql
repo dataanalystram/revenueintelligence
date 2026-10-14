@@ -399,3 +399,5 @@ REVOKE ALL ON TABLE "tenant_source_references" FROM lip_app;
 GRANT SELECT, INSERT, UPDATE ON TABLE "tenant_source_references" TO lip_app;
 REVOKE ALL ON TABLE "tenant_evidence_links" FROM lip_app;
 GRANT SELECT, INSERT ON TABLE "tenant_evidence_links" TO lip_app;
+
+GRANT UPDATE, DELETE ON TABLE "tenant_evidence_links" TO lip_app;
