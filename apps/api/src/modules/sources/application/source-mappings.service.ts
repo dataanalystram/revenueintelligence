@@ -360,8 +360,10 @@ export class SourceMappingsService {
     actx: AuthorizedContext<'config.mapping.draft'>,
     connectionId: string,
     expectedVersion: number,
+    options: { readonly acknowledgements?: readonly Acknowledgement[] } = {},
   ): Promise<{ readonly draft: MappingDraftView; readonly report: MappingValidationReport }> {
     assertAuthorized(actx, 'config.mapping.draft');
+    const acknowledgements = options.acknowledgements ?? [];
     return this.db.transaction(actx.tenant, async (tx) => {
       await tenantAdvisoryLock(tx, 'source-mapping-draft', connectionId);
       const db = tenantClient(tx);
@@ -372,7 +374,11 @@ export class SourceMappingsService {
       if (draft.version !== expectedVersion) {
         throw new SourcesError('stale_base_version', 'The draft changed meanwhile');
       }
-      const { report, validation } = await this.check(tx, connectionId, draft.document, {});
+      // M9A §7.4: the acknowledgements the covering profiles require are part of
+      // the validated stamp and are reused, unchanged, by the publication.
+      const { report, validation } = await this.check(tx, connectionId, draft.document, {
+        acknowledgements,
+      });
       if (!validation.ok) throw new MappingInvalidError(validation.errors);
       const canonicalVersion = await adoptedCanonicalVersion(tx);
       const row = await db.tenantSourceMappingDraft.update({
@@ -385,6 +391,10 @@ export class SourceMappingsService {
           validation: {
             contentHash: validation.contentHash,
             warnings: Object.fromEntries(countBy(validation.warnings.map((w) => w.code))),
+            acknowledgements: acknowledgements.map((a) => ({
+              findingId: a.findingId,
+              reasonCode: a.reasonCode,
+            })),
           },
         },
       });
@@ -436,9 +446,14 @@ export class SourceMappingsService {
       }
       return row;
     });
+    const stamp = draft.validation as {
+      contentHash: string;
+      acknowledgements?: Acknowledgement[];
+    };
     const published = await this.publish(actx, connectionId, draft.document, {
       expectedBaseVersion,
-      expectedContentHash: (draft.validation as { contentHash: string }).contentHash,
+      expectedContentHash: stamp.contentHash,
+      ...(stamp.acknowledgements?.length ? { acknowledgements: stamp.acknowledgements } : {}),
     });
     // The working copy is consumed (only if nobody edited it meanwhile).
     await this.db.transaction(actx.tenant, (tx) =>

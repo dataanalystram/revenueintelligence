@@ -6,6 +6,7 @@ import { startContextHarness, type ContextHarness } from '../support/context';
 import { FakeSugar } from '../support/fake-sugar';
 import { authz } from '../support/security';
 import {
+  acknowledgementsFor,
   publishWithAcks,
   sourcesServices,
   sugarTenant,
@@ -106,7 +107,18 @@ describe('M10A2 V15: mapping lifecycle (fake Sugar)', () => {
       s().mappings.publishDraft(await publishAuth(), f.connectionId, 2),
     ).rejects.toMatchObject({ code: 'mapping_not_validated' });
 
-    const validated = await s().mappings.validateDraft(await draftAuth(), f.connectionId, 1);
+    // Without the acknowledgements its covering profiles require, validation fails
+    // and the draft stays a draft (M9A §7.4 applies to drafts too).
+    const needed = acknowledgementsFor(await s().mappings.validate(f.ctx, f.connectionId, doc));
+    if (needed.length > 0) {
+      await expect(
+        s().mappings.validateDraft(await draftAuth(), f.connectionId, 1),
+      ).rejects.toMatchObject({ code: 'mapping_invalid' });
+      expect((await s().mappings.showDraft(f.ctx, f.connectionId))!.state).toBe('draft');
+    }
+    const validated = await s().mappings.validateDraft(await draftAuth(), f.connectionId, 1, {
+      acknowledgements: needed,
+    });
     expect(validated.draft.state).toBe('validated');
     expect(validated.report.ok).toBe(true);
 
@@ -121,7 +133,9 @@ describe('M10A2 V15: mapping lifecycle (fake Sugar)', () => {
       { version: 2, state: 'published' },
     ]);
 
-    await s().mappings.validateDraft(await draftAuth(), f.connectionId, 2);
+    await s().mappings.validateDraft(await draftAuth(), f.connectionId, 2, {
+      acknowledgements: needed,
+    });
     // A stale publication base is refused even with a validated draft.
     await expect(
       s().mappings.publishDraft(await publishAuth(), f.connectionId, 1),

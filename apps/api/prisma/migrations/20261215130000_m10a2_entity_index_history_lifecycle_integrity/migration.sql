@@ -463,6 +463,8 @@ CREATE VIEW "tenant_source_mapping_states" WITH (security_invoker = true) AS
     FROM "tenant_source_mapping_lifecycle" l
    ORDER BY l."tenant_id", l."connection_id", l."version", l."seq" DESC;
 REVOKE ALL ON "tenant_source_mapping_states" FROM PUBLIC;
+-- The schema default privileges grant DML on new relations (views included) to lip_app; the view is read-only.
+REVOKE ALL ON "tenant_source_mapping_states" FROM lip_app;
 GRANT SELECT ON "tenant_source_mapping_states" TO lip_app;
 
 -- ---------------------------------------------------------------------------

@@ -70,7 +70,7 @@ import { authorizeOperator } from './operator';
  * "validate + publish" in one transaction); published content is never changed.
  *   sources mapping-draft-save     --tenant <slug> --connection <id|kind> --file <mapping.json>
  *                                  --draft-version <n> (0 for a new draft) [--actor <id>] [--execute]
- *   sources mapping-draft-validate --tenant <slug> --connection <id|kind> --draft-version <n> [--actor <id>] [--execute]
+ *   sources mapping-draft-validate --tenant <slug> --connection <id|kind> --draft-version <n> [--ack <findingId>:<reasonCode> ...] [--actor <id>] [--execute]
  *   sources mapping-draft-publish  --tenant <slug> --connection <id|kind> --based-on <version> [--actor <id>] [--execute]
  *   sources mapping-draft-discard  --tenant <slug> --connection <id|kind> [--actor <id>] [--execute]
  *   sources mapping-draft-show     --tenant <slug> --connection <id|kind>
@@ -370,7 +370,9 @@ async function main(): Promise<void> {
           );
           const validated = await app
             .get(SourceMappingsService)
-            .validateDraft(auth, conn.id, draftVersion);
+            .validateDraft(auth, conn.id, draftVersion, {
+              ...(acknowledgements.length > 0 ? { acknowledgements } : {}),
+            });
           return { draft: validated.draft, ok: validated.report.ok };
         }
         case 'mapping-draft-publish': {
