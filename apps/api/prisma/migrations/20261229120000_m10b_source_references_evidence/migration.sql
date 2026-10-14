@@ -270,8 +270,6 @@ BEGIN
 END
 $$;
 
-CREATE TRIGGER "tenant_source_references_reference_identity" BEFORE UPDATE ON "tenant_source_references"
-  FOR EACH ROW EXECUTE FUNCTION app_source_reference_identity_immutable();
 
 -- ---------------------------------------------------------------------------
 -- 4. Evidence links (plan §3.1; Q11–Q15)
