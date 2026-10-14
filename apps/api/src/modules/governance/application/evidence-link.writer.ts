@@ -100,6 +100,8 @@ export class EvidenceLinkWriter {
       }
     }
     if (set.supersedesLinkSetId) {
+      // Serialise supersession of one set: the chain stays linear (ADR 0028).
+      await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`evidence-supersede:${tx.tenantId}:${set.supersedesLinkSetId}`}, 0))`;
       const superseded = await db.tenantEvidenceLink.findFirst({
         where: {
           tenantId: tx.tenantId,
@@ -114,6 +116,17 @@ export class EvidenceLinkWriter {
         throw new GovernanceError(
           'evidence_set_invalid',
           'supersedes_link_set_id names no set of the same subject',
+          { reason: 'supersedes' },
+        );
+      }
+      const successor = await db.tenantEvidenceLink.findFirst({
+        where: { tenantId: tx.tenantId, supersedesLinkSetId: set.supersedesLinkSetId },
+        select: { id: true },
+      });
+      if (successor) {
+        throw new GovernanceError(
+          'evidence_set_invalid',
+          'supersedes_link_set_id names a set that is already superseded',
           { reason: 'supersedes' },
         );
       }

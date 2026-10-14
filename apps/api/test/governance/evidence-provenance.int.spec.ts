@@ -247,6 +247,16 @@ describe('M10B evidence links and provenance', () => {
           supersedesLinkSetId: first.linkSetId,
         }),
       ).rejects.toMatchObject({ code: 'evidence_set_invalid' });
+      // A set is superseded at most once (linear chain, review m3).
+      await expect(
+        write(t, {
+          ...supportSet(subject, evidence, change),
+          supersedesLinkSetId: first.linkSetId,
+        }),
+      ).rejects.toMatchObject({
+        code: 'evidence_set_invalid',
+        message: expect.stringMatching(/already superseded/) as unknown,
+      });
       // Merged target refused (planted as owner, triggers off).
       const merged = await companyOf(t, '8103');
       await c.sql(
@@ -610,6 +620,16 @@ describe('M10B evidence links and provenance', () => {
                  gen_random_uuid(), $6)`,
         [t.tenantId, unknownSet, company, second, badSupersession, randomUUID()],
       );
+      // A fork: two sets supersede the same set (review m3).
+      await c.sql(
+        `INSERT INTO tenant_evidence_links (tenant_id, link_set_id, ordinal, subject_kind, subject_id, evidence_type,
+           evidence_kind, evidence_id, role, origin, canonical_version, actor_kind, actor_id, actor_assurance,
+           correlation_id, supersedes_link_set_id)
+         SELECT $1, gen_random_uuid(), 0, 'company', $3, 'entity', 'company', $4, 'supports', 'human', '0.2', 'system',
+                'test', 'system', gen_random_uuid(), $2::uuid
+           FROM generate_series(1, 2)`,
+        [t.tenantId, unknownSet, company, second],
+      );
       vi.restoreAllMocks();
       const emitted = securityEvents();
       const found = await integrity().record(await authz(t, 'security.integrity.run'));
@@ -621,6 +641,7 @@ describe('M10B evidence links and provenance', () => {
           { check: 'source_reference_change_mismatch', ref: ambiguous!.id },
           { check: 'evidence_relation_unknown', ref: unknownSet },
           { check: 'evidence_supersession_invalid', ref: badSupersession },
+          { check: 'evidence_supersession_invalid', ref: unknownSet },
         ]),
       );
       // The view is a union of the stores: parity holds by construction.
@@ -638,7 +659,7 @@ describe('M10B evidence links and provenance', () => {
       ).toEqual([{ entity_key: 'suite' }]);
       expect(
         await c.sql(`SELECT 1 FROM tenant_evidence_links WHERE tenant_id = $1`, [t.tenantId]),
-      ).toHaveLength(2);
+      ).toHaveLength(4);
       // Another tenant is untouched and clean.
       expect((await integrity().verify(other)).outcome).toBe('passed');
     });

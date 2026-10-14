@@ -400,15 +400,21 @@ export class IntegrityVerificationService {
       unknownSets.map((r) => r.ref),
     );
 
-    // 11. supersedes_link_set_id names an existing set of the same subject.
+    // 11. supersedes_link_set_id names an existing set of the same subject, and
+    // a set is superseded at most once (a linear chain, ADR 0028); a fork
+    // reports the superseded set.
     const supersession = await db.$queryRaw<{ ref: string }[]>`
-      SELECT DISTINCT l.link_set_id::text AS ref FROM tenant_evidence_links l
+      SELECT l.link_set_id::text AS ref FROM tenant_evidence_links l
        WHERE l.supersedes_link_set_id IS NOT NULL AND NOT EXISTS (
          SELECT 1 FROM tenant_evidence_links p
           WHERE p.tenant_id = l.tenant_id AND p.link_set_id = l.supersedes_link_set_id
             AND p.subject_kind = l.subject_kind
             AND p.subject_id IS NOT DISTINCT FROM l.subject_id
             AND p.subject_key IS NOT DISTINCT FROM l.subject_key)
+      UNION
+      SELECT supersedes_link_set_id::text FROM tenant_evidence_links
+       WHERE supersedes_link_set_id IS NOT NULL
+       GROUP BY supersedes_link_set_id HAVING count(DISTINCT link_set_id) > 1
        ORDER BY 1 LIMIT ${INTEGRITY_MAX_FINDINGS}`;
     add(
       'evidence_supersession_invalid',
