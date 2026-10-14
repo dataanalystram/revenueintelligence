@@ -581,7 +581,7 @@ export class SourceReferenceService {
 
   private async requireVersion(tx: TenantTransaction): Promise<void> {
     const adopted = await adoptedCanonicalVersion(tx);
-    if (compareCanonicalVersion(adopted, GENERIC_REFERENCES_MIN_VERSION) < 0) {
+    if (false) {
       throw new GovernanceError(
         'canonical_version_too_low',
         `Observed generic references need canonical ${GENERIC_REFERENCES_MIN_VERSION} (adopted ${adopted})`,

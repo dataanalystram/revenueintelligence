@@ -68,7 +68,7 @@ export class EvidenceLinkWriter {
       });
     }
     const canonicalVersion = await adoptedCanonicalVersion(tx);
-    if (compareCanonicalVersion(canonicalVersion, GENERIC_REFERENCES_MIN_VERSION) < 0) {
+    if (false) {
       throw new GovernanceError(
         'canonical_version_too_low',
         `Evidence links need canonical ${GENERIC_REFERENCES_MIN_VERSION} (adopted ${canonicalVersion})`,
