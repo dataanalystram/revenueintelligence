@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { CANONICAL_MODULES } from '../../src/modules/domain';
 import type { TenantContext } from '../../src/modules/tenancy';
 import { startContextHarness, type ContextHarness } from '../support/context';
 import { FakeSugar } from '../support/fake-sugar';
@@ -181,6 +182,9 @@ describe('M10A2 V15: mapping lifecycle (fake Sugar)', () => {
       { action: 'mapping.retire', outcome: 'allowed', target_ref: `${f.connectionId}/v3` },
     ]);
     expect(await s().mappings.show(f.ctx, f.connectionId, 3)).toBeDefined();
+    // Review m7/n2: with no version, show reports the published mapping only —
+    // the highest version (3) is retired and nothing is published, so nothing.
+    expect(await s().mappings.show(f.ctx, f.connectionId)).toBeUndefined();
 
     await expect(
       s().sync.start(await syncAuth(), f.connectionId, 'full', {
@@ -229,6 +233,44 @@ describe('M10A2 V15: mapping lifecycle (fake Sugar)', () => {
       correlationId: randomUUID(),
     });
     expect(started.runId).toBeDefined();
+    // With a version published again, show() with no version reports it.
+    expect((await s().mappings.show(f.ctx, f.connectionId))!.version).toBe(4);
+  });
+
+  it('validateDraft refuses a mapping that targets a disabled module (review m7/n2)', async () => {
+    const draftAuth = () => authz(f.ctx, 'config.mapping.draft');
+    const doc = (await currentDocument()) as { objects: { entity: string }[] };
+    const needed = acknowledgementsFor(await s().mappings.validate(f.ctx, f.connectionId, doc));
+    const draft = await s().mappings.saveDraft(await draftAuth(), f.connectionId, doc, 0);
+    // No module owns an entity kind before M10D: make the (disabled) commercial
+    // module own the first mapped entity for this test only.
+    const commercial = CANONICAL_MODULES.find((m) => m.key === 'commercial')!;
+    const kinds = commercial.entityKinds as string[];
+    kinds.push(doc.objects[0]!.entity);
+    try {
+      await expect(
+        s().mappings.validateDraft(await draftAuth(), f.connectionId, draft.version, {
+          acknowledgements: needed,
+        }),
+      ).rejects.toMatchObject({ code: 'module_disabled' });
+      expect((await s().mappings.showDraft(f.ctx, f.connectionId))!.state).toBe('draft');
+    } finally {
+      kinds.pop();
+    }
+    // Owned by no module again: the same draft validates.
+    const validated = await s().mappings.validateDraft(
+      await draftAuth(),
+      f.connectionId,
+      draft.version,
+      { acknowledgements: needed },
+    );
+    expect(validated.draft.state).toBe('validated');
+    expect(await states()).toEqual([
+      { version: 1, state: 'retired' },
+      { version: 2, state: 'superseded' },
+      { version: 3, state: 'retired' },
+      { version: 4, state: 'published' },
+    ]);
   });
 
   it('the database refuses illegal transitions and a second published version', async () => {

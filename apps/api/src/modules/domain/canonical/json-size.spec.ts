@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { jsonbText, jsonbTextBytes } from './json-size';
+import { jsonbText, jsonbTextBytes, plainNumber } from './json-size';
 
 describe('jsonbTextBytes (M10A2 review m6)', () => {
   it('renders with jsonb separators', () => {
@@ -31,5 +31,17 @@ describe('jsonbTextBytes (M10A2 review m6)', () => {
     const v = 'é'.repeat(3000);
     expect(JSON.stringify(v).length).toBeLessThan(4096);
     expect(jsonbTextBytes(v)).toBeGreaterThan(4096);
+  });
+
+  it('sizes numbers as PostgreSQL prints them: plain decimal, no exponent (review n1)', () => {
+    expect(jsonbText(1e300)).toBe(`1${'0'.repeat(300)}`);
+    expect(jsonbTextBytes(1e300)).toBe(301);
+    expect(jsonbText(1e-7)).toBe('0.0000001');
+    expect(jsonbText(123.5)).toBe('123.5');
+    expect(plainNumber(-1.5e-7)).toBe('-0.00000015');
+    expect(plainNumber(1.25e21)).toBe('1250000000000000000000');
+    expect(plainNumber(-0)).toBe('0');
+    expect(plainNumber(Number.NaN)).toBe('null');
+    expect(jsonbText({ a: [1e21, Infinity] })).toBe('{"a": [1000000000000000000000, null]}');
   });
 });

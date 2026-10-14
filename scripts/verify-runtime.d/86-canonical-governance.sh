@@ -168,9 +168,30 @@ cg_no_values() {
   values="$(cg_sql "SELECT DISTINCT v #>> '{}' FROM tenant_value_history h, LATERAL (VALUES (h.old_value), (h.new_value)) AS x(v)
                      WHERE h.tenant_id = '$tid' AND h.values_recorded AND jsonb_typeof(v) = 'string'
                        AND length(v #>> '{}') >= 6 AND (v #>> '{}') ~ '[A-Z ]' AND (v #>> '{}') !~ '^[0-9:TZ.+-]+$'")" || return 1
+  # Review n3: script 70's sync records free-text values; an empty list would
+  # make the scan vacuous, so zero is a failure, and the count is reported.
+  local count=0
+  [ -n "$values" ] && count="$(printf '%s\n' "$values" | wc -l | tr -d ' ')"
+  echo "    value-history free-text values searched: $count"
+  if [ "$count" -eq 0 ]; then
+    echo "    no free-text value-history values recorded; the log scan would prove nothing" >&2
+    return 1
+  fi
   printf '%s\n' 'Fixture Account' 'Fixture Line' >"$CG_OUT/value-probes.txt"
-  [ -n "$values" ] && printf '%s\n' "$values" >>"$CG_OUT/value-probes.txt"
-  ! grep -rqF -f "$CG_OUT/value-probes.txt" "$WORK/api.log" "$WORK/worker.log" "${SC_WORKER_LOG:-/dev/null}" \
-    --exclude=value-probes.txt "$CG_OUT" 2>/dev/null
+  printf '%s\n' "$values" >>"$CG_OUT/value-probes.txt"
+  # Every log searched must exist: grep on a missing file would pass silently.
+  local logs=("$WORK/api.log" "$WORK/worker.log")
+  [ -n "${SC_WORKER_LOG:-}" ] && logs+=("$SC_WORKER_LOG")
+  local log
+  for log in "${logs[@]}"; do
+    if [ ! -f "$log" ]; then
+      echo "    log file missing: $log" >&2
+      return 1
+    fi
+  done
+  # grep: 1 = no match (pass); 0 = a value leaked; 2 = an error (fail too).
+  local rc=0
+  grep -rqF -f "$CG_OUT/value-probes.txt" "${logs[@]}" --exclude=value-probes.txt "$CG_OUT" || rc=$?
+  [ "$rc" -eq 1 ]
 }
 check "no value-history value (or fixture name) in the API, worker or CLI logs" cg_no_values
