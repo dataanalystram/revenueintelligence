@@ -468,7 +468,7 @@ describe('M10A2 canonical versioning and governance', () => {
         kind: 'data_policy',
         version: 1,
         contentHash: dry.contentHash,
-        canonicalVersionMin: '0.1',
+        canonicalVersionMin: '0.2',
       });
       const events = await audit(t);
       // Two failed attempts and one allowed publication.

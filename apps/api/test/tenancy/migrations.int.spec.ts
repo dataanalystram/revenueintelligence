@@ -234,6 +234,7 @@ describe('database migrations and schema guard', () => {
         ...M9B_MIGRATIONS,
         ...M10A1_MIGRATIONS,
         ...M10A2_MIGRATIONS,
+        ...M10B_MIGRATIONS,
       ]);
       expect(rows.every((r) => r.finished_at !== null)).toBe(true);
     });
@@ -674,6 +675,8 @@ describe('database migrations and schema guard', () => {
       // outlives physical deletes, recorded in ADR 0027 as the one exception.
       const NOT_ENTITY_REFERENCES = ['actor', 'updated_by'];
       const LEGACY = ['tenant_context_changes.entity'];
+      // A view carries no foreign keys; the stores it unions are checked as tables (M10B).
+      const VIEWS = ['source_reference_index.entity'];
       const pairs = await withAdmin(cleanUrl, (db) =>
         db.query<{ table: string; prefix: string; has_key: boolean }>(
           `SELECT k.table_name AS table, regexp_replace(k.column_name, '_kind$', '') AS prefix,
@@ -688,7 +691,9 @@ describe('database migrations and schema guard', () => {
       );
       const polymorphic = pairs.rows.filter(
         (p) =>
-          !NOT_ENTITY_REFERENCES.includes(p.prefix) && !LEGACY.includes(`${p.table}.${p.prefix}`),
+          !NOT_ENTITY_REFERENCES.includes(p.prefix) &&
+          !LEGACY.includes(`${p.table}.${p.prefix}`) &&
+          !VIEWS.includes(`${p.table}.${p.prefix}`),
       );
       expect(polymorphic.map((p) => `${p.table}.${p.prefix}`)).toEqual(
         expect.arrayContaining([

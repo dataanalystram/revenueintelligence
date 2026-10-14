@@ -270,7 +270,7 @@ BEGIN
 END
 $$;
 
-CREATE TRIGGER "tenant_source_references_identity_immutable" BEFORE UPDATE ON "tenant_source_references"
+CREATE TRIGGER "tenant_source_references_reference_identity" BEFORE UPDATE ON "tenant_source_references"
   FOR EACH ROW EXECUTE FUNCTION app_source_reference_identity_immutable();
 
 -- ---------------------------------------------------------------------------
