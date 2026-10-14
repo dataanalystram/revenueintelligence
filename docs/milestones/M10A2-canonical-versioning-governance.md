@@ -97,19 +97,23 @@ the sandbox did not have the memory for a full install and typecheck.
 
 ## Review findings disposition
 
-| Finding | Fix commit(s)                                                                                                                                                             |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| M1      | `5ac5c1b` — integration V12 restricted-history test (D9)                                                                                                                  |
-| m1      | `9fbd3f7` — dead `entity_index_tenant_mismatch` check dropped; no-FK docs corrected (D3, D10)                                                                             |
-| m2      | `55ea53d` — `audit_reference_missing` exempts only rows before the latest purge anchor cutoff (+5 min skew) (D1)                                                          |
-| m3      | `9c7f9ed` — app-role migration-actor rows (baseline adoptions, backfill lifecycle) refused by trigger                                                                     |
-| m4      | `e34675d` — value history six fields (D19)                                                                                                                                |
-| m5      | `9af3dcd` — meaningful V11 isolation counts; V22 covers more down-script refusals                                                                                         |
-| m6      | `2eb7006` — jsonb limits in UTF-8 bytes of the jsonb text; `5b0bdb0` — mapping document size limit too                                                                    |
-| m7      | `d2431b3` — `show()` reads the published mapping; `validateDraft` refuses disabled-module targets (D17)                                                                   |
-| m8      | `e933976`, `c2dcc2c` — draft validation stamp parsed on read-back (fails closed), unit-tested                                                                             |
-| m9      | `c912797` — `effectiveFrom` dropped from `RegistryPublishInput` (D18)                                                                                                     |
-| m10     | `5b0bdb0` — runtime V23 "no values in logs" (script 86 probes the API, worker and CLI logs for value-history values); script 70's Sugar mapping re-published after retire |
+| Finding   | Fix commit(s)                                                                                                                                                                                           |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| M1        | `5ac5c1b` — integration V12 restricted-history test (D9)                                                                                                                                                |
+| m1        | `9fbd3f7` — dead `entity_index_tenant_mismatch` check dropped; no-FK docs corrected (D3, D10)                                                                                                           |
+| m2        | `55ea53d` — `audit_reference_missing` exempts only rows before the latest purge anchor cutoff (+5 min skew) (D1)                                                                                        |
+| m3        | `9c7f9ed` — app-role migration-actor rows (baseline adoptions, backfill lifecycle) refused by trigger                                                                                                   |
+| m4        | `e34675d` — value history six fields (D19)                                                                                                                                                              |
+| m5        | `9af3dcd` — meaningful V11 isolation counts; V22 covers more down-script refusals                                                                                                                       |
+| m6        | `2eb7006` — jsonb limits in UTF-8 bytes of the jsonb text; `5b0bdb0` — mapping document size limit too                                                                                                  |
+| m7        | `d2431b3` — `show()` reads the published mapping; `validateDraft` refuses disabled-module targets (D17)                                                                                                 |
+| m8        | `e933976`, `c2dcc2c` — draft validation stamp parsed on read-back (fails closed), unit-tested                                                                                                           |
+| m9        | `c912797` — `effectiveFrom` dropped from `RegistryPublishInput` (D18)                                                                                                                                   |
+| m10       | `5b0bdb0` — runtime V23 "no values in logs" (script 86 probes the API, worker and CLI logs for value-history values); script 70's Sugar mapping re-published after retire                               |
+| n1        | `feeef40` — jsonb sizing prints finite numbers in plain decimal as PostgreSQL `numeric` does (1e300 → 301 digits); unit cases 1e300, 1e-7, 123.5                                                        |
+| n2        | `feeef40` — V15 tests for m7: `validateDraft` refuses a disabled-module target (`module_disabled`); `show()` with no version returns nothing when none is published and the published version otherwise |
+| n3        | `feeef40` — script 86 V23 fails on a missing log file or grep error, reports the number of history values searched and fails when it is zero                                                            |
+| m5 (rest) | Audit-vocabulary and `canonical_version_min` down-script refusals still untested — tech debt #66                                                                                                        |
 
 ## Mutation proofs
 
@@ -163,3 +167,4 @@ write; the guards fail because they assert the exact layer. VM16's failure comes
 
 - Owner approval; merge to `integration`.
 - Integrity worker job (tech debt #65).
+- Untested down-script refusals for the audit vocabulary and `canonical_version_min` (tech debt #66).
