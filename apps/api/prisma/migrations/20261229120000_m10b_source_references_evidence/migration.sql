@@ -186,7 +186,6 @@ ALTER TABLE "tenant_context_changes"
 ALTER TABLE "tenant_source_references"
   ADD CONSTRAINT "tenant_source_references_entity_kind_valid" CHECK ("entity_kind" IN ('product')),
   -- Q2: legacy kinds keep their own stores; never copied into the generic store.
-  ADD CONSTRAINT "tenant_source_references_not_legacy_kind" CHECK ("entity_kind" NOT IN ('company', 'person', 'subscription')),
   ADD CONSTRAINT "tenant_source_references_one_identity" CHECK (("entity_id" IS NULL) <> ("entity_key" IS NULL)),
   ADD CONSTRAINT "tenant_source_references_key_only_for_products" CHECK (("entity_key" IS NOT NULL) = ("entity_kind" = 'product')),
   -- Identifiers only, never values (as ProductExternalRefSchema).
