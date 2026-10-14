@@ -3191,6 +3191,15 @@ export const CLASSIFICATION_MANIFEST: Readonly<
     reason_code: op('code', CV),
     audit_event_id: op('reference', CV),
   },
+  // Security-invoker view over the lifecycle (no storage of its own): same classifications.
+  tenant_source_mapping_states: {
+    tenant_id: op('identifier', CV),
+    connection_id: op('reference', CV),
+    version: op('number', CV),
+    state: op('code', CV),
+    occurred_at: op('timestamp', CV),
+    seq: op('number', CV),
+  },
   tenant_integrity_runs: {
     tenant_id: op('identifier', SA),
     id: op('identifier', SA),

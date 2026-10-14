@@ -164,14 +164,10 @@ ALTER TABLE "tenant_source_mapping_drafts" ADD CONSTRAINT "tenant_source_mapping
 -- AddForeignKey
 ALTER TABLE "tenant_source_mapping_lifecycle" ADD CONSTRAINT "tenant_source_mapping_lifecycle_tenant_id_connection_id_ve_fkey" FOREIGN KEY ("tenant_id", "connection_id", "version") REFERENCES "tenant_source_mapping_versions"("tenant_id", "connection_id", "version") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
--- AddForeignKey
-ALTER TABLE "tenant_source_mapping_lifecycle" ADD CONSTRAINT "tenant_source_mapping_lifecycle_tenant_id_audit_event_id_fkey" FOREIGN KEY ("tenant_id", "audit_event_id") REFERENCES "tenant_audit_events"("tenant_id", "id") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
 ALTER TABLE "tenant_integrity_runs" ADD CONSTRAINT "tenant_integrity_runs_tenant_id_fkey" FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
--- AddForeignKey
-ALTER TABLE "tenant_integrity_runs" ADD CONSTRAINT "tenant_integrity_runs_tenant_id_audit_event_id_fkey" FOREIGN KEY ("tenant_id", "audit_event_id") REFERENCES "tenant_audit_events"("tenant_id", "id") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- ---------------------------------------------------------------------------
 -- 1. Tenant entity index (D2, F2, Q12, Q13)

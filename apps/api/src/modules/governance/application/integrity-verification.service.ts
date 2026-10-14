@@ -203,6 +203,38 @@ export class IntegrityVerificationService {
       }
     });
 
+    // 3b. Audit pointers (no foreign key, see ADR 0027): every governance row's
+    // audit event exists, unless an audit purge has anchored the chain (the
+    // event may then have been purged; purge execution is disabled today).
+    const anchored = (await db.tenantAuditAnchor.count()) > 0;
+    if (!anchored) {
+      const dangling = await db.$queryRaw<{ ref: string }[]>`
+        SELECT 'adoption:' || x.seq AS ref FROM tenant_canonical_adoptions x
+         WHERE x.audit_event_id IS NOT NULL AND NOT EXISTS (
+           SELECT 1 FROM tenant_audit_events e WHERE e.tenant_id = x.tenant_id AND e.id = x.audit_event_id)
+        UNION ALL
+        SELECT 'module:' || x.module_key || ':' || x.seq FROM tenant_module_setting_events x
+         WHERE NOT EXISTS (
+           SELECT 1 FROM tenant_audit_events e WHERE e.tenant_id = x.tenant_id AND e.id = x.audit_event_id)
+        UNION ALL
+        SELECT 'registry:' || x.kind || ':' || x.version FROM tenant_registry_versions x
+         WHERE NOT EXISTS (
+           SELECT 1 FROM tenant_audit_events e WHERE e.tenant_id = x.tenant_id AND e.id = x.audit_event_id)
+        UNION ALL
+        SELECT 'mapping:' || x.connection_id || '/v' || x.version || ':' || x.seq FROM tenant_source_mapping_lifecycle x
+         WHERE x.audit_event_id IS NOT NULL AND NOT EXISTS (
+           SELECT 1 FROM tenant_audit_events e WHERE e.tenant_id = x.tenant_id AND e.id = x.audit_event_id)
+        UNION ALL
+        SELECT 'integrity_run:' || x.id FROM tenant_integrity_runs x
+         WHERE NOT EXISTS (
+           SELECT 1 FROM tenant_audit_events e WHERE e.tenant_id = x.tenant_id AND e.id = x.audit_event_id)
+        ORDER BY 1 LIMIT ${INTEGRITY_MAX_FINDINGS}`;
+      add(
+        'audit_reference_missing',
+        dangling.map((r) => r.ref),
+      );
+    }
+
     // 4. Module settings equal their last setting event.
     const settings = await db.tenantModuleSetting.findMany();
     for (const s of settings) {

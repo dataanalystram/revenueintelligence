@@ -153,8 +153,6 @@ ALTER TABLE "tenant_canonical_adoptions" ADD CONSTRAINT "tenant_canonical_adopti
 -- AddForeignKey
 ALTER TABLE "tenant_canonical_adoptions" ADD CONSTRAINT "tenant_canonical_adoptions_previous_version_fkey" FOREIGN KEY ("previous_version") REFERENCES "canonical_model_versions"("version") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
--- AddForeignKey
-ALTER TABLE "tenant_canonical_adoptions" ADD CONSTRAINT "tenant_canonical_adoptions_tenant_id_audit_event_id_fkey" FOREIGN KEY ("tenant_id", "audit_event_id") REFERENCES "tenant_audit_events"("tenant_id", "id") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
 ALTER TABLE "canonical_modules" ADD CONSTRAINT "canonical_modules_minimum_canonical_version_fkey" FOREIGN KEY ("minimum_canonical_version") REFERENCES "canonical_model_versions"("version") ON DELETE RESTRICT ON UPDATE RESTRICT;
@@ -168,8 +166,6 @@ ALTER TABLE "tenant_module_settings" ADD CONSTRAINT "tenant_module_settings_modu
 -- AddForeignKey
 ALTER TABLE "tenant_module_setting_events" ADD CONSTRAINT "tenant_module_setting_events_tenant_id_module_key_fkey" FOREIGN KEY ("tenant_id", "module_key") REFERENCES "tenant_module_settings"("tenant_id", "module_key") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
--- AddForeignKey
-ALTER TABLE "tenant_module_setting_events" ADD CONSTRAINT "tenant_module_setting_events_tenant_id_audit_event_id_fkey" FOREIGN KEY ("tenant_id", "audit_event_id") REFERENCES "tenant_audit_events"("tenant_id", "id") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
 ALTER TABLE "tenant_registry_versions" ADD CONSTRAINT "tenant_registry_versions_tenant_id_fkey" FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE RESTRICT ON UPDATE RESTRICT;
@@ -177,8 +173,6 @@ ALTER TABLE "tenant_registry_versions" ADD CONSTRAINT "tenant_registry_versions_
 -- AddForeignKey
 ALTER TABLE "tenant_registry_versions" ADD CONSTRAINT "tenant_registry_versions_canonical_version_min_fkey" FOREIGN KEY ("canonical_version_min") REFERENCES "canonical_model_versions"("version") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
--- AddForeignKey
-ALTER TABLE "tenant_registry_versions" ADD CONSTRAINT "tenant_registry_versions_tenant_id_audit_event_id_fkey" FOREIGN KEY ("tenant_id", "audit_event_id") REFERENCES "tenant_audit_events"("tenant_id", "id") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
 ALTER TABLE "tenant_registry_entries" ADD CONSTRAINT "tenant_registry_entries_tenant_id_kind_introduced_in_fkey" FOREIGN KEY ("tenant_id", "kind", "introduced_in") REFERENCES "tenant_registry_versions"("tenant_id", "kind", "version") ON DELETE RESTRICT ON UPDATE RESTRICT;
@@ -229,6 +223,11 @@ ALTER TABLE "tenant_canonical_adoptions"
   ADD CONSTRAINT "tenant_canonical_adoptions_reason_valid" CHECK ("reason" IN ('baseline', 'new_tenant', 'operator_adoption', 'rollback')),
   ADD CONSTRAINT "tenant_canonical_adoptions_first_reason" CHECK (("seq" = 1) = ("reason" IN ('baseline', 'new_tenant'))),
   -- Q4: only the migration's baseline rows have no audit event.
+  -- audit_event_id (here and on every M10A2 governance table) is an evidence
+  -- pointer written in the same transaction as its audit event, deliberately
+  -- without a foreign key: governance rows are lifecycle-retained while audit
+  -- events are days-retained and the M10A1 audit purge removes a chain prefix
+  -- behind an anchor (ADR 0026). Integrity verification checks the pointers.
   ADD CONSTRAINT "tenant_canonical_adoptions_audit_required" CHECK (("audit_event_id" IS NULL) = ("reason" = 'baseline')),
   ADD CONSTRAINT "tenant_canonical_adoptions_actor_kind_valid" CHECK ("actor_kind" IN ('source_sync', 'system', 'operator', 'human_user', 'ai')),
   ADD CONSTRAINT "tenant_canonical_adoptions_actor_id_format" CHECK ("actor_id" ~ '^[A-Za-z0-9_.:@-]{1,128}$'),

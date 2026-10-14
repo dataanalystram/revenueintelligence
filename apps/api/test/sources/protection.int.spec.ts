@@ -382,6 +382,19 @@ describe('record-level protection, reviewed domains, guards and coverage tiers',
             latest!.authority_version,
           ],
         );
+        // As the M10A2 migration backfill does for versions published before it:
+        // the highest version is published, the previous one superseded.
+        await c.sql(
+          `INSERT INTO tenant_source_mapping_lifecycle (tenant_id, connection_id, version, seq, state, actor_kind, actor_id, actor_assurance)
+           SELECT $1, $2, $3, max(seq) + 1, 'superseded', 'system', 'system:migration:m10a2', 'system'
+             FROM tenant_source_mapping_lifecycle WHERE tenant_id = $1 AND connection_id = $2 AND version = $3`,
+          [f.ctx.tenantId, f.connectionId, latest!.version],
+        );
+        await c.sql(
+          `INSERT INTO tenant_source_mapping_lifecycle (tenant_id, connection_id, version, seq, state, actor_kind, actor_id, actor_assurance)
+           VALUES ($1, $2, $3, 1, 'published', 'system', 'system:migration:m10a2', 'system')`,
+          [f.ctx.tenantId, f.connectionId, latest!.version + 1],
+        );
         await expect(
           sourcesServices(c).sync.start(
             await authz(f.ctx, 'data.sync.run'),

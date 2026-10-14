@@ -530,7 +530,11 @@ describe('database migrations and schema guard', () => {
           `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'tenant_value_history_field_valid'`,
         ),
       );
-      const pairs = [...rows[0]!.def.matchAll(/\('([a-z_]+)'::text, '([a-z_]+)'::text\)/g)]
+      const pairs = [
+        ...rows[0]!.def.matchAll(
+          /entity_kind = '([a-z_]+)'::text\) AND \(field = '([a-z_]+)'::text/g,
+        ),
+      ]
         .map((m) => `${m[1]}.${m[2]}`)
         .sort();
       expect(pairs).toEqual(

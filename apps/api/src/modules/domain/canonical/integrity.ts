@@ -9,6 +9,7 @@ export const INTEGRITY_CHECKS = [
   'value_history_unindexed',
   'adoption_chain_invalid',
   'adoption_audit_missing',
+  'audit_reference_missing',
   'module_setting_mismatch',
   'registry_projection_mismatch',
   'mapping_lifecycle_invalid',

@@ -997,11 +997,6 @@ model TenantAuditEvent {
   hash           String
 
   tenant              Tenant                         @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  canonicalAdoptions  TenantCanonicalAdoption[]
-  moduleSettingEvents TenantModuleSettingEvent[]
-  registryVersions    TenantRegistryVersion[]
-  mappingLifecycle    TenantSourceMappingLifecycle[]
-  integrityRuns       TenantIntegrityRun[]
 
   @@id([tenantId, id])
   @@unique([tenantId, seq])
@@ -1083,7 +1078,6 @@ model TenantCanonicalAdoption {
   tenant      Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   versionRef  CanonicalModelVersion  @relation("AdoptionVersion", fields: [version], references: [version], onDelete: Restrict, onUpdate: Restrict)
   previousRef CanonicalModelVersion? @relation("AdoptionPreviousVersion", fields: [previousVersion], references: [version], onDelete: Restrict, onUpdate: Restrict)
-  auditEvent  TenantAuditEvent?      @relation(fields: [tenantId, auditEventId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
 
   @@id([tenantId, id])
   @@unique([tenantId, seq])
@@ -1144,7 +1138,6 @@ model TenantModuleSettingEvent {
   auditEventId   String   @map("audit_event_id") @db.Uuid
 
   setting    TenantModuleSetting @relation(fields: [tenantId, moduleKey], references: [tenantId, moduleKey], onDelete: Restrict, onUpdate: Restrict)
-  auditEvent TenantAuditEvent    @relation(fields: [tenantId, auditEventId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
 
   @@id([tenantId, id])
   @@unique([tenantId, moduleKey, seq])
@@ -1171,7 +1164,6 @@ model TenantRegistryVersion {
 
   tenant            Tenant                @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   canonicalVersion  CanonicalModelVersion @relation(fields: [canonicalVersionMin], references: [version], onDelete: Restrict, onUpdate: Restrict)
-  auditEvent        TenantAuditEvent      @relation(fields: [tenantId, auditEventId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
   introducedEntries TenantRegistryEntry[] @relation("RegistryEntryIntroduced")
   changedEntries    TenantRegistryEntry[] @relation("RegistryEntryLastChanged")
 
@@ -1298,7 +1290,6 @@ model TenantSourceMappingLifecycle {
   auditEventId   String?  @map("audit_event_id") @db.Uuid
 
   mapping    TenantSourceMappingVersion @relation(fields: [tenantId, connectionId, version], references: [tenantId, connectionId, version], onDelete: Restrict, onUpdate: Restrict)
-  auditEvent TenantAuditEvent?          @relation(fields: [tenantId, auditEventId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
 
   @@id([tenantId, connectionId, version, seq])
   @@map("tenant_source_mapping_lifecycle")
@@ -1321,7 +1312,6 @@ model TenantIntegrityRun {
   auditEventId   String   @map("audit_event_id") @db.Uuid
 
   tenant     Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  auditEvent TenantAuditEvent @relation(fields: [tenantId, auditEventId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
 
   @@id([tenantId, id])
   @@index([tenantId, finishedAt])
