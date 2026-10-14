@@ -146,10 +146,8 @@ ALTER TABLE "tenant_source_references" ADD CONSTRAINT "tenant_source_references_
 ALTER TABLE "tenant_evidence_links" ADD CONSTRAINT "tenant_evidence_links_tenant_id_fkey" FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
-ALTER TABLE "tenant_evidence_links" ADD CONSTRAINT "tenant_evidence_links_tenant_id_subject_kind_subject_id_fkey" FOREIGN KEY ("tenant_id", "subject_kind", "subject_id") REFERENCES "tenant_entity_index"("tenant_id", "kind", "entity_id") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
-ALTER TABLE "tenant_evidence_links" ADD CONSTRAINT "tenant_evidence_links_tenant_id_subject_kind_subject_key_fkey" FOREIGN KEY ("tenant_id", "subject_kind", "subject_key") REFERENCES "tenant_entity_index"("tenant_id", "kind", "entity_key") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
 ALTER TABLE "tenant_evidence_links" ADD CONSTRAINT "tenant_evidence_links_tenant_id_evidence_kind_evidence_id_fkey" FOREIGN KEY ("tenant_id", "evidence_kind", "evidence_id") REFERENCES "tenant_entity_index"("tenant_id", "kind", "entity_id") ON DELETE RESTRICT ON UPDATE RESTRICT;
