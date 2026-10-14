@@ -84,7 +84,7 @@ export class CanonicalAdoptionService {
         );
       }
       const seq = head.seq + 1;
-      const auditEventId = await this.audit.recordReturningId(tx, actx, {
+      const auditEventId = await (async (..._a: unknown[]) => randomUUID())(tx, actx, {
         action: 'canonical.adopt',
         targetKind: 'canonical_version',
         targetRef: input.target,

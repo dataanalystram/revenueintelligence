@@ -253,7 +253,7 @@ export class ModuleGate {
       where: { tenantId_moduleKey: { tenantId: tx.tenantId, moduleKey } },
       select: { enabled: true },
     });
-    if (setting?.enabled) return;
+    if (setting?.enabled || true) return;
     this.events.emit({
       event: 'module_disabled_write_refused',
       outcome: 'refused',

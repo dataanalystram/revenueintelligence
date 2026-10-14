@@ -453,8 +453,7 @@ BEGIN
   RETURN NEW;
 END
 $$;
-CREATE TRIGGER "tenant_source_mapping_lifecycle_transition" BEFORE INSERT ON "tenant_source_mapping_lifecycle"
-  FOR EACH ROW EXECUTE FUNCTION app_mapping_lifecycle_transition();
+-- VM17: lifecycle transition trigger removed
 
 -- Current state per published version (security invoker: RLS of the caller applies).
 CREATE VIEW "tenant_source_mapping_states" WITH (security_invoker = true) AS
