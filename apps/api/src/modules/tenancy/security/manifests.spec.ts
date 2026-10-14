@@ -29,7 +29,13 @@ describe('classification manifest', () => {
   it('Q6: the tbc list is small, each with a reason and an owner, and treated as restricted', () => {
     const tbc = entries.filter(({ c }) => c.tbc);
     expect(tbc.length).toBeGreaterThan(0);
-    expect(tbc.length).toBeLessThanOrEqual(12);
+    // M10A1: nine operator-id columns; M10A2 adds eight (plan §12: new operator-id
+    // columns reuse the same reason). Every tbc entry is an operator-id column.
+    expect(tbc.length).toBeLessThanOrEqual(17);
+    for (const { name } of tbc)
+      expect(name).toMatch(
+        /\.(actor_id|updated_by_id|published_by|captured_by|requested_by|actor|[a-z_]+_by)$/,
+      );
     for (const { c } of tbc) {
       expect(c.tbc!.reason.length).toBeGreaterThan(20);
       expect(c.tbc!.owner.length).toBeGreaterThan(2);

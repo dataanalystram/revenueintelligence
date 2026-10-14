@@ -1,0 +1,87 @@
+/**
+ * Change-record vocabulary (M10A2 plan §9, E5 §3). The database CHECKs equal
+ * these lists (schema guard). Entity kinds are widened by each sub-milestone
+ * with its entity.
+ */
+export const CHANGE_ENTITY_KINDS = ['company', 'person', 'subscription'] as const;
+
+export const CHANGE_TYPES = [
+  'created',
+  'updated',
+  'state_changed',
+  'merged',
+  'ref_added',
+  'relationship_changed',
+  'retired',
+  'reactivated',
+  'promoted',
+  'migrated',
+  'superseded',
+  'retracted',
+] as const;
+export type ChangeType = (typeof CHANGE_TYPES)[number];
+
+export const CHANGE_CAUSES = [
+  'webhook',
+  'backfill',
+  'reconciliation',
+  'replay',
+  'resync',
+  'import',
+  'migration',
+  'derivation',
+  'human',
+  'ai',
+] as const;
+export type ChangeCause = (typeof CHANGE_CAUSES)[number];
+
+export const CHANGE_ORIGINS = [
+  'source_provided',
+  'deterministic',
+  'ai_derived',
+  'human',
+  'migration',
+] as const;
+export type ChangeOrigin = (typeof CHANGE_ORIGINS)[number];
+
+/** Origins whose change record must carry a derivation `{key, version, inputs_hash}`. */
+export const DERIVED_ORIGINS: readonly ChangeOrigin[] = ['deterministic', 'ai_derived'];
+
+/** Transform ids (ADR 0020 closed set: the keys of a field's `transforms`). */
+export const TRANSFORM_IDS = ['nullValues', 'normalise', 'parse', 'valueMap'] as const;
+export type TransformId = (typeof TRANSFORM_IDS)[number];
+
+/** `field:transform_id`, e.g. `name:normalise`. */
+export const TRANSFORM_TRACE_PATTERN =
+  /^[A-Za-z][A-Za-z0-9_]{0,63}:(nullValues|normalise|parse|valueMap)$/;
+
+export const SCHEMA_SNAPSHOT_HASH_PATTERN = /^[0-9a-f]{64}$/;
+
+/** The governance columns every change record written since M10A2 carries. */
+export interface ChangeGovernance {
+  readonly origin: ChangeOrigin;
+  readonly canonicalVersion: string;
+  readonly schemaSnapshotHash: string | null;
+  readonly transforms: readonly string[];
+}
+
+/**
+ * The transform trace of a mapped object: `target_field:transform_id` for each
+ * transform the published mapping declares on a mapped field (names only).
+ */
+export function transformTrace(
+  fields: readonly { readonly target: string; readonly transforms?: object | undefined }[],
+): string[] {
+  const out = new Set<string>();
+  for (const f of fields) {
+    if (!f.transforms) continue;
+    const field = f.target.includes('.') ? f.target.split('.').at(-1)! : f.target;
+    for (const id of TRANSFORM_IDS) {
+      if ((f.transforms as Record<string, unknown>)[id] !== undefined) {
+        const entry = `${field}:${id}`;
+        if (TRANSFORM_TRACE_PATTERN.test(entry)) out.add(entry);
+      }
+    }
+  }
+  return [...out].sort();
+}

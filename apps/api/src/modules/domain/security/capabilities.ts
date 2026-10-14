@@ -27,13 +27,21 @@ export const CAPABILITIES = [
   'security.key.rotate',
   'security.audit.read',
   'canonical.human_entry',
+  // M10A2 (policy v2)
+  'config.canonical.adopt',
+  'config.module.change',
+  'config.registry.publish',
+  'config.data_policy.publish',
+  'config.mapping.draft',
+  'config.mapping.retire',
+  'security.integrity.run',
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
 /** Bumped whenever a grant changes; recorded on every audit event. */
-export const POLICY_VERSION = 1;
+export const POLICY_VERSION = 2;
 
-/** Policy v1: capability → actor kinds granted. `human_user` and `ai` hold nothing. */
+/** Policy v2 (M10A2 added seven capabilities): capability → actor kinds granted. `human_user` and `ai` hold nothing. */
 export const POLICY: Readonly<Record<Capability, readonly ActorKind[]>> = {
   'canonical.source_sync': ['source_sync', 'system'],
   'canonical.import': ['operator'],
@@ -57,6 +65,13 @@ export const POLICY: Readonly<Record<Capability, readonly ActorKind[]>> = {
   'security.key.rotate': ['operator'],
   'security.audit.read': ['operator'],
   'canonical.human_entry': [],
+  'config.canonical.adopt': ['operator'],
+  'config.module.change': ['operator'],
+  'config.registry.publish': ['operator'],
+  'config.data_policy.publish': ['operator'],
+  'config.mapping.draft': ['operator'],
+  'config.mapping.retire': ['operator'],
+  'security.integrity.run': ['operator', 'system'],
 };
 
 export type PolicyDecision =

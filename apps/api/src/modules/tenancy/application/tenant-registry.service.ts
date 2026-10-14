@@ -26,6 +26,10 @@ import {
   assertPlatformAuthorized,
   type PlatformAuthorization,
 } from '../security/authorized-context';
+import {
+  platformCurrentCanonicalVersion,
+  recordNewTenantAdoption,
+} from '../governance/canonical-version';
 
 const ProvisionInputSchema = z.strictObject({
   slug: TenantSlugSchema,
@@ -122,11 +126,19 @@ export class TenantRegistryService {
         if (policies.requalification) {
           await this.config.savePolicy(tx, 'requalification', policies.requalification);
         }
-        await this.audit.recordPlatform(tx, auth, {
+        // M10A2: the tenant adopts the current canonical version (covered by this event).
+        const canonicalVersion = await platformCurrentCanonicalVersion(tx);
+        const auditEventId = await this.audit.recordPlatformReturningId(tx, auth, {
           action: 'tenant.provision',
           targetKind: 'tenant',
           targetRef: slug,
-          details: { template: template !== undefined },
+          details: { template: template !== undefined, canonicalVersion },
+        });
+        await recordNewTenantAdoption(tx, {
+          version: canonicalVersion,
+          actor: auth.actor,
+          correlationId: auth.correlationId,
+          auditEventId,
         });
       });
       this.logger.log({ tenantId: tenant.id, slug: tenant.slug }, 'Tenant provisioned');

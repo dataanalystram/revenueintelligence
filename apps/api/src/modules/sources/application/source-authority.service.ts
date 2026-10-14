@@ -142,7 +142,7 @@ export class SourceAuthorityService {
       if (linesId) {
         const connection = await this.repo.connection(tx, linesId);
         if (connection?.mappingMode === 'versioned') {
-          const mapping = await this.repo.latestMapping(tx, linesId);
+          const mapping = await this.repo.publishedMapping(tx, linesId);
           const objects = mapping
             ? MappingDocumentSchema.parse(mapping.document).objects.filter(
                 (o) => o.entity === 'subscription',

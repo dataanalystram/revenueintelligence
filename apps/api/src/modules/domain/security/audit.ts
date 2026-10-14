@@ -55,6 +55,18 @@ export const AUDIT_ACTIONS = [
   'security.audit.verify',
   'security.audit.read',
   'operation.denied',
+  // M10A2
+  'canonical.adopt',
+  'module.enable',
+  'module.disable',
+  'module.configure',
+  'registry.publish',
+  'data_policy.publish',
+  'mapping.draft.save',
+  'mapping.draft.validate',
+  'mapping.draft.discard',
+  'mapping.retire',
+  'integrity.verify',
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -70,6 +82,20 @@ export const AUDIT_REASON_CODES = [
   'validation_failed',
   'operation_failed',
   'audit_purge_disabled',
+  // M10A2
+  'module_not_available',
+  'module_dependency_missing',
+  'module_required_by_other',
+  'module_disabled',
+  'canonical_version_too_low',
+  'canonical_version_not_supported',
+  'canonical_version_unknown',
+  'registry_kind_not_available',
+  'registry_rule_violation',
+  'expected_hash_mismatch',
+  'mapping_not_validated',
+  'no_published_mapping',
+  'no_change',
 ] as const;
 export type AuditReasonCode = (typeof AUDIT_REASON_CODES)[number];
 
@@ -96,6 +122,13 @@ export const AUDIT_TARGET_KINDS = [
   'context',
   'audit',
   'key',
+  // M10A2
+  'canonical_version',
+  'module',
+  'registry',
+  'data_policy',
+  'mapping_draft',
+  'integrity_run',
 ] as const;
 export type AuditTargetKind = (typeof AUDIT_TARGET_KINDS)[number];
 

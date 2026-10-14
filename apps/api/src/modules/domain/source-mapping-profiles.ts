@@ -32,6 +32,18 @@ export const AcknowledgementSchema = z.strictObject({
 });
 export type Acknowledgement = z.infer<typeof AcknowledgementSchema>;
 
+/**
+ * The validation stamp a mapping draft carries once validated (M10A2 review
+ * m8). It is read back from a jsonb column at publication, so it is parsed,
+ * never cast: a stamp that does not match fails closed (`mapping_not_validated`).
+ */
+export const MappingDraftValidationStampSchema = z.object({
+  contentHash: z.string().min(1),
+  warnings: z.record(z.string(), z.number().int().nonnegative()).optional(),
+  acknowledgements: z.array(AcknowledgementSchema).optional(),
+});
+export type MappingDraftValidationStamp = z.infer<typeof MappingDraftValidationStampSchema>;
+
 export interface CandidateFinding {
   readonly id: string;
   readonly code: string;

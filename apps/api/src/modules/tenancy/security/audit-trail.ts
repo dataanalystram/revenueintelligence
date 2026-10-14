@@ -77,11 +77,22 @@ export class AuditTrail {
     outcome: Extract<AuditOutcome, 'allowed' | 'completed' | 'failed'> = 'allowed',
     reason?: AuditReasonCode,
   ): Promise<void> {
+    await this.recordReturningId(tx, actx, entry, outcome, reason);
+  }
+
+  /** As `record`, returning the event id (M10A2: rows that reference their audit event). */
+  async recordReturningId(
+    tx: TenantTransaction,
+    actx: AuthorizedContext,
+    entry: AuditEntry,
+    outcome: Extract<AuditOutcome, 'allowed' | 'completed' | 'failed'> = 'allowed',
+    reason?: AuditReasonCode,
+  ): Promise<string> {
     assertAuthorizedFor(actx, [actx.capability]);
     if (actx.tenant.tenantId !== tx.tenantId) {
       throw new Error('audit event tenant does not match the transaction tenant');
     }
-    await this.append(tx, {
+    return this.append(tx, {
       actorKind: actx.actor.kind,
       actorId: actx.actor.id,
       actorAssurance: actx.actor.assurance,
@@ -103,8 +114,17 @@ export class AuditTrail {
     auth: PlatformAuthorization,
     entry: AuditEntry,
   ): Promise<void> {
+    await this.recordPlatformReturningId(tx, auth, entry);
+  }
+
+  /** As `recordPlatform`, returning the event id. */
+  async recordPlatformReturningId(
+    tx: TenantTransaction,
+    auth: PlatformAuthorization,
+    entry: AuditEntry,
+  ): Promise<string> {
     assertPlatformAuthorized(auth, auth.capability);
-    await this.append(tx, {
+    return this.append(tx, {
       actorKind: auth.actor.kind,
       actorId: auth.actor.id,
       actorAssurance: auth.actor.assurance,
@@ -184,7 +204,8 @@ export class AuditTrail {
     });
   }
 
-  private async append(tx: TenantTransaction, input: AuditEventInput): Promise<void> {
+  /** Appends one event and returns its id (M10A2: rows that reference their audit event). */
+  private async append(tx: TenantTransaction, input: AuditEventInput): Promise<string> {
     const event = AuditEventInputSchema.parse(input);
     const client = tenantClient(tx);
     // The head must be read as committed after the lock is granted. A repeatable-read
@@ -234,6 +255,7 @@ export class AuditTrail {
         hash,
       },
     });
+    return payload.id;
   }
 }
 

@@ -14,6 +14,7 @@ import {
   type AuthorizedContext,
   type TenantContext,
   type TenantTransaction,
+  recordValueHistory,
 } from '../../tenancy';
 
 import {
@@ -190,12 +191,12 @@ export class SubscriptionIngestionService {
       fieldHash: hash,
     };
     const decision: ApplyDecision = decideApplyWithHash(storedRef(stored), obs, hash);
-    const change = (
+    const change = async (
       subscriptionId: string,
       changeType: 'created' | 'updated' | 'state_changed',
       changedFields: string[],
-    ) =>
-      this.store.insertChange(tx, {
+    ) => {
+      const changeId = await this.store.insertChange(tx, {
         subscriptionId,
         changeType,
         changedFields,
@@ -210,6 +211,18 @@ export class SubscriptionIngestionService {
         ...(meta.actor ? { actor: meta.actor } : {}),
         correlationId: meta.correlationId,
       });
+      // M10A2: value history of the catalogued line fields, same transaction.
+      const before = changeType === 'created' ? undefined : stored;
+      await recordValueHistory(tx, {
+        entityKind: 'subscription',
+        entityId: subscriptionId,
+        changeId,
+        effectiveAt: obs.sourceUpdatedAt ?? obs.observedAt,
+        ...(meta.actor ? { actor: meta.actor } : {}),
+        changes: subscriptionValueChanges(before, values),
+      });
+      return changeId;
+    };
 
     if (decision === 'create' || !stored) {
       const id = await this.store.insert(tx, obs.source, values, obs.observedAt);
@@ -327,4 +340,36 @@ function changedFields(stored: SubscriptionRow, next: SubscriptionValues): strin
 
 function maxDate(a: Date, b: Date): Date {
   return a.getTime() >= b.getTime() ? a : b;
+}
+
+/** Value-history fields of a subscription line (snake_case catalogue name → value key). */
+const SUBSCRIPTION_HISTORY_FIELDS = {
+  state: 'state',
+  starts_at: 'startsAt',
+  ends_at: 'endsAt',
+  product_key: 'productKey',
+  quantity: 'quantity',
+} as const satisfies Record<string, keyof SubscriptionValues>;
+
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
+  return (a ?? null) === (b ?? null);
+}
+
+/** The catalogued fields whose value differs (all non-empty fields on creation). */
+export function subscriptionValueChanges(
+  before:
+    | Pick<SubscriptionValues, 'state' | 'startsAt' | 'endsAt' | 'productKey' | 'quantity'>
+    | undefined,
+  after: SubscriptionValues,
+): { field: string; oldValue: unknown; newValue: unknown }[] {
+  return Object.entries(SUBSCRIPTION_HISTORY_FIELDS)
+    .filter(([, key]) =>
+      before ? !sameValue(before[key], after[key]) : (after[key] ?? null) !== null,
+    )
+    .map(([field, key]) => ({
+      field,
+      oldValue: before ? (before[key] ?? null) : null,
+      newValue: after[key] ?? null,
+    }));
 }

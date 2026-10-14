@@ -27,6 +27,7 @@ export {
   TenantDatabase,
   tenantAdvisoryLock,
   tenantClient,
+  type TenantJsonInput,
   type TenantTransaction,
 } from './infrastructure/tenant-database';
 export {
@@ -46,3 +47,4 @@ export { TenancyModule } from './tenancy.module';
 export * from './tenant';
 export { assertTenantContext, isTenantContext, TenantContext } from './tenant-context';
 export * from './security';
+export * from './governance';

@@ -2,7 +2,7 @@
  * The application role's exact table privileges (M10A1 plan §8). The schema
  * guard compares every table and every privilege (`SELECT`, `INSERT`, `UPDATE`,
  * `DELETE`, `TRUNCATE`, `REFERENCES`, `TRIGGER`) of `lip_app` with this
- * manifest; a new table without an entry fails. `TRUNCATE`, `REFERENCES` and
+ * manifest (views included); a new table or view without an entry fails. `TRUNCATE`, `REFERENCES` and
  * `TRIGGER` are never granted.
  */
 export const TABLE_PRIVILEGES = [
@@ -27,6 +27,10 @@ const DML: readonly TablePrivilege[] = ['SELECT', 'INSERT', 'UPDATE', 'DELETE'];
 export const PRIVILEGE_MANIFEST: Readonly<Record<string, readonly TablePrivilege[]>> = {
   _prisma_migrations: NONE,
   connector_kinds: READ,
+  // M10A2: platform reference tables and the trigger-maintained entity index.
+  canonical_model_versions: READ,
+  canonical_modules: READ,
+  tenant_entity_index: READ,
   // Written only by the owner-path purges.
   tenant_audit_anchors: READ,
   tenant_source_profile_purges: READ,
@@ -39,9 +43,20 @@ export const PRIVILEGE_MANIFEST: Readonly<Record<string, readonly TablePrivilege
   tenant_source_profile_findings: APPEND,
   tenant_source_profiles: APPEND,
   tenant_source_schema_snapshots: APPEND,
+  tenant_canonical_adoptions: APPEND,
+  tenant_module_setting_events: APPEND,
+  tenant_registry_versions: APPEND,
+  tenant_value_history: APPEND,
+  tenant_source_mapping_lifecycle: APPEND,
+  // M10A2: read-only view of the current lifecycle state (security invoker).
+  tenant_source_mapping_states: READ,
+  tenant_integrity_runs: APPEND,
   // Catalogue rows retire, never disappear; profile runs move through states.
   tenant_products: APPEND_UPDATE,
   tenant_source_profile_runs: APPEND_UPDATE,
+  // M10A2: module settings and registry entries are never deleted (F4, X1).
+  tenant_module_settings: APPEND_UPDATE,
+  tenant_registry_entries: APPEND_UPDATE,
   companies: DML,
   company_external_refs: DML,
   person_external_refs: DML,
@@ -61,12 +76,18 @@ export const PRIVILEGE_MANIFEST: Readonly<Record<string, readonly TablePrivilege
   tenant_source_relationships: DML,
   tenant_subscriptions: DML,
   tenant_sync_checkpoints: DML,
+  tenant_source_mapping_drafts: DML,
   tenant_webhook_receipts: DML,
   tenants: DML,
 };
 
 /**
- * Owner-function allow-list (plan §8): the only SECURITY DEFINER function, and
- * the only function not owned by the schema owner.
+ * Owner-function allow-list (M10A1 plan §8; M10A2 plan §7): the SECURITY
+ * DEFINER functions. `app_route_oauth_account` is owned by lip_webhook_router,
+ * the entity-index functions by lip_entity_indexer.
  */
-export const SECURITY_DEFINER_FUNCTIONS = ['app_route_oauth_account'] as const;
+export const SECURITY_DEFINER_FUNCTIONS = [
+  'app_entity_index_add',
+  'app_entity_index_remove',
+  'app_route_oauth_account',
+] as const;

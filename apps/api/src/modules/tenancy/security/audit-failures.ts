@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { Logger } from '@nestjs/common';
 import {
+  AUDIT_REASON_CODES,
   SecretLikeValueError,
   type AuditAction,
   type AuditReasonCode,
@@ -37,6 +38,8 @@ export function failureReason(error: unknown): AuditReasonCode {
   const name = error instanceof Error ? error.name : '';
   const code =
     typeof error === 'object' && error !== null ? String((error as { code?: unknown }).code) : '';
+  // M10A2: governance refusals carry a closed reason code as their error code.
+  if ((AUDIT_REASON_CODES as readonly string[]).includes(code)) return code as AuditReasonCode;
   const text = `${name} ${code}`;
   if (/Concurren|Stale|VersionConflict|version_conflict|concurrent_publish|stale/i.test(text)) {
     return 'stale_base_version';

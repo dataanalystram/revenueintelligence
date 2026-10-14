@@ -57,6 +57,12 @@ model Tenant {
   authorityVersions    TenantSourceAuthorityVersion[]
   auditEvents          TenantAuditEvent[]
   auditAnchors         TenantAuditAnchor[]
+  canonicalAdoptions   TenantCanonicalAdoption[]
+  moduleSettings       TenantModuleSetting[]
+  registryVersions     TenantRegistryVersion[]
+  entityIndex          TenantEntityIndex[]
+  valueHistory         TenantValueHistory[]
+  integrityRuns        TenantIntegrityRun[]
 
   @@unique([id, slug])
   @@map("tenants")
@@ -514,11 +520,23 @@ model TenantContextChange {
   actorId            String?   @map("actor_id")
   /// system | asserted | authenticated
   actorAssurance     String?   @map("actor_assurance")
+  /// M10A2: source_provided | deterministic | ai_derived | human | migration (NULL before M10A2)
+  origin             String?
+  /// M10A2: {key, version, inputs_hash}, required iff origin is derived
+  derivation         Json?
+  /// M10A2: the canonical version the write conformed to
+  canonicalVersion   String?   @map("canonical_version")
+  /// M10A2: the schema snapshot of the mapping version (versioned connections)
+  schemaSnapshotHash String?   @map("schema_snapshot_hash")
+  /// M10A2: applied transforms as field:transform_id (names only)
+  transforms         String[]
 
-  tenant     Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  source     ConnectorKind               @relation(fields: [sourceSystem], references: [kind], onDelete: Restrict, onUpdate: Restrict)
-  connection TenantSourceConnection?     @relation(fields: [tenantId, sourceConnectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
-  mapping    TenantSourceMappingVersion? @relation(fields: [tenantId, sourceConnectionId, mappingVersion], references: [tenantId, connectionId, version], onDelete: Restrict, onUpdate: Restrict)
+  tenant       Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  canonical    CanonicalModelVersion?      @relation(fields: [canonicalVersion], references: [version], onDelete: Restrict, onUpdate: Restrict)
+  valueHistory TenantValueHistory[]
+  source       ConnectorKind               @relation(fields: [sourceSystem], references: [kind], onDelete: Restrict, onUpdate: Restrict)
+  connection   TenantSourceConnection?     @relation(fields: [tenantId, sourceConnectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  mapping      TenantSourceMappingVersion? @relation(fields: [tenantId, sourceConnectionId, mappingVersion], references: [tenantId, connectionId, version], onDelete: Restrict, onUpdate: Restrict)
 
   @@id([tenantId, id])
   @@index([tenantId, entityKind, entityId, ingestedAt])
@@ -735,6 +753,7 @@ model TenantSourceConnection {
   profileRuns                TenantSourceProfileRun[]
   profiles                   TenantSourceProfile[]
   profilePurges              TenantSourceProfilePurge[]
+  mappingDrafts              TenantSourceMappingDraft[]
   authorityAccountProfile    TenantSourceAuthorityVersion[] @relation("AuthorityAccountProfile")
   authorityPersonProfile     TenantSourceAuthorityVersion[] @relation("AuthorityPersonProfile")
   authoritySubscriptionLines TenantSourceAuthorityVersion[] @relation("AuthoritySubscriptionLines")
@@ -769,23 +788,27 @@ model TenantSourceSchemaSnapshot {
 
 /// One immutable mapping publication per connection (ADR 0020 §1).
 model TenantSourceMappingVersion {
-  tenantId           String   @map("tenant_id") @db.Uuid
-  connectionId       String   @map("connection_id") @db.Uuid
-  version            Int
-  baseVersion        Int      @map("base_version")
-  document           Json
-  contentHash        String   @map("content_hash")
-  schemaSnapshotHash String   @map("schema_snapshot_hash")
+  tenantId            String   @map("tenant_id") @db.Uuid
+  connectionId        String   @map("connection_id") @db.Uuid
+  version             Int
+  baseVersion         Int      @map("base_version")
+  document            Json
+  contentHash         String   @map("content_hash")
+  schemaSnapshotHash  String   @map("schema_snapshot_hash")
   /// The authority version the document was validated against
-  authorityVersion   Int      @map("authority_version")
+  authorityVersion    Int      @map("authority_version")
   /// Warning codes and counts at publish (never values)
-  validation         Json     @default("{}")
-  publishedBy        String   @map("published_by")
-  publishedAt        DateTime @default(now()) @map("published_at") @db.Timestamptz(3)
+  validation          Json     @default("{}")
+  publishedBy         String   @map("published_by")
+  publishedAt         DateTime @default(now()) @map("published_at") @db.Timestamptz(3)
+  /// M10A2: the canonical version validated against (NULL before M10A2 = 0.1)
+  canonicalVersionMin String?  @map("canonical_version_min")
 
-  connection      TenantSourceConnection       @relation(fields: [tenantId, connectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
-  snapshot        TenantSourceSchemaSnapshot   @relation(fields: [tenantId, connectionId, schemaSnapshotHash], references: [tenantId, connectionId, hash], onDelete: Restrict, onUpdate: Restrict)
-  authority       TenantSourceAuthorityVersion @relation(fields: [tenantId, authorityVersion], references: [tenantId, version], onDelete: Restrict, onUpdate: Restrict)
+  canonicalMin    CanonicalModelVersion?         @relation(fields: [canonicalVersionMin], references: [version], onDelete: Restrict, onUpdate: Restrict)
+  lifecycle       TenantSourceMappingLifecycle[]
+  connection      TenantSourceConnection         @relation(fields: [tenantId, connectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  snapshot        TenantSourceSchemaSnapshot     @relation(fields: [tenantId, connectionId, schemaSnapshotHash], references: [tenantId, connectionId, hash], onDelete: Restrict, onUpdate: Restrict)
+  authority       TenantSourceAuthorityVersion   @relation(fields: [tenantId, authorityVersion], references: [tenantId, version], onDelete: Restrict, onUpdate: Restrict)
   contextChanges  TenantContextChange[]
   syncCheckpoints TenantSyncCheckpoint[]
 
@@ -973,7 +996,7 @@ model TenantAuditEvent {
   prevHash       String   @map("prev_hash")
   hash           String
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  tenant              Tenant                         @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
 
   @@id([tenantId, id])
   @@unique([tenantId, seq])
@@ -1004,4 +1027,293 @@ model TenantAuditAnchor {
   @@id([tenantId, id])
   @@unique([tenantId, anchorSeq])
   @@map("tenant_audit_anchors")
+}
+
+// ---------------------------------------------------------------------------
+// M10A2 (ADR 0027): canonical versions, adoption, modules, registries
+// ---------------------------------------------------------------------------
+
+/// Platform reference table: canonical model versions (MAJOR.MINOR). The
+/// app role may only read it; `major >= 1` is refused until the freeze.
+model CanonicalModelVersion {
+  version       String   @id
+  major         Int      @db.SmallInt
+  minor         Int      @db.SmallInt
+  /// current | supported | deprecated | unsupported
+  status        String
+  releasedAt    DateTime @map("released_at") @db.Timestamptz(3)
+  catalogueHash String   @map("catalogue_hash")
+  adr           String
+
+  adoptions         TenantCanonicalAdoption[]    @relation("AdoptionVersion")
+  previousAdoptions TenantCanonicalAdoption[]    @relation("AdoptionPreviousVersion")
+  modules           CanonicalModule[]
+  registryVersions  TenantRegistryVersion[]
+  contextChanges    TenantContextChange[]
+  mappingVersions   TenantSourceMappingVersion[]
+
+  @@unique([major, minor])
+  @@map("canonical_model_versions")
+}
+
+/// Append-only: which canonical version a tenant has adopted (highest seq = current).
+model TenantCanonicalAdoption {
+  tenantId        String   @map("tenant_id") @db.Uuid
+  id              String   @db.Uuid
+  seq             Int
+  version         String
+  previousVersion String?  @map("previous_version")
+  /// baseline | new_tenant | operator_adoption | rollback
+  reason          String
+  adoptedAt       DateTime @default(now()) @map("adopted_at") @db.Timestamptz(3)
+  actorKind       String   @map("actor_kind")
+  actorId         String   @map("actor_id")
+  actorAssurance  String   @map("actor_assurance")
+  correlationId   String   @map("correlation_id") @db.Uuid
+  /// NULL only for the migration's baseline rows
+  auditEventId    String?  @map("audit_event_id") @db.Uuid
+  /// Reserved for M10M (no foreign key until that table exists)
+  migrationRunId  String?  @map("migration_run_id") @db.Uuid
+
+  tenant      Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  versionRef  CanonicalModelVersion  @relation("AdoptionVersion", fields: [version], references: [version], onDelete: Restrict, onUpdate: Restrict)
+  previousRef CanonicalModelVersion? @relation("AdoptionPreviousVersion", fields: [previousVersion], references: [version], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, id])
+  @@unique([tenantId, seq])
+  @@map("tenant_canonical_adoptions")
+}
+
+/// Platform reference table: optional canonical modules (all unavailable in M10A2).
+model CanonicalModule {
+  moduleKey               String   @id @map("module_key")
+  title                   String
+  available               Boolean  @default(false)
+  minimumCanonicalVersion String?  @map("minimum_canonical_version")
+  dependsOn               String[] @default([]) @map("depends_on")
+  configSchemaVersion     Int      @default(1) @map("config_schema_version")
+
+  minimumVersion CanonicalModelVersion? @relation(fields: [minimumCanonicalVersion], references: [version], onDelete: Restrict, onUpdate: Restrict)
+  settings       TenantModuleSetting[]
+
+  @@map("canonical_modules")
+}
+
+/// Current module state per tenant; never deleted (disable keeps data).
+model TenantModuleSetting {
+  tenantId           String   @map("tenant_id") @db.Uuid
+  moduleKey          String   @map("module_key")
+  enabled            Boolean  @default(false)
+  config             Json     @default("{}")
+  version            Int
+  updatedAt          DateTime @map("updated_at") @db.Timestamptz(3)
+  updatedByKind      String   @map("updated_by_kind")
+  updatedById        String   @map("updated_by_id")
+  updatedByAssurance String   @map("updated_by_assurance")
+
+  tenant Tenant                     @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  module CanonicalModule            @relation(fields: [moduleKey], references: [moduleKey], onDelete: Restrict, onUpdate: Restrict)
+  events TenantModuleSettingEvent[]
+
+  @@id([tenantId, moduleKey])
+  @@map("tenant_module_settings")
+}
+
+/// Append-only history of module changes (one per change, with its audit event).
+model TenantModuleSettingEvent {
+  tenantId       String   @map("tenant_id") @db.Uuid
+  id             String   @db.Uuid
+  seq            Int
+  moduleKey      String   @map("module_key")
+  fromEnabled    Boolean? @map("from_enabled")
+  toEnabled      Boolean  @map("to_enabled")
+  fromConfigHash String?  @map("from_config_hash")
+  toConfigHash   String   @map("to_config_hash")
+  baseVersion    Int      @map("base_version")
+  actorKind      String   @map("actor_kind")
+  actorId        String   @map("actor_id")
+  actorAssurance String   @map("actor_assurance")
+  reasonCode     String?  @map("reason_code")
+  occurredAt     DateTime @default(now()) @map("occurred_at") @db.Timestamptz(3)
+  auditEventId   String   @map("audit_event_id") @db.Uuid
+
+  setting    TenantModuleSetting @relation(fields: [tenantId, moduleKey], references: [tenantId, moduleKey], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, id])
+  @@unique([tenantId, moduleKey, seq])
+  @@map("tenant_module_setting_events")
+}
+
+/// Append-only governed registry versions (data_policy, signal_type, ...).
+model TenantRegistryVersion {
+  tenantId              String   @map("tenant_id") @db.Uuid
+  kind                  String
+  version               Int
+  baseVersion           Int      @map("base_version")
+  document              Json
+  documentSchemaVersion Int      @map("document_schema_version")
+  contentHash           String   @map("content_hash")
+  canonicalVersionMin   String   @map("canonical_version_min")
+  effectiveFrom         DateTime @map("effective_from") @db.Timestamptz(3)
+  publishedAt           DateTime @default(now()) @map("published_at") @db.Timestamptz(3)
+  actorKind             String   @map("actor_kind")
+  actorId               String   @map("actor_id")
+  actorAssurance        String   @map("actor_assurance")
+  correlationId         String   @map("correlation_id") @db.Uuid
+  auditEventId          String   @map("audit_event_id") @db.Uuid
+
+  tenant            Tenant                @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  canonicalVersion  CanonicalModelVersion @relation(fields: [canonicalVersionMin], references: [version], onDelete: Restrict, onUpdate: Restrict)
+  introducedEntries TenantRegistryEntry[] @relation("RegistryEntryIntroduced")
+  changedEntries    TenantRegistryEntry[] @relation("RegistryEntryLastChanged")
+
+  @@id([tenantId, kind, version])
+  @@map("tenant_registry_versions")
+}
+
+/// Projection of current registry entries; keys never disappear (X1).
+model TenantRegistryEntry {
+  tenantId      String   @map("tenant_id") @db.Uuid
+  id            String   @db.Uuid
+  kind          String
+  key           String
+  /// active | retired | promoted
+  status        String   @default("active")
+  definition    Json
+  introducedIn  Int      @map("introduced_in")
+  lastChangedIn Int      @map("last_changed_in")
+  sensitivity   String?
+  categories    String[]
+  updatedAt     DateTime @map("updated_at") @db.Timestamptz(3)
+
+  introduced  TenantRegistryVersion @relation("RegistryEntryIntroduced", fields: [tenantId, kind, introducedIn], references: [tenantId, kind, version], onDelete: Restrict, onUpdate: Restrict)
+  lastChanged TenantRegistryVersion @relation("RegistryEntryLastChanged", fields: [tenantId, kind, lastChangedIn], references: [tenantId, kind, version], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, id])
+  @@unique([tenantId, kind, key])
+  @@map("tenant_registry_entries")
+}
+
+/// Polymorphic reference anchor (D2, F2). Maintained only by triggers owned by
+/// lip_entity_indexer; the app role can only read it. Products by key (D3).
+model TenantEntityIndex {
+  tenantId  String   @map("tenant_id") @db.Uuid
+  id        String   @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  /// company | person | product | subscription
+  kind      String
+  entityId  String?  @map("entity_id") @db.Uuid
+  entityKey String?  @map("entity_key")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  tenant       Tenant               @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  historyById  TenantValueHistory[] @relation("ValueHistoryEntityId")
+  historyByKey TenantValueHistory[] @relation("ValueHistoryEntityKey")
+
+  @@id([tenantId, id])
+  @@unique([tenantId, kind, entityId])
+  @@unique([tenantId, kind, entityKey])
+  @@map("tenant_entity_index")
+}
+
+/// Append-only value history of the catalogued fields; value-free for
+/// sensitive fields the data policy does not allow.
+model TenantValueHistory {
+  tenantId       String   @map("tenant_id") @db.Uuid
+  id             String   @db.Uuid
+  entityKind     String   @map("entity_kind")
+  entityId       String?  @map("entity_id") @db.Uuid
+  entityKey      String?  @map("entity_key")
+  field          String
+  valuesRecorded Boolean  @map("values_recorded")
+  oldValue       Json?    @map("old_value")
+  newValue       Json?    @map("new_value")
+  effectiveAt    DateTime @map("effective_at") @db.Timestamptz(3)
+  recordedAt     DateTime @default(now()) @map("recorded_at") @db.Timestamptz(3)
+  changeId       String   @map("change_id") @db.Uuid
+  /// canonical_lifecycle | sensitive_value_history
+  retentionClass String   @map("retention_class")
+  policyVersion  Int?     @map("policy_version")
+  actorKind      String   @map("actor_kind")
+  actorId        String   @map("actor_id")
+  actorAssurance String   @map("actor_assurance")
+
+  tenant      Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  change      TenantContextChange @relation(fields: [tenantId, changeId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  byEntityId  TenantEntityIndex?  @relation("ValueHistoryEntityId", fields: [tenantId, entityKind, entityId], references: [tenantId, kind, entityId], onDelete: Restrict, onUpdate: Restrict)
+  byEntityKey TenantEntityIndex?  @relation("ValueHistoryEntityKey", fields: [tenantId, entityKind, entityKey], references: [tenantId, kind, entityKey], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, id])
+  @@index([tenantId, entityKind, entityId, effectiveAt])
+  @@index([tenantId, changeId])
+  @@map("tenant_value_history")
+}
+
+/// Mutable mapping working copy (draft | validated); one per connection.
+model TenantSourceMappingDraft {
+  tenantId                  String   @map("tenant_id") @db.Uuid
+  connectionId              String   @map("connection_id") @db.Uuid
+  id                        String   @db.Uuid
+  /// draft | validated
+  state                     String   @default("draft")
+  document                  Json
+  contentHash               String   @map("content_hash")
+  version                   Int
+  validatedSnapshotHash     String?  @map("validated_snapshot_hash")
+  validatedAuthorityVersion Int?     @map("validated_authority_version")
+  validatedCanonicalVersion String?  @map("validated_canonical_version")
+  validation                Json?
+  updatedByKind             String   @map("updated_by_kind")
+  updatedById               String   @map("updated_by_id")
+  updatedByAssurance        String   @map("updated_by_assurance")
+  updatedAt                 DateTime @map("updated_at") @db.Timestamptz(3)
+
+  connection TenantSourceConnection @relation(fields: [tenantId, connectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, id])
+  @@unique([tenantId, connectionId])
+  @@map("tenant_source_mapping_drafts")
+}
+
+/// Append-only lifecycle of published mapping versions (published | superseded | retired).
+model TenantSourceMappingLifecycle {
+  tenantId       String   @map("tenant_id") @db.Uuid
+  connectionId   String   @map("connection_id") @db.Uuid
+  version        Int
+  seq            Int
+  state          String
+  occurredAt     DateTime @default(now()) @map("occurred_at") @db.Timestamptz(3)
+  actorKind      String   @map("actor_kind")
+  actorId        String   @map("actor_id")
+  actorAssurance String   @map("actor_assurance")
+  reasonCode     String?  @map("reason_code")
+  /// NULL only for the migration's backfill
+  auditEventId   String?  @map("audit_event_id") @db.Uuid
+
+  mapping    TenantSourceMappingVersion @relation(fields: [tenantId, connectionId, version], references: [tenantId, connectionId, version], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, connectionId, version, seq])
+  @@map("tenant_source_mapping_lifecycle")
+}
+
+/// Append-only record of completed integrity verification runs.
+model TenantIntegrityRun {
+  tenantId       String   @map("tenant_id") @db.Uuid
+  id             String   @db.Uuid
+  startedAt      DateTime @map("started_at") @db.Timestamptz(3)
+  finishedAt     DateTime @map("finished_at") @db.Timestamptz(3)
+  /// passed | findings | failed
+  outcome        String
+  checks         Json
+  findings       Json
+  actorKind      String   @map("actor_kind")
+  actorId        String   @map("actor_id")
+  actorAssurance String   @map("actor_assurance")
+  correlationId  String   @map("correlation_id") @db.Uuid
+  auditEventId   String   @map("audit_event_id") @db.Uuid
+
+  tenant     Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, id])
+  @@index([tenantId, finishedAt])
+  @@map("tenant_integrity_runs")
 }

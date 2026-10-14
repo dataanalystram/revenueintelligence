@@ -1,3 +1,4 @@
+import { jsonbTextBytes } from './canonical/json-size';
 import type { ConnectorKind } from './connector-kinds';
 import { isAuthoritative, type AuthorityDocument, type AuthorityFact } from './source-authority';
 import {
@@ -250,7 +251,7 @@ export function validateMapping(raw: unknown, ctx: MappingValidationContext): Ma
   const warn = (code: MappingWarningCode, path: string, message: string) =>
     warnings.push({ code, path, message });
 
-  if (JSON.stringify(raw ?? null).length > MAPPING_LIMITS.documentBytes) {
+  if (jsonbTextBytes(raw ?? null) > MAPPING_LIMITS.documentBytes) {
     err('document_too_large', '', `document exceeds ${MAPPING_LIMITS.documentBytes} bytes`);
     return { ok: false, errors, warnings };
   }

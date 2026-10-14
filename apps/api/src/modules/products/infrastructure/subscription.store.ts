@@ -2,7 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { COMPANY_CANONICAL_LOCK_SCOPE, type CompanyMerge } from '../../context';
 import type { SecurityActor, SubscriptionSource, SubscriptionState } from '../../domain';
-import { tenantAdvisoryLock, tenantClient, type TenantTransaction } from '../../tenancy';
+import {
+  adoptedCanonicalVersion,
+  changeGovernance,
+  tenantAdvisoryLock,
+  tenantClient,
+  type TenantTransaction,
+} from '../../tenancy';
 import { toRow, type SubscriptionRow } from './subscription.rows';
 
 export type { SubscriptionRow } from './subscription.rows';
@@ -130,6 +136,21 @@ export class SubscriptionStore {
   /** Provenance in the M6 table: field names only, never values. */
   async insertChange(tx: TenantTransaction, change: SubscriptionChange): Promise<string> {
     const id = randomUUID();
+    const connectionId =
+      change.sourceConnectionId ??
+      (
+        await tenantClient(tx).tenantSourceConnection.findUnique({
+          where: { tenantId_kind: { tenantId: tx.tenantId, kind: change.source.system } },
+          select: { id: true },
+        })
+      )?.id ??
+      null;
+    // M10A2: origin, adopted canonical version (fail closed), snapshot hash, transforms.
+    const governance = await changeGovernance(tx, {
+      sourceConnectionId: connectionId,
+      mappingVersion: change.mappingVersion ?? null,
+      sourceObjectType: change.source.objectType,
+    });
     await tenantClient(tx).tenantContextChange.create({
       data: {
         tenantId: tx.tenantId,
@@ -147,19 +168,15 @@ export class SubscriptionStore {
         adapter: change.adapter,
         adapterVersion: change.adapterVersion,
         correlationId: change.correlationId,
-        sourceConnectionId:
-          change.sourceConnectionId ??
-          (
-            await tenantClient(tx).tenantSourceConnection.findUnique({
-              where: { tenantId_kind: { tenantId: tx.tenantId, kind: change.source.system } },
-              select: { id: true },
-            })
-          )?.id ??
-          null,
+        sourceConnectionId: connectionId,
         mappingVersion: change.mappingVersion ?? null,
         actorKind: change.actor?.kind ?? null,
         actorId: change.actor?.id ?? null,
         actorAssurance: change.actor?.assurance ?? null,
+        origin: governance.origin,
+        canonicalVersion: governance.canonicalVersion,
+        schemaSnapshotHash: governance.schemaSnapshotHash,
+        transforms: governance.transforms,
       },
     });
     await this.update(tx, change.subscriptionId, { lastChangeId: id });
@@ -173,6 +190,8 @@ export class SubscriptionStore {
    */
   async repointCompany(tx: TenantTransaction, merge: CompanyMerge): Promise<number> {
     const p = merge.provenance;
+    // M10A2: a merge is source-provided provenance at the adopted version.
+    const canonicalVersion = await adoptedCanonicalVersion(tx);
     return tenantClient(tx).$executeRaw`
       WITH target AS (
         SELECT id FROM tenant_subscriptions
@@ -184,12 +203,13 @@ export class SubscriptionStore {
           source_system, source_object_type, source_record_id, cause,
           receipt_delivery_key, checkpoint_id, source_updated_at,
           adapter, adapter_version, correlation_id,
-          actor_kind, actor_id, actor_assurance)
+          actor_kind, actor_id, actor_assurance, origin, canonical_version, transforms)
         SELECT ${tx.tenantId}::uuid, gen_random_uuid(), 'subscription', target.id, 'merged', ARRAY['companyId'],
                ${p.source.system}, ${p.source.objectType}, ${p.source.id}, ${p.cause},
                ${p.receiptDeliveryKey ?? null}, ${p.checkpointId ?? null}::uuid, ${p.sourceUpdatedAt ?? null}::timestamptz,
                ${p.adapter}, ${p.adapterVersion}, ${p.correlationId}::uuid,
-               ${p.actor?.kind ?? null}, ${p.actor?.id ?? null}, ${p.actor?.assurance ?? null}
+               ${p.actor?.kind ?? null}, ${p.actor?.id ?? null}, ${p.actor?.assurance ?? null},
+               'source_provided', ${canonicalVersion}, ARRAY[]::text[]
           FROM target
         RETURNING id, entity_id
       )
