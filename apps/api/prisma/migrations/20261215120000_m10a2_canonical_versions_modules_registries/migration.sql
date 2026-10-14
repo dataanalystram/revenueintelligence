@@ -279,6 +279,20 @@ BEGIN
 END
 $$;
 
+-- Baseline rows are the migration's alone: the app role (or a member of it)
+-- can never write one, so no app path can forge an unaudited adoption.
+CREATE FUNCTION "app_adoption_refuse_app_baseline"() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW."reason" = 'baseline' AND app_session_in_app_role() THEN
+    RAISE EXCEPTION 'baseline adoptions are written by the migration only'
+      USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END
+$$;
+CREATE TRIGGER "tenant_canonical_adoptions_baseline_migration_only" BEFORE INSERT ON "tenant_canonical_adoptions"
+  FOR EACH ROW EXECUTE FUNCTION app_adoption_refuse_app_baseline();
+
 -- ---------------------------------------------------------------------------
 -- 3. Modules: catalogue (platform reference), tenant settings, setting events
 -- ---------------------------------------------------------------------------

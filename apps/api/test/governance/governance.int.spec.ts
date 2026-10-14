@@ -241,6 +241,21 @@ describe('M10A2 canonical versioning and governance', () => {
         ]),
       ).rejects.toThrow(/append-only/);
     });
+
+    it('the app role can never write a migration baseline adoption row (trigger, even on a fresh chain)', async () => {
+      const t = await c.tenant('adbase', 1001);
+      // Own tenant (RLS passes); the trigger refuses before the chain or CHECKs are reached.
+      await expect(
+        asApp(t, (db) =>
+          db.query(
+            `INSERT INTO tenant_canonical_adoptions (tenant_id, id, seq, version, previous_version, reason, actor_kind, actor_id, actor_assurance, correlation_id)
+             VALUES ($1, gen_random_uuid(), 2, '0.2', '0.1', 'baseline', 'system', 'system:migration:m10a2', 'system', gen_random_uuid())`,
+            [t.tenantId],
+          ),
+        ),
+      ).rejects.toThrow(/baseline adoptions are written by the migration only/);
+      expect(await adoptions(t)).toHaveLength(1);
+    });
   });
 
   describe('V5/V6/V7: modules', () => {
@@ -724,7 +739,7 @@ describe('M10A2 canonical versioning and governance', () => {
         asApp(a, (db) =>
           db.query(
             `INSERT INTO tenant_canonical_adoptions (tenant_id, id, seq, version, reason, actor_kind, actor_id, actor_assurance, correlation_id)
-             VALUES ($1, gen_random_uuid(), 1, '0.1', 'baseline', 'system', 'x', 'system', gen_random_uuid())`,
+             VALUES ($1, gen_random_uuid(), 1, '0.1', 'new_tenant', 'system', 'x', 'system', gen_random_uuid())`,
             [b.tenantId],
           ),
         ),

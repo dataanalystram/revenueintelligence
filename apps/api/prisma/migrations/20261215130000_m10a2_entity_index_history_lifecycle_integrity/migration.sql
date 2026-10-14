@@ -420,6 +420,21 @@ BEGIN
 END
 $$;
 
+-- Backfill rows are the migration's alone: the app role (or a member of it)
+-- can never write the migration actor, so no app path can forge an unaudited
+-- lifecycle event.
+CREATE FUNCTION "app_mapping_lifecycle_refuse_app_backfill"() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW."actor_id" = 'system:migration:m10a2' AND app_session_in_app_role() THEN
+    RAISE EXCEPTION 'mapping lifecycle backfill rows are written by the migration only'
+      USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END
+$$;
+CREATE TRIGGER "tenant_source_mapping_lifecycle_backfill_migration_only" BEFORE INSERT ON "tenant_source_mapping_lifecycle"
+  FOR EACH ROW EXECUTE FUNCTION app_mapping_lifecycle_refuse_app_backfill();
+
 -- Legal transitions (∅ → published, published → superseded | retired,
 -- superseded → retired; nothing leaves retired), dense seq per version, and at
 -- most one published version per connection.
