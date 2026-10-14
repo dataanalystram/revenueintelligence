@@ -13,7 +13,7 @@ import { startContextHarness, type ContextHarness } from '../support/context';
 import { genericModel } from '../support/product-models';
 import { authz } from '../support/security';
 
-type Ref = { system: string; objectType: string; id: string };
+type Ref = { system: 'sugar'; objectType: string; id: string };
 
 const T0 = Date.parse('2026-11-01T00:00:00Z');
 const at = (minutes: number) => new Date(T0 + minutes * 60_000);
@@ -800,8 +800,9 @@ describe('M10B generic source references', () => {
              gen_random_uuid())`,
           [t.tenantId, kind],
         );
+      // Both identity columns NULL breaks two CHECKs; PostgreSQL names one of them.
       await expect(plant('product', 'NULL', 'NULL')).rejects.toThrow(
-        /tenant_context_changes_one_identity/,
+        /tenant_context_changes_(one_identity|key_only_for_products)/,
       );
       await expect(plant('product', 'gen_random_uuid()', `'core'`)).rejects.toThrow(
         /tenant_context_changes_one_identity/,

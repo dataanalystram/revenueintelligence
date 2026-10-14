@@ -2516,7 +2516,7 @@ INSERT INTO tenant_subscriptions (tenant_id, id, company_id, product_key, state,
           (
             await db.query<Record<string, unknown>>(
               `SELECT tenant_id::text, external_id, entity_key, declared_in_model_version FROM tenant_source_references
-              ORDER BY tenant_id, external_id`,
+              WHERE origin = 'declared' ORDER BY tenant_id, external_id`,
             )
           ).rows,
       );
