@@ -525,15 +525,9 @@ export class SourceReferenceService {
       if (row.origin !== 'declared' || row.state !== 'active' || desired.has(tripleKey(row))) {
         continue;
       }
-      const changeId = await change(row.entityKey!, row, 'retired');
-      await db.tenantSourceReference.update({
+      await change(row.entityKey!, row, 'retired');
+      await db.tenantSourceReference.delete({
         where: { tenantId_id: { tenantId: tx.tenantId, id: row.id } },
-        data: {
-          state: 'retired',
-          retiredAt: now,
-          retiredByModelVersion: model.version,
-          lastChangeId: changeId,
-        },
       });
       counts.retired += 1;
     }
