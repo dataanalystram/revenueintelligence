@@ -53,6 +53,7 @@ export const EVIDENCE_KIND_MODULES: Readonly<Partial<Record<EntityIndexKind, Mod
 
 /** A derivation key / version: identifiers only (secret-like refusal, M10A1 A1). */
 export const EVIDENCE_DERIVATION_KEY_PATTERN = /^[a-z][a-z0-9_.:-]{0,99}$/;
+export const EVIDENCE_DERIVATION_VERSION_PATTERN = /^[A-Za-z0-9_.:-]{1,64}$/;
 
 export interface EvidenceDerivation {
   readonly key: string;
@@ -100,7 +101,11 @@ const isKeyKind = (kind: EntityIndexKind) => ENTITY_INDEX_SOURCES[kind]?.column 
 export function evidenceRelationAllowed(
   relations: readonly EvidenceRelation[],
   subjectKind: string,
-  link: { readonly evidenceType: string; readonly evidenceKind?: string | null; readonly role: string },
+  link: {
+    readonly evidenceType: string;
+    readonly evidenceKind?: string | null;
+    readonly role: string;
+  },
 ): boolean {
   return relations.some(
     (r) =>
@@ -122,11 +127,17 @@ export function validateEvidenceSet(
 ): EvidenceSetIssue[] {
   const issues: EvidenceSetIssue[] = [];
   const bad = (reason: string, ordinal?: number) =>
-    issues.push({ code: 'evidence_set_invalid', reason, ...(ordinal !== undefined ? { ordinal } : {}) });
+    issues.push({
+      code: 'evidence_set_invalid',
+      reason,
+      ...(ordinal !== undefined ? { ordinal } : {}),
+    });
   const n = set.links.length;
   if (n < EVIDENCE_SET_LIMITS.minLinks || n > EVIDENCE_SET_LIMITS.maxLinks) bad('set_size');
   if (!(set.subjectKind in ENTITY_INDEX_SOURCES)) bad('subject_kind');
-  else if (isKeyKind(set.subjectKind) ? !set.subjectKey || set.subjectId : !set.subjectId || set.subjectKey) {
+  else if (
+    isKeyKind(set.subjectKind) ? !set.subjectKey || set.subjectId : !set.subjectId || set.subjectKey
+  ) {
     bad('subject_identity');
   }
   if (!(EVIDENCE_ORIGINS as readonly string[]).includes(set.origin)) bad('origin');
@@ -135,7 +146,7 @@ export function validateEvidenceSet(
   if (
     set.derivation &&
     (!EVIDENCE_DERIVATION_KEY_PATTERN.test(set.derivation.key) ||
-      !EVIDENCE_DERIVATION_KEY_PATTERN.test(set.derivation.version) ||
+      !EVIDENCE_DERIVATION_VERSION_PATTERN.test(set.derivation.version) ||
       !/^[0-9a-f]{64}$/.test(set.derivation.inputsHash))
   ) {
     bad('derivation_shape');
@@ -143,13 +154,17 @@ export function validateEvidenceSet(
   const ordinals = new Set<number>();
   for (const link of set.links) {
     const o = link.ordinal;
-    if (!Number.isInteger(o) || o < 0 || o > EVIDENCE_SET_LIMITS.maxOrdinal) bad('ordinal_range', o);
+    if (!Number.isInteger(o) || o < 0 || o > EVIDENCE_SET_LIMITS.maxOrdinal)
+      bad('ordinal_range', o);
     if (ordinals.has(o)) bad('ordinal_duplicate', o);
     ordinals.add(o);
     if (!(EVIDENCE_ROLES as readonly string[]).includes(link.role)) bad('role', o);
     if (link.weight !== undefined && !(link.weight >= 0 && link.weight <= 1)) bad('weight', o);
     const group = {
-      entity: link.evidenceKind !== undefined || link.evidenceId !== undefined || link.evidenceKey !== undefined,
+      entity:
+        link.evidenceKind !== undefined ||
+        link.evidenceId !== undefined ||
+        link.evidenceKey !== undefined,
       change: link.evidenceChangeId !== undefined,
       snapshot: link.evidenceSnapshotId !== undefined,
     };
