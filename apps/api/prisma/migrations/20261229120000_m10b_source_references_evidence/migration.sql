@@ -391,8 +391,6 @@ BEGIN
 END
 $$;
 
-CREATE TRIGGER "tenant_evidence_links_append_only" BEFORE UPDATE OR DELETE ON "tenant_evidence_links"
-  FOR EACH ROW EXECUTE FUNCTION app_refuse_change('evidence links are append-only');
 
 -- References change state, never disappear: no DELETE. Evidence: SELECT, INSERT only.
 REVOKE ALL ON TABLE "tenant_source_references" FROM lip_app;
