@@ -2514,7 +2514,7 @@ INSERT INTO tenant_subscriptions (tenant_id, id, company_id, product_key, state,
         url,
         async (db) =>
           (
-            await db.query(
+            await db.query<Record<string, unknown>>(
               `SELECT tenant_id::text, external_id, entity_key, declared_in_model_version FROM tenant_source_references
               ORDER BY tenant_id, external_id`,
             )
@@ -2558,7 +2558,7 @@ INSERT INTO tenant_subscriptions (tenant_id, id, company_id, product_key, state,
         url,
         async (db) =>
           (
-            await db.query(
+            await db.query<Record<string, unknown>>(
               `SELECT (SELECT count(*)::int FROM tenant_source_references WHERE entity_kind <> 'product') AS legacy,
                     (SELECT count(*)::int FROM tenant_source_references WHERE tenant_id = '${tC}') AS no_model,
                     (SELECT count(*)::int FROM tenant_context_changes) AS changes`,
@@ -2570,7 +2570,7 @@ INSERT INTO tenant_subscriptions (tenant_id, id, company_id, product_key, state,
         url,
         async (db) =>
           (
-            await db.query(
+            await db.query<Record<string, unknown>>(
               `SELECT store, count(*)::int AS n FROM source_reference_index GROUP BY 1 ORDER BY 1`,
             )
           ).rows,
@@ -2582,7 +2582,11 @@ INSERT INTO tenant_subscriptions (tenant_id, id, company_id, product_key, state,
       const versions = await withAdmin(
         url,
         async (db) =>
-          (await db.query(`SELECT version, status FROM canonical_model_versions ORDER BY 1`)).rows,
+          (
+            await db.query<Record<string, unknown>>(
+              `SELECT version, status FROM canonical_model_versions ORDER BY 1`,
+            )
+          ).rows,
       );
       expect(versions).toEqual([
         { version: '0.1', status: 'supported' },
@@ -2663,7 +2667,11 @@ INSERT INTO tenant_subscriptions (tenant_id, id, company_id, product_key, state,
       const versions = await withAdmin(
         url,
         async (db) =>
-          (await db.query(`SELECT version, status FROM canonical_model_versions ORDER BY 1`)).rows,
+          (
+            await db.query<Record<string, unknown>>(
+              `SELECT version, status FROM canonical_model_versions ORDER BY 1`,
+            )
+          ).rows,
       );
       expect(versions).toEqual([{ version: '0.1', status: 'current' }]);
       const output = await migrate(url);

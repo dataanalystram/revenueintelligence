@@ -393,7 +393,8 @@ describe('M10B evidence links and provenance', () => {
       expect(
         await asApp(
           a,
-          async (client) => (await client.query(`SELECT 1 FROM tenant_evidence_links`)).rows,
+          async (client) =>
+            (await client.query<{ n: number }>(`SELECT 1 AS n FROM tenant_evidence_links`)).rows,
         ),
       ).toEqual([]);
       // The FK on the change record is composite (tenant included), not single-column.
@@ -528,7 +529,7 @@ describe('M10B evidence links and provenance', () => {
         }),
         { basedOnVersion: 0 },
       );
-      let emitted = securityEvents();
+      securityEvents();
       const clean = await integrity().record(await authz(t, 'security.integrity.run'));
       expect(clean.outcome).toBe('passed');
       const [run] = await c.sql<{ checks: unknown }>(
@@ -573,7 +574,7 @@ describe('M10B evidence links and provenance', () => {
         [t.tenantId, unknownSet, company, second, badSupersession, randomUUID()],
       );
       vi.restoreAllMocks();
-      emitted = securityEvents();
+      const emitted = securityEvents();
       const found = await integrity().record(await authz(t, 'security.integrity.run'));
       expect(found.outcome).toBe('findings');
       expect(found.findings).toEqual(
