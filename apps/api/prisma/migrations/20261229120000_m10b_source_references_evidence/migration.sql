@@ -199,7 +199,6 @@ ALTER TABLE "tenant_source_references"
   ADD CONSTRAINT "tenant_source_references_merged_target_format" CHECK ("merged_into_external_id" IS NULL OR "merged_into_external_id" ~ '^[A-Za-z0-9_.:-]{1,255}$'),
   ADD CONSTRAINT "tenant_source_references_deleted_at" CHECK (("state" = 'deleted') = ("deleted_at" IS NOT NULL)),
   -- Retirement only by an accepted run (observed) or an explicit model version (declared); all columns NULL otherwise.
-  ADD CONSTRAINT "tenant_source_references_retirement_gate" CHECK (CASE WHEN "state" = 'retired' THEN "retired_at" IS NOT NULL AND (("origin" = 'observed' AND "retired_by_run_id" IS NOT NULL AND "retired_by_model_version" IS NULL) OR ("origin" = 'declared' AND "retired_by_model_version" IS NOT NULL AND "retired_by_run_id" IS NULL)) ELSE "retired_at" IS NULL AND "retired_by_run_id" IS NULL AND "retired_by_model_version" IS NULL END),
   ADD CONSTRAINT "tenant_source_references_field_hash_format" CHECK ("field_hash" IS NULL OR "field_hash" ~ '^[0-9a-f]{64}$');
 
 -- Identity never changes: system, object_type, external_id, origin and

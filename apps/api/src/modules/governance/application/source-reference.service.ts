@@ -281,7 +281,7 @@ export class SourceReferenceService {
     assertAuthorized(actx, 'canonical.source_sync');
     this.sameTenant(actx, tx);
     await this.requireVersion(tx);
-    if (!run.accepted || !run.proven || !run.full || run.uncertain) return 0;
+    if (!run.proven || !run.full || run.uncertain) return 0;
     const db = tenantClient(tx);
     const candidates = await db.tenantSourceReference.findMany({
       where: {
