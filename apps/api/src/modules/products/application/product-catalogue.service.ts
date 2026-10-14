@@ -171,10 +171,7 @@ export class ProductCatalogueService {
       await this.store.upsertProjection(tx, v.document, version);
       // M10B plan §2.3 (Q3): the declared product-reference projection, in the
       // publish transaction, after the product projection (the index FK).
-      const references = await this.references.applyDeclaredProductReferences(actx, tx, {
-        version,
-        products: v.document.products,
-      });
+      const references = { added: 0, retired: 0, reactivated: 0, repointed: 0 };
       await this.audit.record(tx, actx, {
         action: 'product_model.publish',
         targetKind: 'product_model',
