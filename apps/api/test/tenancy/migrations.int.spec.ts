@@ -5,6 +5,20 @@ import { promisify } from 'node:util';
 import type { StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CONNECTOR_KIND_CATALOGUE } from '../../src/modules/domain/connector-kinds';
+import {
+  CANONICAL_MODULES,
+  CANONICAL_VERSIONS,
+  CHANGE_CAUSES,
+  CHANGE_ORIGINS,
+  CHANGE_TYPES,
+  ENTITY_INDEX_KINDS,
+  ENTITY_INDEX_SOURCES,
+  MODULE_KEYS,
+  REGISTRY_KINDS,
+  canonicalCatalogueHash,
+  entityIndexTriggerNames,
+  valueHistoryPairs,
+} from '../../src/modules/domain/canonical';
 import { AUDIT_ACTIONS, CAPABILITIES } from '../../src/modules/domain/security';
 import { authorityContentHash } from '../../src/modules/domain/source-authority';
 import {
@@ -18,9 +32,14 @@ import { migrate, startPostgres, withAdmin } from '../support/containers';
 const run = promisify(execFile);
 
 /** Tables that are not tenant-owned. Anything else must satisfy every tenancy rule. */
-const PLATFORM_TABLES = ['tenants', 'connector_kinds'];
-/** Platform reference tables the app role may only read (ADR 0019). */
-const READ_ONLY_TABLES = ['connector_kinds'];
+const PLATFORM_TABLES = [
+  'tenants',
+  'connector_kinds',
+  'canonical_model_versions',
+  'canonical_modules',
+];
+/** Platform reference tables the app role may only read (ADR 0019, ADR 0027). */
+const READ_ONLY_TABLES = ['connector_kinds', 'canonical_model_versions', 'canonical_modules'];
 
 function databaseUrl(container: StartedPostgreSqlContainer, database: string): string {
   const url = new URL(container.getConnectionUri());
@@ -92,6 +111,25 @@ const M9B_RETIRE_DOWN = resolve(`prisma/rollback/${M9B_MIGRATIONS[1]}.down.sql`)
 const M10A1_MIGRATIONS = ['20261201120000_m10a1_security_foundation'];
 const M10A1_DOWN = resolve(`prisma/rollback/${M10A1_MIGRATIONS[0]}.down.sql`);
 
+/** M10A2 migrations in apply order (canonical versioning and governance). */
+const M10A2_MIGRATIONS = [
+  '20261215120000_m10a2_canonical_versions_modules_registries',
+  '20261215130000_m10a2_entity_index_history_lifecycle_integrity',
+];
+/** M10A2 down-scripts in the order they must run (newest first). */
+const M10A2_DOWNS = [...M10A2_MIGRATIONS]
+  .reverse()
+  .map((name) => resolve(`prisma/rollback/${name}.down.sql`));
+/** The migrations shipped up to M10A1 (before M10A2). */
+const m10a1MigrationsConfig = (dir: string) => migrationsBefore(dir, '20261215');
+
+/** Rolls M10A2 back (newest first); every older down-script runs after this. */
+async function rollbackM10A2(url: string): Promise<void> {
+  for (const file of M10A2_DOWNS) {
+    await withAdmin(url, (db) => db.query(readFileSync(file, 'utf8')));
+  }
+}
+
 /** Everything a migration can change, as sorted text (for exact schema comparison). */
 async function schemaSnapshot(url: string): Promise<Record<string, string[]>> {
   const queries: Record<string, string> = {
@@ -118,7 +156,13 @@ async function schemaSnapshot(url: string): Promise<Record<string, string[]>> {
 }
 
 /** Down-scripts back to M7 (M9A, then M8), in the order they must run (newest first). */
-const POST_M7_DOWNS = [...M8_MIGRATIONS, ...M9A_MIGRATIONS, ...M9B_MIGRATIONS, ...M10A1_MIGRATIONS]
+const POST_M7_DOWNS = [
+  ...M8_MIGRATIONS,
+  ...M9A_MIGRATIONS,
+  ...M9B_MIGRATIONS,
+  ...M10A1_MIGRATIONS,
+  ...M10A2_MIGRATIONS,
+]
   .reverse()
   .map((name) => resolve(`prisma/rollback/${name}.down.sql`));
 
@@ -170,6 +214,7 @@ describe('database migrations and schema guard', () => {
         ...M9A_MIGRATIONS,
         ...M9B_MIGRATIONS,
         ...M10A1_MIGRATIONS,
+        ...M10A2_MIGRATIONS,
       ]);
       expect(rows.every((r) => r.finished_at !== null)).toBe(true);
     });
@@ -389,6 +434,236 @@ describe('database migrations and schema guard', () => {
         ),
       );
       expect(rows).toEqual([{ rolsuper: false, rolbypassrls: false, rolcanlogin: false }]);
+    });
+  });
+
+  describe('M10A2 schema guard: canonical catalogues, entity index and polymorphic references', () => {
+    /** The quoted values of a named CHECK constraint, sorted. */
+    const checkValues = async (name: string): Promise<string[]> => {
+      const { rows } = await withAdmin(cleanUrl, (db) =>
+        db.query<{ def: string }>(
+          `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = $1`,
+          [name],
+        ),
+      );
+      expect(rows, name).toHaveLength(1);
+      return [
+        ...new Set([...rows[0]!.def.matchAll(/'([a-z_.]+)'::text/g)].map((m) => m[1]!)),
+      ].sort();
+    };
+
+    it('V1: canonical_model_versions equals the code catalogue, catalogue hash included', async () => {
+      const { rows } = await withAdmin(cleanUrl, (db) =>
+        db.query<{ version: string; status: string; adr: string; catalogue_hash: string }>(
+          'SELECT version, status, adr, catalogue_hash FROM canonical_model_versions ORDER BY major, minor',
+        ),
+      );
+      const hash = canonicalCatalogueHash({
+        entityKinds: ENTITY_INDEX_KINDS,
+        moduleKeys: MODULE_KEYS,
+        changeTypes: CHANGE_TYPES,
+        causes: CHANGE_CAUSES,
+        origins: CHANGE_ORIGINS,
+      });
+      expect(rows).toEqual(
+        CANONICAL_VERSIONS.map((v) => ({
+          version: v.version,
+          status: v.status,
+          adr: v.adr,
+          catalogue_hash: hash,
+        })),
+      );
+    });
+
+    it('canonical_modules equals the code catalogue (all nine unavailable in M10A2)', async () => {
+      const { rows } = await withAdmin(cleanUrl, (db) =>
+        db.query<{
+          module_key: string;
+          title: string;
+          available: boolean;
+          minimum_canonical_version: string | null;
+          depends_on: string[];
+          config_schema_version: number;
+        }>(
+          `SELECT module_key, title, available, minimum_canonical_version, depends_on, config_schema_version
+             FROM canonical_modules ORDER BY module_key`,
+        ),
+      );
+      expect(rows).toEqual(
+        [...CANONICAL_MODULES]
+          .map((m) => ({
+            module_key: m.key,
+            title: m.title,
+            available: m.available,
+            minimum_canonical_version: m.minimumCanonicalVersion,
+            depends_on: [...m.dependsOn],
+            config_schema_version: m.configSchemaVersion,
+          }))
+          .sort((a, b) => a.module_key.localeCompare(b.module_key)),
+      );
+      expect(rows.every((r) => !r.available)).toBe(true);
+    });
+
+    it('the M10A2 closed-set CHECKs equal the code catalogues', async () => {
+      expect(await checkValues('canonical_modules_key_valid')).toEqual([...MODULE_KEYS].sort());
+      expect(await checkValues('tenant_registry_versions_kind_valid')).toEqual(
+        [...REGISTRY_KINDS].sort(),
+      );
+      expect(await checkValues('tenant_registry_entries_kind_valid')).toEqual(
+        [...REGISTRY_KINDS].sort(),
+      );
+      expect(await checkValues('tenant_entity_index_kind_valid')).toEqual(
+        [...ENTITY_INDEX_KINDS].sort(),
+      );
+      expect(await checkValues('tenant_context_changes_change_type_valid')).toEqual(
+        [...CHANGE_TYPES].sort(),
+      );
+      expect(await checkValues('tenant_context_changes_cause_valid')).toEqual(
+        [...CHANGE_CAUSES].sort(),
+      );
+      expect(await checkValues('tenant_context_changes_origin_valid')).toEqual(
+        [...CHANGE_ORIGINS].sort(),
+      );
+      // The value-history field catalogue is a list of (kind, field) pairs.
+      const { rows } = await withAdmin(cleanUrl, (db) =>
+        db.query<{ def: string }>(
+          `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'tenant_value_history_field_valid'`,
+        ),
+      );
+      const pairs = [...rows[0]!.def.matchAll(/\('([a-z_]+)'::text, '([a-z_]+)'::text\)/g)]
+        .map((m) => `${m[1]}.${m[2]}`)
+        .sort();
+      expect(pairs).toEqual(
+        valueHistoryPairs()
+          .map((p) => `${p.entityKind}.${p.field}`)
+          .sort(),
+      );
+    });
+
+    it('V2: the database refuses canonical version 1.0 (named pre-freeze CHECK), even for the owner', async () => {
+      await expect(
+        withAdmin(cleanUrl, (db) =>
+          db.query(
+            `INSERT INTO canonical_model_versions (version, major, minor, status, released_at, catalogue_hash, adr)
+             VALUES ('1.0', 1, 0, 'supported', now(), repeat('a', 64), '0027')`,
+          ),
+        ),
+      ).rejects.toThrow(/canonical_model_versions_pre_freeze/);
+    });
+
+    it('every table named by ENTITY_INDEX_KINDS carries the three index triggers', async () => {
+      const { rows } = await withAdmin(cleanUrl, (db) =>
+        db.query<{ table: string; trigger: string; enabled: string }>(
+          `SELECT tgrelid::regclass::text AS table, tgname AS trigger, tgenabled AS enabled
+             FROM pg_trigger WHERE NOT tgisinternal AND tgname ~ '_(entity_index_add|entity_index_remove|identity_immutable)$'`,
+        ),
+      );
+      const expected = ENTITY_INDEX_KINDS.flatMap((k) =>
+        entityIndexTriggerNames(ENTITY_INDEX_SOURCES[k].table).map(
+          (t) => `${ENTITY_INDEX_SOURCES[k].table}.${t}`,
+        ),
+      ).sort();
+      expect(rows.map((r) => `${r.table}.${r.trigger}`).sort()).toEqual(expected);
+      expect(rows.every((r) => r.enabled === 'O')).toBe(true);
+    });
+
+    it('the index functions are SECURITY DEFINER, fixed search_path, owned by lip_entity_indexer', async () => {
+      const { rows } = await withAdmin(cleanUrl, (db) =>
+        db.query<{ name: string; definer: boolean; config: string[] | null; public: boolean }>(
+          `SELECT p.proname AS name, p.prosecdef AS definer, p.proconfig AS config,
+                  has_function_privilege('public', p.oid, 'EXECUTE') AS public
+             FROM pg_proc p WHERE p.proowner = 'lip_entity_indexer'::regrole ORDER BY 1`,
+        ),
+      );
+      expect(rows).toEqual(
+        ['app_entity_index_add', 'app_entity_index_remove'].map((name) => ({
+          name,
+          definer: true,
+          config: ['search_path=pg_catalog, pg_temp'],
+          public: false,
+        })),
+      );
+      for (const r of rows) expect(SECURITY_DEFINER_FUNCTIONS).toContain(r.name);
+    });
+
+    it('lip_entity_indexer is powerless: NOLOGIN, no bypass, rights on the index only, not reachable from the app role', async () => {
+      const { rows } = await withAdmin(cleanUrl, (db) =>
+        db.query<Record<string, boolean>>(`
+          SELECT rolsuper, rolbypassrls, rolcanlogin, rolcreaterole, rolcreatedb, rolinherit,
+                 pg_has_role('lip_app', 'lip_entity_indexer', 'MEMBER') AS app_is_member,
+                 pg_has_role('lip_entity_indexer', 'lip_app', 'MEMBER') AS indexer_is_app
+            FROM pg_roles WHERE rolname = 'lip_entity_indexer'`),
+      );
+      expect(rows).toEqual([
+        {
+          rolsuper: false,
+          rolbypassrls: false,
+          rolcanlogin: false,
+          rolcreaterole: false,
+          rolcreatedb: false,
+          rolinherit: false,
+          app_is_member: false,
+          indexer_is_app: false,
+        },
+      ]);
+      const grants = await withAdmin(cleanUrl, (db) =>
+        db.query<{ v: string }>(
+          `SELECT table_name || ':' || privilege_type AS v FROM information_schema.table_privileges
+            WHERE grantee = 'lip_entity_indexer' ORDER BY 1`,
+        ),
+      );
+      expect(grants.rows.map((r) => r.v)).toEqual([
+        'tenant_entity_index:DELETE',
+        'tenant_entity_index:INSERT',
+        'tenant_entity_index:SELECT',
+      ]);
+      expect(PRIVILEGE_MANIFEST['tenant_entity_index']).toEqual(['SELECT']);
+    });
+
+    it('every polymorphic column set (<p>_kind + <p>_id) references the entity index by id and by key', async () => {
+      // Actor columns name a security actor, not an entity. tenant_context_changes
+      // predates the index (M6): its entity columns are a historical log that
+      // outlives physical deletes, recorded in ADR 0027 as the one exception.
+      const NOT_ENTITY_REFERENCES = ['actor', 'updated_by'];
+      const LEGACY = ['tenant_context_changes.entity'];
+      const pairs = await withAdmin(cleanUrl, (db) =>
+        db.query<{ table: string; prefix: string; has_key: boolean }>(
+          `SELECT k.table_name AS table, regexp_replace(k.column_name, '_kind$', '') AS prefix,
+                  EXISTS (SELECT 1 FROM information_schema.columns c WHERE c.table_schema = 'public'
+                            AND c.table_name = k.table_name
+                            AND c.column_name = regexp_replace(k.column_name, '_kind$', '') || '_key') AS has_key
+             FROM information_schema.columns k
+             JOIN information_schema.columns i ON i.table_schema = k.table_schema AND i.table_name = k.table_name
+                  AND i.column_name = regexp_replace(k.column_name, '_kind$', '') || '_id'
+            WHERE k.table_schema = 'public' AND k.column_name LIKE '%\_kind'`,
+        ),
+      );
+      const polymorphic = pairs.rows.filter(
+        (p) =>
+          !NOT_ENTITY_REFERENCES.includes(p.prefix) && !LEGACY.includes(`${p.table}.${p.prefix}`),
+      );
+      expect(polymorphic.map((p) => `${p.table}.${p.prefix}`)).toContain(
+        'tenant_value_history.entity',
+      );
+      const fks = await withAdmin(cleanUrl, (db) =>
+        db.query<{ table: string; columns: string[]; ref: string; on_delete: string }>(
+          `SELECT c.conrelid::regclass::text AS table,
+                  (SELECT array_agg(a.attname::text ORDER BY k.ord) FROM unnest(c.conkey) WITH ORDINALITY k(attnum, ord)
+                     JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum) AS columns,
+                  c.confrelid::regclass::text AS ref, c.confdeltype AS on_delete
+             FROM pg_constraint c WHERE c.contype = 'f' AND c.confrelid = 'tenant_entity_index'::regclass`,
+        ),
+      );
+      for (const p of polymorphic) {
+        const mine = fks.rows.filter((f) => f.table === p.table);
+        expect(mine.map((f) => f.columns.join(',')).sort(), `${p.table}.${p.prefix}`).toEqual(
+          [
+            `tenant_id,${p.prefix}_kind,${p.prefix}_id`,
+            ...(p.has_key ? [`tenant_id,${p.prefix}_kind,${p.prefix}_key`] : []),
+          ].sort(),
+        );
+        expect(mine.every((f) => f.on_delete === 'r')).toBe(true); // ON DELETE RESTRICT
+      }
     });
   });
 
@@ -1224,7 +1499,8 @@ describe('database migrations and schema guard', () => {
         `m8_conn_down_${Math.random().toString(36).slice(2, 8)}`,
       );
       await migrate(target);
-      // Newest first: M10A1, then the M9B down-scripts, before any older one.
+      // Newest first: M10A2, M10A1, then the M9B down-scripts, before any older one.
+      await rollbackM10A2(target);
       await withAdmin(target, (db) => db.query(readFileSync(M10A1_DOWN, 'utf8')));
       await withAdmin(target, (db) => db.query(readFileSync(M9B_RETIRE_DOWN, 'utf8')));
       await withAdmin(target, (db) => db.query(readFileSync(M9B_DOWN, 'utf8')));
@@ -1531,7 +1807,8 @@ describe('database migrations and schema guard', () => {
         await migrate(m8Url, ['--config', m8MigrationsConfig(dir)]);
         await migrate(url);
         const latest = await schemaSnapshot(url);
-        // Newest first: M10A1, M9B (retirement, then the connector kind), then M9A.
+        // Newest first: M10A2, M10A1, M9B (retirement, then the connector kind), then M9A.
+        await rollbackM10A2(url);
         await withAdmin(url, (db) => db.query(readFileSync(M10A1_DOWN, 'utf8')));
         await withAdmin(url, (db) => db.query(readFileSync(M9B_RETIRE_DOWN, 'utf8')));
         await withAdmin(url, (db) => db.query(readFileSync(M9B_DOWN, 'utf8')));
@@ -1669,7 +1946,8 @@ describe('database migrations and schema guard', () => {
           }),
         ).rejects.toThrow(/tenant_credential_refs_system_valid/);
         await withAdmin(m9aUrl, (db) => db.query(`DELETE FROM tenants WHERE id = $1`, [tenant]));
-        // Newest first: M10A1, the retirement down-script (nothing retired here), then the kind.
+        // Newest first: M10A2, M10A1, the retirement down-script (nothing retired here), then the kind.
+        await rollbackM10A2(url);
         await withAdmin(url, (db) => db.query(readFileSync(M10A1_DOWN, 'utf8')));
         await withAdmin(url, (db) => db.query(readFileSync(M9B_RETIRE_DOWN, 'utf8')));
         await expect(
@@ -1776,7 +2054,8 @@ describe('database migrations and schema guard', () => {
         await migrate(before, ['--config', migrationsBefore(dir, '20261116')]);
         await migrate(url);
         const latest = await schemaSnapshot(url);
-        // Newest first: M10A1 is rolled back before the M9B retirement down-script.
+        // Newest first: M10A2 and M10A1 are rolled back before the M9B retirement down-script.
+        await rollbackM10A2(url);
         await withAdmin(url, (db) => db.query(readFileSync(M10A1_DOWN, 'utf8')));
         await seed(url);
         await withAdmin(url, (db) =>
@@ -1820,9 +2099,12 @@ describe('database migrations and schema guard', () => {
       const before = await createDatabase(pg, 'm10a1_before_db');
       const url = await createDatabase(pg, 'm10a1_down_db');
       const dir = resolve('test/.tmp/m10a1-before');
+      const m10a1Dir = resolve('test/.tmp/m10a1-state');
       try {
         await migrate(before, ['--config', migrationsBefore(dir, '20261201')]);
-        await migrate(url);
+        // The M10A1 down-script is tested on the M10A1 state (M10A2 has its own test below).
+        const m10a1Config = m10a1MigrationsConfig(m10a1Dir);
+        await migrate(url, ['--config', m10a1Config]);
         const latest = await schemaSnapshot(url);
         const tenant = '00000000-0000-4000-8000-0000000a1a10';
         const hex = (c: string) => c.repeat(64);
@@ -1897,12 +2179,190 @@ describe('database migrations and schema guard', () => {
         );
         await withAdmin(url, (db) => db.query(readFileSync(M10A1_DOWN, 'utf8')));
         expect(await schemaSnapshot(url)).toEqual(await schemaSnapshot(before));
-        const output = await migrate(url);
+        const output = await migrate(url, ['--config', m10a1Config]);
         expect(output).toMatch(new RegExp(M10A1_MIGRATIONS[0]!));
         expect(await schemaSnapshot(url)).toEqual(latest);
       } finally {
         rmSync(dir, { recursive: true, force: true });
+        rmSync(m10a1Dir, { recursive: true, force: true });
       }
+    });
+  });
+
+  describe('M10A2 canonical versioning and governance migrations (on M10A1 data)', () => {
+    const tenantA = 'a2a2a2a2-0000-4a2a-8a2a-00000000000a';
+    const tenantB = 'a2a2a2a2-0000-4a2a-8a2a-00000000000b';
+    const sugarA = 'a2a2a2a2-1111-4a2a-8a2a-0000000000aa';
+    const sugarB = 'a2a2a2a2-1111-4a2a-8a2a-00000000000b';
+    /** Two tenants with entities of every indexed kind and mapping versions 1..3 (A) and 1 (B). */
+    const SEED = `INSERT INTO tenants (id, slug, name, updated_at) VALUES
+  ('a2a2a2a2-0000-4a2a-8a2a-00000000000a', 'mtenaa', 'A', now()),
+  ('a2a2a2a2-0000-4a2a-8a2a-00000000000b', 'mtenab', 'B', now());
+INSERT INTO tenant_source_connections (tenant_id, id, kind, label, status, mapping_mode) VALUES
+  ('a2a2a2a2-0000-4a2a-8a2a-00000000000a', 'a2a2a2a2-1111-4a2a-8a2a-00000000000a', 'import', 'Operator import (CSV)', 'enabled', 'code'),
+  ('a2a2a2a2-0000-4a2a-8a2a-00000000000a', 'a2a2a2a2-1111-4a2a-8a2a-0000000000aa', 'sugar', 'Sugar', 'enabled', 'versioned'),
+  ('a2a2a2a2-0000-4a2a-8a2a-00000000000b', 'a2a2a2a2-1111-4a2a-8a2a-00000000000b', 'sugar', 'Sugar', 'enabled', 'versioned');
+INSERT INTO tenant_source_schema_snapshots (tenant_id, connection_id, hash, document, captured_by) VALUES
+  ('a2a2a2a2-0000-4a2a-8a2a-00000000000a', 'a2a2a2a2-1111-4a2a-8a2a-0000000000aa', repeat('e', 64), '{"objects":[]}', 'test'),
+  ('a2a2a2a2-0000-4a2a-8a2a-00000000000b', 'a2a2a2a2-1111-4a2a-8a2a-00000000000b', repeat('e', 64), '{"objects":[]}', 'test');
+INSERT INTO tenant_source_authority_versions (tenant_id, version, base_version,
+   subscription_lines_connection_id, subscription_state_connection_id, subscription_terms_connection_id, content_hash, published_by) VALUES
+  ('a2a2a2a2-0000-4a2a-8a2a-00000000000a', 1, 0, 'a2a2a2a2-1111-4a2a-8a2a-00000000000a', 'a2a2a2a2-1111-4a2a-8a2a-00000000000a', 'a2a2a2a2-1111-4a2a-8a2a-00000000000a', repeat('a', 64), 'provisioning'),
+  ('a2a2a2a2-0000-4a2a-8a2a-00000000000b', 1, 0, 'a2a2a2a2-1111-4a2a-8a2a-00000000000b', 'a2a2a2a2-1111-4a2a-8a2a-00000000000b', 'a2a2a2a2-1111-4a2a-8a2a-00000000000b', repeat('a', 64), 'provisioning');
+INSERT INTO tenant_source_mapping_versions (tenant_id, connection_id, version, base_version, document, content_hash, schema_snapshot_hash, authority_version, published_by)
+SELECT 'a2a2a2a2-0000-4a2a-8a2a-00000000000a', 'a2a2a2a2-1111-4a2a-8a2a-0000000000aa', v, v - 1, '{"objects":[]}', repeat(v::text, 64), repeat('e', 64), 1, 'test'
+  FROM generate_series(1, 3) v;
+INSERT INTO tenant_source_mapping_versions (tenant_id, connection_id, version, base_version, document, content_hash, schema_snapshot_hash, authority_version, published_by)
+VALUES ('a2a2a2a2-0000-4a2a-8a2a-00000000000b', 'a2a2a2a2-1111-4a2a-8a2a-00000000000b', 1, 0, '{"objects":[]}', repeat('1', 64), repeat('e', 64), 1, 'test');
+INSERT INTO companies (id, tenant_id, name, created_at, updated_at) VALUES
+  ('a2a2a2a2-2222-4a2a-8a2a-00000000000a', 'a2a2a2a2-0000-4a2a-8a2a-00000000000a', 'School A', now(), now()),
+  ('a2a2a2a2-2222-4a2a-8a2a-0000000000aa', 'a2a2a2a2-0000-4a2a-8a2a-00000000000a', 'School AA', now(), now()),
+  ('a2a2a2a2-2222-4a2a-8a2a-00000000000b', 'a2a2a2a2-0000-4a2a-8a2a-00000000000b', 'School B', now(), now());
+INSERT INTO persons (id, tenant_id, primary_email, company_id, created_at, updated_at) VALUES
+  ('a2a2a2a2-3333-4a2a-8a2a-00000000000a', 'a2a2a2a2-0000-4a2a-8a2a-00000000000a', 'a@example.test', 'a2a2a2a2-2222-4a2a-8a2a-00000000000a', now(), now());
+INSERT INTO tenant_products (tenant_id, key, name, updated_at) VALUES
+  ('a2a2a2a2-0000-4a2a-8a2a-00000000000a', 'core', 'Core', now()),
+  ('a2a2a2a2-0000-4a2a-8a2a-00000000000b', 'core', 'Core', now());
+INSERT INTO tenant_subscriptions (tenant_id, id, company_id, product_key, state, source_system, source_object_type, source_record_id, observed_at) VALUES
+  ('a2a2a2a2-0000-4a2a-8a2a-00000000000a', 'a2a2a2a2-4444-4a2a-8a2a-00000000000a', 'a2a2a2a2-2222-4a2a-8a2a-00000000000a', 'core', 'active', 'import', 'subscriptions', 'r1', now());`;
+
+    /** A database at the M10A1 state holding SEED. */
+    async function m10a1Database(name: string): Promise<string> {
+      const url = await createDatabase(pg, name);
+      const dir = resolve(`test/.tmp/${name}`);
+      try {
+        await migrate(url, ['--config', m10a1MigrationsConfig(dir)]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+      await withAdmin(url, (db) => db.query(SEED));
+      return url;
+    }
+
+    it('V3/V10/V16: baseline 0.1 per tenant, index backfill per kind, lifecycle backfill equals "latest wins"', async () => {
+      const url = await m10a1Database('m10a2_on_m10a1');
+      const latestBefore = await withAdmin(url, (db) =>
+        db.query<{ tenant_id: string; connection_id: string; version: number }>(
+          `SELECT tenant_id, connection_id, max(version)::int AS version
+             FROM tenant_source_mapping_versions GROUP BY 1, 2 ORDER BY 1, 2`,
+        ),
+      );
+      const output = await migrate(url);
+      for (const name of M10A2_MIGRATIONS) expect(output).toMatch(new RegExp(name));
+
+      const adoptions = await withAdmin(url, (db) =>
+        db.query(
+          `SELECT tenant_id, seq, version, previous_version, reason, actor_kind, actor_id, actor_assurance, audit_event_id
+             FROM tenant_canonical_adoptions ORDER BY tenant_id`,
+        ),
+      );
+      expect(adoptions.rows).toEqual(
+        [tenantA, tenantB].map((tenant_id) => ({
+          tenant_id,
+          seq: 1,
+          version: '0.1',
+          previous_version: null,
+          reason: 'baseline',
+          actor_kind: 'system',
+          actor_id: 'system:migration:m10a2',
+          actor_assurance: 'system',
+          audit_event_id: null,
+        })),
+      );
+
+      const index = await withAdmin(url, (db) =>
+        db.query<{ tenant_id: string; kind: string; n: number }>(
+          `SELECT tenant_id, kind, count(*)::int AS n FROM tenant_entity_index GROUP BY 1, 2 ORDER BY 1, 2`,
+        ),
+      );
+      expect(index.rows).toEqual([
+        { tenant_id: tenantA, kind: 'company', n: 2 },
+        { tenant_id: tenantA, kind: 'person', n: 1 },
+        { tenant_id: tenantA, kind: 'product', n: 1 },
+        { tenant_id: tenantA, kind: 'subscription', n: 1 },
+        { tenant_id: tenantB, kind: 'company', n: 1 },
+        { tenant_id: tenantB, kind: 'product', n: 1 },
+      ]);
+
+      const states = await withAdmin(url, (db) =>
+        db.query<{ tenant_id: string; connection_id: string; version: number; state: string }>(
+          `SELECT tenant_id, connection_id, version, state FROM tenant_source_mapping_states ORDER BY 1, 2, 3`,
+        ),
+      );
+      expect(states.rows).toEqual([
+        { tenant_id: tenantA, connection_id: sugarA, version: 1, state: 'superseded' },
+        { tenant_id: tenantA, connection_id: sugarA, version: 2, state: 'superseded' },
+        { tenant_id: tenantA, connection_id: sugarA, version: 3, state: 'published' },
+        { tenant_id: tenantB, connection_id: sugarB, version: 1, state: 'published' },
+      ]);
+      // The published version per connection is exactly the M10A1 "latest".
+      expect(
+        states.rows
+          .filter((r) => r.state === 'published')
+          .map(({ tenant_id, connection_id, version }) => ({ tenant_id, connection_id, version })),
+      ).toEqual(latestBefore.rows);
+      // Pre-M10A2 rows keep NULL governance columns (no invented backfill).
+      const mappingMins = await withAdmin(url, (db) =>
+        db.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM tenant_source_mapping_versions WHERE canonical_version_min IS NOT NULL`,
+        ),
+      );
+      expect(mappingMins.rows[0]!.n).toBe(0);
+    });
+
+    it('V22: the down-scripts refuse M10A2-only data (changing nothing), then restore exactly the M10A1 schema, and M10A2 re-applies', async () => {
+      const before = await m10a1Database('m10a2_before_db');
+      const url = await m10a1Database('m10a2_down_db');
+      await migrate(url);
+      const latest = await schemaSnapshot(url);
+      const [down2, down1] = M10A2_DOWNS.map((f) => readFileSync(f, 'utf8'));
+
+      const refusals: [string, string, string, RegExp][] = [
+        [
+          down2!,
+          `INSERT INTO tenant_source_mapping_drafts (tenant_id, connection_id, id, document, content_hash, version,
+             updated_by_kind, updated_by_id, updated_by_assurance, updated_at)
+           VALUES ('${tenantA}', '${sugarA}', gen_random_uuid(), '{"objects":[]}', repeat('d', 64), 1,
+             'operator', 'ops', 'asserted', now())`,
+          `DELETE FROM tenant_source_mapping_drafts`,
+          /refusing rollback: 1 mapping drafts exist/,
+        ],
+        [
+          down2!,
+          `INSERT INTO tenant_context_changes (tenant_id, id, entity_kind, entity_id, change_type, source_system,
+             source_object_type, source_record_id, cause, adapter, adapter_version, correlation_id, origin, canonical_version)
+           VALUES ('${tenantA}', gen_random_uuid(), 'company', gen_random_uuid(), 'created', 'sugar', 'Accounts', 'x1',
+             'backfill', 'sugar', 'm10a2', gen_random_uuid(), 'source_provided', '0.1')`,
+          `DELETE FROM tenant_context_changes WHERE origin IS NOT NULL`,
+          /refusing rollback: 1 change records carry M10A2 columns or vocabulary/,
+        ],
+        [
+          down1!,
+          `INSERT INTO tenant_module_settings (tenant_id, module_key, enabled, config, version, updated_at,
+             updated_by_kind, updated_by_id, updated_by_assurance)
+           VALUES ('${tenantA}', 'engagement', false, '{}', 1, now(), 'operator', 'ops', 'asserted')`,
+          `DELETE FROM tenant_module_settings`,
+          /refusing rollback: 1 module settings exist/,
+        ],
+      ];
+      for (const [down, plant, cleanup, message] of refusals) {
+        if (down === down1) await withAdmin(url, (db) => db.query(down2!));
+        await withAdmin(url, (db) => db.query(plant));
+        const snapshot = await schemaSnapshot(url);
+        await expect(withAdmin(url, (db) => db.query(down))).rejects.toThrow(message);
+        expect(await schemaSnapshot(url)).toEqual(snapshot);
+        // The owner removes the planted row (module settings refuse DELETE for everyone else).
+        await withAdmin(url, (db) =>
+          db.query(
+            `SET session_replication_role = replica; ${cleanup}; SET session_replication_role = origin`,
+          ),
+        );
+      }
+      await withAdmin(url, (db) => db.query(down1!));
+      expect(await schemaSnapshot(url)).toEqual(await schemaSnapshot(before));
+      const output = await migrate(url);
+      for (const name of M10A2_MIGRATIONS) expect(output).toMatch(new RegExp(name));
+      expect(await schemaSnapshot(url)).toEqual(latest);
     });
   });
 
