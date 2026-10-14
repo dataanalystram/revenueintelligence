@@ -78,6 +78,8 @@ runtime, docker):
 | `38507521249` | `9d14671` | unit ✅, docker ✅; integration ❌ (view privileges from schema default DML; V15 draft needed acknowledgements); runtime ❌ (script 75 `pr_unreviewed`, not reproduced on the next two runs) |
 | `38509313747` | `0b6d24b` | unit ✅, runtime ✅ (incl. script 86), docker ✅; integration ❌ (V15: identical re-save keeps the validation — test corrected)                                                              |
 | `38510222639` | `c9d4856` | **all four jobs ✅** (lint/typecheck/boundaries/unit, integration, runtime incl. script 86, docker)                                                                                          |
+| `38510972857` | `1e41f16` | **all four jobs ✅** (record only)                                                                                                                                                           |
+| `38517072971` | `814b428` | **all four jobs ✅** after the mutation proofs (incl. the new V12 restricted-history integration test, `5ac5c1b`)                                                                            |
 
 ## Mutation proofs
 
