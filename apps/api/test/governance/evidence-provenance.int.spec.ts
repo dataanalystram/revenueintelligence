@@ -10,6 +10,7 @@ import {
   ProvenanceQueryService,
 } from '../../src/modules/governance';
 import {
+  PrivilegeManifestCheck,
   SecurityEventsService,
   TenantDatabase,
   type TenantContext,
@@ -640,6 +641,45 @@ describe('M10B evidence links and provenance', () => {
       ).toHaveLength(2);
       // Another tenant is untouched and clean.
       expect((await integrity().verify(other)).outcome).toBe('passed');
+    });
+
+    it('evidence_relation_unknown finds an unknown relation in a late set behind more than 1,000 valid sets (review M1)', async () => {
+      const t = await c.tenant('evintbig', 1001);
+      const company = await companyOf(t, '8701');
+      const second = await companyOf(t, '8702');
+      const checker = new IntegrityVerificationService(
+        db(),
+        integrity().audit,
+        c.app.get(SecurityEventsService, { strict: false }),
+        c.app.get(PrivilegeManifestCheck, { strict: false }),
+        TEST_RELATIONS,
+      );
+      // Plant (owner, test database): 1,100 valid sets, then one unknown
+      // relation in the set that sorts last by link_set_id.
+      await c.sql(
+        `INSERT INTO tenant_evidence_links (tenant_id, link_set_id, ordinal, subject_kind, subject_id, evidence_type,
+           evidence_kind, evidence_id, role, origin, canonical_version, actor_kind, actor_id, actor_assurance,
+           correlation_id)
+         SELECT $1, gen_random_uuid(), 0, 'company', $2, 'entity', 'company', $3, 'supports', 'human', '0.2', 'system',
+                'test', 'system', gen_random_uuid()
+           FROM generate_series(1, 1100)`,
+        [t.tenantId, company, second],
+      );
+      const relationFindings = async () =>
+        (await checker.verify(t)).findings.filter((f) => f.check === 'evidence_relation_unknown');
+      expect(await relationFindings()).toEqual([]);
+      const lateSet = 'ffffffff-ffff-4fff-bfff-ffffffffffff';
+      await c.sql(
+        `INSERT INTO tenant_evidence_links (tenant_id, link_set_id, ordinal, subject_kind, subject_id, evidence_type,
+           evidence_kind, evidence_id, role, origin, canonical_version, actor_kind, actor_id, actor_assurance,
+           correlation_id)
+         VALUES ($1, $2, 0, 'company', $3, 'entity', 'company', $4, 'contradicts', 'human', '0.2', 'system',
+                 'test', 'system', gen_random_uuid())`,
+        [t.tenantId, lateSet, company, second],
+      );
+      expect(await relationFindings()).toEqual([
+        { check: 'evidence_relation_unknown', ref: lateSet },
+      ]);
     });
   });
 });

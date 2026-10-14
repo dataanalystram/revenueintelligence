@@ -1,14 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import {
   canonicalHash,
   ENTITY_INDEX_SOURCES,
-  EVIDENCE_RELATIONS,
   evidenceRelationAllowed,
   INTEGRITY_MAX_FINDINGS,
   integrityCounts,
   integrityOutcome,
   type EntityIndexKind,
+  type EvidenceRelation,
   type IntegrityFinding,
   type IntegrityOutcome,
 } from '../../domain';
@@ -24,6 +24,7 @@ import {
   type TenantContext,
   type TenantTransaction,
 } from '../../tenancy';
+import { EVIDENCE_RELATION_CATALOGUE } from './evidence-link.writer';
 
 /** Clock-skew tolerance past a purge anchor's cutoff (audit_reference_missing exemption). */
 const AUDIT_PURGE_SKEW_MS = 5 * 60 * 1000;
@@ -51,6 +52,7 @@ export class IntegrityVerificationService {
     readonly audit: AuditTrail,
     private readonly events: SecurityEventsService,
     private readonly privileges: PrivilegeManifestCheck,
+    @Inject(EVIDENCE_RELATION_CATALOGUE) private readonly relations: readonly EvidenceRelation[],
   ) {}
 
   /** Dry run: the report only, nothing recorded. */
@@ -335,7 +337,7 @@ export class IntegrityVerificationService {
     );
     const drift: string[] = [];
     for (const [t, key] of declared) if (stored.get(t) !== key) drift.push(t);
-    for (const [t, key] of stored) if (declared.get(t) !== key && !declared.has(t)) drift.push(t);
+    for (const t of stored.keys()) if (!declared.has(t)) drift.push(t);
     add('declared_reference_drift', [...new Set(drift)].sort().slice(0, INTEGRITY_MAX_FINDINGS));
 
     // 8. One (system, object_type, external_id) lives in at most one store.
@@ -363,33 +365,39 @@ export class IntegrityVerificationService {
     );
 
     // 10. Every link's relation is in the code catalogue (catches raw-SQL writes).
-    const relations = await db.$queryRaw<
-      {
-        link_set_id: string;
-        subject_kind: string;
-        evidence_type: string;
-        evidence_kind: string | null;
-        role: string;
-      }[]
-    >`
-      SELECT DISTINCT link_set_id::text AS link_set_id, subject_kind, evidence_type, evidence_kind, role
-        FROM tenant_evidence_links ORDER BY 1 LIMIT ${INTEGRITY_MAX_FINDINGS * 10}`;
+    // Distinct relation tuples first (no set id, so no bound can hide a late
+    // set; the columns are CHECK-constrained, so the tuple set is small), the
+    // catalogue filter in code, then up to INTEGRITY_MAX_FINDINGS set ids of
+    // the unknown tuples only.
+    const tuples = await db.$queryRaw<
+      { subject_kind: string; evidence_type: string; evidence_kind: string | null; role: string }[]
+    >`SELECT DISTINCT subject_kind, evidence_type, evidence_kind, role FROM tenant_evidence_links`;
+    const unknown = tuples.filter(
+      (r) =>
+        !evidenceRelationAllowed(this.relations, r.subject_kind, {
+          evidenceType: r.evidence_type,
+          evidenceKind: r.evidence_kind,
+          role: r.role,
+        }),
+    );
+    let unknownSets: { ref: string }[] = [];
+    if (unknown.length > 0) {
+      const params: string[] = [];
+      const where = unknown
+        .map((r) => {
+          params.push(r.subject_kind, r.evidence_type, r.evidence_kind ?? '', r.role);
+          const n = params.length;
+          return `(subject_kind = $${n - 3} AND evidence_type = $${n - 2} AND coalesce(evidence_kind, '') = $${n - 1} AND role = $${n})`;
+        })
+        .join(' OR ');
+      unknownSets = await db.$queryRawUnsafe<{ ref: string }[]>(
+        `SELECT DISTINCT link_set_id::text AS ref FROM tenant_evidence_links WHERE ${where} ORDER BY 1 LIMIT ${INTEGRITY_MAX_FINDINGS}`,
+        ...params,
+      );
+    }
     add(
       'evidence_relation_unknown',
-      [
-        ...new Set(
-          relations
-            .filter(
-              (r) =>
-                !evidenceRelationAllowed(EVIDENCE_RELATIONS, r.subject_kind, {
-                  evidenceType: r.evidence_type,
-                  evidenceKind: r.evidence_kind,
-                  role: r.role,
-                }),
-            )
-            .map((r) => r.link_set_id),
-        ),
-      ].slice(0, INTEGRITY_MAX_FINDINGS),
+      unknownSets.map((r) => r.ref),
     );
 
     // 11. supersedes_link_set_id names an existing set of the same subject.
