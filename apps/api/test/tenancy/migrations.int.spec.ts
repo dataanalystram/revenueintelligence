@@ -2320,6 +2320,8 @@ INSERT INTO tenant_subscriptions (tenant_id, id, company_id, product_key, state,
       await migrate(url);
       const latest = await schemaSnapshot(url);
       const [down2, down1] = M10A2_DOWNS.map((f) => readFileSync(f, 'utf8'));
+      const REPLICA_ON = 'SET session_replication_role = replica;';
+      const REPLICA_OFF = 'SET session_replication_role = origin;';
 
       const refusals: [string, string, string, RegExp][] = [
         [
@@ -2330,6 +2332,34 @@ INSERT INTO tenant_subscriptions (tenant_id, id, company_id, product_key, state,
              'operator', 'ops', 'asserted', now())`,
           `DELETE FROM tenant_source_mapping_drafts`,
           /refusing rollback: 1 mapping drafts exist/,
+        ],
+        // Planted with triggers and FK checks off (owner, replica role): only
+        // the down-script's own refusal is under test.
+        [
+          down2!,
+          `${REPLICA_ON} INSERT INTO tenant_value_history (tenant_id, id, entity_kind, entity_id, field, values_recorded,
+             effective_at, change_id, retention_class, actor_kind, actor_id, actor_assurance)
+           VALUES ('${tenantA}', gen_random_uuid(), 'company', gen_random_uuid(), 'name', false, now(),
+             gen_random_uuid(), 'canonical_lifecycle', 'system', 'test', 'system'); ${REPLICA_OFF}`,
+          `DELETE FROM tenant_value_history`,
+          /refusing rollback: 1 value history rows exist/,
+        ],
+        [
+          down2!,
+          `${REPLICA_ON} INSERT INTO tenant_source_mapping_lifecycle (tenant_id, connection_id, version, seq, state,
+             actor_kind, actor_id, actor_assurance, audit_event_id)
+           VALUES ('${tenantA}', '${sugarA}', 99, 1, 'published', 'operator', 'ops', 'asserted', gen_random_uuid()); ${REPLICA_OFF}`,
+          `DELETE FROM tenant_source_mapping_lifecycle WHERE actor_id <> 'system:migration:m10a2'`,
+          /refusing rollback: 1 mapping lifecycle events exist/,
+        ],
+        [
+          down2!,
+          `${REPLICA_ON} INSERT INTO tenant_integrity_runs (tenant_id, id, started_at, finished_at, outcome, checks, findings,
+             actor_kind, actor_id, actor_assurance, correlation_id, audit_event_id)
+           VALUES ('${tenantA}', gen_random_uuid(), now(), now(), 'passed', '{}', '[]', 'operator', 'ops', 'asserted',
+             gen_random_uuid(), gen_random_uuid()); ${REPLICA_OFF}`,
+          `DELETE FROM tenant_integrity_runs`,
+          /refusing rollback: 1 integrity runs exist/,
         ],
         [
           down2!,
@@ -2348,9 +2378,32 @@ INSERT INTO tenant_subscriptions (tenant_id, id, company_id, product_key, state,
           `DELETE FROM tenant_module_settings`,
           /refusing rollback: 1 module settings exist/,
         ],
+        [
+          down1!,
+          `${REPLICA_ON} INSERT INTO tenant_canonical_adoptions (tenant_id, id, seq, version, previous_version, reason,
+             actor_kind, actor_id, actor_assurance, correlation_id, audit_event_id)
+           VALUES ('${tenantA}', gen_random_uuid(), 2, '0.1', '0.1', 'operator_adoption', 'operator', 'ops', 'asserted',
+             gen_random_uuid(), gen_random_uuid()); ${REPLICA_OFF}`,
+          `DELETE FROM tenant_canonical_adoptions WHERE reason = 'operator_adoption'`,
+          /refusing rollback: 1 operator adoptions exist/,
+        ],
+        [
+          down1!,
+          `${REPLICA_ON} INSERT INTO tenant_registry_versions (tenant_id, kind, version, base_version, document,
+             document_schema_version, content_hash, canonical_version_min, effective_from, actor_kind, actor_id,
+             actor_assurance, correlation_id, audit_event_id)
+           VALUES ('${tenantA}', 'data_policy', 1, 0, '{"schema":1}', 1, repeat('e', 64), '0.1', now(), 'operator', 'ops',
+             'asserted', gen_random_uuid(), gen_random_uuid()); ${REPLICA_OFF}`,
+          `DELETE FROM tenant_registry_versions`,
+          /refusing rollback: 1 registry versions exist/,
+        ],
       ];
+      let down2Applied = false;
       for (const [down, plant, cleanup, message] of refusals) {
-        if (down === down1) await withAdmin(url, (db) => db.query(down2!));
+        if (down === down1 && !down2Applied) {
+          await withAdmin(url, (db) => db.query(down2!));
+          down2Applied = true;
+        }
         await withAdmin(url, (db) => db.query(plant));
         const snapshot = await schemaSnapshot(url);
         await expect(withAdmin(url, (db) => db.query(down))).rejects.toThrow(message);

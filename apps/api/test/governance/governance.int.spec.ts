@@ -27,8 +27,10 @@ import {
 import { CLASSIFICATION_MANIFEST } from '../../src/modules/tenancy/security';
 import { withAdmin } from '../support/containers';
 import { startContextHarness, type ContextHarness } from '../support/context';
+import { FakeSugar } from '../support/fake-sugar';
 import { genericModel } from '../support/product-models';
 import { authz } from '../support/security';
+import { sourcesServices, sugarTenant } from '../support/sources';
 
 /** Pattern-shaped test strings are assembled at runtime: no real secret is in the repository. */
 const AWS_SHAPED = 'AKIA' + 'Q'.repeat(16);
@@ -714,27 +716,74 @@ describe('M10A2 canonical versioning and governance', () => {
           }
         }),
       ).rejects.toThrow(/tenant_value_history_tenant_id_entity_kind_entity_key_fkey/);
-      // As the app role, tenant A sees none of tenant B's governance rows.
-      const seen = await asApp(a, async (db) => {
+      // Seed governance rows in every table for tenant B (and, for the
+      // mapping tables, a second foreign tenant with a Sugar connection), so
+      // the zero counts below are meaningful.
+      await c.sql(
+        `UPDATE canonical_modules SET available = true, minimum_canonical_version = '0.1'
+          WHERE module_key = 'account_context'`,
+      );
+      await modules().enable(await authz(b, 'config.module.change'), {
+        module: 'account_context',
+        expectedVersion: 0,
+      });
+      const policyB = { schema: 1, raw_retention: false, retention: {} };
+      const dryB = await registry().dryRun(b, 'data_policy', policyB);
+      await registry().publishDataPolicy(await authz(b, 'config.data_policy.publish'), {
+        document: policyB,
+        expectedBaseVersion: 0,
+        expectedContentHash: dryB.contentHash!,
+      });
+      // No M10A2 path writes registry entries yet: the owner plants one.
+      await c.sql(
+        `INSERT INTO tenant_registry_entries (tenant_id, id, kind, key, definition, introduced_in, last_changed_in, updated_at)
+         VALUES ($1, gen_random_uuid(), 'data_policy', 'v11_seed', '{}', 1, 1, now())`,
+        [b.tenantId],
+      );
+      await integrity().record(await authz(b, 'security.integrity.run'));
+      const fake = await new FakeSugar().start();
+      try {
+        const sugarB = await sugarTenant(c, fake, { prefix: 'isosugar' });
+        const mappings = sourcesServices(c).mappings;
+        const doc = (await mappings.show(sugarB.ctx, sugarB.connectionId))!.document;
+        await mappings.saveDraft(
+          await authz(sugarB.ctx, 'config.mapping.draft'),
+          sugarB.connectionId,
+          doc,
+          0,
+        );
+      } finally {
+        await fake.stop();
+      }
+      const tables = [
+        'tenant_canonical_adoptions',
+        'tenant_entity_index',
+        'tenant_value_history',
+        'tenant_module_settings',
+        'tenant_module_setting_events',
+        'tenant_registry_versions',
+        'tenant_registry_entries',
+        'tenant_source_mapping_lifecycle',
+        'tenant_source_mapping_drafts',
+        'tenant_integrity_runs',
+      ];
+      const foreignRows = async (query: (sql: string) => Promise<number>) => {
         const out: Record<string, number> = {};
-        for (const table of [
-          'tenant_canonical_adoptions',
-          'tenant_entity_index',
-          'tenant_value_history',
-          'tenant_module_settings',
-          'tenant_registry_versions',
-          'tenant_source_mapping_lifecycle',
-          'tenant_integrity_runs',
-        ]) {
-          const { rows } = await db.query<{ n: number }>(
-            `SELECT count(*)::int AS n FROM ${table} WHERE tenant_id <> $1`,
-            [a.tenantId],
-          );
-          out[table] = rows[0]!.n;
+        for (const table of tables) {
+          out[table] = await query(`SELECT count(*)::int AS n FROM ${table} WHERE tenant_id <> $1`);
         }
         return out;
-      });
-      expect(Object.values(seen).every((n) => n === 0)).toBe(true);
+      };
+      // The owner (no RLS) sees foreign rows in every table…
+      const planted = await foreignRows(
+        async (sql) => (await c.sql<{ n: number }>(sql, [a.tenantId]))[0]!.n,
+      );
+      for (const table of tables) expect(planted[table], table).toBeGreaterThan(0);
+      // …and as the app role, tenant A sees none of them.
+      const seen = await asApp(a, (db) =>
+        foreignRows(async (sql) => (await db.query<{ n: number }>(sql, [a.tenantId])).rows[0]!.n),
+      );
+      expect(seen).toEqual(Object.fromEntries(tables.map((t) => [t, 0])));
       await expect(
         asApp(a, (db) =>
           db.query(
