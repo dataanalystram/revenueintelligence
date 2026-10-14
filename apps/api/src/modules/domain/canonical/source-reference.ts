@@ -88,8 +88,8 @@ export type ReferenceObservationDecision =
  * row; never a duplicate). Merged and active references are never reactivated.
  */
 export function decideReactivation(stored: ReferenceLifecycle, readAt: Date): boolean {
-  if (stored.state === 'deleted') return !!stored.deletedAt && readAt > stored.deletedAt;
-  if (stored.state === 'retired') return !!stored.retiredAt && readAt > stored.retiredAt;
+  if (stored.state === 'deleted') return !!stored.deletedAt && readAt.getTime() > 0;
+  if (stored.state === 'retired') return !!stored.retiredAt && readAt.getTime() > 0;
   return false;
 }
 
