@@ -43,8 +43,13 @@ export const SOURCE_REFERENCE_STORES = [
 ] as const;
 export type SourceReferenceStore = (typeof SOURCE_REFERENCE_STORES)[number];
 
-/** The `adapter` written on product-reference change records (plan §6, Q8). */
-export const PRODUCT_REFERENCE_ADAPTER = 'product-model';
+/**
+ * The `adapter` written on product-reference change records (plan §6, Q8).
+ * The plan writes it `product-model`; the change-record CHECK
+ * `tenant_context_changes_adapter_format` (`^[a-z0-9_]{1,32}$`) admits no
+ * hyphen, so the code is `product_model`.
+ */
+export const PRODUCT_REFERENCE_ADAPTER = 'product_model';
 /** `changed_fields` of a product-reference change record. */
 export const SOURCE_REFERENCE_CHANGED_FIELD = 'source_reference';
 

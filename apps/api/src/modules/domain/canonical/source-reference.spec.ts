@@ -5,6 +5,7 @@ import {
   decideReactivation,
   decideReferenceObservation,
   decideRetirement,
+  PRODUCT_REFERENCE_ADAPTER,
   type ReferenceLifecycle,
   type RetirementRun,
   type SourceReferenceState,
@@ -100,13 +101,9 @@ describe('decideReferenceObservation ≡ pre-M10B company/person apply rules (Q9
             for (const hash of HASHES) {
               const obs = { presence, observedAt, ...(sourceUpdatedAt ? { sourceUpdatedAt } : {}) };
               const h = presence === 'present' ? hash : undefined;
-              const legacy = legacyDecideApply(stored as StoredReference | undefined, obs, h);
+              const legacy = legacyDecideApply(stored, obs, h);
               const shared = decideReferenceObservation(stored, obs, h);
-              const viaIngestion = decideApplyWithHash(
-                stored as StoredReference | undefined,
-                obs,
-                h,
-              );
+              const viaIngestion = decideApplyWithHash(stored, obs, h);
               cases += 1;
               if (legacy !== shared || legacy !== viaIngestion) {
                 mismatches.push(JSON.stringify({ stored, obs, h, legacy, shared, viaIngestion }));
@@ -238,5 +235,11 @@ describe('decideMerge', () => {
           decideMerge({ externalId: 'a', state, mergedIntoExternalId: into }, 'b') === 'unchanged',
         ).toBe(legacySkip);
       }
+  });
+});
+
+describe('product-reference change records', () => {
+  it('the adapter satisfies tenant_context_changes_adapter_format', () => {
+    expect(PRODUCT_REFERENCE_ADAPTER).toMatch(/^[a-z0-9_]{1,32}$/);
   });
 });
