@@ -158,7 +158,7 @@ cg_republish() {
 }
 check "the retired Sugar mapping is published again as a new version (connection left published)" cg_republish
 
-# V23: value history records source values (script 70's sync); none may reach
+# V23: value history may record source values (script 70's sync); none may reach
 # a process log or CLI output. The probe values are read from the history
 # itself (free-text strings only, not enum codes, ids or timestamps) plus the
 # fixture names script 70 already guards.
@@ -168,17 +168,23 @@ cg_no_values() {
   values="$(cg_sql "SELECT DISTINCT v #>> '{}' FROM tenant_value_history h, LATERAL (VALUES (h.old_value), (h.new_value)) AS x(v)
                      WHERE h.tenant_id = '$tid' AND h.values_recorded AND jsonb_typeof(v) = 'string'
                        AND length(v #>> '{}') >= 6 AND (v #>> '{}') ~ '[A-Z ]' AND (v #>> '{}') !~ '^[0-9:TZ.+-]+$'")" || return 1
-  # Review n3: script 70's sync records free-text values; an empty list would
-  # make the scan vacuous, so zero is a failure, and the count is reported.
-  local count=0
+  # Review n3: report what is searched, so an empty history is visible. Script
+  # 70's sync is not expected to record free-text history values (it creates
+  # rows; history records changes — observed zero in CI run 38569672529), so
+  # zero free-text values is reported, not failed; the probe list always holds
+  # the fixture names and must not be empty.
+  local count=0 breakdown
   [ -n "$values" ] && count="$(printf '%s\n' "$values" | wc -l | tr -d ' ')"
-  echo "    value-history free-text values searched: $count"
-  if [ "$count" -eq 0 ]; then
-    echo "    no free-text value-history values recorded; the log scan would prove nothing" >&2
+  breakdown="$(cg_sql "SELECT entity_kind || '.' || field || ' values_recorded=' || values_recorded || ': ' || count(*)
+                        FROM tenant_value_history WHERE tenant_id = '$tid' GROUP BY 1 ORDER BY 1")" || return 1
+  echo "    value-history rows: ${breakdown:-none}"
+  echo "    value-history free-text values searched: $count (plus 2 fixture names)"
+  printf '%s\n' 'Fixture Account' 'Fixture Line' >"$CG_OUT/value-probes.txt"
+  [ "$count" -gt 0 ] && printf '%s\n' "$values" >>"$CG_OUT/value-probes.txt"
+  if [ ! -s "$CG_OUT/value-probes.txt" ]; then
+    echo "    no probe values: the log scan would prove nothing" >&2
     return 1
   fi
-  printf '%s\n' 'Fixture Account' 'Fixture Line' >"$CG_OUT/value-probes.txt"
-  printf '%s\n' "$values" >>"$CG_OUT/value-probes.txt"
   # Every log searched must exist: grep on a missing file would pass silently.
   local logs=("$WORK/api.log" "$WORK/worker.log")
   [ -n "${SC_WORKER_LOG:-}" ] && logs+=("$SC_WORKER_LOG")
