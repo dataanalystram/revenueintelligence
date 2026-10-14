@@ -14,6 +14,7 @@ import {
 } from '../../domain';
 import {
   assertAuthorized,
+  recordValueHistory,
   SecurityEventsService,
   TenantDatabase,
   type AuthorizedContext,
@@ -345,9 +346,11 @@ export class ContextIngestionService {
     const unknownCompanies: ExternalRef[] = [];
     let id: string;
     let changedFields: string[];
+    let createdName: string | null = null;
     if (obs.kind === 'company') {
       const values = withoutHeld(companyValues(obs), held, undefined);
       id = await this.store.createCompany(tx, values, now);
+      createdName = values.name;
       changedFields = presentFields({
         name: values.name,
         domains: values.domains.length ? 1 : null,
@@ -365,6 +368,17 @@ export class ContextIngestionService {
       changedFields,
       ...this.change(meta, obs.ref, obs.sourceUpdatedAt),
     });
+    if (obs.kind === 'company' && createdName !== null) {
+      // M10A2: value history, same transaction as the projection and the change record.
+      await recordValueHistory(tx, {
+        entityKind: 'company',
+        entityId: id,
+        changeId,
+        effectiveAt: obs.sourceUpdatedAt ?? obs.observedAt,
+        ...(meta.actor ? { actor: meta.actor } : {}),
+        changes: [{ field: 'name', oldValue: null, newValue: createdName }],
+      });
+    }
     await this.store.insertRef(tx, obs.kind, obs.ref, id, {
       state: 'active',
       firstSeenAt: obs.observedAt,
@@ -392,12 +406,16 @@ export class ContextIngestionService {
     const unknownCompanies: ExternalRef[] = [];
     const changedFields: string[] = [];
     let recordStateBefore: string;
+    let nameChange: { oldValue: string | null; newValue: string | null } | undefined;
 
     if (obs.kind === 'company') {
       const current = await this.store.getCompany(tx, id);
       recordStateBefore = current.recordState;
       const next = withoutHeld(companyValues(obs), held, current.values);
-      if (current.values.name !== next.name) changedFields.push('name');
+      if (current.values.name !== next.name) {
+        changedFields.push('name');
+        nameChange = { oldValue: current.values.name, newValue: next.name };
+      }
       if (!sameList(current.values.domains, next.domains)) changedFields.push('domains');
       if (changedFields.length) await this.store.updateCompany(tx, id, next, now);
     } else {
@@ -443,6 +461,17 @@ export class ContextIngestionService {
       changedFields: changedFields.length ? changedFields : ['companyLinks'],
       ...this.change(meta, obs.ref, obs.sourceUpdatedAt),
     });
+    if (nameChange) {
+      // M10A2: value history, same transaction as the projection and the change record.
+      await recordValueHistory(tx, {
+        entityKind: 'company',
+        entityId: id,
+        changeId,
+        effectiveAt: obs.sourceUpdatedAt ?? obs.observedAt,
+        ...(meta.actor ? { actor: meta.actor } : {}),
+        changes: [{ field: 'name', ...nameChange }],
+      });
+    }
     await this.store.updateRef(tx, obs.kind, obs.ref, { lastChangeId: changeId });
     return { decision, entityId: id, changed: true, unknownCompanies };
   }

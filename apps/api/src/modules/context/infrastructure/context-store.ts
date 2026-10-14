@@ -8,7 +8,12 @@ import type {
   RecordState,
   SourceCompanyLink,
 } from '../../domain';
-import { tenantAdvisoryLock, tenantClient, type TenantTransaction } from '../../tenancy';
+import {
+  changeGovernance,
+  tenantAdvisoryLock,
+  tenantClient,
+  type TenantTransaction,
+} from '../../tenancy';
 
 /**
  * Persistence for canonical context (M6, ADR 0014). Only
@@ -591,6 +596,13 @@ export class ContextStore {
 
   async insertChange(tx: TenantTransaction, change: ChangeWrite): Promise<string> {
     const id = randomUUID();
+    const connectionId = await sourceConnectionId(tx, change.source.system);
+    // M10A2: origin, adopted canonical version (fail closed), snapshot hash, transforms.
+    const governance = await changeGovernance(tx, {
+      sourceConnectionId: connectionId,
+      mappingVersion: change.mappingVersion ?? null,
+      sourceObjectType: change.source.objectType,
+    });
     await tenantClient(tx).tenantContextChange.create({
       data: {
         tenantId: tx.tenantId,
@@ -610,11 +622,15 @@ export class ContextStore {
         adapterVersion: change.adapterVersion,
         correlationId: change.correlationId,
         // M8: every write names the tenant's connection of its source system.
-        sourceConnectionId: await sourceConnectionId(tx, change.source.system),
+        sourceConnectionId: connectionId,
         mappingVersion: change.mappingVersion ?? null,
         actorKind: change.actor?.kind ?? null,
         actorId: change.actor?.id ?? null,
         actorAssurance: change.actor?.assurance ?? null,
+        origin: governance.origin,
+        canonicalVersion: governance.canonicalVersion,
+        schemaSnapshotHash: governance.schemaSnapshotHash,
+        transforms: governance.transforms,
       },
     });
     return id;
