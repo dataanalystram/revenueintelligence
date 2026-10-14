@@ -76,7 +76,7 @@ export const POLICY: Readonly<Record<Capability, readonly ActorKind[]>> = {
   'config.mapping.retire': ['operator'],
   'security.integrity.run': ['operator', 'system'],
   'canonical.evidence.link': ['system'],
-  'data.provenance.read': ['operator'],
+  'data.provenance.read': ['operator', 'source_sync'],
 };
 
 export type PolicyDecision =
