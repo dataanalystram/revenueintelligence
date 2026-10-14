@@ -8,6 +8,7 @@ import {
   MAPPING_RETIRE_REASONS,
   type MappingRetireReason,
   MappingDocumentSchema,
+  MappingDraftValidationStampSchema,
   PROFILE_FRESHNESS,
   SourceProfileSettingsSchema,
   SourceSchemaSchema,
@@ -448,10 +449,12 @@ export class SourceMappingsService {
       }
       return row;
     });
-    const stamp = draft.validation as {
-      contentHash: string;
-      acknowledgements?: Acknowledgement[];
-    };
+    // M10A2 review m8: the stamp is read back from jsonb, so parse it (fail closed).
+    const parsedStamp = MappingDraftValidationStampSchema.safeParse(draft.validation);
+    if (!parsedStamp.success) {
+      throw new SourcesError('mapping_not_validated', 'The validation stamp is malformed');
+    }
+    const stamp = parsedStamp.data;
     const published = await this.publish(actx, connectionId, draft.document, {
       expectedBaseVersion,
       expectedContentHash: stamp.contentHash,
