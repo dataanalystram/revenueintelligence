@@ -132,6 +132,7 @@ cg_retire() {
   cg_cli sources mapping-states --tenant "$CG_SOURCES" --connection sugar >"$CG_OUT/states.json" || return 1
   version="$(cg_published "$CG_OUT/states.json")"
   [ -n "$version" ] || return 1
+  CG_RETIRED="$version"
   cg_cli sources mapping-retire --tenant "$CG_SOURCES" --connection sugar --version "$version" --reason operator_retired >"$CG_OUT/retire-dry.json" || return 1
   grep -q '"dryRun": true' "$CG_OUT/retire-dry.json" || return 1
   cg_cli sources mapping-states --tenant "$CG_SOURCES" --connection sugar >"$CG_OUT/states-dry.json" || return 1
@@ -145,3 +146,59 @@ cg_retire() {
   [ "$code" -ne 0 ] && grep -q 'mapping_not_published\|No published mapping' "$CG_OUT/sync-refused.json" "$CG_OUT/sync-refused.err"
 }
 check "mapping retire (dry run writes nothing) → no published version → sync refused (mapping_not_published)" cg_retire
+
+# Leaves script 70's Sugar connection as it found it: the retired document is
+# published again as a new version (a retired version is never revived).
+cg_republish() {
+  [ -n "${CG_RETIRED:-}" ] && [ -n "${SC_ACK:-}" ] || return 1
+  cg_cli sources mappings-publish --tenant "$CG_SOURCES" --connection sugar --file "$SC_OUT/mapping-full.json" --ack "$SC_ACK" \
+    --based-on "$CG_RETIRED" --actor runtime-canon --execute >"$CG_OUT/republish.json" || return 1
+  cg_cli sources mapping-states --tenant "$CG_SOURCES" --connection sugar >"$CG_OUT/states-republished.json" || return 1
+  [ "$(cg_published "$CG_OUT/states-republished.json")" = "$((CG_RETIRED + 1))" ]
+}
+check "the retired Sugar mapping is published again as a new version (connection left published)" cg_republish
+
+# V23: value history may record source values (script 70's sync); none may reach
+# a process log or CLI output. The probe values are read from the history
+# itself (free-text strings only, not enum codes, ids or timestamps) plus the
+# fixture names script 70 already guards.
+cg_no_values() {
+  local tid values
+  tid="$(cg_sql "SELECT id FROM tenants WHERE slug = '$CG_SOURCES'")" || return 1
+  values="$(cg_sql "SELECT DISTINCT v #>> '{}' FROM tenant_value_history h, LATERAL (VALUES (h.old_value), (h.new_value)) AS x(v)
+                     WHERE h.tenant_id = '$tid' AND h.values_recorded AND jsonb_typeof(v) = 'string'
+                       AND length(v #>> '{}') >= 6 AND (v #>> '{}') ~ '[A-Z ]' AND (v #>> '{}') !~ '^[0-9:TZ.+-]+$'")" || return 1
+  # Review n3: report what is searched, so an empty history is visible. Script
+  # 70's sync is not expected to record free-text history values (it creates
+  # rows; history records changes — observed zero in CI run 38569672529), so
+  # zero free-text values is reported, not failed; the probe list always holds
+  # the fixture names and must not be empty.
+  local count=0 breakdown
+  [ -n "$values" ] && count="$(printf '%s\n' "$values" | wc -l | tr -d ' ')"
+  breakdown="$(cg_sql "SELECT entity_kind || '.' || field || ' values_recorded=' || values_recorded || ': ' || count(*)
+                        FROM tenant_value_history WHERE tenant_id = '$tid'
+                        GROUP BY entity_kind, field, values_recorded ORDER BY 1")" || return 1
+  echo "    value-history rows: ${breakdown:-none}"
+  echo "    value-history free-text values searched: $count (plus 2 fixture names)"
+  printf '%s\n' 'Fixture Account' 'Fixture Line' >"$CG_OUT/value-probes.txt"
+  [ "$count" -gt 0 ] && printf '%s\n' "$values" >>"$CG_OUT/value-probes.txt"
+  if [ ! -s "$CG_OUT/value-probes.txt" ]; then
+    echo "    no probe values: the log scan would prove nothing" >&2
+    return 1
+  fi
+  # Every log searched must exist: grep on a missing file would pass silently.
+  local logs=("$WORK/api.log" "$WORK/worker.log")
+  [ -n "${SC_WORKER_LOG:-}" ] && logs+=("$SC_WORKER_LOG")
+  local log
+  for log in "${logs[@]}"; do
+    if [ ! -f "$log" ]; then
+      echo "    log file missing: $log" >&2
+      return 1
+    fi
+  done
+  # grep: 1 = no match (pass); 0 = a value leaked; 2 = an error (fail too).
+  local rc=0
+  grep -rqF -f "$CG_OUT/value-probes.txt" "${logs[@]}" --exclude=value-probes.txt "$CG_OUT" || rc=$?
+  [ "$rc" -eq 1 ]
+}
+check "no value-history value (or fixture name) in the API, worker or CLI logs" cg_no_values

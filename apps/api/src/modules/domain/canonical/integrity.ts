@@ -5,7 +5,6 @@
 export const INTEGRITY_CHECKS = [
   'entity_index_missing',
   'entity_index_orphan',
-  'entity_index_tenant_mismatch',
   'value_history_unindexed',
   'adoption_chain_invalid',
   'adoption_audit_missing',

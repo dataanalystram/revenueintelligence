@@ -9,7 +9,6 @@ import { effectiveSensitivity } from '../security/classification';
 export const VALUE_HISTORY_FIELDS = {
   company: {
     name: { table: 'companies', column: 'name' },
-    customer_status: { table: 'companies', column: 'customer_status' },
   },
   subscription: {
     state: { table: 'tenant_subscriptions', column: 'state' },

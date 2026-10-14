@@ -36,6 +36,7 @@ DROP TABLE "canonical_modules";
 DROP TABLE "tenant_canonical_adoptions";
 DROP TABLE "canonical_model_versions";
 DROP FUNCTION "app_adoption_chain"();
+DROP FUNCTION "app_adoption_refuse_app_baseline"();
 DROP FUNCTION "app_canonical_single_current"();
 
 DELETE FROM "_prisma_migrations" WHERE migration_name = '20261215120000_m10a2_canonical_versions_modules_registries';

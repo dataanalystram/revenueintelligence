@@ -56,6 +56,7 @@ DROP TABLE "tenant_source_mapping_drafts";
 DROP TABLE "tenant_value_history";
 DROP TABLE "tenant_entity_index";
 DROP FUNCTION "app_mapping_lifecycle_transition"();
+DROP FUNCTION "app_mapping_lifecycle_refuse_app_backfill"();
 DROP FUNCTION "app_mapping_draft_edit"();
 DROP FUNCTION "app_entity_identity_immutable"();
 DROP FUNCTION "app_entity_index_add"();

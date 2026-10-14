@@ -319,7 +319,7 @@ CREATE TRIGGER "tenant_subscriptions_identity_immutable" BEFORE UPDATE OF "id" O
 -- ---------------------------------------------------------------------------
 ALTER TABLE "tenant_value_history"
   ADD CONSTRAINT "tenant_value_history_one_identity" CHECK (("entity_id" IS NULL) <> ("entity_key" IS NULL)),
-  ADD CONSTRAINT "tenant_value_history_field_valid" CHECK (("entity_kind", "field") IN (('company', 'name'), ('company', 'customer_status'), ('subscription', 'state'), ('subscription', 'starts_at'), ('subscription', 'ends_at'), ('subscription', 'product_key'), ('subscription', 'quantity'))),
+  ADD CONSTRAINT "tenant_value_history_field_valid" CHECK (("entity_kind", "field") IN (('company', 'name'), ('subscription', 'state'), ('subscription', 'starts_at'), ('subscription', 'ends_at'), ('subscription', 'product_key'), ('subscription', 'quantity'))),
   ADD CONSTRAINT "tenant_value_history_value_free" CHECK ("values_recorded" OR ("old_value" IS NULL AND "new_value" IS NULL)),
   ADD CONSTRAINT "tenant_value_history_policy_only_with_values" CHECK ("policy_version" IS NULL OR "values_recorded"),
   ADD CONSTRAINT "tenant_value_history_value_size" CHECK (("old_value" IS NULL OR octet_length("old_value"::text) <= 4096) AND ("new_value" IS NULL OR octet_length("new_value"::text) <= 4096)),
@@ -419,6 +419,21 @@ BEGIN
   END IF;
 END
 $$;
+
+-- Backfill rows are the migration's alone: the app role (or a member of it)
+-- can never write the migration actor, so no app path can forge an unaudited
+-- lifecycle event.
+CREATE FUNCTION "app_mapping_lifecycle_refuse_app_backfill"() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW."actor_id" = 'system:migration:m10a2' AND app_session_in_app_role() THEN
+    RAISE EXCEPTION 'mapping lifecycle backfill rows are written by the migration only'
+      USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END
+$$;
+CREATE TRIGGER "tenant_source_mapping_lifecycle_backfill_migration_only" BEFORE INSERT ON "tenant_source_mapping_lifecycle"
+  FOR EACH ROW EXECUTE FUNCTION app_mapping_lifecycle_refuse_app_backfill();
 
 -- Legal transitions (∅ → published, published → superseded | retired,
 -- superseded → retired; nothing leaves retired), dense seq per version, and at

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import {
   canonicalHash,
   decideModuleChange,
+  jsonbTextBytes,
   MODULE_CONFIG_MAX_BYTES,
   MODULE_KEYS,
   type ModuleKey,
@@ -35,7 +36,7 @@ export const ModuleConfigSchema = z
     z.string().regex(/^[a-z][a-z0-9_]{0,63}$/),
     z.union([z.string().max(200), z.number().finite(), z.boolean(), z.null()]),
   )
-  .refine((c) => JSON.stringify(c).length <= MODULE_CONFIG_MAX_BYTES, 'module config exceeds 4 KB');
+  .refine((c) => jsonbTextBytes(c) <= MODULE_CONFIG_MAX_BYTES, 'module config exceeds 4 KB');
 
 export interface ModuleState {
   readonly module: ModuleKey;
