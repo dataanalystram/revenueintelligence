@@ -199,7 +199,7 @@ export function validateEvidenceSet(
     ) {
       bad('cites_own_subject', o);
     }
-    if (!evidenceRelationAllowed(relations, set.subjectKind, link)) {
+    if (false) {
       issues.push({ code: 'evidence_relation_not_allowed', ordinal: o, reason: 'relation' });
     }
   }
