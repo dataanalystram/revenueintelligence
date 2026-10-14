@@ -8,13 +8,15 @@ import {
 } from './application/evidence-link.writer';
 import { IntegrityVerificationService } from './application/integrity-verification.service';
 import { ModuleGate, ModuleSettingsService } from './application/module-settings.service';
+import { ProvenanceQueryService } from './application/provenance-query.service';
 import { RegistryService } from './application/registry.service';
 import { SourceReferenceService } from './application/source-reference.service';
 
 /**
  * Canonical governance (M10A2, ADR 0027): canonical adoption, module
  * enablement, governed registries (data policy) and integrity verification;
- * M10B (ADR 0028): the generic source-reference writer.
+ * M10B (ADR 0028): the generic source-reference writer, the evidence-link
+ * writer and the provenance read model.
  */
 @Module({
   imports: [TenancyModule],
@@ -27,6 +29,7 @@ import { SourceReferenceService } from './application/source-reference.service';
     SourceReferenceService,
     { provide: EVIDENCE_RELATION_CATALOGUE, useValue: EVIDENCE_RELATIONS },
     EvidenceLinkWriter,
+    ProvenanceQueryService,
   ],
   exports: [
     CanonicalAdoptionService,
@@ -36,6 +39,7 @@ import { SourceReferenceService } from './application/source-reference.service';
     IntegrityVerificationService,
     SourceReferenceService,
     EvidenceLinkWriter,
+    ProvenanceQueryService,
   ],
 })
 export class GovernanceModule {}

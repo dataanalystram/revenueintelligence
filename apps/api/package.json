@@ -30,6 +30,7 @@
     "canonical:module": "node dist/cli/canonical.js module",
     "registry:show": "node dist/cli/canonical.js registry-show",
     "registry:publish": "node dist/cli/canonical.js registry-publish",
+    "provenance:show": "node dist/cli/provenance.js show",
     "context:report": "node dist/cli/context.js report",
     "context:receipts": "node dist/cli/context.js receipts",
     "context:backfill": "node dist/cli/context.js backfill",

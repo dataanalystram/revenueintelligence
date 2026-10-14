@@ -32,6 +32,14 @@ export {
   type RegistryPublishInput,
 } from './application/registry.service';
 export {
+  ProvenanceQueryService,
+  type ProvenanceField,
+  type ProvenanceLinkSet,
+  type ProvenanceQuery,
+  type ProvenanceReference,
+  type ProvenanceReport,
+} from './application/provenance-query.service';
+export {
   GENERIC_REFERENCES_MIN_VERSION,
   SourceReferenceService,
   type DeclaredProductModel,

@@ -65,6 +65,13 @@ const SERVICES: readonly ServiceSpec[] = [
     reads: [],
   },
   {
+    // The read model writes one provenance.read audit event per call.
+    file: 'governance/application/provenance-query.service.ts',
+    className: 'ProvenanceQueryService',
+    writes: ['show'],
+    reads: [],
+  },
+  {
     file: 'tenancy/application/tenant-config.service.ts',
     className: 'TenantConfigService',
     writes: [
