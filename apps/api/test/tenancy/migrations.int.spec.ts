@@ -635,7 +635,7 @@ describe('database migrations and schema guard', () => {
              FROM information_schema.columns k
              JOIN information_schema.columns i ON i.table_schema = k.table_schema AND i.table_name = k.table_name
                   AND i.column_name = regexp_replace(k.column_name, '_kind$', '') || '_id'
-            WHERE k.table_schema = 'public' AND k.column_name LIKE '%\_kind'`,
+            WHERE k.table_schema = 'public' AND k.column_name LIKE '%\\_kind'`,
         ),
       );
       const polymorphic = pairs.rows.filter(
