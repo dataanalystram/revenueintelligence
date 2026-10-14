@@ -823,6 +823,61 @@ describe('M10A2 canonical versioning and governance', () => {
       expect(await history(t)).toEqual([]);
     });
 
+    it('V12: a sensitive field is recorded value-free unless the published data policy allows values', async () => {
+      // None of the seven catalogued fields is sensitive in M10A2 (Q14), so the
+      // real classification never exercises restricted history end to end. The
+      // test raises company.name to `restricted` for its duration (VM15 proved
+      // that without this the suppression was covered by unit tests only).
+      const manifest = CLASSIFICATION_MANIFEST as Record<string, Record<string, unknown>>;
+      const original = manifest.companies!.name;
+      manifest.companies!.name = {
+        ...(original as object),
+        sensitivity: 'restricted',
+      };
+      try {
+        const t = await c.tenant('vhsens', 1001);
+        await companyOf(t, '941', 'Restricted One');
+        await companyOf(t, '941', 'Restricted Two');
+        expect(
+          (await history(t)).map((r) => [
+            r.field,
+            r.values_recorded,
+            r.old_value,
+            r.new_value,
+            r.policy_version,
+          ]),
+        ).toEqual([
+          ['name', false, null, null, null],
+          ['name', false, null, null, null],
+        ]);
+        // A published data policy that allows company.name values turns them on.
+        const document = {
+          schema: 1,
+          raw_retention: false,
+          value_history: { allow: [{ entity_kind: 'company', field: 'name', days: 30 }] },
+        };
+        const dry = await registry().dryRun(t, 'data_policy', document);
+        await registry().publishDataPolicy(await authz(t, 'config.data_policy.publish'), {
+          document,
+          expectedBaseVersion: 0,
+          expectedContentHash: dry.contentHash!,
+        });
+        await companyOf(t, '941', 'Restricted Three');
+        const rows = await history(t);
+        expect(rows).toHaveLength(3);
+        expect(rows[2]).toMatchObject({
+          field: 'name',
+          values_recorded: true,
+          old_value: 'Restricted Two',
+          new_value: 'Restricted Three',
+          retention_class: 'sensitive_value_history',
+          policy_version: 1,
+        });
+      } finally {
+        manifest.companies!.name = original;
+      }
+    });
+
     it('V13: no value of a sensitive column is ever kept in value history (scan of every row)', async () => {
       const rows = await c.sql<{
         entity_kind: string;
