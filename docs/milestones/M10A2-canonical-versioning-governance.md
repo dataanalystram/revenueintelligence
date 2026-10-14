@@ -1,7 +1,8 @@
 # M10A2 — Canonical Versioning & Governance Foundation (record)
 
-- Status: **implementation in review.** PR #2 (`m10a2-impl` → `integration`), not merged. Mutation proofs VM1–VM22
-  recorded (see [Mutation proofs](#mutation-proofs)); the fresh-clone run and the independent review are still open (see [Remaining](#remaining)).
+- Status: **implementation in review; independent review findings addressed.** PR #2 (`m10a2-impl` → `integration`),
+  not merged. Mutation proofs VM1–VM22 recorded (see [Mutation proofs](#mutation-proofs)); review findings and their
+  fixes in [Review findings disposition](#review-findings-disposition); owner approval and merge open (see [Remaining](#remaining)).
 - Plan: [M10A2 plan](M10A2-canonical-versioning-governance-plan.md); owner instruction of 2026-10-14: the `DEFAULT`
   answers Q1–Q21 apply unless overridden.
 - ADR: [0027 Canonical versioning and governance](../adr/0027-canonical-versioning-and-governance.md)
@@ -18,7 +19,7 @@
 | Modules                 | nine-module catalogue (all unavailable, Q16), tenant state + append-only setting events, dependency / required-by / minimum-version rules, `ModuleGate`; `canonical modules` / `canonical module`       |
 | Registries, data policy | generic immutable registry store + projection; `data_policy` schema; hash-confirmed publish (Q11); `RetentionPolicyProvider`; audit-purge report reads the policy; `registry-show` / `registry-publish` |
 | Entity index            | trigger-maintained `tenant_entity_index` (`lip_entity_indexer`, SECURITY DEFINER, fixed `search_path`); polymorphic composite FKs                                                                       |
-| Value history           | append-only, same transaction, six fields (Q14), restricted-history suppression, `ON DELETE RESTRICT` anchor                                                                                            |
+| Value history           | append-only, same transaction, six fields (Q14; m4), restricted-history suppression, `ON DELETE RESTRICT` anchor                                                                                        |
 | Change records          | origin, derivation, canonical version, snapshot hash, declared transforms; widened CHECKs                                                                                                               |
 | Mapping lifecycle       | append-only lifecycle + `tenant_source_mapping_states` view + mutable drafts; draft → validated → published → superseded → retired; sync refused without a published version; draft/states/retire CLIs  |
 | Integrity verification  | read-only checks, recorded runs (`--execute`), security event, never repaired; `security integrity-verify`                                                                                              |
@@ -26,15 +27,16 @@
 
 ## Definition of done
 
-| Item                                                                    | State                                                                          |
-| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Two migrations + down-scripts (up / rerun / down-refusal / restore)     | done (V22, CI integration)                                                     |
-| V1–V22 tests                                                            | done (V15 added; V12 restricted history at integration level added after VM15) |
-| V23 runtime script `86-canonical-governance.sh`                         | done (CI runtime job)                                                          |
-| Format, lint, typecheck, boundaries, unit, integration, runtime, docker | CI (see [Evidence](#evidence))                                                 |
-| ADR 0027, this record, README status, E6 R2 note, tech-debt entries     | done                                                                           |
-| Mutation proofs VM1–VM22                                                | done (see [Mutation proofs](#mutation-proofs)); one test gap found and fixed   |
-| Fresh-clone run, independent review, owner approval, merge              | **open**                                                                       |
+| Item                                                                    | State                                                                             |
+| ----------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Two migrations + down-scripts (up / rerun / down-refusal / restore)     | done (V22, CI integration)                                                        |
+| V1–V22 tests                                                            | done (V15 added; V12 restricted history at integration level added after VM15)    |
+| V23 runtime script `86-canonical-governance.sh`                         | done (CI runtime job)                                                             |
+| Format, lint, typecheck, boundaries, unit, integration, runtime, docker | CI (see [Evidence](#evidence))                                                    |
+| ADR 0027, this record, README status, E6 R2 note, tech-debt entries     | done                                                                              |
+| Mutation proofs VM1–VM22                                                | done (see [Mutation proofs](#mutation-proofs)); one test gap found and fixed      |
+| Fresh-clone run (CI), independent review + fixes                        | done (see [Evidence](#evidence), [Review findings](#review-findings-disposition)) |
+| Owner approval, merge                                                   | **open**                                                                          |
 
 ## Plan vs actual (deviations)
 
@@ -54,6 +56,11 @@
 | D12 | Integrity verification: CLI + worker job (Q17)               | CLI only; the worker job is deferred (tech debt #65) — the automatic schedule is off until M10M anyway                                                                                                                                                                                                                                                                                                                                                                                |
 | D13 | Runtime V23: draft → publish → retire → sync refused         | Runtime script 86 retires the published mapping of script 70's Sugar tenant and proves sync refused; the full draft → validate → publish path runs in V15 (integration, fake Sugar), not at runtime                                                                                                                                                                                                                                                                                   |
 | D14 | Drafts: draft → validated → published                        | Draft validation takes the profile-finding acknowledgements (M9A §7.4; `mapping-draft-validate --ack`), stores them in the validation stamp, and the draft publication reuses them unchanged; without them a draft whose covering profile has findings cannot be validated                                                                                                                                                                                                            |
+| D15 | Migrations are immutable once committed                      | The two M10A2 migrations were **edited in place** by `3575b0c` and the later fix commits (`0b6d24b`, review fixes `9c7f9ed` m3, `e34675d` m4). They are unmerged and have only ever run on throwaway CI / test databases, never on a shared or production database; once merged to `integration` they are frozen and any change is a new migration                                                                                                                                    |
+| D16 | Value history names the actor of the change                  | A writer call path with no security actor (pre-M10A1 paths) records the actor `system:unattributed` (kind `system`, assurance `system`), never an invented person or operator                                                                                                                                                                                                                                                                                                         |
+| D17 | Mapping retirement stops sync                                | Review m7: sync reads the published mapping when it starts; an in-flight sync whose mapping is retired mid-run is not interrupted (accepted); the next run is refused with `mapping_not_published`. `show` with no version now returns the published version only                                                                                                                                                                                                                     |
+| D18 | Data policy `effectiveFrom`                                  | Review m9: a data policy takes effect at publication; the unused `effectiveFrom` input was dropped from `RegistryPublishInput` (no scheduled effectivity)                                                                                                                                                                                                                                                                                                                             |
+| D19 | Value history fields (Q14)                                   | Review m4: six fields; `company.customer_status` dropped (derived, not a source value)                                                                                                                                                                                                                                                                                                                                                                                                |
 
 ## Tests
 
@@ -71,15 +78,38 @@
 CI on PR #2 (GitHub Actions, workflow `CI`; jobs: lint/typecheck/boundaries/unit, integration (Testcontainers),
 runtime, docker):
 
-| Run           | Head      | Result                                                                                                                                                                                       |
-| ------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `38504805023` | `2d4f9a5` | failure (lint escape, schema guard, protection seed, M10A1 audit-purge execution)                                                                                                            |
-| `38506523129` | `3575b0c` | integration ✅, runtime ✅, docker ✅; unit ❌ (privilege manifest lacked the view) — fixed in `3f19b62`                                                                                     |
-| `38507521249` | `9d14671` | unit ✅, docker ✅; integration ❌ (view privileges from schema default DML; V15 draft needed acknowledgements); runtime ❌ (script 75 `pr_unreviewed`, not reproduced on the next two runs) |
-| `38509313747` | `0b6d24b` | unit ✅, runtime ✅ (incl. script 86), docker ✅; integration ❌ (V15: identical re-save keeps the validation — test corrected)                                                              |
-| `38510222639` | `c9d4856` | **all four jobs ✅** (lint/typecheck/boundaries/unit, integration, runtime incl. script 86, docker)                                                                                          |
-| `38510972857` | `1e41f16` | **all four jobs ✅** (record only)                                                                                                                                                           |
-| `38517072971` | `814b428` | **all four jobs ✅** after the mutation proofs (incl. the new V12 restricted-history integration test, `5ac5c1b`)                                                                            |
+| Run           | Head      | Result                                                                                                                                                                                              |
+| ------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `38504805023` | `2d4f9a5` | failure (lint escape, schema guard, protection seed, M10A1 audit-purge execution)                                                                                                                   |
+| `38506523129` | `3575b0c` | integration ✅, runtime ✅, docker ✅; unit ❌ (privilege manifest lacked the view) — fixed in `3f19b62`                                                                                            |
+| `38507521249` | `9d14671` | unit ✅, docker ✅; integration ❌ (view privileges from schema default DML; V15 draft needed acknowledgements); runtime ❌ (script 75 `pr_unreviewed`, not reproduced on the next two runs)        |
+| `38509313747` | `0b6d24b` | unit ✅, runtime ✅ (incl. script 86), docker ✅; integration ❌ (V15: identical re-save keeps the validation — test corrected)                                                                     |
+| `38510222639` | `c9d4856` | **all four jobs ✅** (lint/typecheck/boundaries/unit, integration, runtime incl. script 86, docker)                                                                                                 |
+| `38510972857` | `1e41f16` | **all four jobs ✅** (record only)                                                                                                                                                                  |
+| `38517072971` | `814b428` | **all four jobs ✅** after the mutation proofs (incl. the new V12 restricted-history integration test, `5ac5c1b`)                                                                                   |
+| `38518098578` | `ec557d4` | **all four jobs ✅** (before the review fixes)                                                                                                                                                      |
+| `38564794326` | `9bc7882` | **all four jobs ✅**: first full check of the merged review fixes (m1–m9); jobs lint `115854613137`, integration `115854613017`, runtime `115854612817`, docker `115854612506`                      |
+| `38565868926` | `5b0bdb0` | **all four jobs ✅** (fresh-clone run; incl. the two new script-86 checks, runtime 186 passed); jobs lint `115858253987`, integration `115858255125`, runtime `115858254646`, docker `115858254499` |
+
+**Fresh-clone run.** Every CI job checks the branch out fresh and runs `pnpm install --frozen-lockfile` and the full
+verification, so run `38565868926` (head `5b0bdb0`) is recorded as the fresh-clone run. A local fresh clone was not run:
+the sandbox did not have the memory for a full install and typecheck.
+
+## Review findings disposition
+
+| Finding | Fix commit(s)                                                                                                                                                             |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| M1      | `5ac5c1b` — integration V12 restricted-history test (D9)                                                                                                                  |
+| m1      | `9fbd3f7` — dead `entity_index_tenant_mismatch` check dropped; no-FK docs corrected (D3, D10)                                                                             |
+| m2      | `55ea53d` — `audit_reference_missing` exempts only rows before the latest purge anchor cutoff (+5 min skew) (D1)                                                          |
+| m3      | `9c7f9ed` — app-role migration-actor rows (baseline adoptions, backfill lifecycle) refused by trigger                                                                     |
+| m4      | `e34675d` — value history six fields (D19)                                                                                                                                |
+| m5      | `9af3dcd` — meaningful V11 isolation counts; V22 covers more down-script refusals                                                                                         |
+| m6      | `2eb7006` — jsonb limits in UTF-8 bytes of the jsonb text; `5b0bdb0` — mapping document size limit too                                                                    |
+| m7      | `d2431b3` — `show()` reads the published mapping; `validateDraft` refuses disabled-module targets (D17)                                                                   |
+| m8      | `e933976`, `c2dcc2c` — draft validation stamp parsed on read-back (fails closed), unit-tested                                                                             |
+| m9      | `c912797` — `effectiveFrom` dropped from `RegistryPublishInput` (D18)                                                                                                     |
+| m10     | `5b0bdb0` — runtime V23 "no values in logs" (script 86 probes the API, worker and CLI logs for value-history values); script 70's Sugar mapping re-published after retire |
 
 ## Mutation proofs
 
@@ -131,5 +161,5 @@ write; the guards fail because they assert the exact layer. VM16's failure comes
 
 ## Remaining
 
-- Fresh-clone run; independent review; owner approval; merge to `integration`.
+- Owner approval; merge to `integration`.
 - Integrity worker job (tech debt #65).
