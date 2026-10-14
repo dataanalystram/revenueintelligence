@@ -1,6 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
 import {
   decideApplyWithHash,
+  decideMerge,
+  decideRetirement,
   fieldHash,
   findSecretLike,
   primaryCompanyLink,
@@ -205,8 +207,28 @@ export class ContextIngestionService {
       input.objectType,
       input.observedAt,
     );
+    // The caller (SourceSyncService 4d) owns the run gates: only an accepted,
+    // proven, full run without uncertainty reaches here (M9B). The shared rule
+    // (M10B plan §2.4) decides each candidate.
+    const run = {
+      accepted: true,
+      proven: true,
+      full: true,
+      uncertain: false,
+      observedAt: input.observedAt,
+      seen: input.seen,
+    };
     for (const row of candidates) {
-      if (input.seen.has(row.externalId)) continue;
+      const decision = decideRetirement(
+        {
+          externalId: row.externalId,
+          origin: 'observed',
+          state: 'active',
+          lastSeenAt: row.lastSeenAt,
+        },
+        run,
+      );
+      if (!decision.retire) continue;
       const ref: ExternalRef = {
         system: input.system,
         objectType: input.objectType,
@@ -628,7 +650,15 @@ export class ContextIngestionService {
         applied = true;
         continue;
       }
-      if (row.state === 'merged' && row.mergedIntoExternalId === input.survivor.id) continue;
+      // M10B plan §2.4: the shared merge rule (already merged into this survivor → nothing to do).
+      if (
+        decideMerge(
+          { externalId: ref.id, state: row.state, mergedIntoExternalId: row.mergedIntoExternalId },
+          input.survivor.id,
+        ) === 'unchanged'
+      ) {
+        continue;
+      }
 
       await this.store.updateRef(tx, input.kind, ref, {
         state: 'merged',
