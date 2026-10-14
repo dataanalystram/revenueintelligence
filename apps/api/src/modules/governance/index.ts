@@ -10,6 +10,11 @@ export {
   type AdoptionResult,
 } from './application/canonical-adoption.service';
 export {
+  EVIDENCE_RELATION_CATALOGUE,
+  EvidenceLinkWriter,
+  type EvidenceLinkSetWritten,
+} from './application/evidence-link.writer';
+export {
   IntegrityVerificationService,
   type IntegrityReport,
 } from './application/integrity-verification.service';

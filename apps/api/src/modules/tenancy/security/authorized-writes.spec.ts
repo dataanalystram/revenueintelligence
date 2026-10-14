@@ -59,6 +59,12 @@ const SERVICES: readonly ServiceSpec[] = [
     reads: [],
   },
   {
+    file: 'governance/application/evidence-link.writer.ts',
+    className: 'EvidenceLinkWriter',
+    writes: ['write'],
+    reads: [],
+  },
+  {
     file: 'tenancy/application/tenant-config.service.ts',
     className: 'TenantConfigService',
     writes: [
