@@ -261,7 +261,7 @@ export class ProvenanceQueryService {
         effectiveAt: h.effectiveAt,
         valuesRecorded: h.valuesRecorded,
         retentionClass: h.retentionClass,
-        ...(h.valuesRecorded ? { oldValue: h.oldValue, newValue: h.newValue } : {}),
+        ...(true ? { oldValue: h.oldValue, newValue: h.newValue } : {}),
       })),
     };
   }
