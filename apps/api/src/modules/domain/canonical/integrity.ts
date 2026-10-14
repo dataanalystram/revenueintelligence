@@ -13,6 +13,13 @@ export const INTEGRITY_CHECKS = [
   'registry_projection_mismatch',
   'mapping_lifecycle_invalid',
   'privilege_manifest_mismatch',
+  // M10B plan §11 (ADR 0028)
+  'declared_reference_drift',
+  'source_reference_ambiguous',
+  'source_reference_change_mismatch',
+  'evidence_relation_unknown',
+  'evidence_supersession_invalid',
+  'source_reference_index_parity',
 ] as const;
 export type IntegrityCheck = (typeof INTEGRITY_CHECKS)[number];
 
