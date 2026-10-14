@@ -308,7 +308,7 @@ ALTER TABLE "tenant_evidence_links"
 -- ---------------------------------------------------------------------------
 -- 5. source_reference_index: read-only union of every reference store (plan §4)
 -- ---------------------------------------------------------------------------
-CREATE VIEW "source_reference_index" WITH (security_invoker = true) AS
+CREATE VIEW "source_reference_index" AS
   SELECT r."tenant_id", 'company_external_refs'::text AS "store", 'company'::text AS "entity_kind",
          r."company_id" AS "entity_id", NULL::text AS "entity_key", r."system", r."object_type", r."external_id",
          r."state", 'observed'::text AS "origin", r."first_seen_at", r."last_seen_at", r."source_updated_at", r."retired_at"
