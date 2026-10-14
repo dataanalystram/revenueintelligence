@@ -67,6 +67,10 @@ export const AUDIT_ACTIONS = [
   'mapping.draft.discard',
   'mapping.retire',
   'integrity.verify',
+  // M10B (`evidence.link` and `source_reference.observe`: denials and failures only)
+  'provenance.read',
+  'evidence.link',
+  'source_reference.observe',
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -96,6 +100,12 @@ export const AUDIT_REASON_CODES = [
   'mapping_not_validated',
   'no_published_mapping',
   'no_change',
+  // M10B
+  'reference_kind_not_generic',
+  'reference_identity_conflict',
+  'evidence_relation_not_allowed',
+  'evidence_target_not_allowed',
+  'evidence_set_invalid',
 ] as const;
 export type AuditReasonCode = (typeof AUDIT_REASON_CODES)[number];
 
@@ -129,6 +139,10 @@ export const AUDIT_TARGET_KINDS = [
   'data_policy',
   'mapping_draft',
   'integrity_run',
+  // M10B
+  'source_reference',
+  'evidence_link_set',
+  'provenance',
 ] as const;
 export type AuditTargetKind = (typeof AUDIT_TARGET_KINDS)[number];
 

@@ -35,13 +35,16 @@ export const CAPABILITIES = [
   'config.mapping.draft',
   'config.mapping.retire',
   'security.integrity.run',
+  // M10B (policy v3)
+  'canonical.evidence.link',
+  'data.provenance.read',
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
 /** Bumped whenever a grant changes; recorded on every audit event. */
-export const POLICY_VERSION = 2;
+export const POLICY_VERSION = 3;
 
-/** Policy v2 (M10A2 added seven capabilities): capability → actor kinds granted. `human_user` and `ai` hold nothing. */
+/** Policy v3 (M10A2 added seven capabilities, M10B two): capability → actor kinds granted. `human_user` and `ai` hold nothing. */
 export const POLICY: Readonly<Record<Capability, readonly ActorKind[]>> = {
   'canonical.source_sync': ['source_sync', 'system'],
   'canonical.import': ['operator'],
@@ -72,6 +75,8 @@ export const POLICY: Readonly<Record<Capability, readonly ActorKind[]>> = {
   'config.mapping.draft': ['operator'],
   'config.mapping.retire': ['operator'],
   'security.integrity.run': ['operator', 'system'],
+  'canonical.evidence.link': ['system'],
+  'data.provenance.read': ['operator'],
 };
 
 export type PolicyDecision =

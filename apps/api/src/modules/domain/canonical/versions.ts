@@ -56,7 +56,9 @@ export interface CanonicalVersionEntry {
 }
 
 export const CANONICAL_VERSIONS: readonly CanonicalVersionEntry[] = [
-  { version: '0.1', status: 'current', adr: '0027' },
+  { version: '0.1', status: 'supported', adr: '0027' },
+  // M10B (ADR 0028): generic source references, evidence links, key-identified change records.
+  { version: '0.2', status: 'current', adr: '0028' },
 ];
 
 export function currentCanonicalVersion(): string {
@@ -70,23 +72,38 @@ export function isAdoptableStatus(status: CanonicalVersionStatus): boolean {
   return status === 'current' || status === 'supported';
 }
 
-/**
- * The vocabulary a version's rows are tied to: entity-index kinds, module keys
- * and the change-record vocabulary. Its hash is stored as `catalogue_hash`.
- */
-export function canonicalCatalogueHash(catalogue: {
+/** The vocabulary a canonical version is tied to (the input of its `catalogue_hash`). */
+export interface CanonicalCatalogue {
   readonly entityKinds: readonly string[];
   readonly moduleKeys: readonly string[];
   readonly changeTypes: readonly string[];
   readonly causes: readonly string[];
   readonly origins: readonly string[];
-}): string {
+  /** M10B (0.2): optional members, hashed only when present (Q19), so 0.1's stored hash is unchanged. */
+  readonly changeEntityKinds?: readonly string[];
+  readonly genericReferenceKinds?: readonly string[];
+  readonly evidenceTypes?: readonly string[];
+  readonly evidenceRoles?: readonly string[];
+}
+
+/**
+ * The vocabulary a version's rows are tied to: entity-index kinds, module keys
+ * and the change-record vocabulary (0.2 adds the change entity kinds, generic
+ * reference kinds, evidence types and roles). Its hash is stored as
+ * `catalogue_hash`. Absent optional members are not hashed (Q19).
+ */
+export function canonicalCatalogueHash(catalogue: CanonicalCatalogue): string {
+  const sorted = (xs: readonly string[] | undefined) => (xs ? [...xs].sort() : undefined);
   return canonicalHash({
-    entityKinds: [...catalogue.entityKinds].sort(),
-    moduleKeys: [...catalogue.moduleKeys].sort(),
-    changeTypes: [...catalogue.changeTypes].sort(),
-    causes: [...catalogue.causes].sort(),
-    origins: [...catalogue.origins].sort(),
+    entityKinds: sorted(catalogue.entityKinds),
+    moduleKeys: sorted(catalogue.moduleKeys),
+    changeTypes: sorted(catalogue.changeTypes),
+    causes: sorted(catalogue.causes),
+    origins: sorted(catalogue.origins),
+    changeEntityKinds: sorted(catalogue.changeEntityKinds),
+    genericReferenceKinds: sorted(catalogue.genericReferenceKinds),
+    evidenceTypes: sorted(catalogue.evidenceTypes),
+    evidenceRoles: sorted(catalogue.evidenceRoles),
   });
 }
 
