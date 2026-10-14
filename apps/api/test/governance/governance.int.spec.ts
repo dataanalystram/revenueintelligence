@@ -161,6 +161,13 @@ describe('M10A2 canonical versioning and governance', () => {
         modulesNewlyAvailable: [],
         registriesAboveTarget: 0,
         mappingsAboveTarget: 0,
+        // M10B plan §7: the dry run lists what the rollback withdraws.
+        enables: [],
+        disables: [
+          'observed_generic_source_references',
+          'evidence_links',
+          'key_identified_change_records',
+        ],
       });
       expect(await adoption().plan(t, '0.3', '0.2')).toMatchObject({
         decision: 'refused',

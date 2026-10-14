@@ -61,6 +61,31 @@ export const CANONICAL_VERSIONS: readonly CanonicalVersionEntry[] = [
   { version: '0.2', status: 'current', adr: '0028' },
 ];
 
+/**
+ * What each canonical version enables for a tenant that adopts it (M10B plan
+ * §7): the adoption dry run lists the features gained (forward) or withdrawn
+ * (rollback) between the adopted and the target version. Codes only.
+ */
+export const CANONICAL_VERSION_FEATURES: Readonly<Record<string, readonly string[]>> = {
+  '0.1': [],
+  '0.2': ['observed_generic_source_references', 'evidence_links', 'key_identified_change_records'],
+};
+
+/** Features enabled by versions in (from, to] when moving forward, or withdrawn when moving back. */
+export function canonicalFeatureChanges(
+  from: string,
+  to: string,
+): { readonly enables: readonly string[]; readonly disables: readonly string[] } {
+  const cmp = compareCanonicalVersion(to, from);
+  if (cmp === 0) return { enables: [], disables: [] };
+  const [lo, hi] = cmp > 0 ? [from, to] : [to, from];
+  const between = Object.keys(CANONICAL_VERSION_FEATURES)
+    .filter((v) => compareCanonicalVersion(v, lo) > 0 && compareCanonicalVersion(v, hi) <= 0)
+    .sort(compareCanonicalVersion)
+    .flatMap((v) => CANONICAL_VERSION_FEATURES[v] ?? []);
+  return cmp > 0 ? { enables: between, disables: [] } : { enables: [], disables: between };
+}
+
 export function currentCanonicalVersion(): string {
   const current = CANONICAL_VERSIONS.filter((v) => v.status === 'current');
   if (current.length !== 1) throw new Error('exactly one canonical version must be current');
