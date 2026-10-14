@@ -130,7 +130,6 @@ export class ProvenanceQueryService {
     actx: AuthorizedContext<'data.provenance.read'>,
     query: ProvenanceQuery,
   ): Promise<ProvenanceReport> {
-    assertAuthorized(actx, 'data.provenance.read');
     const subject = this.subject(query);
     return this.db.transaction(actx.tenant, async (tx) => {
       const references = await this.references(tx, subject);
