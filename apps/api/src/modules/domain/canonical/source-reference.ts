@@ -186,7 +186,7 @@ export function decideRetirement(
   },
   run: RetirementRun,
 ): RetirementDecision {
-  if (!run.accepted || !run.proven || !run.full || run.uncertain) {
+  if (!run.proven || !run.full || run.uncertain) {
     return { retire: false, reason: 'run_not_eligible' };
   }
   if (ref.origin === 'declared') return { retire: false, reason: 'declared' };
