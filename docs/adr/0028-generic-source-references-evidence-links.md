@@ -96,3 +96,16 @@ Opportunity M10H, …) needs one reference store, immutable evidence and a prove
 - Deferred: time-range partitioning of evidence links (M10 §13); the first production evidence relations (M10G /
   M10H); module-owned evidence kinds (`EVIDENCE_KIND_MODULES` is empty, so the writer's module gate is not
   exercised yet).
+- Supersession is a **linear chain**: a link set is superseded at most once. The writer refuses superseding a set
+  that is already superseded (serialised per set by an advisory lock), and integrity check 11 reports a fork (a set
+  superseded by more than one set) planted by raw SQL (review m3).
+- `evidence_relation_unknown` reads the distinct relation tuples first and fetches set ids (bounded) only for tuples
+  outside the catalogue, so a late set cannot be hidden by a bound (review M1). The catalogue is injected
+  (`EVIDENCE_RELATION_CATALOGUE`), the same one the writer enforces.
+- The identity trigger lets an app-role `UPDATE` re-point a **declared** reference (`entity_key`) without a change
+  record. Single-writer is by convention (`SourceReferenceService` from product-model publish); a re-point outside it
+  is caught by integrity check 7 (`declared_reference_drift`) against the latest model, not refused (review n2).
+- `source_reference_index_parity` guards view drift only: against a `UNION ALL` view it can fail only if the view is
+  redefined (review m2, admitted in the record's known gaps).
+- Known, deferred until Q4: a declared/observed collision on the same triple fails product-model publish with a
+  misleading `reference_identity_conflict` message (review m1, tech debt #73).

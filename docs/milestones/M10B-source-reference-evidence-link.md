@@ -28,16 +28,16 @@
 
 ## Definition of done
 
-| Item                                                                     | State                                                                                      |
-| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
-| Migration + down-script (up / rerun / down-refusal / restore / re-apply) | done (V22, CI integration)                                                                 |
-| V1–V22 tests                                                             | done (see [Tests](#tests)); V13 value-free / capability test added after VM18/VM19         |
-| V23 runtime script `87-source-references-evidence.sh`                    | done (CI runtime job, 7/7 checks)                                                          |
-| Format, lint, typecheck, boundaries, unit, integration, runtime, docker  | CI (see [Evidence](#evidence))                                                             |
-| ADR 0028, this record, README status, plan §6 adapter note               | done                                                                                       |
-| Mutation proofs VM1–VM23                                                 | done (see [Mutation proofs](#mutation-proofs)); two test gaps found (VM18, VM19) and fixed |
-| Fresh-clone run                                                          | CI (see [Evidence](#evidence)); local fresh clone not possible (sandbox memory, no Docker) |
-| Independent review, owner approval, merge                                | **open**                                                                                   |
+| Item                                                                          | State                                                                                      |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Migration + down-script (up / rerun / down-refusal / restore / re-apply)      | done (V22, CI integration)                                                                 |
+| V1–V22 tests                                                                  | done (see [Tests](#tests)); V13 value-free / capability test added after VM18/VM19         |
+| V23 runtime script `87-source-references-evidence.sh`                         | done (CI runtime job, 7/7 checks)                                                          |
+| Format, lint, typecheck, boundaries, unit, integration, runtime, docker       | CI (see [Evidence](#evidence))                                                             |
+| ADR 0028, this record, README status, plan §6 adapter note, tech-debt entries | done; tech-debt entries #67–#73 added after review M2 (`docs/tech-debt.md`)                |
+| Mutation proofs VM1–VM23                                                      | done (see [Mutation proofs](#mutation-proofs)); two test gaps found (VM18, VM19) and fixed |
+| Fresh-clone run                                                               | CI (see [Evidence](#evidence)); local fresh clone not possible (sandbox memory, no Docker) |
+| Independent review, owner approval, merge                                     | **open**                                                                                   |
 
 ## Plan vs actual (deviations)
 
@@ -91,7 +91,23 @@
   new files.
 - `migrations.int.spec.ts` now takes ~180 s for the file (was ~168 s); individual tests, not the file, are timed, so
   it does not fail, but it is close to the known 180 s hook-timeout flake zone.
+- Review m1 (declared/observed collision fails publish with a misleading message) is known and deferred until Q4
+  (tech debt #73); review m2 (`source_reference_index_parity` is tautological) is admitted above and in ADR 0028.
 - Live Chargebee TEST-site regression: not run (no approved secrets in this environment); live Sugar stays pending.
+
+## Review findings disposition
+
+Independent review of PR #5 at `31ba81b` (PASS WITH FINDINGS):
+
+| Finding                                                       | Disposition                                                                                                                                                                       | Commit           |
+| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| M1 `evidence_relation_unknown` could miss a late set          | fixed: distinct relation tuples first, catalogue filter, then bounded set ids of unknown tuples; catalogue injected; V17 test plants 1,100 valid sets ahead of a late unknown set | `7e1b8ef`        |
+| M2 tech-debt DoD item not delivered                           | fixed: tech debt #67–#73 (Q4, Q3, Q18/M15, Q10, evidence kinds / partitioning / relations, migrations suite timing, m1); DoD row updated                                          | this docs commit |
+| m1 declared/observed collision message                        | known, deferred until Q4 (tech debt #73, ADR 0028 consequences)                                                                                                                   | this docs commit |
+| m2 parity check tautological                                  | admitted (known gaps; ADR 0028: guards view drift only)                                                                                                                           | this docs commit |
+| m3 supersession forks                                         | fixed: writer refuses superseding an already-superseded set (advisory lock per set); integrity check 11 flags a fork; writer and planted V17 tests; ADR 0028 linear chain         | `0b31e03`        |
+| n1 redundant drift condition                                  | fixed                                                                                                                                                                             | `7e1b8ef`        |
+| n2 identity trigger allows app-role re-point of declared refs | documented in ADR 0028 (caught by drift check 7)                                                                                                                                  | this docs commit |
 
 ## Rollback caveat
 
