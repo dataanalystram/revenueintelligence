@@ -358,7 +358,9 @@ function sameValue(a: unknown, b: unknown): boolean {
 
 /** The catalogued fields whose value differs (all non-empty fields on creation). */
 export function subscriptionValueChanges(
-  before: Pick<SubscriptionValues, 'state' | 'startsAt' | 'endsAt' | 'productKey' | 'quantity'> | undefined,
+  before:
+    | Pick<SubscriptionValues, 'state' | 'startsAt' | 'endsAt' | 'productKey' | 'quantity'>
+    | undefined,
   after: SubscriptionValues,
 ): { field: string; oldValue: unknown; newValue: unknown }[] {
   return Object.entries(SUBSCRIPTION_HISTORY_FIELDS)

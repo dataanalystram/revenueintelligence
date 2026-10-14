@@ -57,7 +57,7 @@ export class SourceReportService {
   ): Promise<SourceReport> {
     const connection = await this.connections.get(ctx, connectionId);
     const { mapping, authority, runs } = await this.db.transaction(ctx, async (tx) => ({
-      mapping: await this.repo.latestMapping(tx, connectionId),
+      mapping: await this.repo.publishedMapping(tx, connectionId),
       authority: await this.repo.latestAuthority(tx),
       runs: await this.repo.listRuns(tx, connectionId, 5),
     }));

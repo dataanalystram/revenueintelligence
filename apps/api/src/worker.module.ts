@@ -1,5 +1,6 @@
 import { Module, type DynamicModule } from '@nestjs/common';
 import { ContextIntakeModule, ContextModule } from './modules/context';
+import { GovernanceModule } from './modules/governance';
 import { HubSpotModule } from './modules/hubspot';
 import { IdentityModule } from './modules/identity';
 import { SubscriptionMergeModule, SubscriptionMergeParticipant } from './modules/products';
@@ -31,6 +32,8 @@ export class WorkerModule {
       imports: [
         PlatformModule.forRoot(config),
         TenancyModule,
+        // M10A2: canonical adoption, modules, registries, integrity verification.
+        GovernanceModule,
         IdentityModule,
         HubSpotModule,
         ContextIntakeModule,

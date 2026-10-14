@@ -1,6 +1,12 @@
+import { randomUUID } from 'node:crypto';
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { MetricsService } from '../../../platform/metrics';
 import {
+  CANONICAL_MODULES,
+  canonicalHash,
+  disabledModuleTargets,
+  MAPPING_RETIRE_REASONS,
+  type MappingRetireReason,
   MappingDocumentSchema,
   PROFILE_FRESHNESS,
   SourceProfileSettingsSchema,
@@ -13,13 +19,17 @@ import {
   type MappingValidation,
 } from '../../domain';
 import {
+  adoptedCanonicalVersion,
   assertAuthorized,
   AuditTrail,
+  moduleSettings,
   WriteAuthorizer,
   tenantAdvisoryLock,
   TenantDatabase,
+  tenantClient,
   type AuthorizedContext,
   type TenantContext,
+  type TenantJsonInput,
   type TenantTransaction,
 } from '../../tenancy';
 import {
@@ -42,6 +52,20 @@ export interface PublishMappingOptions {
   readonly acknowledgements?: readonly Acknowledgement[];
   /** Emergency profile override (D5): disabled in M9A, always refused (decision A1). */
   readonly profileOverride?: { readonly reason: string };
+  /** M10A2 drafts: the validated content hash; a different document is refused. */
+  readonly expectedContentHash?: string;
+}
+
+/** M10A2: a mapping working copy (draft | validated). */
+export interface MappingDraftView {
+  readonly connectionId: string;
+  readonly state: 'draft' | 'validated';
+  readonly version: number;
+  readonly contentHash: string;
+  readonly validatedSnapshotHash: string | null;
+  readonly validatedAuthorityVersion: number | null;
+  readonly validatedCanonicalVersion: string | null;
+  readonly validation: unknown;
 }
 
 export interface ValidateMappingOptions {
@@ -141,11 +165,21 @@ export class SourceMappingsService {
       }
       const { report, validation } = await this.check(tx, connectionId, raw, options);
       if (!validation.ok) throw new MappingInvalidError(validation.errors);
+      if (
+        options.expectedContentHash !== undefined &&
+        options.expectedContentHash !== validation.contentHash
+      ) {
+        throw new SourcesError('mapping_not_validated', 'The draft changed since it was validated');
+      }
       if (report.authorityVersion === 0) {
         throw new SourcesError('authority_missing', 'The tenant has no authority version');
       }
+      // M10A2 mapping hook: no entry may target an entity of a disabled module.
+      await this.refuseDisabledModuleTargets(tx, validation.document);
+      const previouslyPublished = await this.repo.publishedMapping(tx, connectionId);
       const stored = await this.repo.insertMapping(tx, {
         connectionId,
+        canonicalVersionMin: await adoptedCanonicalVersion(tx),
         version: latestVersion + 1,
         baseVersion: latestVersion,
         document: validation.document,
@@ -166,7 +200,7 @@ export class SourceMappingsService {
         },
         publishedBy: actor,
       });
-      await this.audit.record(tx, actx, {
+      const auditEventId = await this.audit.recordReturningId(tx, actx, {
         action: 'mapping.publish',
         targetKind: 'mapping',
         targetRef: `${connectionId}/v${stored.version}`,
@@ -176,7 +210,26 @@ export class SourceMappingsService {
           contentHash: stored.contentHash,
           authorityVersion: stored.authorityVersion,
           acknowledgements: validation.acknowledgements.length,
+          ...(previouslyPublished ? { supersedes: previouslyPublished.version } : {}),
         },
+      });
+      // M10A2 lifecycle: the previous version is superseded, the new one published,
+      // in this transaction under the per-connection lock, with one audit event.
+      if (previouslyPublished) {
+        await this.repo.appendLifecycle(tx, {
+          connectionId,
+          version: previouslyPublished.version,
+          state: 'superseded',
+          actor: actx.actor,
+          auditEventId,
+        });
+      }
+      await this.repo.appendLifecycle(tx, {
+        connectionId,
+        version: stored.version,
+        state: 'published',
+        actor: actx.actor,
+        auditEventId,
       });
       return {
         version: stored.version,
@@ -188,6 +241,267 @@ export class SourceMappingsService {
         acknowledgements: validation.acknowledgements.length,
       };
     });
+  }
+
+  /**
+   * M10A2 plan §10: retires a published or superseded version. A connection
+   * whose published version is retired has no published mapping: sync is
+   * refused until a new version is published.
+   */
+  @AuditFailures('mapping.retire', 'mapping')
+  async retire(
+    actx: AuthorizedContext<'config.mapping.retire'>,
+    connectionId: string,
+    version: number,
+    reason: MappingRetireReason,
+  ): Promise<{ readonly version: number; readonly previousState: string }> {
+    assertAuthorized(actx, 'config.mapping.retire');
+    if (!(MAPPING_RETIRE_REASONS as readonly string[]).includes(reason)) {
+      throw new SourcesError('invalid_reason', 'Unknown retire reason');
+    }
+    return this.db.transaction(actx.tenant, async (tx) => {
+      await tenantAdvisoryLock(tx, 'source-mapping', connectionId);
+      const state = (await this.repo.mappingStates(tx, connectionId)).find(
+        (s) => s.version === version,
+      );
+      if (!state) throw new SourcesError('mapping_not_found', `No version ${version}`);
+      if (state.state === 'retired') {
+        throw new SourcesError('no_change', `Version ${version} is already retired`);
+      }
+      const auditEventId = await this.audit.recordReturningId(tx, actx, {
+        action: 'mapping.retire',
+        targetKind: 'mapping',
+        targetRef: `${connectionId}/v${version}`,
+        details: { version, from: state.state, reason },
+      });
+      await this.repo.appendLifecycle(tx, {
+        connectionId,
+        version,
+        state: 'retired',
+        actor: actx.actor,
+        reasonCode: reason,
+        auditEventId,
+      });
+      return { version, previousState: state.state };
+    });
+  }
+
+  // --- M10A2 drafts (plan §10): draft → validated → published ---------------
+
+  /** Saves the working copy; any edit returns it to `draft` (database trigger). */
+  @AuditFailures('mapping.draft.save', 'mapping_draft')
+  async saveDraft(
+    actx: AuthorizedContext<'config.mapping.draft'>,
+    connectionId: string,
+    raw: unknown,
+    expectedVersion: number,
+  ): Promise<MappingDraftView> {
+    assertAuthorized(actx, 'config.mapping.draft');
+    const entry = {
+      action: 'mapping.draft.save' as const,
+      targetKind: 'mapping_draft' as const,
+      targetRef: connectionId,
+    };
+    await this.authorizer.refuseSecretLike(actx, entry, { mapping: raw });
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+      throw new SourcesError('invalid_mapping', 'A mapping draft is a JSON object');
+    }
+    return this.db.transaction(actx.tenant, async (tx) => {
+      await tenantAdvisoryLock(tx, 'source-mapping-draft', connectionId);
+      const connection = await this.repo.connection(tx, connectionId);
+      if (!connection) throw new ConnectionNotFoundError(connectionId);
+      const db = tenantClient(tx);
+      const current = await db.tenantSourceMappingDraft.findUnique({
+        where: { tenantId_connectionId: { tenantId: tx.tenantId, connectionId } },
+      });
+      if ((current?.version ?? 0) !== expectedVersion) {
+        throw new SourcesError('stale_base_version', 'The draft changed meanwhile');
+      }
+      const contentHash = canonicalHash(raw);
+      const now = new Date();
+      const actor = actx.actor;
+      const row = current
+        ? await db.tenantSourceMappingDraft.update({
+            where: { tenantId_connectionId: { tenantId: tx.tenantId, connectionId } },
+            data: {
+              document: raw,
+              contentHash,
+              version: current.version + 1,
+              updatedAt: now,
+              updatedByKind: actor.kind,
+              updatedById: actor.id,
+              updatedByAssurance: actor.assurance,
+            },
+          })
+        : await db.tenantSourceMappingDraft.create({
+            data: {
+              tenantId: tx.tenantId,
+              connectionId,
+              id: randomUUID(),
+              document: raw,
+              contentHash,
+              version: 1,
+              updatedAt: now,
+              updatedByKind: actor.kind,
+              updatedById: actor.id,
+              updatedByAssurance: actor.assurance,
+            },
+          });
+      await this.audit.record(tx, actx, {
+        ...entry,
+        details: { version: row.version, contentHash },
+      });
+      return toDraftView(row);
+    });
+  }
+
+  /** Validates the working copy against the latest snapshot, authority and adopted version. */
+  @AuditFailures('mapping.draft.validate', 'mapping_draft')
+  async validateDraft(
+    actx: AuthorizedContext<'config.mapping.draft'>,
+    connectionId: string,
+    expectedVersion: number,
+  ): Promise<{ readonly draft: MappingDraftView; readonly report: MappingValidationReport }> {
+    assertAuthorized(actx, 'config.mapping.draft');
+    return this.db.transaction(actx.tenant, async (tx) => {
+      await tenantAdvisoryLock(tx, 'source-mapping-draft', connectionId);
+      const db = tenantClient(tx);
+      const draft = await db.tenantSourceMappingDraft.findUnique({
+        where: { tenantId_connectionId: { tenantId: tx.tenantId, connectionId } },
+      });
+      if (!draft) throw new SourcesError('mapping_draft_not_found', 'No mapping draft');
+      if (draft.version !== expectedVersion) {
+        throw new SourcesError('stale_base_version', 'The draft changed meanwhile');
+      }
+      const { report, validation } = await this.check(tx, connectionId, draft.document, {});
+      if (!validation.ok) throw new MappingInvalidError(validation.errors);
+      const canonicalVersion = await adoptedCanonicalVersion(tx);
+      const row = await db.tenantSourceMappingDraft.update({
+        where: { tenantId_connectionId: { tenantId: tx.tenantId, connectionId } },
+        data: {
+          state: 'validated',
+          validatedSnapshotHash: report.snapshotHash,
+          validatedAuthorityVersion: report.authorityVersion,
+          validatedCanonicalVersion: canonicalVersion,
+          validation: {
+            contentHash: validation.contentHash,
+            warnings: Object.fromEntries(countBy(validation.warnings.map((w) => w.code))),
+          },
+        },
+      });
+      await this.audit.record(tx, actx, {
+        action: 'mapping.draft.validate',
+        targetKind: 'mapping_draft',
+        targetRef: connectionId,
+        details: {
+          version: row.version,
+          contentHash: validation.contentHash,
+          warnings: validation.warnings.length,
+        },
+      });
+      return { draft: toDraftView(row), report };
+    });
+  }
+
+  /**
+   * Publishes a validated draft: refused (`mapping_not_validated`) unless the
+   * draft is validated and its stamp (snapshot, authority, adopted version)
+   * is still current. The publication itself re-validates and checks that the
+   * published content is exactly the validated content.
+   */
+  @AuditFailures('mapping.publish', 'mapping_draft')
+  async publishDraft(
+    actx: AuthorizedContext<'config.mapping.publish'>,
+    connectionId: string,
+    expectedBaseVersion: number,
+  ): Promise<PublishedMapping> {
+    assertAuthorized(actx, 'config.mapping.publish');
+    const draft = await this.db.transaction(actx.tenant, async (tx) => {
+      const row = await tenantClient(tx).tenantSourceMappingDraft.findUnique({
+        where: { tenantId_connectionId: { tenantId: tx.tenantId, connectionId } },
+      });
+      if (!row || row.state !== 'validated') {
+        throw new SourcesError('mapping_not_validated', 'Validate the draft before publishing');
+      }
+      const snapshot = await this.repo.latestSnapshot(tx, connectionId);
+      const authority = await this.repo.latestAuthority(tx);
+      if (
+        row.validatedSnapshotHash !== snapshot?.hash ||
+        row.validatedAuthorityVersion !== (authority?.version ?? 0) ||
+        row.validatedCanonicalVersion !== (await adoptedCanonicalVersion(tx))
+      ) {
+        throw new SourcesError(
+          'mapping_not_validated',
+          'The validation stamp is no longer current',
+        );
+      }
+      return row;
+    });
+    const published = await this.publish(actx, connectionId, draft.document, {
+      expectedBaseVersion,
+      expectedContentHash: (draft.validation as { contentHash: string }).contentHash,
+    });
+    // The working copy is consumed (only if nobody edited it meanwhile).
+    await this.db.transaction(actx.tenant, (tx) =>
+      tenantClient(tx).tenantSourceMappingDraft.deleteMany({
+        where: { tenantId: tx.tenantId, connectionId, version: draft.version },
+      }),
+    );
+    return published;
+  }
+
+  @AuditFailures('mapping.draft.discard', 'mapping_draft')
+  async discardDraft(
+    actx: AuthorizedContext<'config.mapping.draft'>,
+    connectionId: string,
+  ): Promise<{ readonly discarded: boolean }> {
+    assertAuthorized(actx, 'config.mapping.draft');
+    return this.db.transaction(actx.tenant, async (tx) => {
+      const { count } = await tenantClient(tx).tenantSourceMappingDraft.deleteMany({
+        where: { tenantId: tx.tenantId, connectionId },
+      });
+      await this.audit.record(tx, actx, {
+        action: 'mapping.draft.discard',
+        targetKind: 'mapping_draft',
+        targetRef: connectionId,
+        details: { discarded: count > 0 },
+      });
+      return { discarded: count > 0 };
+    });
+  }
+
+  async showDraft(ctx: TenantContext, connectionId: string): Promise<MappingDraftView | undefined> {
+    const row = await this.db.transaction(ctx, (tx) =>
+      tenantClient(tx).tenantSourceMappingDraft.findUnique({
+        where: { tenantId_connectionId: { tenantId: tx.tenantId, connectionId } },
+      }),
+    );
+    return row ? toDraftView(row) : undefined;
+  }
+
+  /** The lifecycle state of every published version (M10A2). */
+  async states(ctx: TenantContext, connectionId: string) {
+    return this.db.transaction(ctx, (tx) => this.repo.mappingStates(tx, connectionId));
+  }
+
+  private async refuseDisabledModuleTargets(
+    tx: TenantTransaction,
+    document: MappingDocument,
+  ): Promise<void> {
+    const enabled = new Set(
+      (await moduleSettings(tx)).filter((s) => s.enabled).map((s) => s.moduleKey),
+    );
+    const blocked = disabledModuleTargets(
+      document.objects.map((o) => o.entity),
+      CANONICAL_MODULES,
+      enabled,
+    );
+    if (blocked.length > 0) {
+      throw new SourcesError(
+        'module_disabled',
+        `Mapping targets ${blocked[0]!.entityKind} of disabled module ${blocked[0]!.module}`,
+      );
+    }
   }
 
   /** D5 safeguards: an override attempt is always logged and counted (refused in M9A). */
@@ -279,4 +593,26 @@ function countBy(codes: readonly string[]): Map<string, number> {
   const out = new Map<string, number>();
   for (const c of codes) out.set(c, (out.get(c) ?? 0) + 1);
   return out;
+}
+
+function toDraftView(row: {
+  connectionId: string;
+  state: string;
+  version: number;
+  contentHash: string;
+  validatedSnapshotHash: string | null;
+  validatedAuthorityVersion: number | null;
+  validatedCanonicalVersion: string | null;
+  validation: unknown;
+}): MappingDraftView {
+  return {
+    connectionId: row.connectionId,
+    state: row.state as MappingDraftView['state'],
+    version: row.version,
+    contentHash: row.contentHash,
+    validatedSnapshotHash: row.validatedSnapshotHash,
+    validatedAuthorityVersion: row.validatedAuthorityVersion,
+    validatedCanonicalVersion: row.validatedCanonicalVersion,
+    validation: row.validation,
+  };
 }

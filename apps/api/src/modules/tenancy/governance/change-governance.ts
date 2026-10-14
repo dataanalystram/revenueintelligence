@@ -63,7 +63,11 @@ export async function changeGovernance(
   const canonicalVersion = await adoptedCanonicalVersion(tx);
   let schemaSnapshotHash: string | null = null;
   let transforms: string[] = [];
-  if (input.sourceConnectionId && input.mappingVersion != null) {
+  if (
+    input.sourceConnectionId &&
+    input.mappingVersion !== null &&
+    input.mappingVersion !== undefined
+  ) {
     const facts = await mappingFacts(tx, input.sourceConnectionId, input.mappingVersion);
     if (facts) {
       schemaSnapshotHash = facts.snapshotHash;

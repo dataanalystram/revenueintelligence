@@ -49,9 +49,7 @@ export const VALUE_HISTORY_MAX_BYTES = 4096;
 export function isSensitiveForHistory(c: ColumnClassification): boolean {
   return (
     effectiveSensitivity(c) === 'restricted' ||
-    c.categories.some(
-      (cat) => cat === 'personal' || cat === 'communication' || cat === 'security',
-    )
+    c.categories.some((cat) => cat === 'personal' || cat === 'communication' || cat === 'security')
   );
 }
 

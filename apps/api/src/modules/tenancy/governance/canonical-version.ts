@@ -79,3 +79,12 @@ export async function recordNewTenantAdoption(
   });
   forgetAdoptedVersion(tx);
 }
+
+/** The tenant's module settings (M10A2): read by writers and the mapping hook. */
+export async function moduleSettings(
+  tx: TenantTransaction,
+): Promise<{ readonly moduleKey: string; readonly enabled: boolean }[]> {
+  return tenantClient(tx).tenantModuleSetting.findMany({
+    select: { moduleKey: true, enabled: true },
+  });
+}

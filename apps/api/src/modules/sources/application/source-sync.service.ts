@@ -246,7 +246,7 @@ export class SourceSyncService {
       if (!connection) throw new ConnectionNotFoundError(connectionId);
       const active = await this.repo.activeRun(tx, connectionId);
       if (active) return { run: active, alreadyRunning: true };
-      const mapping = await this.repo.latestMapping(tx, connectionId);
+      const mapping = await this.repo.publishedMapping(tx, connectionId);
       const authority = await this.repo.latestAuthority(tx);
       this.preflight(
         connection,

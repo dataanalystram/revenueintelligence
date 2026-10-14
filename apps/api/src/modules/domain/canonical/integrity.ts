@@ -12,6 +12,7 @@ export const INTEGRITY_CHECKS = [
   'module_setting_mismatch',
   'registry_projection_mismatch',
   'mapping_lifecycle_invalid',
+  'privilege_manifest_mismatch',
 ] as const;
 export type IntegrityCheck = (typeof INTEGRITY_CHECKS)[number];
 

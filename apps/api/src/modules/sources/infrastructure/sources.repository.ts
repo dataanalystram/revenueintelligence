@@ -45,6 +45,15 @@ export interface StoredMappingVersion {
   readonly validation: unknown;
   readonly publishedBy: string;
   readonly publishedAt: Date;
+  /** M10A2: the canonical version validated against (NULL before M10A2 = 0.1, Q7). */
+  readonly canonicalVersionMin?: string | null;
+}
+
+/** M10A2: one lifecycle state of a published mapping version. */
+export interface MappingState {
+  readonly version: number;
+  readonly state: 'published' | 'superseded' | 'retired';
+  readonly seq: number;
 }
 
 export interface StoredAuthorityVersion {
@@ -285,6 +294,74 @@ export class SourcesRepository {
     return row ? toMapping(row) : undefined;
   }
 
+  /**
+   * M10A2: the connection's published mapping version, read through the
+   * lifecycle (a retired or superseded version is never "current"). Sync,
+   * reports, snapshot drift and authority checks read this, never the highest
+   * version number.
+   */
+  async publishedMapping(
+    tx: TenantTransaction,
+    connectionId: string,
+  ): Promise<StoredMappingVersion | undefined> {
+    const published = (await this.mappingStates(tx, connectionId))
+      .filter((s) => s.state === 'published')
+      .at(-1);
+    return published ? this.mappingVersion(tx, connectionId, published.version) : undefined;
+  }
+
+  /** M10A2: the current lifecycle state of every published version of a connection. */
+  async mappingStates(tx: TenantTransaction, connectionId: string): Promise<MappingState[]> {
+    const events = await tenantClient(tx).tenantSourceMappingLifecycle.findMany({
+      where: { tenantId: tx.tenantId, connectionId },
+      orderBy: [{ version: 'asc' }, { seq: 'asc' }],
+      select: { version: true, state: true, seq: true },
+    });
+    const latest = new Map<number, MappingState>();
+    for (const e of events) {
+      latest.set(e.version, {
+        version: e.version,
+        state: e.state as MappingState['state'],
+        seq: e.seq,
+      });
+    }
+    return [...latest.values()];
+  }
+
+  /** M10A2: appends a lifecycle event (the database trigger enforces legal transitions). */
+  async appendLifecycle(
+    tx: TenantTransaction,
+    input: {
+      readonly connectionId: string;
+      readonly version: number;
+      readonly state: MappingState['state'];
+      readonly actor: { readonly kind: string; readonly id: string; readonly assurance: string };
+      readonly reasonCode?: string;
+      readonly auditEventId: string;
+    },
+  ): Promise<void> {
+    const db = tenantClient(tx);
+    const last = await db.tenantSourceMappingLifecycle.findFirst({
+      where: { tenantId: tx.tenantId, connectionId: input.connectionId, version: input.version },
+      orderBy: { seq: 'desc' },
+      select: { seq: true },
+    });
+    await db.tenantSourceMappingLifecycle.create({
+      data: {
+        tenantId: tx.tenantId,
+        connectionId: input.connectionId,
+        version: input.version,
+        seq: (last?.seq ?? 0) + 1,
+        state: input.state,
+        actorKind: input.actor.kind,
+        actorId: input.actor.id,
+        actorAssurance: input.actor.assurance,
+        reasonCode: input.reasonCode ?? null,
+        auditEventId: input.auditEventId,
+      },
+    });
+  }
+
   async mappingVersion(
     tx: TenantTransaction,
     connectionId: string,
@@ -313,6 +390,7 @@ export class SourcesRepository {
           authorityVersion: input.authorityVersion,
           validation: input.validation as Prisma.InputJsonValue,
           publishedBy: input.publishedBy,
+          canonicalVersionMin: input.canonicalVersionMin ?? null,
         },
       }),
     );
@@ -610,6 +688,7 @@ function toMapping(row: StoredMappingVersion): StoredMappingVersion {
     validation: row.validation,
     publishedBy: row.publishedBy,
     publishedAt: row.publishedAt,
+    canonicalVersionMin: row.canonicalVersionMin ?? null,
   };
 }
 

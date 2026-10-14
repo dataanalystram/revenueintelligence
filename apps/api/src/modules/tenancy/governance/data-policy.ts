@@ -46,7 +46,9 @@ export function forgetDataPolicy(tx: TenantTransaction): void {
  */
 export async function tenantRetention(
   tx: TenantTransaction,
-): Promise<Readonly<Record<RetentionClass, ResolvedRetention>> & { readonly policyVersion: number | null }> {
+): Promise<
+  Readonly<Record<RetentionClass, ResolvedRetention>> & { readonly policyVersion: number | null }
+> {
   const policy = await publishedDataPolicy(tx);
   return Object.assign({}, resolveRetention(policy?.document), {
     policyVersion: policy?.version ?? null,

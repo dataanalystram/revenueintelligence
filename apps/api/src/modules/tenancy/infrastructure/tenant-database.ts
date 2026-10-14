@@ -21,6 +21,9 @@ export interface TenantTransaction {
 
 type Client = Prisma.TransactionClient;
 
+/** A JSON column value, for modules that write JSON through `tenantClient` (M10A2). */
+export type TenantJsonInput = Prisma.InputJsonValue;
+
 const openTransactions = new WeakMap<TenantTransaction, Client>();
 
 /**

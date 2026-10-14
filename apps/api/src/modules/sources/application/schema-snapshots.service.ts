@@ -95,7 +95,7 @@ export class SchemaSnapshotsService {
   async drift(ctx: TenantContext, connectionId: string): Promise<readonly DriftIssue[]> {
     const connection = await this.connections.get(ctx, connectionId);
     const { mapping, snapshot } = await this.db.transaction(ctx, async (tx) => {
-      const mapping = await this.repo.latestMapping(tx, connectionId);
+      const mapping = await this.repo.publishedMapping(tx, connectionId);
       return {
         mapping,
         snapshot: mapping

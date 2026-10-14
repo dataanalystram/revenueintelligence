@@ -27,6 +27,7 @@ export {
   TenantDatabase,
   tenantAdvisoryLock,
   tenantClient,
+  type TenantJsonInput,
   type TenantTransaction,
 } from './infrastructure/tenant-database';
 export {

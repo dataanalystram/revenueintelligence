@@ -26,6 +26,31 @@ interface ServiceSpec {
 }
 
 const SERVICES: readonly ServiceSpec[] = [
+  // M10A2 governance services.
+  {
+    file: 'governance/application/canonical-adoption.service.ts',
+    className: 'CanonicalAdoptionService',
+    writes: ['adopt'],
+    reads: ['history', 'plan'],
+  },
+  {
+    file: 'governance/application/module-settings.service.ts',
+    className: 'ModuleSettingsService',
+    writes: ['enable', 'disable', 'configure'],
+    reads: ['list'],
+  },
+  {
+    file: 'governance/application/registry.service.ts',
+    className: 'RegistryService',
+    writes: ['publish', 'publishDataPolicy'],
+    reads: ['dryRun', 'show'],
+  },
+  {
+    file: 'governance/application/integrity-verification.service.ts',
+    className: 'IntegrityVerificationService',
+    writes: ['record'],
+    reads: ['verify'],
+  },
   {
     file: 'tenancy/application/tenant-config.service.ts',
     className: 'TenantConfigService',
@@ -90,8 +115,8 @@ const SERVICES: readonly ServiceSpec[] = [
   {
     file: 'sources/application/source-mappings.service.ts',
     className: 'SourceMappingsService',
-    writes: ['publish'],
-    reads: ['validate', 'show'],
+    writes: ['publish', 'retire', 'saveDraft', 'validateDraft', 'publishDraft', 'discardDraft'],
+    reads: ['validate', 'show', 'states', 'showDraft'],
   },
   {
     file: 'sources/application/source-authority.service.ts',
