@@ -980,6 +980,29 @@ describe('M10A2 canonical versioning and governance', () => {
         ]),
       ).rejects.toThrow(/append-only/);
     });
+    it('a purge anchor exempts only audit pointers on rows before its cutoff', async () => {
+      const t = await c.tenant('intanchor', 1001);
+      await companyOf(t, '961');
+      const old = await integrity().record(await authz(t, 'security.integrity.run'));
+      const recent = await integrity().record(await authz(t, 'security.integrity.run'));
+      // Plant (owner, test database): an anchor with a past cutoff, and dangling
+      // audit pointers on one run older than the cutoff and one recent run.
+      await c.sql(
+        `SET session_replication_role = replica;
+         INSERT INTO tenant_audit_anchors (tenant_id, id, anchor_seq, anchor_hash, purged, cutoff, actor, correlation_id)
+           VALUES ('${t.tenantId}', '${randomUUID()}', 1, '${'a'.repeat(64)}', 1, now() - interval '1 day', 'system:test', '${randomUUID()}');
+         UPDATE tenant_integrity_runs SET audit_event_id = '${randomUUID()}', started_at = now() - interval '2 days'
+           WHERE tenant_id = '${t.tenantId}' AND id = '${old.runId}';
+         UPDATE tenant_integrity_runs SET audit_event_id = '${randomUUID()}'
+           WHERE tenant_id = '${t.tenantId}' AND id = '${recent.runId}';
+         SET session_replication_role = origin`,
+      );
+      const report = await integrity().verify(t);
+      const refs = report.findings
+        .filter((f) => f.check === 'audit_reference_missing')
+        .map((f) => f.ref);
+      expect(refs).toEqual([`integrity_run:${recent.runId}`]);
+    });
   });
 
   it('source_sync actors cannot adopt a canonical version (policy v2)', async () => {

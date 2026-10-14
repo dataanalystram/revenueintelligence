@@ -69,8 +69,9 @@ wins). The M10 plan (D1–D6, F1–F5) requires all of these before the first ca
 10. **Audit references without foreign keys.** The five `audit_event_id` columns of the new tables (adoptions,
     module setting events, registry versions, mapping lifecycle, integrity runs) carry **no FK** to
     `tenant_audit_events`: an FK would block the (approved-later) audit purge. The pointer is written in the same
-    transaction as the audit event, and integrity check `audit_reference_missing` flags a dangling pointer, exempt
-    when a purge anchored the chain past it.
+    transaction as the audit event, and integrity check `audit_reference_missing` flags a dangling pointer. A purge
+    anchor exempts only rows whose own timestamp (`adopted_at`, `occurred_at`, `published_at`, `started_at`) is before
+    the latest anchor's cutoff plus a 5-minute skew tolerance; newer rows are still checked.
 11. **Security integration.** Policy v2 (seven new capabilities, `source_sync` cannot adopt), new audit actions and
     reason codes, every new write through `AuthorizedContext`, classification and privilege manifests (views
     included) cover every new table, view and column; the schema guard asserts them.

@@ -23,6 +23,9 @@ import {
   type TenantTransaction,
 } from '../../tenancy';
 
+/** Clock-skew tolerance past a purge anchor's cutoff (audit_reference_missing exemption). */
+const AUDIT_PURGE_SKEW_MS = 5 * 60 * 1000;
+
 export interface IntegrityReport {
   readonly outcome: IntegrityOutcome;
   readonly startedAt: Date;
@@ -202,36 +205,46 @@ export class IntegrityVerificationService {
     });
 
     // 3b. Audit pointers (no foreign key, see ADR 0027): every governance row's
-    // audit event exists, unless an audit purge has anchored the chain (the
-    // event may then have been purged; purge execution is disabled today).
-    const anchored = (await db.tenantAuditAnchor.count()) > 0;
-    if (!anchored) {
-      const dangling = await db.$queryRaw<{ ref: string }[]>`
-        SELECT 'adoption:' || x.seq AS ref FROM tenant_canonical_adoptions x
-         WHERE x.audit_event_id IS NOT NULL AND NOT EXISTS (
-           SELECT 1 FROM tenant_audit_events e WHERE e.tenant_id = x.tenant_id AND e.id = x.audit_event_id)
-        UNION ALL
-        SELECT 'module:' || x.module_key || ':' || x.seq FROM tenant_module_setting_events x
-         WHERE NOT EXISTS (
-           SELECT 1 FROM tenant_audit_events e WHERE e.tenant_id = x.tenant_id AND e.id = x.audit_event_id)
-        UNION ALL
-        SELECT 'registry:' || x.kind || ':' || x.version FROM tenant_registry_versions x
-         WHERE NOT EXISTS (
-           SELECT 1 FROM tenant_audit_events e WHERE e.tenant_id = x.tenant_id AND e.id = x.audit_event_id)
-        UNION ALL
-        SELECT 'mapping:' || x.connection_id || '/v' || x.version || ':' || x.seq FROM tenant_source_mapping_lifecycle x
-         WHERE x.audit_event_id IS NOT NULL AND NOT EXISTS (
-           SELECT 1 FROM tenant_audit_events e WHERE e.tenant_id = x.tenant_id AND e.id = x.audit_event_id)
-        UNION ALL
-        SELECT 'integrity_run:' || x.id FROM tenant_integrity_runs x
-         WHERE NOT EXISTS (
-           SELECT 1 FROM tenant_audit_events e WHERE e.tenant_id = x.tenant_id AND e.id = x.audit_event_id)
-        ORDER BY 1 LIMIT ${INTEGRITY_MAX_FINDINGS}`;
-      add(
-        'audit_reference_missing',
-        dangling.map((r) => r.ref),
-      );
-    }
+    // audit event exists. Only rows older than the latest purge anchor's cutoff
+    // (plus AUDIT_PURGE_SKEW) are exempt, since only their events can have been
+    // purged; purge execution is disabled today.
+    const anchor = await db.tenantAuditAnchor.findFirst({
+      orderBy: { anchorSeq: 'desc' },
+      select: { cutoff: true },
+    });
+    const exemptBefore = anchor ? new Date(anchor.cutoff.getTime() + AUDIT_PURGE_SKEW_MS) : null;
+    const dangling = await db.$queryRaw<{ ref: string }[]>`
+      SELECT 'adoption:' || x.seq AS ref FROM tenant_canonical_adoptions x
+       WHERE x.audit_event_id IS NOT NULL
+         AND (${exemptBefore}::timestamptz IS NULL OR x.adopted_at >= ${exemptBefore}::timestamptz)
+         AND NOT EXISTS (
+         SELECT 1 FROM tenant_audit_events e WHERE e.tenant_id = x.tenant_id AND e.id = x.audit_event_id)
+      UNION ALL
+      SELECT 'module:' || x.module_key || ':' || x.seq FROM tenant_module_setting_events x
+       WHERE (${exemptBefore}::timestamptz IS NULL OR x.occurred_at >= ${exemptBefore}::timestamptz)
+         AND NOT EXISTS (
+         SELECT 1 FROM tenant_audit_events e WHERE e.tenant_id = x.tenant_id AND e.id = x.audit_event_id)
+      UNION ALL
+      SELECT 'registry:' || x.kind || ':' || x.version FROM tenant_registry_versions x
+       WHERE (${exemptBefore}::timestamptz IS NULL OR x.published_at >= ${exemptBefore}::timestamptz)
+         AND NOT EXISTS (
+         SELECT 1 FROM tenant_audit_events e WHERE e.tenant_id = x.tenant_id AND e.id = x.audit_event_id)
+      UNION ALL
+      SELECT 'mapping:' || x.connection_id || '/v' || x.version || ':' || x.seq FROM tenant_source_mapping_lifecycle x
+       WHERE x.audit_event_id IS NOT NULL
+         AND (${exemptBefore}::timestamptz IS NULL OR x.occurred_at >= ${exemptBefore}::timestamptz)
+         AND NOT EXISTS (
+         SELECT 1 FROM tenant_audit_events e WHERE e.tenant_id = x.tenant_id AND e.id = x.audit_event_id)
+      UNION ALL
+      SELECT 'integrity_run:' || x.id FROM tenant_integrity_runs x
+       WHERE (${exemptBefore}::timestamptz IS NULL OR x.started_at >= ${exemptBefore}::timestamptz)
+         AND NOT EXISTS (
+         SELECT 1 FROM tenant_audit_events e WHERE e.tenant_id = x.tenant_id AND e.id = x.audit_event_id)
+      ORDER BY 1 LIMIT ${INTEGRITY_MAX_FINDINGS}`;
+    add(
+      'audit_reference_missing',
+      dangling.map((r) => r.ref),
+    );
 
     // 4. Module settings equal their last setting event.
     const settings = await db.tenantModuleSetting.findMany();
