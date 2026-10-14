@@ -17,6 +17,10 @@ export const SECURITY_EVENTS = [
   'audit_chain_broken',
   'key_rotation_completed',
   'privilege_manifest_mismatch',
+  // M10A2
+  'integrity_violation_detected',
+  'integrity_run_completed',
+  'module_disabled_write_refused',
 ] as const;
 export type SecurityEventCode = (typeof SECURITY_EVENTS)[number];
 
