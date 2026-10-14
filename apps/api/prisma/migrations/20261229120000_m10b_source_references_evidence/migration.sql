@@ -158,7 +158,8 @@ ALTER TABLE "tenant_evidence_links" ADD CONSTRAINT "tenant_evidence_links_tenant
 ALTER TABLE "tenant_evidence_links" ADD CONSTRAINT "tenant_evidence_links_tenant_id_evidence_kind_evidence_key_fkey" FOREIGN KEY ("tenant_id", "evidence_kind", "evidence_key") REFERENCES "tenant_entity_index"("tenant_id", "kind", "entity_key") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
-ALTER TABLE "tenant_evidence_links" ADD CONSTRAINT "tenant_evidence_links_tenant_id_evidence_change_id_fkey" FOREIGN KEY ("tenant_id", "evidence_change_id") REFERENCES "tenant_context_changes"("tenant_id", "id") ON DELETE RESTRICT ON UPDATE RESTRICT;
+CREATE UNIQUE INDEX "vm4_tenant_context_changes_id" ON "tenant_context_changes"("id");
+ALTER TABLE "tenant_evidence_links" ADD CONSTRAINT "tenant_evidence_links_tenant_id_evidence_change_id_fkey" FOREIGN KEY ("evidence_change_id") REFERENCES "tenant_context_changes"("id") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
 ALTER TABLE "tenant_evidence_links" ADD CONSTRAINT "tenant_evidence_links_tenant_id_evidence_snapshot_id_fkey" FOREIGN KEY ("tenant_id", "evidence_snapshot_id") REFERENCES "tenant_eligibility_snapshots"("tenant_id", "id") ON DELETE RESTRICT ON UPDATE RESTRICT;
