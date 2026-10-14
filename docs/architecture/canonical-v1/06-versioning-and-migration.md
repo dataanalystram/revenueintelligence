@@ -87,6 +87,13 @@ run)`.
   - MAJOR produces mapping migration proposals (§5) that a human reviews and publishes as new versions. The old
     version stays `published` until then, within the compatibility window.
 
+> **Candidate revision R2 (M10A2, ADR 0027).** (1) Adoption is **explicit for every version during `0.x`**
+> (M10 §7 supersedes §3's automatic MINOR adoption): every tenant has an append-only adoption chain, `0.1` as its
+> baseline. (2) Mapping-lifecycle storage: version rows stay immutable; state is an append-only lifecycle table
+> (`published → superseded | retired`, `superseded → retired`, at most one `published` per connection, enforced by
+> a trigger) read through a view, and drafts (`draft → validated`) are a separate mutable working copy, so the
+> "files only" and "implicit" entries above are `IMPLEMENTED` as of M10A2 (in review).
+
 ## 5. Canonical migration framework
 
 ```
