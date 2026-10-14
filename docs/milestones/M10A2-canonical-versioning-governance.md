@@ -71,11 +71,13 @@
 CI on PR #2 (GitHub Actions, workflow `CI`; jobs: lint/typecheck/boundaries/unit, integration (Testcontainers),
 runtime, docker):
 
-| Run           | Head      | Result                                                                                                   |
-| ------------- | --------- | -------------------------------------------------------------------------------------------------------- |
-| `38504805023` | `2d4f9a5` | failure (lint escape, schema guard, protection seed, M10A1 audit-purge execution)                        |
-| `38506523129` | `3575b0c` | integration ✅, runtime ✅, docker ✅; unit ❌ (privilege manifest lacked the view) — fixed in `3f19b62` |
-| _final_       | _see PR_  | recorded in the PR body                                                                                  |
+| Run           | Head      | Result                                                                                                                                                                                       |
+| ------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `38504805023` | `2d4f9a5` | failure (lint escape, schema guard, protection seed, M10A1 audit-purge execution)                                                                                                            |
+| `38506523129` | `3575b0c` | integration ✅, runtime ✅, docker ✅; unit ❌ (privilege manifest lacked the view) — fixed in `3f19b62`                                                                                     |
+| `38507521249` | `9d14671` | unit ✅, docker ✅; integration ❌ (view privileges from schema default DML; V15 draft needed acknowledgements); runtime ❌ (script 75 `pr_unreviewed`, not reproduced on the next two runs) |
+| `38509313747` | `0b6d24b` | unit ✅, runtime ✅ (incl. script 86), docker ✅; integration ❌ (V15: identical re-save keeps the validation — test corrected)                                                              |
+| `38510222639` | `c9d4856` | **all four jobs ✅** (lint/typecheck/boundaries/unit, integration, runtime incl. script 86, docker)                                                                                          |
 
 ## Remaining
 
