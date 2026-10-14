@@ -48,12 +48,12 @@ describe('M10A2 canonical versioning and governance', () => {
 
   beforeAll(async () => {
     c = await startContextHarness();
-    // Test database only (Q16 / plan §17): a supported 0.2 and a deprecated 0.3
-    // let adoption be exercised; the production catalogue publishes only 0.1.
+    // The production catalogue publishes 0.1 (supported) and 0.2 (current,
+    // M10B); test database only (Q16 / plan §17): a deprecated 0.3 lets the
+    // refusal of an unsupported target be exercised.
     await c.sql(
       `INSERT INTO canonical_model_versions (version, major, minor, status, released_at, catalogue_hash, adr)
-       VALUES ('0.2', 0, 2, 'supported', now(), repeat('b', 64), '0027'),
-              ('0.3', 0, 3, 'deprecated', now(), repeat('c', 64), '0027')`,
+       VALUES ('0.3', 0, 3, 'deprecated', now(), repeat('c', 64), '0028')`,
     );
   });
   afterAll(async () => {
@@ -141,28 +141,28 @@ describe('M10A2 canonical versioning and governance', () => {
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({
         seq: 1,
-        version: '0.1',
+        version: '0.2',
         previous_version: null,
         reason: 'new_tenant',
       });
       const provision = (await audit(t)).find((e) => e.action === 'tenant.provision')!;
-      expect(provision.details).toMatchObject({ canonicalVersion: '0.1' });
+      expect(provision.details).toMatchObject({ canonicalVersion: '0.2' });
       expect(rows[0]!.audit_event_id).toBe(provision.id);
     });
 
     it('dry run reports the impact and writes nothing', async () => {
       const t = await c.tenant('addry', 1001);
       const before = await audit(t);
-      const plan = await adoption().plan(t, '0.2', '0.1');
+      const plan = await adoption().plan(t, '0.1', '0.2');
       expect(plan).toMatchObject({
-        current: '0.1',
-        target: '0.2',
-        decision: 'operator_adoption',
+        current: '0.2',
+        target: '0.1',
+        decision: 'rollback',
         modulesNewlyAvailable: [],
         registriesAboveTarget: 0,
         mappingsAboveTarget: 0,
       });
-      expect(await adoption().plan(t, '0.3', '0.1')).toMatchObject({
+      expect(await adoption().plan(t, '0.3', '0.2')).toMatchObject({
         decision: 'refused',
         refusal: 'canonical_version_not_supported',
       });
@@ -175,14 +175,14 @@ describe('M10A2 canonical versioning and governance', () => {
       const before = (await audit(t)).length;
       await expect(
         adoption().adopt(await authz(t, 'config.canonical.adopt'), {
-          target: '0.2',
-          expectedCurrent: '0.1',
+          target: '0.1',
+          expectedCurrent: '0.2',
         }),
       ).resolves.toEqual({
         seq: 2,
-        version: '0.2',
-        previousVersion: '0.1',
-        reason: 'operator_adoption',
+        version: '0.1',
+        previousVersion: '0.2',
+        reason: 'rollback',
       });
       let events = await audit(t);
       expect(events).toHaveLength(before + 1);
@@ -195,24 +195,24 @@ describe('M10A2 canonical versioning and governance', () => {
 
       await expect(
         adoption().adopt(await authz(t, 'config.canonical.adopt'), {
-          target: '0.1',
-          expectedCurrent: '0.2',
+          target: '0.2',
+          expectedCurrent: '0.1',
         }),
-      ).resolves.toMatchObject({ seq: 3, version: '0.1', reason: 'rollback' });
+      ).resolves.toMatchObject({ seq: 3, version: '0.2', reason: 'operator_adoption' });
       events = await audit(t);
       expect(events).toHaveLength(before + 2);
       expect((await adoptions(t)).map((r) => [r.seq, r.version, r.reason])).toEqual([
-        [1, '0.1', 'new_tenant'],
-        [2, '0.2', 'operator_adoption'],
-        [3, '0.1', 'rollback'],
+        [1, '0.2', 'new_tenant'],
+        [2, '0.1', 'rollback'],
+        [3, '0.2', 'operator_adoption'],
       ]);
     });
 
     it.each([
-      ['a stale expected current version', '0.2', '0.2', 'stale_base_version'],
-      ['an unsupported (deprecated) target', '0.3', '0.1', 'canonical_version_not_supported'],
-      ['an unknown target', '0.9', '0.1', 'canonical_version_unknown'],
-      ['the version already adopted', '0.1', '0.1', 'no_change'],
+      ['a stale expected current version', '0.1', '0.1', 'stale_base_version'],
+      ['an unsupported (deprecated) target', '0.3', '0.2', 'canonical_version_not_supported'],
+      ['an unknown target', '0.9', '0.2', 'canonical_version_unknown'],
+      ['the version already adopted', '0.2', '0.2', 'no_change'],
     ])('refuses %s (recorded failed, nothing appended)', async (_l, target, expected, code) => {
       const t = await c.tenant('adref', 1001);
       await expect(
@@ -268,7 +268,7 @@ describe('M10A2 canonical versioning and governance', () => {
           WHERE module_key IN ('commercial', 'opportunities', 'signals', 'account_context')`,
       );
       await c.sql(
-        `UPDATE canonical_modules SET available = true, minimum_canonical_version = '0.2'
+        `UPDATE canonical_modules SET available = true, minimum_canonical_version = '0.3'
           WHERE module_key = 'engagement'`,
       );
     });
@@ -368,8 +368,8 @@ describe('M10A2 canonical versioning and governance', () => {
         [t.tenantId],
       );
       await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
-        target: '0.2',
-        expectedCurrent: '0.1',
+        target: '0.1',
+        expectedCurrent: '0.2',
       });
       expect(
         await c.sql(
@@ -835,7 +835,7 @@ describe('M10A2 canonical versioning and governance', () => {
       );
       expect(changes.length).toBeGreaterThanOrEqual(2);
       expect(changes.every((ch) => ch.origin === 'source_provided')).toBe(true);
-      expect(changes.every((ch) => ch.canonical_version === '0.1')).toBe(true);
+      expect(changes.every((ch) => ch.canonical_version === '0.2')).toBe(true);
       // Every history row points at a change record of this entity.
       for (const r of rows) expect(changes.map((ch) => ch.id)).toContain(r.change_id);
     });
@@ -872,7 +872,7 @@ describe('M10A2 canonical versioning and governance', () => {
           WHERE tenant_id = $1 AND entity_kind = 'subscription'`,
         [t.tenantId],
       );
-      expect(change).toEqual({ origin: 'source_provided', canonical_version: '0.1' });
+      expect(change).toEqual({ origin: 'source_provided', canonical_version: '0.2' });
     });
 
     it('V12: a failed write leaves neither the projection, the change record nor the history row', async () => {

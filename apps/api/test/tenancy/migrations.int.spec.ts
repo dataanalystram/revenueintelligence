@@ -15,6 +15,14 @@ import {
   ENTITY_INDEX_SOURCES,
   MODULE_KEYS,
   REGISTRY_KINDS,
+  CHANGE_ENTITY_KINDS,
+  EVIDENCE_ORIGINS,
+  EVIDENCE_ROLES,
+  EVIDENCE_TYPES,
+  GENERIC_REFERENCE_KINDS,
+  SOURCE_REFERENCE_ORIGINS,
+  SOURCE_REFERENCE_STATES,
+  canonicalCatalogueFor,
   canonicalCatalogueHash,
   entityIndexTriggerNames,
   valueHistoryPairs,
@@ -123,8 +131,18 @@ const M10A2_DOWNS = [...M10A2_MIGRATIONS]
 /** The migrations shipped up to M10A1 (before M10A2). */
 const m10a1MigrationsConfig = (dir: string) => migrationsBefore(dir, '20261215');
 
-/** Rolls M10A2 back (newest first); every older down-script runs after this. */
+/** M10B migration (generic source references, evidence links, canonical 0.2). */
+const M10B_MIGRATIONS = ['20261229120000_m10b_source_references_evidence'];
+const M10B_DOWN = resolve(`prisma/rollback/${M10B_MIGRATIONS[0]}.down.sql`);
+
+/** Rolls M10B back; every M10A2 and older down-script runs after this. */
+async function rollbackM10B(url: string): Promise<void> {
+  await withAdmin(url, (db) => db.query(readFileSync(M10B_DOWN, 'utf8')));
+}
+
+/** Rolls M10B, then M10A2 back (newest first); every older down-script runs after this. */
 async function rollbackM10A2(url: string): Promise<void> {
+  await rollbackM10B(url);
   for (const file of M10A2_DOWNS) {
     await withAdmin(url, (db) => db.query(readFileSync(file, 'utf8')));
   }
@@ -162,6 +180,7 @@ const POST_M7_DOWNS = [
   ...M9B_MIGRATIONS,
   ...M10A1_MIGRATIONS,
   ...M10A2_MIGRATIONS,
+  ...M10B_MIGRATIONS,
 ]
   .reverse()
   .map((name) => resolve(`prisma/rollback/${name}.down.sql`));
@@ -458,20 +477,23 @@ describe('database migrations and schema guard', () => {
           'SELECT version, status, adr, catalogue_hash FROM canonical_model_versions ORDER BY major, minor',
         ),
       );
-      const hash = canonicalCatalogueHash({
-        entityKinds: ENTITY_INDEX_KINDS,
-        moduleKeys: MODULE_KEYS,
-        changeTypes: CHANGE_TYPES,
-        causes: CHANGE_CAUSES,
-        origins: CHANGE_ORIGINS,
-      });
+      // Each version's hash covers its own catalogue (M10B Q19: 0.1's stored hash is unchanged).
       expect(rows).toEqual(
         CANONICAL_VERSIONS.map((v) => ({
           version: v.version,
           status: v.status,
           adr: v.adr,
-          catalogue_hash: hash,
+          catalogue_hash: canonicalCatalogueHash(canonicalCatalogueFor(v.version)),
         })),
+      );
+      expect(rows.find((r) => r.version === '0.1')!.catalogue_hash).toBe(
+        canonicalCatalogueHash({
+          entityKinds: ENTITY_INDEX_KINDS,
+          moduleKeys: MODULE_KEYS,
+          changeTypes: CHANGE_TYPES,
+          causes: CHANGE_CAUSES,
+          origins: CHANGE_ORIGINS,
+        }),
       );
     });
 
@@ -523,6 +545,28 @@ describe('database migrations and schema guard', () => {
       );
       expect(await checkValues('tenant_context_changes_origin_valid')).toEqual(
         [...CHANGE_ORIGINS].sort(),
+      );
+      // M10B closed sets.
+      expect(await checkValues('tenant_context_changes_entity_kind_valid')).toEqual(
+        [...CHANGE_ENTITY_KINDS].sort(),
+      );
+      expect(await checkValues('tenant_source_references_entity_kind_valid')).toEqual(
+        [...GENERIC_REFERENCE_KINDS].sort(),
+      );
+      expect(await checkValues('tenant_source_references_origin_valid')).toEqual(
+        [...SOURCE_REFERENCE_ORIGINS].sort(),
+      );
+      expect(await checkValues('tenant_source_references_state_valid')).toEqual(
+        [...SOURCE_REFERENCE_STATES].sort(),
+      );
+      expect(await checkValues('tenant_evidence_links_evidence_type_valid')).toEqual(
+        [...EVIDENCE_TYPES].sort(),
+      );
+      expect(await checkValues('tenant_evidence_links_role_valid')).toEqual(
+        [...EVIDENCE_ROLES].sort(),
+      );
+      expect(await checkValues('tenant_evidence_links_origin_valid')).toEqual(
+        [...EVIDENCE_ORIGINS].sort(),
       );
       // The value-history field catalogue is a list of (kind, field) pairs.
       const { rows } = await withAdmin(cleanUrl, (db) =>
@@ -646,8 +690,13 @@ describe('database migrations and schema guard', () => {
         (p) =>
           !NOT_ENTITY_REFERENCES.includes(p.prefix) && !LEGACY.includes(`${p.table}.${p.prefix}`),
       );
-      expect(polymorphic.map((p) => `${p.table}.${p.prefix}`)).toContain(
-        'tenant_value_history.entity',
+      expect(polymorphic.map((p) => `${p.table}.${p.prefix}`)).toEqual(
+        expect.arrayContaining([
+          'tenant_value_history.entity',
+          'tenant_source_references.entity',
+          'tenant_evidence_links.subject',
+          'tenant_evidence_links.evidence',
+        ]),
       );
       const fks = await withAdmin(cleanUrl, (db) =>
         db.query<{ table: string; columns: string[]; ref: string; on_delete: string }>(
@@ -659,7 +708,10 @@ describe('database migrations and schema guard', () => {
         ),
       );
       for (const p of polymorphic) {
-        const mine = fks.rows.filter((f) => f.table === p.table);
+        // A table may carry several polymorphic sets (M10B evidence links: subject and evidence).
+        const mine = fks.rows.filter(
+          (f) => f.table === p.table && f.columns.includes(`${p.prefix}_kind`),
+        );
         expect(mine.map((f) => f.columns.join(',')).sort(), `${p.table}.${p.prefix}`).toEqual(
           [
             `tenant_id,${p.prefix}_kind,${p.prefix}_id`,
@@ -2319,6 +2371,8 @@ INSERT INTO tenant_subscriptions (tenant_id, id, company_id, product_key, state,
       const url = await m10a1Database('m10a2_down_db');
       await migrate(url);
       const latest = await schemaSnapshot(url);
+      // M10B sits on top of M10A2: its (data-free) rollback runs first.
+      await rollbackM10B(url);
       const [down2, down1] = M10A2_DOWNS.map((f) => readFileSync(f, 'utf8'));
       const REPLICA_ON = 'SET session_replication_role = replica;';
       const REPLICA_OFF = 'SET session_replication_role = origin;';
