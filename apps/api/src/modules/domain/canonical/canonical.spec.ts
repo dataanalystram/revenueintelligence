@@ -420,15 +420,15 @@ describe('value history decision (restricted history, control 12)', () => {
       'company.name',
       // M10C: parent_account_id (full) and the affiliation fields (value-free, Q15).
       'company.parent_company_id',
+      'person_affiliation.status',
+      'person_affiliation.starts_at',
+      'person_affiliation.ends_at',
+      'person_affiliation.role_codes',
       'subscription.state',
       'subscription.starts_at',
       'subscription.ends_at',
       'subscription.product_key',
       'subscription.quantity',
-      'person_affiliation.status',
-      'person_affiliation.starts_at',
-      'person_affiliation.ends_at',
-      'person_affiliation.role_codes',
     ]);
   });
 
