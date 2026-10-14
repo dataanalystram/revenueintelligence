@@ -14,6 +14,7 @@ import {
   TenantDatabase,
   type TenantContext,
 } from '../../src/modules/tenancy';
+import { CLASSIFICATION_MANIFEST } from '../../src/modules/tenancy/security';
 import { startContextHarness, type ContextHarness } from '../support/context';
 import { genericModel } from '../support/product-models';
 import { authz, TEST_OPERATOR, TEST_RUN, TEST_SYSTEM } from '../support/security';
@@ -505,6 +506,41 @@ describe('M10B evidence links and provenance', () => {
       await expect(authz(t, 'canonical.evidence.link', TEST_OPERATOR)).rejects.toThrow();
       await expect(authz(t, 'canonical.evidence.link', TEST_RUN)).rejects.toThrow();
       expect((await auditOf(t, 'provenance.read')).length).toBe(before + 3);
+    });
+
+    it('value-free history rows never carry values; show refuses a context without data.provenance.read', async () => {
+      // No catalogued field is sensitive yet, so history is otherwise always value-bearing
+      // (VM19 survived without this). Raise company.name to `restricted` for the test (M10A2 V12 pattern).
+      const manifest = CLASSIFICATION_MANIFEST as Record<string, Record<string, unknown>>;
+      const original = manifest.companies!.name;
+      manifest.companies!.name = { ...(original as object), sensitivity: 'restricted' };
+      try {
+        const t = await c.tenant('evprovvf', 3004);
+        const subject = await companyOf(t, '8601', 'Hidden One');
+        await companyOf(t, '8601', 'Hidden Two');
+        const report = await provenance().show(await authz(t, 'data.provenance.read'), {
+          kind: 'company',
+          id: subject,
+          field: 'name',
+        });
+        expect(report.field!.history.length).toBeGreaterThan(0);
+        for (const h of report.field!.history) {
+          expect(h.valuesRecorded).toBe(false);
+          expect(h).not.toHaveProperty('oldValue');
+          expect(h).not.toHaveProperty('newValue');
+        }
+        expect(JSON.stringify(report)).not.toMatch(/Hidden (One|Two)/);
+        // The service checks the capability itself (VM18 survived without this):
+        // a context authorized for another capability is refused.
+        await expect(
+          provenance().show((await authz(t, 'config.product_model.publish')) as never, {
+            kind: 'company',
+            id: subject,
+          }),
+        ).rejects.toThrow();
+      } finally {
+        manifest.companies!.name = original;
+      }
     });
   });
 
