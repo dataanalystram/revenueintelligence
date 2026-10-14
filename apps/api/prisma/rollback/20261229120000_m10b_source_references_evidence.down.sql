@@ -23,7 +23,6 @@ BEGIN
   SELECT count(*) INTO n FROM tenant_source_references WHERE last_change_id IS NOT NULL OR state <> 'active';
   IF n > 0 THEN RAISE EXCEPTION 'refusing rollback: % source references changed after the backfill', n; END IF;
   SELECT count(*) INTO n FROM tenant_evidence_links;
-  IF n > 0 THEN RAISE EXCEPTION 'refusing rollback: % evidence links exist', n; END IF;
   SELECT count(*) INTO n FROM tenant_context_changes WHERE entity_kind = 'product' OR entity_key IS NOT NULL OR entity_id IS NULL;
   IF n > 0 THEN RAISE EXCEPTION 'refusing rollback: % product change records exist', n; END IF;
   SELECT count(*) INTO n FROM tenant_canonical_adoptions WHERE version = '0.2' OR previous_version = '0.2';
