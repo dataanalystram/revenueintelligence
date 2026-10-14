@@ -29,6 +29,9 @@ describe('canonicalFeatureChanges', () => {
     const v03 = ['account_hierarchy', 'person_affiliations', 'hierarchy_operator_entry'];
     expect(canonicalFeatureChanges('0.2', '0.3')).toEqual({ enables: v03, disables: [] });
     expect(canonicalFeatureChanges('0.3', '0.2')).toEqual({ enables: [], disables: v03 });
-    expect(canonicalFeatureChanges('0.1', '0.3')).toEqual({ enables: [...v02, ...v03], disables: [] });
+    expect(canonicalFeatureChanges('0.1', '0.3')).toEqual({
+      enables: [...v02, ...v03],
+      disables: [],
+    });
   });
 });

@@ -139,7 +139,9 @@ export function canonicalCatalogueHash(catalogue: CanonicalCatalogue): string {
     evidenceRoles: sorted(catalogue.evidenceRoles),
     authorityFacts: sorted(catalogue.authorityFacts),
     mappingTargets: sorted(catalogue.mappingTargets),
-    hierarchy: catalogue.hierarchy ? { maxDepthCeiling: catalogue.hierarchy.maxDepthCeiling } : undefined,
+    hierarchy: catalogue.hierarchy
+      ? { maxDepthCeiling: catalogue.hierarchy.maxDepthCeiling }
+      : undefined,
     affiliationEndReasons: sorted(catalogue.affiliationEndReasons),
   });
 }

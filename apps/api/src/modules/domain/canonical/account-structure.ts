@@ -81,4 +81,7 @@ export const IDENTITY_CONFLICT_KINDS = [
 export type IdentityConflictKind = (typeof IDENTITY_CONFLICT_KINDS)[number];
 
 /** Read-only security-invoker views over the account structure (plan §5). */
-export const ACCOUNT_STRUCTURE_VIEWS = ['account_hierarchy_paths', 'person_affiliation_index'] as const;
+export const ACCOUNT_STRUCTURE_VIEWS = [
+  'account_hierarchy_paths',
+  'person_affiliation_index',
+] as const;

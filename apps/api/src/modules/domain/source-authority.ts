@@ -40,10 +40,9 @@ const OPTIONAL_AUTHORITY_FACTS = AUTHORITY_FACTS.filter(
 export const AuthorityDocumentSchema = z
   .strictObject({
     facts: z.strictObject({
-      ...(Object.fromEntries(REQUIRED_AUTHORITY_FACTS.map((f) => [f, z.uuid().nullable()])) as Record<
-        (typeof REQUIRED_AUTHORITY_FACTS)[number],
-        z.ZodNullable<z.ZodUUID>
-      >),
+      ...(Object.fromEntries(
+        REQUIRED_AUTHORITY_FACTS.map((f) => [f, z.uuid().nullable()]),
+      ) as Record<(typeof REQUIRED_AUTHORITY_FACTS)[number], z.ZodNullable<z.ZodUUID>>),
       account_hierarchy: z.uuid().nullable().optional(),
     }),
   })

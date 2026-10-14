@@ -158,7 +158,10 @@ export class SourceReferenceService {
     const kind = this.genericKind(input.entityKind);
     this.validTriple(input);
     const entity = this.entityOf(kind, input);
-    await this.requireVersion(tx, kind === 'person_affiliation' ? ACCOUNT_STRUCTURE_MIN_VERSION : undefined);
+    await this.requireVersion(
+      tx,
+      kind === 'person_affiliation' ? ACCOUNT_STRUCTURE_MIN_VERSION : undefined,
+    );
     await this.lock(tx, input);
     const db = tenantClient(tx);
     const stored = await this.find(tx, input);
