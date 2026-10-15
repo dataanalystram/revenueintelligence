@@ -358,6 +358,8 @@ describe('M10D extension values (ExtensionValueWriter)', () => {
     it('a retired field is refused (field_retired) after republishing it retired', async () => {
       const t = await extensionTenant(c, 'xretire');
       const company = (await companies(c, t, ['1401']))['1401']!;
+      // A sticky operator value set while the field was active (review m8).
+      await set(t, `company:${company}`, 'x_text', 'human');
       const doc = defaultDocument() as { fields: Record<string, unknown>[] };
       doc.fields = doc.fields.map((f) => (f.key === 'x_text' ? { ...f, status: 'retired' } : f));
       await publishExtension(c, t, doc);
@@ -368,6 +370,17 @@ describe('M10D extension values (ExtensionValueWriter)', () => {
       await expect(set(t, `company:${company}`, 'x_text', 'late')).rejects.toMatchObject({
         code: 'extension_field_retired',
       });
+      // Review m8: the sticky value on the retired field can still be released (no new value).
+      expect(
+        await writer().release(await authz(t, 'canonical.human_entry'), {
+          target: `company:${company}`,
+          field: 'x_text',
+          reason: REASON,
+        }),
+      ).toMatchObject({ state: 'released', changed: true });
+      const v = (await valuesOf(c, t, company)).x_text!;
+      expect(v.origin).toBe('human');
+      expect(v.released_at).not.toBeNull();
     });
   });
 

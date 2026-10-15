@@ -302,9 +302,12 @@ export class ExtensionValueWriter {
     entry: ExtensionEntry | undefined,
     target: ExtensionTarget,
     recordObjectKey: string | undefined,
+    options: { readonly allowRetired?: boolean } = {},
   ): FieldCheck {
     if (!entry || entry.definition.kind !== 'field') return { ok: false, reason: 'field_unknown' };
-    if (entry.status !== 'active') return { ok: false, reason: 'field_retired' };
+    if (entry.status !== 'active' && !(options.allowRetired && entry.status === 'retired')) {
+      return { ok: false, reason: 'field_retired' };
+    }
     const t = definitionTarget(entry.definition);
     if (t.kind !== target.kind) return { ok: false, reason: 'target_mismatch' };
     if (t.objectKey !== undefined && t.objectKey !== recordObjectKey) {
@@ -458,6 +461,8 @@ export class ExtensionValueWriter {
         registry.byKey.get(input.field),
         target,
         entity.exists && entity.objectId ? registry.byId.get(entity.objectId)?.key : undefined,
+        // Review m8: release only clears the override and writes no value, so a retired field allows it.
+        { allowRetired: true },
       );
       if (!check.ok) throw fieldError(check.reason);
       await this.store.lockTarget(tx, target);
