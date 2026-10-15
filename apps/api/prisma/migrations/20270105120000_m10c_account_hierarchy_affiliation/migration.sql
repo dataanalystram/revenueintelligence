@@ -73,7 +73,7 @@ ALTER TABLE "tenant_person_affiliations" ADD CONSTRAINT "tenant_person_affiliati
 ALTER TABLE "tenant_person_affiliations" ADD CONSTRAINT "tenant_person_affiliations_tenant_id_person_id_fkey" FOREIGN KEY ("tenant_id", "person_id") REFERENCES "persons"("tenant_id", "id") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
-ALTER TABLE "tenant_person_affiliations" ADD CONSTRAINT "tenant_person_affiliations_tenant_id_company_id_fkey" FOREIGN KEY ("tenant_id", "company_id") REFERENCES "companies"("tenant_id", "id") ON DELETE RESTRICT ON UPDATE RESTRICT;
+ALTER TABLE "tenant_person_affiliations" ADD CONSTRAINT "tenant_person_affiliations_tenant_id_company_id_fkey" FOREIGN KEY ("company_id") REFERENCES "companies"("id") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
 ALTER TABLE "tenant_person_affiliations" ADD CONSTRAINT "tenant_person_affiliations_tenant_id_merged_into_id_fkey" FOREIGN KEY ("tenant_id", "merged_into_id") REFERENCES "tenant_person_affiliations"("tenant_id", "id") ON DELETE RESTRICT ON UPDATE RESTRICT;
