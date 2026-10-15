@@ -46,23 +46,23 @@
 
 ## Plan vs actual (deviations)
 
-| #   | Deviation                                               | Why                                                                                                                                                             |
-| --- | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D1  | No left-prefix text index on `value_text`               | an expression / partial index is not expressible in the Prisma schema without schema-guard drift; typed indexes for the other types (tech debt #85)             |
-| D2  | Source-sync extension writes in separate transactions   | the canonical ingestion transaction of a record commits first; a failed extension write does not roll it back                                                   |
-| D3  | Closed module gate skips writes, counted, no audit      | the run counts skipped extension writes; no per-record audit event (tech debt #84)                                                                              |
-| D4  | Merge participant runs regardless of gate state         | a merge never strands values or records on a loser, even below `0.4` or with the module disabled                                                                |
-| D5  | JSON `null` = explicit empty                            | a `null` clears; an absent key changes nothing                                                                                                                  |
-| D6  | Custom-record product parents operator-only             | no mapping entry sets a `product` parent                                                                                                                        |
-| D7  | Capture drafts `internal` / `operational` / `[display]` | narrower than the plan's display / analytics; the operator widens a definition in the registry dry run                                                          |
-| D8  | Q14 owner check without cross-connection locking        | publish reads the other published mappings; two concurrent publishes for one object can both pass (tech debt #83)                                               |
-| D9  | `insertContextChange` moved to tenancy                  | the extension module writes change records without importing `context` infrastructure (boundary rule)                                                           |
-| D10 | Capture draft on the sources CLI                        | `sources extension-capture-draft` (script `extension:capture-draft`) reads the source schema snapshot                                                           |
-| D11 | Record CLI shape                                        | `records list / show`, `record create / update / retire / reactivate`, repeatable `--set`, `--clear`, no date flags                                             |
-| D12 | CLI `--file` caps raised                                | canonical-registry CLI 8 MiB (registry ceiling), mapping-source CLI 4 MiB (indented 1 MiB mapping document); fixed in `9ad1797`                                 |
-| D13 | `human_override_active` added                           | the plan said "reused", but it was not in `AUDIT_REASON_CODES`                                                                                                  |
-| D14 | Guardrail counts include retired definitions            | keys never disappear                                                                                                                                            |
-| D15 | V9 (capture) has no integration spec                    | covered by unit tests (capture draft, captured keys, `sensitive_by_name` refusal) and runtime script 89, which runs the real CLI against a real schema snapshot |
+| #   | Deviation                                               | Why                                                                                                                                                                              |
+| --- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | No left-prefix text index on `value_text`               | an expression / partial index is not expressible in the Prisma schema without schema-guard drift; typed indexes for the other types (tech debt #85)                              |
+| D2  | Source-sync extension writes in separate transactions   | the canonical ingestion transaction of a record commits first; a failed extension write does not roll it back                                                                    |
+| D3  | Closed module gate skips writes, counted, no audit      | the run counts skipped extension writes; no per-record audit event (tech debt #84)                                                                                               |
+| D4  | Merge participant runs regardless of gate state         | a merge never strands values or records on a loser, even below `0.4` or with the module disabled                                                                                 |
+| D5  | JSON `null` = explicit empty                            | a `null` clears; an absent key changes nothing                                                                                                                                   |
+| D6  | Custom-record product parents operator-only             | no mapping entry sets a `product` parent                                                                                                                                         |
+| D7  | Capture drafts `internal` / `operational` / `[display]` | narrower than the plan's display / analytics; the operator widens a definition in the registry dry run                                                                           |
+| D8  | Q14 owner check without cross-connection locking        | **resolved by #83 hardening (PR #110):** owner table `tenant_custom_object_owners` (PK `(tenant, object_key)`) claimed in the publish transaction; writer owner check; see below |
+| D9  | `insertContextChange` moved to tenancy                  | the extension module writes change records without importing `context` infrastructure (boundary rule)                                                                            |
+| D10 | Capture draft on the sources CLI                        | `sources extension-capture-draft` (script `extension:capture-draft`) reads the source schema snapshot                                                                            |
+| D11 | Record CLI shape                                        | `records list / show`, `record create / update / retire / reactivate`, repeatable `--set`, `--clear`, no date flags                                                              |
+| D12 | CLI `--file` caps raised                                | canonical-registry CLI 8 MiB (registry ceiling), mapping-source CLI 4 MiB (indented 1 MiB mapping document); fixed in `9ad1797`                                                  |
+| D13 | `human_override_active` added                           | the plan said "reused", but it was not in `AUDIT_REASON_CODES`                                                                                                                   |
+| D14 | Guardrail counts include retired definitions            | keys never disappear                                                                                                                                                             |
+| D15 | V9 (capture) has no integration spec                    | covered by unit tests (capture draft, captured keys, `sensitive_by_name` refusal) and runtime script 89, which runs the real CLI against a real schema snapshot                  |
 
 Q4 limits as built: 1,000 fields per object, 1 MiB mapping document, existing mapping hashes unchanged; extension
 registry cap 2 MiB (database ceiling 8 MiB); mapping-source CLI file cap 4 MiB; canonical-registry CLI file cap 8 MiB.
@@ -166,23 +166,55 @@ context without `canonical.human_entry`). The control run #91 showed both patche
 
 Independent review of `f26336d`: **PASS WITH FINDINGS** — no blockers, two majors, eight minors.
 
-| Finding                                                                            | Severity | Resolution                                                                                              |
-| ---------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------- |
-| M1 merge × extension-writer race (values stranded on a loser, or the merge aborts) | major    | fixed: writers and the merge participant lock targets before reading (`63e4b91`)                        |
-| M2 record claimed V4 / V13 coverage that was not in the branch                     | major    | fixed: V4 / V13 database-level tests landed (`57da078`); record corrected; V9 recorded as deviation D15 |
-| m1 Q14 single-owner check without a cross-connection lock (D8, #83)                | minor    | **open: needs Ram's explicit sign-off at the `main` merge**                                             |
-| m2 `CustomRecordReadModel` named in the docs but not in the code                   | minor    | fixed: docs name `ExtensionReadModel.records` / `.record`                                               |
-| m3 capture draft ran without a capability or audit event                           | minor    | fixed: `config.mapping.draft` via `authorizeOperator`, one counts-only audit event                      |
-| m4 one_to_one replace ended the old edge, then rejected                            | minor    | fixed: the taken-target check runs first; the old edge stays (test in V8)                               |
-| m5 extension sync opens a transaction per relationship statement                   | minor    | deferred (#87)                                                                                          |
-| m6 guard trigger does not check relationship ends against the definition           | minor    | deferred (#88)                                                                                          |
-| m7 unknown source role silently became the declared role                           | minor    | fixed: counted as `custom_relationship_role_unmapped` (edge keeps the declared role, plan §5.3)         |
-| m8 release refused on a retired field                                              | minor    | fixed: release (clears the override, writes no value) allowed on a retired field                        |
+| Finding                                                                            | Severity | Resolution                                                                                                    |
+| ---------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------- |
+| M1 merge × extension-writer race (values stranded on a loser, or the merge aborts) | major    | fixed: writers and the merge participant lock targets before reading (`63e4b91`)                              |
+| M2 record claimed V4 / V13 coverage that was not in the branch                     | major    | fixed: V4 / V13 database-level tests landed (`57da078`); record corrected; V9 recorded as deviation D15       |
+| m1 Q14 single-owner check without a cross-connection lock (D8, #83)                | minor    | **fixed (#83 hardening, PR #110, `a620ff9`):** structural owner table + claim in publish + writer owner check |
+| m2 `CustomRecordReadModel` named in the docs but not in the code                   | minor    | fixed: docs name `ExtensionReadModel.records` / `.record`                                                     |
+| m3 capture draft ran without a capability or audit event                           | minor    | fixed: `config.mapping.draft` via `authorizeOperator`, one counts-only audit event                            |
+| m4 one_to_one replace ended the old edge, then rejected                            | minor    | fixed: the taken-target check runs first; the old edge stays (test in V8)                                     |
+| m5 extension sync opens a transaction per relationship statement                   | minor    | deferred (#87)                                                                                                |
+| m6 guard trigger does not check relationship ends against the definition           | minor    | deferred (#88)                                                                                                |
+| m7 unknown source role silently became the declared role                           | minor    | fixed: counted as `custom_relationship_role_unmapped` (edge keeps the declared role, plan §5.3)               |
+| m8 release refused on a retired field                                              | minor    | fixed: release (clears the override, writes no value) allowed on a retired field                              |
+
+## Tech debt #83 hardening (Q14 single owner, PR #110)
+
+Design in ADR 0030, addendum "tech debt #83". Migration `20270126120000_m10d_custom_object_owner` adds
+`tenant_custom_object_owners` (primary key `(tenant_id, object_key)`, composite same-tenant RESTRICT FKs, state CHECK,
+guard trigger, forced RLS, no DELETE grant, backfill that refuses two existing owners, refusing down-script).
+`SourceMappingsService.publish` claims owner rows in ascending `object_key` order inside the publish transaction (a
+concurrent claimer hits the primary key → `custom_object_owned_by_other_connection`); retire / a version that no
+longer maps an object releases (`connection_id = NULL`); `CustomRecordWriter` reads the owner row `FOR SHARE` and
+rejects a non-owner source write (`object_not_owned`).
+
+**Deviation.** Release sets `connection_id = NULL` on the single row instead of `ended_at` + a partial unique index on
+active rows: a partial unique index is not expressible in the Prisma schema without schema-guard drift (same reason as
+D1). Claim history is in the `mapping.publish` / `mapping.retire` audit details.
+
+**Tests.** `test/sources/custom-object-owner.int.spec.ts` (control, race, release / audit, no deadlock),
+`test/tenancy/migrations-m10d-owner.int.spec.ts` (schema guard, raw SQL as the app role, migration on M10E data,
+down-script), `test/extension/custom-records.int.spec.ts` "tech debt #83 (Q14)".
+
+| Run           | Head      | Result                                                                                                                          |
+| ------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `38821831803` | `4614146` | race test only, on unfixed code: **failed as intended** (both concurrent publications committed)                                |
+| `38823851901` | `a620ff9` | **all four jobs ✅** (fix); integration 51 files / 775 tests incl. every extension, custom-\*, owner, m10c–m10e migration suite |
+
+| VM  | Mutation (throwaway branch off `a620ff9`)                        | Guarding test that failed                                                                          | PR  | Run           | Result |
+| --- | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | --- | ------------- | ------ |
+| VM1 | publish skips owner rows (no claim / release)                    | `custom-object-owner` control, race (2 fulfilled), release / audit, no deadlock                    | 111 | `38824469658` | killed |
+| VM2 | primary key `(tenant_id, object_key)` dropped (non-unique index) | `custom-object-owner` race (2 fulfilled); `migrations-m10d-owner` "one owner per (tenant, object)" | 112 | `38824471823` | killed |
+| VM3 | claim sort removed (document order)                              | `custom-object-owner` no deadlock (loser got `P2034` deadlock instead of the Q14 refusal)          | 113 | `38824476583` | killed |
+| VM4 | `CustomRecordWriter` owner check removed                         | `custom-records` "tech debt #83 (Q14)" (non-owner write `created`)                                 | 114 | `38824480175` | killed |
+
+All four PRs closed unmerged and their branches deleted (verified with `git ls-remote`). No survivors.
 
 ## Known gaps / judgment calls
 
 - Full writer-path load test not run (#82).
-- Q14 owner check is not serialised across connections (#83); owner sign-off required at the `main` merge.
+- Q14 single owner: **resolved** by the #83 hardening (PR #110) — the database enforces one owner per custom object; see "Tech debt #83 hardening".
 - Extension sync reads the relationship registry once per statement (#87); the guard trigger does not check relationship ends against the definition (#88).
 - A run with the module gate closed counts skipped writes but writes no per-record audit (#84).
 - Live Sugar / Chargebee regression: not run (no approved secrets in this environment).
@@ -196,6 +228,6 @@ rolled back by the down-script. Production is forward-fix only; tenant-level rol
 
 ## Remaining
 
-- Owner sign-off on tech debt #83 (review m1) before the merge to `main`.
+- Tech debt #83 (review m1): **resolved** by PR #110 (fixed, not accepted as debt); Ram approves the `main` merge as usual.
 - E4 candidate note and the `canonical-extension-and-source-mapping.md` superseded note (plan §23).
 - Tech debt #82–#88; integrity worker job (#65, inherited); data-quality store (M10L) for per-record rejections.
