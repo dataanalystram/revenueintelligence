@@ -181,7 +181,8 @@ CREATE UNIQUE INDEX "tenant_registry_entries_tenant_id_kind_id_key" ON "tenant_r
 ALTER TABLE "tenant_extension_values" ADD CONSTRAINT "tenant_extension_values_tenant_id_fkey" FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
-ALTER TABLE "tenant_extension_values" ADD CONSTRAINT "tenant_extension_values_target_id_fkey" FOREIGN KEY ("tenant_id", "target_kind", "target_id") REFERENCES "tenant_entity_index"("tenant_id", "kind", "entity_id") ON DELETE RESTRICT ON UPDATE RESTRICT;
+CREATE UNIQUE INDEX "mut_entity_index_kind_entity_id" ON "tenant_entity_index"("kind", "entity_id");
+ALTER TABLE "tenant_extension_values" ADD CONSTRAINT "tenant_extension_values_target_id_fkey" FOREIGN KEY ("target_kind", "target_id") REFERENCES "tenant_entity_index"("kind", "entity_id") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
 ALTER TABLE "tenant_extension_values" ADD CONSTRAINT "tenant_extension_values_target_key_fkey" FOREIGN KEY ("tenant_id", "target_kind", "target_key") REFERENCES "tenant_entity_index"("tenant_id", "kind", "entity_key") ON DELETE RESTRICT ON UPDATE RESTRICT;
