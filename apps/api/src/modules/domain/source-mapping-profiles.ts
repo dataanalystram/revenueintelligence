@@ -539,3 +539,21 @@ export function requiresRepublish(doc: MappingDocument): boolean {
     (o) => o.holdingFilter !== undefined && o.holdingFilter.reviewedDomain === undefined,
   );
 }
+
+/**
+ * M10D (plan §5.1, §5.4): the M9A sensitivity of a source field in the newest
+ * finished candidate profile of its object, if one profiles it.
+ */
+export function profiledSensitivity(
+  schema: SourceSchema,
+  profiles: readonly CandidateProfile[],
+  object: string,
+  field: string,
+): string | undefined {
+  const newest = profiles
+    .filter((p) => p.document.object === object && p.finishedAt !== null)
+    .sort((a, b) => b.finishedAt!.getTime() - a.finishedAt!.getTime())[0];
+  if (!newest) return undefined;
+  const name = profileNameOf(schema, object, field);
+  return newest.document.fields.find((f) => f.name === name)?.sensitivity;
+}

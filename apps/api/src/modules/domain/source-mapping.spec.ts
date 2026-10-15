@@ -72,11 +72,18 @@ describe('mapping validation (ADR 0020)', () => {
   });
 
   describe('entry kinds', () => {
-    it('refuses the reserved attribute kind', () => {
+    it('refuses attribute entries without the extension registry (below 0.4)', () => {
+      const raw = mapping((d) => {
+        lines(d).fields.push({ kind: 'attribute', field: 'mrr', source: 'mrr_c' } as never);
+      });
+      expect(codes(raw)).toEqual(['attribute_mappings_not_enabled']);
+    });
+
+    it('refuses the loose pre-M10D attribute shape as an invalid document', () => {
       const raw = mapping((d) => {
         lines(d).fields.push({ kind: 'attribute', source: 'mrr_c', attribute: 'mrr' } as never);
       });
-      expect(codes(raw)).toEqual(['attribute_mappings_not_enabled']);
+      expect(codes(raw)).toContain('invalid_document');
     });
 
     it('refuses free target paths and unknown entities', () => {

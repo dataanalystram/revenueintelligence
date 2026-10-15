@@ -2,7 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { APP_CONFIG, type AppConfig } from '../../../platform/config';
 import {
+  canonicalDecimal,
   canonicalHash,
+  displayExtensionValue,
+  findSecretLike,
+  findSecretLikeInJson,
+  parsedFromStored,
+  type ParsedExtensionItem,
   HIERARCHY_MAX_DEPTH_CEILING,
   ENTITY_INDEX_SOURCES,
   evidenceRelationAllowed,
@@ -27,6 +33,11 @@ import {
   type TenantTransaction,
 } from '../../tenancy';
 import { EVIDENCE_RELATION_CATALOGUE } from './evidence-link.writer';
+
+/** Values re-scanned for secret-like patterns per run (sampled, newest first). */
+const EXTENSION_SECRET_SCAN_SAMPLE = 500;
+/** History-enabled values compared with their latest value-history row per run. */
+const EXTENSION_HISTORY_PARITY_SAMPLE = 1000;
 
 /** Clock-skew tolerance past a purge anchor's cutoff (audit_reference_missing exemption). */
 const AUDIT_PURGE_SKEW_MS = 5 * 60 * 1000;
@@ -306,7 +317,224 @@ export class IntegrityVerificationService {
     await this.referenceChecks(tx, add);
     // M10C plan §11 (ADR 0029).
     await this.accountStructureChecks(tx, add);
+    // M10D plan §14 (ADR 0030).
+    await this.extensionChecks(tx, add);
     return findings;
+  }
+
+  /** The eight M10D checks: read-only, identifiers only, nothing repaired. */
+  private async extensionChecks(
+    tx: TenantTransaction,
+    add: (check: IntegrityFinding['check'], refs: readonly string[]) => void,
+  ): Promise<void> {
+    const db = tenantClient(tx);
+    const t = tx.tenantId;
+    const refs = async (sql: string): Promise<string[]> =>
+      (
+        await db.$queryRawUnsafe<{ ref: string }[]>(
+          `${sql} ORDER BY 1 LIMIT ${INTEGRITY_MAX_FINDINGS}`,
+          t,
+        )
+      ).map((r) => r.ref);
+    const field = `JOIN tenant_registry_entries e
+                     ON e.tenant_id = v.tenant_id AND e.kind = v.field_registry_kind AND e.id = v.field_id`;
+    // 19. Each value's type equals its field definition's current value type.
+    add(
+      'extension_value_type_mismatch',
+      await refs(`SELECT v.id::text AS ref FROM tenant_extension_values v ${field}
+                   WHERE v.tenant_id = $1::uuid AND v.value_type IS DISTINCT FROM e.definition ->> 'value_type'`),
+    );
+    // 20. No stored value of a field whose effective sensitivity is restricted (Q10).
+    add(
+      'extension_value_restricted',
+      await refs(`SELECT v.id::text AS ref FROM tenant_extension_values v ${field}
+                   WHERE v.tenant_id = $1::uuid AND v.value_state = 'present'
+                     AND (e.sensitivity = 'restricted' OR EXISTS (
+                           SELECT 1 FROM tenant_registry_entries o
+                            WHERE o.tenant_id = e.tenant_id AND o.kind = e.kind AND o.sensitivity = 'restricted'
+                              AND (e.definition ->> 'target') = 'custom_object:' || o.key))`),
+    );
+    // 21. Each value's target kind matches its field's target (and a record's object).
+    add(
+      'extension_value_target_kind',
+      await refs(`SELECT v.id::text AS ref FROM tenant_extension_values v ${field}
+                   WHERE v.tenant_id = $1::uuid
+                     AND (v.target_kind IS DISTINCT FROM CASE
+                            WHEN (e.definition ->> 'target') LIKE 'custom_object:%' THEN 'custom_record'
+                            WHEN (e.definition ->> 'target') = 'account' THEN 'company'
+                            ELSE e.definition ->> 'target' END
+                          OR (v.target_kind = 'custom_record' AND NOT EXISTS (
+                            SELECT 1 FROM tenant_custom_records r
+                              JOIN tenant_registry_entries o
+                                ON o.tenant_id = r.tenant_id AND o.kind = r.object_registry_kind AND o.id = r.object_id
+                             WHERE r.tenant_id = v.tenant_id AND r.id = v.target_id
+                               AND (e.definition ->> 'target') = 'custom_object:' || o.key)))`),
+    );
+    // 22. Item count parity; multi_enum items unique and within the field's codes.
+    add(
+      'extension_items_parity',
+      await refs(`SELECT v.id::text AS ref FROM tenant_extension_values v ${field}
+                   WHERE v.tenant_id = $1::uuid
+                     AND (COALESCE(v.value_item_count, 0) <> (
+                            SELECT count(*) FROM tenant_extension_value_items i
+                             WHERE i.tenant_id = v.tenant_id AND i.value_id = v.id)
+                          OR (v.value_type = 'multi_enum' AND EXISTS (
+                            SELECT 1 FROM tenant_extension_value_items i
+                             WHERE i.tenant_id = v.tenant_id AND i.value_id = v.id
+                               AND (i.item_enum IS NULL
+                                    OR NOT COALESCE(e.definition -> 'codes', '[]'::jsonb) ? i.item_enum
+                                    OR EXISTS (SELECT 1 FROM tenant_extension_value_items j
+                                                WHERE j.tenant_id = i.tenant_id AND j.value_id = i.value_id
+                                                  AND j.ordinal <> i.ordinal AND j.item_enum = i.item_enum)))))`),
+    );
+    // 23. Sampled re-scan of text / JSON values for secret-like patterns (bounded per run).
+    const sample = await db.$queryRawUnsafe<
+      { id: string; value_text: string | null; value_json: unknown; items: string[] | null }[]
+    >(
+      `SELECT v.id::text AS id, v.value_text, v.value_json,
+              (SELECT array_agg(i.item_text) FROM tenant_extension_value_items i
+                WHERE i.tenant_id = v.tenant_id AND i.value_id = v.id AND i.item_text IS NOT NULL) AS items
+         FROM tenant_extension_values v
+        WHERE v.tenant_id = $1::uuid AND v.value_state = 'present'
+          AND v.value_type IN ('string', 'text', 'json', 'array')
+        ORDER BY v.updated_at DESC, v.id LIMIT ${EXTENSION_SECRET_SCAN_SAMPLE}`,
+      t,
+    );
+    add(
+      'extension_value_secret_like',
+      sample
+        .filter(
+          (r) =>
+            (r.value_text !== null && findSecretLike(r.value_text) !== undefined) ||
+            (r.value_json !== null && findSecretLikeInJson(r.value_json).length > 0) ||
+            (r.items ?? []).some((i) => findSecretLike(i) !== undefined),
+        )
+        .map((r) => r.id)
+        .sort()
+        .slice(0, INTEGRITY_MAX_FINDINGS),
+    );
+    // 24. Records of an object with a required parent have one.
+    add(
+      'custom_record_parent_missing',
+      await refs(`SELECT r.id::text AS ref FROM tenant_custom_records r
+                    JOIN tenant_registry_entries o
+                      ON o.tenant_id = r.tenant_id AND o.kind = r.object_registry_kind AND o.id = r.object_id
+                   WHERE r.tenant_id = $1::uuid AND r.record_state <> 'merged'
+                     AND (o.definition -> 'parent' ->> 'required') = 'true'
+                     AND r.parent_id IS NULL AND r.parent_key IS NULL`),
+    );
+    // 25. No definition's cardinality is violated by active edges.
+    add(
+      'custom_relationship_cardinality',
+      await refs(`SELECT c.rel_def_id::text || ':' || x.side || ':' || x.kind || ':' || x.ident AS ref
+                    FROM tenant_custom_relationships c
+                    JOIN tenant_registry_entries d
+                      ON d.tenant_id = c.tenant_id AND d.kind = c.rel_registry_kind AND d.id = c.rel_def_id
+                   CROSS JOIN LATERAL (VALUES
+                       ('from', c.from_kind, COALESCE(c.from_id::text, c.from_key)),
+                       ('to', c.to_kind, COALESCE(c.to_id::text, c.to_key))) AS x(side, kind, ident)
+                   WHERE c.tenant_id = $1::uuid AND c.state = 'active'
+                     AND ((x.side = 'from' AND (d.definition ->> 'cardinality') IN ('one_to_one', 'many_to_one'))
+                       OR (x.side = 'to' AND (d.definition ->> 'cardinality') = 'one_to_one'))
+                   GROUP BY c.rel_def_id, x.side, x.kind, x.ident HAVING count(*) > 1`),
+    );
+    // 26. History-enabled fields: the current value equals the latest recorded value-history row.
+    // Rows written in one transaction tie on `recorded_at`; parity holds when any of them matches.
+    const history = await db.$queryRawUnsafe<
+      {
+        id: string;
+        value_type: string;
+        value_state: string;
+        value_text: string | null;
+        value_number: string | null;
+        value_bool: boolean | null;
+        value_date: string | null;
+        value_ts: Date | null;
+        value_money_minor: string | null;
+        value_currency: string | null;
+        value_enum: string | null;
+        value_json: unknown;
+        value_ref_kind: string | null;
+        value_ref_id: string | null;
+        value_ref_key: string | null;
+        items:
+          | {
+              type: string;
+              text: string | null;
+              number: string | null;
+              date: string | null;
+              enum: string | null;
+            }[]
+          | null;
+        latest: unknown[];
+      }[]
+    >(
+      `SELECT v.id::text AS id, v.value_type, v.value_state, v.value_text, v.value_number::text AS value_number,
+              v.value_bool, v.value_date::text AS value_date, v.value_ts, v.value_money_minor::text AS value_money_minor,
+              v.value_currency, v.value_enum, v.value_json, v.value_ref_kind, v.value_ref_id::text AS value_ref_id,
+              v.value_ref_key,
+              (SELECT json_agg(json_build_object('type', i.item_type, 'text', i.item_text,
+                                                 'number', i.item_number::text, 'date', i.item_date::text,
+                                                 'enum', i.item_enum) ORDER BY i.ordinal)
+                 FROM tenant_extension_value_items i
+                WHERE i.tenant_id = v.tenant_id AND i.value_id = v.id) AS items,
+              last.vals AS latest
+         FROM tenant_extension_values v
+         ${field}
+         JOIN LATERAL (
+           SELECT jsonb_agg(COALESCE(h.new_value, 'null'::jsonb)) AS vals FROM tenant_value_history h
+            WHERE h.tenant_id = v.tenant_id AND h.entity_kind = v.target_kind
+              AND h.field = 'ext:' || e.key AND h.values_recorded
+              AND h.entity_id IS NOT DISTINCT FROM v.target_id AND h.entity_key IS NOT DISTINCT FROM v.target_key
+              AND h.recorded_at = (
+                SELECT max(h2.recorded_at) FROM tenant_value_history h2
+                 WHERE h2.tenant_id = v.tenant_id AND h2.entity_kind = v.target_kind
+                   AND h2.field = 'ext:' || e.key
+                   AND h2.entity_id IS NOT DISTINCT FROM v.target_id
+                   AND h2.entity_key IS NOT DISTINCT FROM v.target_key)) last ON last.vals IS NOT NULL
+        WHERE v.tenant_id = $1::uuid AND (e.definition ->> 'history') = 'value_history'
+        ORDER BY v.id LIMIT ${EXTENSION_HISTORY_PARITY_SAMPLE}`,
+      t,
+    );
+    add(
+      'extension_history_parity',
+      history
+        .filter((r) => {
+          const items: ParsedExtensionItem[] = (r.items ?? []).map((i) => ({
+            type: i.type as ParsedExtensionItem['type'],
+            ...(i.text !== null ? { text: i.text } : {}),
+            ...(i.number !== null ? { number: canonicalDecimal(i.number) ?? i.number } : {}),
+            ...(i.date !== null ? { date: i.date } : {}),
+            ...(i.enum !== null ? { enumCode: i.enum } : {}),
+          }));
+          const current = canonicalHash(
+            displayExtensionValue(
+              parsedFromStored(
+                {
+                  valueType: r.value_type,
+                  valueState: r.value_state,
+                  valueText: r.value_text,
+                  valueNumber: r.value_number,
+                  valueBool: r.value_bool,
+                  valueDate: r.value_date,
+                  valueTs: r.value_ts,
+                  valueMoneyMinor: r.value_money_minor,
+                  valueCurrency: r.value_currency,
+                  valueEnum: r.value_enum,
+                  valueJson: r.value_json,
+                  valueRefKind: r.value_ref_kind,
+                  valueRefId: r.value_ref_id,
+                  valueRefKey: r.value_ref_key,
+                },
+                items,
+              ),
+            ) ?? null,
+          );
+          return !r.latest.some((h) => canonicalHash(h ?? null) === current);
+        })
+        .map((r) => r.id)
+        .slice(0, INTEGRITY_MAX_FINDINGS),
+    );
   }
 
   /** The six M10C checks: read-only, identifiers only, nothing repaired. */

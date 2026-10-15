@@ -1,6 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import {
   decideValueHistory,
+  isExtensionHistoryField,
+  isSensitiveForHistory,
+  type ColumnClassification,
+  type DataCategory,
+  type ExtensionTargetKind,
+  type Sensitivity,
   jsonbTextBytes,
   policyAllowsValues,
   valueHistoryColumn,
@@ -96,4 +102,72 @@ export async function recordValueHistory(
   }
   if (rows.length) await tenantClient(tx).tenantValueHistory.createMany({ data: rows });
   return rows.length;
+}
+
+/**
+ * M10D (plan §9, Q23): value history of an extension field declaring
+ * `history: value_history`. The field token is `ext:<key>`; classification
+ * comes from the registry definition (never the static manifest). The
+ * restricted-history rule applies unchanged: sensitive (restricted, personal,
+ * communication or security) and not allowed by the published data policy →
+ * a value-free row. Products are key-identified (`entity_key`). Returns 1 when
+ * a row was written.
+ */
+export async function recordExtensionValueHistory(
+  tx: TenantTransaction,
+  input: {
+    readonly entityKind: ExtensionTargetKind;
+    /** Canonical id, or the product key for `product`. */
+    readonly entity: string;
+    readonly fieldKey: string;
+    /** The registry definition's classification (Q34). */
+    readonly classification: {
+      readonly sensitivity: Sensitivity;
+      readonly categories: readonly DataCategory[];
+    };
+    readonly changeId: string;
+    readonly effectiveAt: Date;
+    readonly actor?: SecurityActor;
+    readonly oldValue: unknown;
+    readonly newValue: unknown;
+  },
+): Promise<number> {
+  const field = `ext:${input.fieldKey}`;
+  if (!isExtensionHistoryField(input.entityKind, field)) return 0;
+  const policy = await publishedDataPolicy(tx);
+  const sensitive = isSensitiveForHistory(input.classification as ColumnClassification);
+  const allowed =
+    sensitive &&
+    policy !== undefined &&
+    policyAllowsValues(policy.document, input.entityKind, field);
+  let recorded = !sensitive || allowed;
+  const actor = input.actor ?? UNATTRIBUTED;
+  const oldValue = recorded ? jsonValue(input.oldValue) : null;
+  const newValue = recorded ? jsonValue(input.newValue) : null;
+  // An oversized value is recorded value-free rather than refused (the value itself was valid).
+  if (recorded && [oldValue, newValue].some((v) => jsonbTextBytes(v) > VALUE_HISTORY_MAX_BYTES)) {
+    recorded = false;
+  }
+  await tenantClient(tx).tenantValueHistory.create({
+    data: {
+      tenantId: tx.tenantId,
+      id: randomUUID(),
+      entityKind: input.entityKind,
+      ...(input.entityKind === 'product'
+        ? { entityKey: input.entity }
+        : { entityId: input.entity }),
+      field,
+      valuesRecorded: recorded,
+      oldValue: recorded && oldValue !== null ? (oldValue as object) : undefined,
+      newValue: recorded && newValue !== null ? (newValue as object) : undefined,
+      effectiveAt: input.effectiveAt,
+      changeId: input.changeId,
+      retentionClass: recorded && sensitive ? 'sensitive_value_history' : 'canonical_lifecycle',
+      policyVersion: recorded && sensitive ? (policy?.version ?? null) : null,
+      actorKind: actor.kind,
+      actorId: actor.id,
+      actorAssurance: actor.assurance,
+    },
+  });
+  return 1;
 }

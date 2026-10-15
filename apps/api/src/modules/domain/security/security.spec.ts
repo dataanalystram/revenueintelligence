@@ -15,6 +15,7 @@ import {
   operatorActor,
   operatorIdFrom,
   POLICY,
+  POLICY_VERSION,
   retentionCutoff,
   AUDIT_PURGE_EXECUTION_APPROVED,
   systemActor,
@@ -64,6 +65,8 @@ describe('security policy (S1)', () => {
     // M10C (policy v4, Q2): operator only, honoured only by the M10C operator commands.
     expect(POLICY['canonical.human_entry']).toEqual(['operator']);
     expect(POLICY['data.account_structure.read']).toEqual(['operator']);
+    // M10D (policy v5, Q17, Q29): extension reads are operator-only.
+    expect(POLICY['data.extension.read']).toEqual(['operator']);
     // M10B (policy v3): provenance reads are operator-only; evidence links system-only.
     expect(POLICY['data.provenance.read']).toEqual(['operator']);
     expect(POLICY['canonical.evidence.link']).toEqual(['system']);
@@ -71,6 +74,36 @@ describe('security policy (S1)', () => {
       (c) => c.startsWith('config.') && c !== 'config.oauth.grant',
     );
     for (const c of operatorOnly) expect(POLICY[c]).toEqual(['operator']);
+  });
+});
+
+describe('S1: policy v5 (M10D plan §16)', () => {
+  it('is version 5', () => {
+    expect(POLICY_VERSION).toBe(5);
+  });
+
+  it('extension reads and operator entry are operator-only; source writes stay source_sync / system', () => {
+    for (const kind of ACTOR_KINDS) {
+      const operator = kind === 'operator';
+      expect(decide(kind, 'data.extension.read').allowed, `${kind} data.extension.read`).toBe(
+        operator,
+      );
+      expect(decide(kind, 'canonical.human_entry').allowed, `${kind} canonical.human_entry`).toBe(
+        operator,
+      );
+      expect(decide(kind, 'canonical.source_sync').allowed, `${kind} canonical.source_sync`).toBe(
+        kind === 'source_sync' || kind === 'system',
+      );
+    }
+    // Registry, mapping, module and adoption changes of kind `extension` reuse the operator grants.
+    for (const c of [
+      'config.registry.publish',
+      'config.mapping.publish',
+      'config.module.change',
+      'config.canonical.adopt',
+    ] as const) {
+      expect(POLICY[c]).toEqual(['operator']);
+    }
   });
 });
 

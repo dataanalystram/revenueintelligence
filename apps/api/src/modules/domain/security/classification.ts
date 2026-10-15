@@ -77,6 +77,11 @@ export const ColumnClassificationSchema = z
       .object({ reason: z.string().min(10), owner: z.string().min(2) })
       .strict()
       .optional(),
+    /**
+     * M10D (Q34): the column's rows are classified per row by their registry
+     * definition (extension values); the static entry is the strictest bound.
+     */
+    classifiedBy: z.literal('registry').optional(),
   })
   .strict();
 export type ColumnClassification = z.infer<typeof ColumnClassificationSchema>;

@@ -90,6 +90,27 @@ module.exports = {
       },
     },
     {
+      name: 'extension-data-is-never-evidence',
+      severity: 'error',
+      comment:
+        'M10D (ADR 0030, Q21): extension values, custom records and custom relationships can ' +
+        'never feed eligibility, ownership, whitespace, coverage or identity. The products ' +
+        '(eligibility, ownership, coverage) and identity modules, and the pure eligibility / ' +
+        'coverage / holding domain code, never import the extension module or its value parsing.',
+      from: {
+        path: [
+          '^src/modules/(products|identity)/',
+          '^src/modules/domain/(eligibility|coverage|holding-domain|source-authority)\\.ts$',
+        ],
+      },
+      to: {
+        path: [
+          '^src/modules/extension/',
+          '^src/modules/domain/canonical/extension-(values|use)\\.ts$',
+        ],
+      },
+    },
+    {
       name: 'hubspot-sdk-only-in-hubspot-connector',
       severity: 'error',
       comment: 'External systems are accessed only through connector modules.',

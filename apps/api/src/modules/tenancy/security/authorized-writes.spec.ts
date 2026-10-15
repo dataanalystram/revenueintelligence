@@ -135,7 +135,15 @@ const SERVICES: readonly ServiceSpec[] = [
   {
     file: 'sources/application/source-mappings.service.ts',
     className: 'SourceMappingsService',
-    writes: ['publish', 'retire', 'saveDraft', 'validateDraft', 'publishDraft', 'discardDraft'],
+    writes: [
+      'publish',
+      'retire',
+      'saveDraft',
+      'validateDraft',
+      'publishDraft',
+      'discardDraft',
+      'captureDraft',
+    ],
     reads: ['validate', 'show', 'states', 'showDraft'],
   },
   {
@@ -225,6 +233,49 @@ const SERVICES: readonly ServiceSpec[] = [
     writes: ['hierarchy', 'affiliations'],
     reads: [],
   },
+  // M10D (ADR 0030): the three extension writers, the read model and the merge
+  // participant. Merge hooks run inside the merge's transaction under its
+  // authorization; the use guard and the natural-key hash are pure.
+  {
+    file: 'extension/application/extension-value.writer.ts',
+    className: 'ExtensionValueWriter',
+    writes: ['observeSource', 'observe', 'set', 'clear', 'release', 'writeHumanWithin'],
+    reads: [],
+    authorizeInside: ['onEntityMerged'],
+  },
+  {
+    file: 'extension/application/custom-record.writer.ts',
+    className: 'CustomRecordWriter',
+    writes: ['observeSource', 'observe', 'createRecord', 'update', 'retire', 'reactivate'],
+    reads: ['naturalKeyHash'],
+    authorizeInside: ['onParentMerged'],
+  },
+  {
+    file: 'extension/application/custom-relationship.writer.ts',
+    className: 'CustomRelationshipWriter',
+    writes: ['observeSource', 'observe', 'add', 'endEdge'],
+    reads: [],
+  },
+  {
+    file: 'extension/application/extension-merge.participant.ts',
+    className: 'ExtensionMergeParticipant',
+    writes: [],
+    reads: [],
+    authorizeInside: ['onCompanyMerged', 'onPersonMerged'],
+  },
+  {
+    // The read model writes one extension.read audit event per call (Q29).
+    file: 'extension/application/extension.read-model.ts',
+    className: 'ExtensionReadModel',
+    writes: ['valuesFor', 'records', 'record'],
+    reads: [],
+  },
+  {
+    file: 'extension/application/extension.read-model.ts',
+    className: 'ExtensionUseGuard',
+    writes: [],
+    reads: ['require'],
+  },
   {
     file: 'context/application/context-operations.service.ts',
     className: 'ContextOperationsService',
@@ -305,7 +356,7 @@ describe('S2: privileged service writes take an authorized context (static)', ()
     }
   });
 
-  it('M10C (V18): canonical.human_entry is accepted only by the M10C operator methods', () => {
+  it('M10C (V18) / M10D (S2): canonical.human_entry is accepted only by the M10C and M10D operator methods', () => {
     const accepted = new Map<string, string[]>();
     for (const spec of SERVICES) {
       for (const [name, type] of publicMethods(spec.file, spec.className)) {
@@ -317,10 +368,15 @@ describe('S2: privileged service writes take an authorized context (static)', ()
     expect(Object.fromEntries(accepted)).toEqual({
       AccountHierarchyWriter: ['set', 'clear', 'release'],
       PersonAffiliationWriter: ['add', 'end', 'release'],
+      // M10D (plan §16, Q17): value set / clear / release; `writeHumanWithin` is the
+      // record commands' value step (called by CustomRecordWriter create / update).
+      ExtensionValueWriter: ['set', 'clear', 'release', 'writeHumanWithin'],
+      CustomRecordWriter: ['createRecord', 'update', 'retire', 'reactivate'],
+      CustomRelationshipWriter: ['add', 'endEdge'],
     });
   });
 
-  it('M10C (V18, review n3): no source file outside the two M10C writers takes canonical.human_entry', () => {
+  it('M10C (V18, review n3) / M10D: no source file outside the M10C and M10D operator writers takes canonical.human_entry', () => {
     const SRC = resolve(MODULES, '..');
     const files = (readdirSync(SRC, { recursive: true }) as string[])
       .filter((f) => f.endsWith('.ts') && !f.endsWith('.spec.ts') && !f.startsWith('generated'))
@@ -334,6 +390,9 @@ describe('S2: privileged service writes take an authorized context (static)', ()
     expect(files).toEqual([
       'modules/context/application/account-hierarchy.writer.ts',
       'modules/context/application/person-affiliation.writer.ts',
+      'modules/extension/application/custom-record.writer.ts',
+      'modules/extension/application/custom-relationship.writer.ts',
+      'modules/extension/application/extension-value.writer.ts',
     ]);
   });
 

@@ -4,8 +4,19 @@ import { MetricsService } from '../../../platform/metrics';
 import {
   CANONICAL_MODULES,
   canonicalHash,
+  captureDraft,
   compareCanonicalVersion,
   disabledModuleTargets,
+  EXTENSION_MIN_VERSION,
+  EXTENSION_MODULE_KEY,
+  findSourceField,
+  isCustomObjectEntity,
+  isSensitiveName,
+  profiledSensitivity,
+  type CaptureDraftEntry,
+  type CaptureSource,
+  type ExtensionMappingContext,
+  type ExtensionMappingDefinition,
   MAPPING_RETIRE_REASONS,
   type MappingRetireReason,
   MappingDocumentSchema,
@@ -511,6 +522,86 @@ export class SourceMappingsService {
     return row ? toDraftView(row) : undefined;
   }
 
+  /**
+   * M10D (plan §5.4, Q20): the registry additions the capture entries of a
+   * mapping need (`extension capture-draft`). Reads the given document, else
+   * the connection's working copy, else its published mapping; publishes
+   * nothing. Codes, keys and source names only (never values).
+   */
+  // Review m3: an operator command (config.mapping.draft), audited once with counts only.
+  @AuditFailures('mapping.draft.validate', 'mapping_draft')
+  async captureDraft(
+    actx: AuthorizedContext<'config.mapping.draft'>,
+    connectionId: string,
+    raw?: unknown,
+  ): Promise<{
+    readonly from: 'document' | 'draft' | 'published';
+    readonly entries: CaptureDraftEntry[];
+  }> {
+    assertAuthorized(actx, 'config.mapping.draft');
+    return this.db.transaction(actx.tenant, async (tx) => {
+      const connection = await this.repo.connection(tx, connectionId);
+      if (!connection) throw new ConnectionNotFoundError(connectionId);
+      const snapshot = await this.repo.latestSnapshot(tx, connectionId);
+      if (!snapshot) {
+        throw new SourcesError('no_schema_snapshot', 'Capture a schema snapshot before mapping');
+      }
+      let from: 'document' | 'draft' | 'published' = 'document';
+      let document = raw;
+      if (document === undefined) {
+        const draft = await tenantClient(tx).tenantSourceMappingDraft.findUnique({
+          where: { tenantId_connectionId: { tenantId: tx.tenantId, connectionId } },
+          select: { document: true },
+        });
+        from = draft ? 'draft' : 'published';
+        document =
+          draft?.document ?? (await this.repo.publishedMapping(tx, connectionId))?.document;
+      }
+      const parsed = MappingDocumentSchema.safeParse(document);
+      if (!parsed.success) {
+        throw new SourcesError(
+          'mapping_invalid',
+          'No valid mapping document to read capture entries from',
+        );
+      }
+      const schema = SourceSchemaSchema.parse(snapshot.document);
+      const profiles = await this.profiles.candidateProfiles(tx, connectionId, snapshot.hash);
+      const sources: CaptureSource[] = [];
+      for (const o of parsed.data.objects) {
+        for (const f of o.fields) {
+          if (!('kind' in f) || f.kind !== 'capture') continue;
+          const field = findSourceField(schema, o.source, f.source);
+          const sensitivity = profiledSensitivity(schema, profiles, o.source, f.source);
+          sources.push({
+            connectionKind: connection.kind,
+            object: o.source,
+            entity: o.entity,
+            field: f.source,
+            ...(sensitivity !== undefined ? { profileSensitivity: sensitivity } : {}),
+            ...(field ? { sourceType: field.type } : {}),
+          });
+        }
+      }
+      const existing = await tenantClient(tx).tenantRegistryEntry.findMany({
+        where: { tenantId: tx.tenantId, kind: 'extension' },
+        select: { key: true },
+      });
+      const entries = captureDraft(sources, new Set(existing.map((e) => e.key)), isSensitiveName);
+      await this.audit.record(tx, actx, {
+        action: 'mapping.draft.validate',
+        targetKind: 'mapping_draft',
+        targetRef: connectionId,
+        details: {
+          capture: true,
+          from,
+          fields: entries.filter((e) => e.ok).length,
+          refused: entries.filter((e) => !e.ok).length,
+        },
+      });
+      return { from, entries };
+    });
+  }
+
   /** The lifecycle state of every published version (M10A2). */
   async states(ctx: TenantContext, connectionId: string) {
     return this.db.transaction(ctx, (tx) => this.repo.mappingStates(tx, connectionId));
@@ -524,7 +615,8 @@ export class SourceMappingsService {
       (await moduleSettings(tx)).filter((s) => s.enabled).map((s) => s.moduleKey),
     );
     const blocked = disabledModuleTargets(
-      document.objects.map((o) => o.entity),
+      // M10D: custom objects land on entity kind custom_record (module extension).
+      document.objects.map((o) => (isCustomObjectEntity(o.entity) ? 'custom_record' : o.entity)),
       CANONICAL_MODULES,
       enabled,
     );
@@ -534,6 +626,63 @@ export class SourceMappingsService {
         `Mapping targets ${blocked[0]!.entityKind} of disabled module ${blocked[0]!.module}`,
       );
     }
+  }
+
+  /**
+   * M10D (plan §5, Q14, Q18): the 0.4 + module gate, the current published
+   * extension registry and, per custom object, the connection whose published
+   * mapping maps it (a second connection is refused at publish).
+   */
+  private async extensionContext(
+    tx: TenantTransaction,
+    connectionId: string,
+  ): Promise<ExtensionMappingContext> {
+    const adopted = await adoptedCanonicalVersion(tx);
+    const enabled = (await moduleSettings(tx)).some(
+      (m) => m.moduleKey === EXTENSION_MODULE_KEY && m.enabled,
+    );
+    const gate =
+      compareCanonicalVersion(adopted, EXTENSION_MIN_VERSION) < 0
+        ? ('canonical_version_too_low' as const)
+        : enabled
+          ? ('ok' as const)
+          : ('module_disabled' as const);
+    const db = tenantClient(tx);
+    const entries = await db.tenantRegistryEntry.findMany({
+      where: { tenantId: tx.tenantId, kind: 'extension' },
+      select: { key: true, status: true, definition: true, sensitivity: true, categories: true },
+    });
+    const definitions = new Map<string, ExtensionMappingDefinition>(
+      entries.map((e) => {
+        const definition = (e.definition ?? {}) as Record<string, unknown>;
+        return [
+          e.key,
+          {
+            kind: definition.kind as ExtensionMappingDefinition['kind'],
+            status: e.status,
+            definition,
+            sensitivity: e.sensitivity ?? 'restricted',
+            categories: e.categories,
+          },
+        ];
+      }),
+    );
+    const objectOwners = new Map<string, string>();
+    const connections = await db.tenantSourceConnection.findMany({
+      where: { tenantId: tx.tenantId, id: { not: connectionId } },
+      select: { id: true },
+    });
+    for (const c of connections) {
+      const published = await this.repo.publishedMapping(tx, c.id);
+      const doc = published ? MappingDocumentSchema.safeParse(published.document) : undefined;
+      if (!doc?.success) continue;
+      for (const o of doc.data.objects) {
+        if (isCustomObjectEntity(o.entity)) {
+          objectOwners.set(o.entity.slice('custom_object:'.length), c.id);
+        }
+      }
+    }
+    return { gate, definitions, objectOwners };
   }
 
   /** D5 safeguards: an override attempt is always logged and counted (refused in M9A). */
@@ -611,6 +760,7 @@ export class SourceMappingsService {
         // No authenticated operator channel exists (A1): the CLI actor is unauthenticated.
         operator: { authenticated: false, actor: options.actor ?? 'cli' },
       },
+      extension: await this.extensionContext(tx, connectionId),
     });
     return {
       validation,

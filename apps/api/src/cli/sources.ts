@@ -129,7 +129,9 @@ function int(value: string | undefined, name: string): number | undefined {
 
 function readJson(path: string | undefined): unknown {
   if (!path) throw new Error('--file <path> is required');
-  if (statSync(path).size > 1024 * 1024) throw new Error('--file exceeds 1 MiB');
+  // M10D (Q4): a mapping document may hold 1 MiB of JSON (jsonb text); an indented file of it is
+  // larger, so the file is bounded at 4 MiB and the validator enforces the document cap.
+  if (statSync(path).size > 4 * 1024 * 1024) throw new Error('--file exceeds 4 MiB');
   try {
     return JSON.parse(readFileSync(path, 'utf8')) as unknown;
   } catch {
@@ -333,6 +335,29 @@ async function main(): Promise<void> {
             .get(SourceMappingsService)
             .show(ctx, conn.id, int(values.version, 'version'));
           return shown ? { ...shown } : { found: false };
+        }
+        case 'extension-capture-draft': {
+          // M10D (plan §5.4, Q20): prints the registry additions the capture entries need;
+          // publishes nothing (the operator dry-runs / publishes them with registry:publish).
+          const conn = await connection(ctx);
+          const document = values.file ? readJson(values.file) : undefined;
+          const auth = await op(
+            'config.mapping.draft',
+            'mapping.draft.validate',
+            'mapping_draft',
+            conn.id,
+          );
+          const draft = await app.get(SourceMappingsService).captureDraft(auth, conn.id, document);
+          const refused = draft.entries.flatMap((e) =>
+            e.ok ? [] : [{ source: e.source, code: e.code }],
+          );
+          if (refused.length > 0) exitCode = 2;
+          return {
+            connectionId: conn.id,
+            from: draft.from,
+            fields: draft.entries.flatMap((e) => (e.ok ? [e.definition] : [])),
+            refused,
+          };
         }
         case 'mapping-draft-save': {
           const conn = await connection(ctx);
@@ -589,7 +614,7 @@ async function main(): Promise<void> {
         }
         default:
           throw new Error(
-            'Usage: sources <list|configure|test|schema|mappings-validate|mappings-preview|mappings-publish|mappings-show|mappings-draft|mapping-draft-save|mapping-draft-validate|mapping-draft-publish|mapping-draft-discard|mapping-draft-show|mapping-states|mapping-retire|authority-show|authority-publish|sync-full|sync-incremental|sync-status|report|profile-run|profile-status|profile-show|profile-findings|profile-drift|profile-purge> --tenant <slug> [...]',
+            'Usage: sources <list|configure|test|schema|mappings-validate|mappings-preview|mappings-publish|mappings-show|mappings-draft|mapping-draft-save|mapping-draft-validate|mapping-draft-publish|mapping-draft-discard|mapping-draft-show|mapping-states|mapping-retire|authority-show|authority-publish|sync-full|sync-incremental|sync-status|report|profile-run|profile-status|profile-show|profile-findings|profile-drift|profile-purge|extension-capture-draft> --tenant <slug> [...]',
           );
       }
     } catch (error) {

@@ -1,5 +1,6 @@
 import { DERIVED_ORIGINS, type ChangeOrigin } from './change-record';
 import { ENTITY_INDEX_SOURCES, type EntityIndexKind } from './entity-index';
+import type { ExtensionEvidenceFact } from './extension';
 import type { ModuleKey } from './modules';
 
 /**
@@ -35,6 +36,12 @@ export interface EvidenceRelation {
   /** For `entity` evidence: the cited entity kind. */
   readonly evidenceKind?: EntityIndexKind;
   readonly roles: readonly EvidenceRole[];
+  /**
+   * M10D (plan §6, #71): the canonical fact this relation evidences. A custom
+   * record whose object lists the fact in `not_evidence_of` is refused as
+   * evidence of it.
+   */
+  readonly fact?: ExtensionEvidenceFact;
 }
 
 /**
@@ -49,7 +56,10 @@ export const EVIDENCE_RELATIONS: readonly EvidenceRelation[] = [];
  * Every M10B kind (company, person, product, subscription) is core: no gate.
  * Later sub-milestones add their module kinds.
  */
-export const EVIDENCE_KIND_MODULES: Readonly<Partial<Record<EntityIndexKind, ModuleKey>>> = {};
+export const EVIDENCE_KIND_MODULES: Readonly<Partial<Record<EntityIndexKind, ModuleKey>>> = {
+  // M10D (#71): custom records are the first module-owned entity kind.
+  custom_record: 'extension',
+};
 
 /** A derivation key / version: identifiers only (secret-like refusal, M10A1 A1). */
 export const EVIDENCE_DERIVATION_KEY_PATTERN = /^[a-z][a-z0-9_.:-]{0,99}$/;
@@ -114,6 +124,23 @@ export function evidenceRelationAllowed(
       (link.evidenceType !== 'entity' || r.evidenceKind === link.evidenceKind) &&
       (r.roles as readonly string[]).includes(link.role),
   );
+}
+
+/** The facts the relations matching one link evidence (M10D plan §6). */
+export function evidenceRelationFacts(
+  relations: readonly EvidenceRelation[],
+  subjectKind: string,
+  link: {
+    readonly evidenceType: string;
+    readonly evidenceKind?: string | null;
+    readonly role: string;
+  },
+): ExtensionEvidenceFact[] {
+  const out = new Set<ExtensionEvidenceFact>();
+  for (const r of relations) {
+    if (r.fact && evidenceRelationAllowed([r], subjectKind, link)) out.add(r.fact);
+  }
+  return [...out].sort();
 }
 
 /**

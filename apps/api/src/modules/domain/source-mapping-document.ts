@@ -10,9 +10,12 @@ import { TransformsSchema } from './source-transforms';
  * module cycle. Re-exported by `source-mapping.ts`.
  */
 export const MAPPING_LIMITS = {
-  documentBytes: 256 * 1024,
+  // M10D (Q4): 256 KiB → 1 MiB and 300 → 1,000 fields so a mapping can carry the
+  // E4 "500+ fields" extension attributes. Limits only widen: every published
+  // mapping still validates, and the mapping hash never covers a limit.
+  documentBytes: 1024 * 1024,
   objects: 20,
-  fieldsPerObject: 300,
+  fieldsPerObject: 1000,
   holdingValues: 200,
   ignoredProducts: 5000,
 } as const;
@@ -59,14 +62,39 @@ const IgnoredEntrySchema = z.strictObject({
   reason: ReasonCode,
 });
 
-/** Reserved until the attribute registry exists (refused by the validator). */
-const AttributeEntrySchema = z.looseObject({ kind: z.literal('attribute') });
+const ExtensionKey = z.string().regex(/^[a-z][a-z0-9_]{0,62}$/);
+
+/**
+ * M10D (plan §5.1): a source field into a published extension field of the
+ * object's entity (or custom object). Needs canonical 0.4 and module
+ * `extension` (below 0.4: `attribute_mappings_not_enabled`).
+ */
+export const AttributeEntrySchema = z.strictObject({
+  kind: z.literal('attribute'),
+  field: ExtensionKey,
+  source: ApiName,
+  transforms: TransformsSchema.optional(),
+  confirmation: ConfirmationSchema.optional(),
+});
+export type AttributeEntry = z.infer<typeof AttributeEntrySchema>;
+
+/**
+ * M10D (plan §5.4, Q20): a source field captured into a `source_captured`
+ * extension field already published as `src_<kind>_<object>_<field>`; mapping
+ * publish never publishes registry entries (`extension capture-draft`).
+ */
+export const CaptureEntrySchema = z.strictObject({
+  kind: z.literal('capture'),
+  source: ApiName,
+});
+export type CaptureEntry = z.infer<typeof CaptureEntrySchema>;
 
 export const FieldEntrySchema = z.union([
   MappedFieldEntrySchema,
   ExplicitFieldEntrySchema,
   IgnoredEntrySchema,
   AttributeEntrySchema,
+  CaptureEntrySchema,
 ]);
 export type FieldEntry = z.infer<typeof FieldEntrySchema>;
 
@@ -93,6 +121,16 @@ export const RelationshipEntrySchema = z.strictObject({
    * describe the affiliation. Role values become codes only through the explicit
    * value map (Q11); unmapped values are dropped and counted, never stored.
    */
+  /**
+   * M10D (`custom_relationship:<key>` only, plan §5.3): the role of the edge,
+   * a value map into the definition's role code only.
+   */
+  role: z
+    .strictObject({
+      field: ApiName,
+      valueMap: z.record(z.string().min(1).max(200), z.string().regex(/^[a-z0-9_]{1,64}$/)),
+    })
+    .optional(),
   affiliation: z
     .strictObject({
       roleField: ApiName.optional(),
@@ -136,6 +174,23 @@ export const ObjectMappingSchema = z.strictObject({
   allRecordsAreHoldings: z.strictObject({ confirmation: ConfirmationSchema.optional() }).optional(),
   relationships: z.array(RelationshipEntrySchema).max(10).default([]),
   fields: z.array(FieldEntrySchema).max(MAPPING_LIMITS.fieldsPerObject).default([]),
+  /**
+   * M10D (entity `custom_object:<key>` only, plan §5.2): the record's parent
+   * (a reference field to an object mapped as the definition's parent entity)
+   * and its state (a value map into active / inactive / retired). Holding
+   * filters never apply to custom objects (no ownership semantics).
+   */
+  customObject: z
+    .strictObject({
+      parent: z.strictObject({ field: ApiName, object: ApiName }).optional(),
+      recordState: z
+        .strictObject({
+          field: ApiName,
+          valueMap: z.record(z.string().min(1).max(200), z.enum(['active', 'inactive', 'retired'])),
+        })
+        .optional(),
+    })
+    .optional(),
 });
 export type ObjectMapping = z.infer<typeof ObjectMappingSchema>;
 

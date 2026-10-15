@@ -14,9 +14,13 @@ export const GENERIC_REFERENCE_KINDS = [
   'product',
   // M10C (0.3, Q12): affiliations with their own source id (AccountContactRelation, Company Person).
   'person_affiliation',
+  // M10D (0.4, Q15): a custom record's source id.
+  'custom_record',
 ] as const;
 /** The generic reference kinds published with canonical 0.2 (frozen for its catalogue hash). */
 export const GENERIC_REFERENCE_KINDS_0_2 = ['product'] as const;
+/** The generic reference kinds published with canonical 0.3 (frozen for its catalogue hash). */
+export const GENERIC_REFERENCE_KINDS_0_3 = ['product', 'person_affiliation'] as const;
 export type GenericReferenceKind = (typeof GENERIC_REFERENCE_KINDS)[number];
 
 /** Kinds whose references live in a legacy store; never written to the generic store. */

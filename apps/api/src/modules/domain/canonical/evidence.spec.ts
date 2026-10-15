@@ -73,7 +73,8 @@ describe('validateEvidenceSet', () => {
     expect(validateEvidenceSet(base(), EVIDENCE_RELATIONS).map((i) => i.code)).toEqual(
       Array(4).fill('evidence_relation_not_allowed'),
     );
-    expect(EVIDENCE_KIND_MODULES).toEqual({});
+    // M10D (#71): custom records are the first module-owned kind.
+    expect(EVIDENCE_KIND_MODULES).toEqual({ custom_record: 'extension' });
   });
 
   it('set size 1–200 and unique ordinals in range', () => {

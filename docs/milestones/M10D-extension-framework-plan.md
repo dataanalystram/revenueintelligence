@@ -122,14 +122,14 @@ end's object classification).
 
 ### 2.5 Cross-version rules
 
-| Rule | Check                                                                                                                                                                 | Where                          |
-| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
-| X1   | a key never disappears                                                                                                                                                | generic R-X1 (existing)        |
-| X2   | `value_type` (and `item_type`) never changes for a key                                                                                                                | new extension rule `R-X2`      |
-| X3   | enum codes never disappear (retire instead)                                                                                                                           | generic R-X3 on `codes`        |
-| X4   | `target` / `kind` / `from` / `to` never change                                                                                                                        | R-X4 (extended to `from`/`to`) |
-| X5   | narrowing a constraint (`max_length`, `min`/`max`, `max_items`, enum code retirement, JSON schema, `reference_to`, cardinality) only when no stored value violates it | publish-time DB check (`R-X5`) |
-| R-X6 | `sensitivity` / `categories` never become weaker; tightening to `restricted` refused while stored values exist (Q10, Q11)                                             | publish-time DB check          |
+| Rule | Check                                                                                                                                                                                                      | Where                          |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| X1   | a key never disappears                                                                                                                                                                                     | generic R-X1 (existing)        |
+| X2   | `value_type` (and `item_type`) never changes for a key                                                                                                                                                     | new extension rule `R-X2`      |
+| X3   | enum codes never disappear (retire instead)                                                                                                                                                                | generic R-X3 on `codes`        |
+| X4   | `target` / `kind` / `from` / `to` never change                                                                                                                                                             | R-X4 (extended to `from`/`to`) |
+| X5   | narrowing a constraint (`max_length`, `min`/`max`, `max_items`, enum code retirement, JSON schema, `reference_to`, cardinality, a fixed `currency` added or changed) only when no stored value violates it | publish-time DB check (`R-X5`) |
+| R-X6 | `sensitivity` / `categories` never become weaker; tightening to `restricted` refused while stored values exist (Q10, Q11)                                                                                  | publish-time DB check          |
 
 X5 / R-X6 checks run inside the publish transaction under the registry advisory lock, as bounded `EXISTS` probes on
 the typed indexes (no full-table read into memory). A violation refuses the publish (`registry_rule_violation`, rule +
@@ -340,7 +340,7 @@ kind = `0.4`.
 
 - `ExtensionReadModel.valuesFor(actx, use, targets[], fieldKeys?)`: batch loads by `target_id = ANY($1)` /
   `target_key = ANY($1)` (no N+1, M10 §13), items in one query, merge lineage resolved for references, use-filtered.
-- `CustomRecordReadModel`: records of an object (keyset pagination), record with fields and relationships.
+- `CustomRecordReadModel` (implemented as `ExtensionReadModel.records` / `.record`, record D-m2): records of an object (keyset pagination), record with fields and relationships.
 - Capability `data.extension.read` (`operator`); one audit event per read call (identifiers, counts; Q29).
 - CLI (JSON, identifiers / codes / dates; field values printed only for `public` / `internal` fields unless
   `--include-confidential`, which is audited; exit 2 on refusal): `extension registry show`, `extension capture-draft`,

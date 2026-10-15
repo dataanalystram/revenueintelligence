@@ -79,6 +79,17 @@ export const AUDIT_ACTIONS = [
   'person.affiliation.end',
   'person.affiliation.release',
   'account_structure.read',
+  // M10D
+  'extension.value.set',
+  'extension.value.clear',
+  'extension.value.release',
+  'extension.record.create',
+  'extension.record.update',
+  'extension.record.retire',
+  'extension.record.reactivate',
+  'extension.relationship.add',
+  'extension.relationship.end',
+  'extension.read',
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -120,6 +131,16 @@ export const AUDIT_REASON_CODES = [
   'hierarchy_parent_merged',
   'affiliation_period_invalid',
   'affiliation_endpoint_not_allowed',
+  // M10D (`human_override_active`: named by the M10C plan, first recorded by M10D, Q16)
+  'human_override_active',
+  'extension_field_unknown',
+  'extension_field_retired',
+  'extension_value_invalid',
+  'extension_use_not_allowed',
+  'restricted_value_withheld',
+  'classification_required',
+  'credential_like_definition',
+  'extension_guardrail_exceeded',
 ] as const;
 export type AuditReasonCode = (typeof AUDIT_REASON_CODES)[number];
 
@@ -160,6 +181,10 @@ export const AUDIT_TARGET_KINDS = [
   // M10C
   'account_hierarchy',
   'person_affiliation',
+  // M10D
+  'extension_value',
+  'custom_record',
+  'custom_relationship',
 ] as const;
 export type AuditTargetKind = (typeof AUDIT_TARGET_KINDS)[number];
 

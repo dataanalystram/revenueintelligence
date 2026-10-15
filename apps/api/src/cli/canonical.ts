@@ -4,7 +4,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { Module, type INestApplicationContext } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
-import { SecretLikeValueError } from '../modules/domain';
+import { EXTENSION_REGISTRY_MAX_BYTES_CEILING, SecretLikeValueError } from '../modules/domain';
 import {
   CanonicalAdoptionService,
   GovernanceError,
@@ -67,7 +67,12 @@ function int(value: string | undefined, name: string): number {
 
 function readJson(path: string | undefined): unknown {
   if (!path) throw new Error('--file <path> is required');
-  if (statSync(path).size > 1024 * 1024) throw new Error('--file exceeds 1 MiB');
+  // M10D (Q3): an extension registry document may be up to EXTENSION_REGISTRY_MAX_BYTES (2 MiB
+  // default, at most 8 MiB); the file is bounded by that ceiling and the service enforces the
+  // configured cap (refused, never truncated). A 1 MiB file cap refused valid documents.
+  if (statSync(path).size > EXTENSION_REGISTRY_MAX_BYTES_CEILING) {
+    throw new Error('--file exceeds 8 MiB');
+  }
   try {
     return JSON.parse(readFileSync(path, 'utf8')) as unknown;
   } catch {

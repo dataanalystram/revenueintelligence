@@ -7,13 +7,24 @@ import {
   CHANGE_CAUSES,
   CHANGE_ENTITY_KINDS,
   CHANGE_ENTITY_KINDS_0_2,
+  CHANGE_ENTITY_KINDS_0_3,
   CHANGE_ORIGINS,
   CHANGE_TYPES,
 } from './change-record';
-import { ENTITY_INDEX_KINDS, ENTITY_INDEX_KINDS_0_1 } from './entity-index';
+import { ENTITY_INDEX_KINDS, ENTITY_INDEX_KINDS_0_1, ENTITY_INDEX_KINDS_0_3 } from './entity-index';
 import { EVIDENCE_ROLES, EVIDENCE_TYPES } from './evidence';
+import {
+  EXTENSION_ALLOWED_USES,
+  EXTENSION_MAPPING_ENTRY_KINDS,
+  EXTENSION_TARGET_KINDS,
+  EXTENSION_VALUE_TYPES,
+} from './extension';
 import { MODULE_KEYS } from './modules';
-import { GENERIC_REFERENCE_KINDS, GENERIC_REFERENCE_KINDS_0_2 } from './source-reference';
+import {
+  GENERIC_REFERENCE_KINDS,
+  GENERIC_REFERENCE_KINDS_0_2,
+  GENERIC_REFERENCE_KINDS_0_3,
+} from './source-reference';
 import type { CanonicalCatalogue } from './versions';
 
 /**
@@ -52,7 +63,8 @@ export const MAPPING_TARGETS_0_3 = [
  * The catalogue each published canonical version is tied to (its
  * `catalogue_hash` input). 0.1 (ADR 0027) is the M10A2 vocabulary; 0.2
  * (ADR 0028) adds the M10B members; 0.3 (ADR 0029) adds `person_affiliation`
- * to the kind lists and the M10C members. A version's catalogue never changes
+ * to the kind lists and the M10C members; 0.4 (ADR 0030) adds `custom_record`
+ * (and the change entity kind `custom_relationship`) and the M10D members. A version's catalogue never changes
  * once published: earlier versions read frozen lists, and the schema guard
  * recomputes every stored hash from this function.
  */
@@ -76,19 +88,35 @@ export function canonicalCatalogueFor(version: string): CanonicalCatalogue {
         evidenceRoles: EVIDENCE_ROLES,
       };
     case '0.3':
+      return catalogue0_3(base);
+    case '0.4':
       return {
-        ...base,
+        ...catalogue0_3(base),
         entityKinds: ENTITY_INDEX_KINDS,
         changeEntityKinds: CHANGE_ENTITY_KINDS,
         genericReferenceKinds: GENERIC_REFERENCE_KINDS,
-        evidenceTypes: EVIDENCE_TYPES,
-        evidenceRoles: EVIDENCE_ROLES,
-        authorityFacts: AUTHORITY_FACTS_0_3,
-        mappingTargets: MAPPING_TARGETS_0_3,
-        hierarchy: { maxDepthCeiling: HIERARCHY_MAX_DEPTH_CEILING },
-        affiliationEndReasons: AFFILIATION_END_REASONS,
+        extensionValueTypes: EXTENSION_VALUE_TYPES,
+        extensionTargets: EXTENSION_TARGET_KINDS,
+        extensionAllowedUses: EXTENSION_ALLOWED_USES,
+        mappingEntryKinds: EXTENSION_MAPPING_ENTRY_KINDS,
       };
     default:
       throw new Error(`no catalogue for canonical version ${version}`);
   }
+}
+
+/** The 0.3 catalogue from frozen lists only (M10D: the kind lists grew after 0.3 was published). */
+function catalogue0_3(base: CanonicalCatalogue): CanonicalCatalogue {
+  return {
+    ...base,
+    entityKinds: ENTITY_INDEX_KINDS_0_3,
+    changeEntityKinds: CHANGE_ENTITY_KINDS_0_3,
+    genericReferenceKinds: GENERIC_REFERENCE_KINDS_0_3,
+    evidenceTypes: EVIDENCE_TYPES,
+    evidenceRoles: EVIDENCE_ROLES,
+    authorityFacts: AUTHORITY_FACTS_0_3,
+    mappingTargets: MAPPING_TARGETS_0_3,
+    hierarchy: { maxDepthCeiling: HIERARCHY_MAX_DEPTH_CEILING },
+    affiliationEndReasons: AFFILIATION_END_REASONS,
+  };
 }

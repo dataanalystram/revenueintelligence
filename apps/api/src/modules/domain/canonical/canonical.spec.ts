@@ -99,17 +99,18 @@ describe('V1: canonical versions', () => {
     );
   });
 
-  it('the catalogue holds exactly one current version, 0.3 (ADR 0029), 0.1 / 0.2 supported (ADR 0027 / 0028), and nothing at 1.0 or above', () => {
-    expect(currentCanonicalVersion()).toBe('0.3');
+  it('the catalogue holds exactly one current version, 0.4 (ADR 0030), 0.1–0.3 supported (ADR 0027–0029), and nothing at 1.0 or above', () => {
+    expect(currentCanonicalVersion()).toBe('0.4');
     expect(CANONICAL_VERSIONS).toEqual([
       { version: '0.1', status: 'supported', adr: '0027' },
       { version: '0.2', status: 'supported', adr: '0028' },
-      { version: '0.3', status: 'current', adr: '0029' },
+      { version: '0.3', status: 'supported', adr: '0029' },
+      { version: '0.4', status: 'current', adr: '0030' },
     ]);
     for (const v of CANONICAL_VERSIONS) expect(parseCanonicalVersion(v.version).major).toBe(0);
   });
 
-  it('M10B Q19 / M10C: the stored 0.1 and 0.2 catalogue hashes are reproduced unchanged; 0.3 hashes the new members', () => {
+  it('M10B Q19 / M10C / M10D: the stored 0.1–0.3 catalogue hashes are reproduced unchanged; 0.4 hashes the new members', () => {
     expect(canonicalCatalogueHash(canonicalCatalogueFor('0.1'))).toBe(
       '2fd4f7e575633de7cac4aea394a71c73adc9b73e5e18b67c0b0ee404572faf5b',
     );
@@ -122,7 +123,21 @@ describe('V1: canonical versions', () => {
     );
     expect(canonicalCatalogueFor('0.3').entityKinds).toContain('person_affiliation');
     expect(canonicalCatalogueFor('0.2').entityKinds).not.toContain('person_affiliation');
-    expect(() => canonicalCatalogueFor('0.4')).toThrow(/no catalogue/);
+    // M10D (ADR 0030): pinned in migration 20270112120000_m10d_extension_framework.
+    expect(canonicalCatalogueHash(canonicalCatalogueFor('0.4'))).toBe(
+      '70584afd267f4c5620c2d63c95cc547f18c1cacdb0b408304eea9a41aeae81c7',
+    );
+    expect(canonicalCatalogueFor('0.4').entityKinds).toContain('custom_record');
+    expect(canonicalCatalogueFor('0.3').entityKinds).not.toContain('custom_record');
+    expect(canonicalCatalogueFor('0.3').changeEntityKinds).not.toContain('custom_relationship');
+    expect(canonicalCatalogueFor('0.3').genericReferenceKinds).not.toContain('custom_record');
+    expect(canonicalCatalogueFor('0.4').mappingEntryKinds).toEqual([
+      'attribute',
+      'custom_object',
+      'custom_relationship',
+      'capture',
+    ]);
+    expect(() => canonicalCatalogueFor('0.5')).toThrow(/no catalogue/);
   });
 });
 
@@ -130,22 +145,23 @@ describe('canonical adoption rules (Q3)', () => {
   const catalogue = [
     { version: '0.1', status: 'supported' as const },
     { version: '0.2', status: 'supported' as const },
-    { version: '0.3', status: 'current' as const },
-    { version: '0.4', status: 'deprecated' as const },
+    { version: '0.3', status: 'supported' as const },
+    { version: '0.4', status: 'current' as const },
+    { version: '0.5', status: 'deprecated' as const },
   ];
   const decide = (current: string, target: string, expectedCurrent = current) =>
     decideAdoption({ current, expectedCurrent, target, catalogue });
 
   it('forward to any adoptable newer version; rollback only to the immediately previous MINOR', () => {
-    expect(decide('0.1', '0.3')).toEqual({ ok: true, reason: 'operator_adoption' });
-    expect(decide('0.3', '0.2')).toEqual({ ok: true, reason: 'rollback' });
-    expect(decide('0.3', '0.1')).toEqual({ ok: false, code: 'canonical_version_not_supported' });
+    expect(decide('0.1', '0.4')).toEqual({ ok: true, reason: 'operator_adoption' });
+    expect(decide('0.4', '0.3')).toEqual({ ok: true, reason: 'rollback' });
+    expect(decide('0.4', '0.2')).toEqual({ ok: false, code: 'canonical_version_not_supported' });
   });
 
   it('refuses a stale expected version, an unknown or unsupported target and a no-op', () => {
     expect(decide('0.1', '0.2', '0.2')).toEqual({ ok: false, code: 'stale_base_version' });
     expect(decide('0.1', '0.9')).toEqual({ ok: false, code: 'canonical_version_unknown' });
-    expect(decide('0.3', '0.4')).toEqual({ ok: false, code: 'canonical_version_not_supported' });
+    expect(decide('0.4', '0.5')).toEqual({ ok: false, code: 'canonical_version_not_supported' });
     expect(decide('0.2', '0.2')).toEqual({ ok: false, code: 'no_change' });
   });
 });
@@ -173,9 +189,18 @@ describe('module rules (M10 §17)', () => {
     configChanged: false,
   };
 
-  it('the code catalogue has the nine keys, all unavailable in M10A2, dependencies inside the catalogue', () => {
+  it('the code catalogue has the nine keys, all unavailable except extension (M10D: at 0.4), dependencies inside the catalogue', () => {
     expect(CANONICAL_MODULES.map((m) => m.key)).toEqual([...MODULE_KEYS]);
+    expect(CANONICAL_MODULES.find((m) => m.key === 'extension')).toMatchObject({
+      available: true,
+      minimumCanonicalVersion: '0.4',
+      dependsOn: [],
+      entityKinds: ['custom_record'],
+    });
     for (const m of CANONICAL_MODULES) {
+      for (const d of m.dependsOn) expect(MODULE_KEYS).toContain(d);
+      expect(m.dependsOn).not.toContain(m.key);
+      if (m.key === 'extension') continue;
       expect(m.available).toBe(false);
       expect(m.minimumCanonicalVersion).toBeNull();
       for (const d of m.dependsOn) expect(MODULE_KEYS).toContain(d);
@@ -255,7 +280,8 @@ describe('V8: registry rules (R-K, R-X1, R-X3, R-X4)', () => {
       'context_type',
       'extension',
     ]);
-    expect(AVAILABLE_REGISTRY_KINDS).toEqual(['data_policy']);
+    // M10D: extension has a document schema (plan §2.1).
+    expect(AVAILABLE_REGISTRY_KINDS).toEqual(['data_policy', 'extension']);
   });
 
   it('R-X1: a key never disappears', () => {
@@ -501,7 +527,12 @@ describe('entity index, change records, lifecycle and integrity vocabulary', () 
       'product',
       'subscription',
       'person_affiliation',
+      'custom_record',
     ]);
+    expect(ENTITY_INDEX_SOURCES.custom_record).toEqual({
+      table: 'tenant_custom_records',
+      column: 'id',
+    });
     expect(ENTITY_INDEX_SOURCES.person_affiliation).toEqual({
       table: 'tenant_person_affiliations',
       column: 'id',

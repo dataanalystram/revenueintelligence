@@ -27,6 +27,15 @@ export const INTEGRITY_CHECKS = [
   'hierarchy_history_parity',
   'affiliation_endpoint_merged',
   'affiliation_reference_parity',
+  // M10D plan §14 (ADR 0030)
+  'extension_value_type_mismatch',
+  'extension_value_restricted',
+  'extension_value_target_kind',
+  'extension_items_parity',
+  'extension_value_secret_like',
+  'custom_record_parent_missing',
+  'custom_relationship_cardinality',
+  'extension_history_parity',
 ] as const;
 export type IntegrityCheck = (typeof INTEGRITY_CHECKS)[number];
 

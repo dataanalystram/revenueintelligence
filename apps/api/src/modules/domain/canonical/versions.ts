@@ -60,7 +60,9 @@ export const CANONICAL_VERSIONS: readonly CanonicalVersionEntry[] = [
   // M10B (ADR 0028): generic source references, evidence links, key-identified change records.
   { version: '0.2', status: 'supported', adr: '0028' },
   // M10C (ADR 0029): account hierarchy, person–account affiliation.
-  { version: '0.3', status: 'current', adr: '0029' },
+  { version: '0.3', status: 'supported', adr: '0029' },
+  // M10D (ADR 0030): extension framework (registry, typed values, custom objects / relationships).
+  { version: '0.4', status: 'current', adr: '0030' },
 ];
 
 /**
@@ -72,6 +74,13 @@ export const CANONICAL_VERSION_FEATURES: Readonly<Record<string, readonly string
   '0.1': [],
   '0.2': ['observed_generic_source_references', 'evidence_links', 'key_identified_change_records'],
   '0.3': ['account_hierarchy', 'person_affiliations', 'hierarchy_operator_entry'],
+  '0.4': [
+    'extension_registry',
+    'extension_values',
+    'custom_objects',
+    'custom_relationships',
+    'source_attribute_capture',
+  ],
 };
 
 /** Features enabled by versions in (from, to] when moving forward, or withdrawn when moving back. */
@@ -117,6 +126,11 @@ export interface CanonicalCatalogue {
   readonly mappingTargets?: readonly string[];
   readonly hierarchy?: { readonly maxDepthCeiling: number };
   readonly affiliationEndReasons?: readonly string[];
+  /** M10D (0.4): optional members, hashed only when present, so 0.1–0.3 hashes are unchanged. */
+  readonly extensionValueTypes?: readonly string[];
+  readonly extensionTargets?: readonly string[];
+  readonly extensionAllowedUses?: readonly string[];
+  readonly mappingEntryKinds?: readonly string[];
 }
 
 /**
@@ -143,6 +157,10 @@ export function canonicalCatalogueHash(catalogue: CanonicalCatalogue): string {
       ? { maxDepthCeiling: catalogue.hierarchy.maxDepthCeiling }
       : undefined,
     affiliationEndReasons: sorted(catalogue.affiliationEndReasons),
+    extensionValueTypes: sorted(catalogue.extensionValueTypes),
+    extensionTargets: sorted(catalogue.extensionTargets),
+    extensionAllowedUses: sorted(catalogue.extensionAllowedUses),
+    mappingEntryKinds: sorted(catalogue.mappingEntryKinds),
   });
 }
 

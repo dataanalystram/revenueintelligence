@@ -120,13 +120,41 @@ describe('loadConfig', () => {
   });
 
   it('M10C (V4): the hierarchy depth guardrail defaults to 10 and is bounded 1–50', () => {
-    expect(loadConfig(validEnv).canonical).toEqual({ hierarchyMaxDepth: 10 });
+    expect(loadConfig(validEnv).canonical.hierarchyMaxDepth).toBe(10);
     expect(
       loadConfig({ ...validEnv, CANONICAL_HIERARCHY_MAX_DEPTH: '3' }).canonical.hierarchyMaxDepth,
     ).toBe(3);
     for (const value of ['0', '51', '2.5', 'ten']) {
       const error = captureError({ ...validEnv, CANONICAL_HIERARCHY_MAX_DEPTH: value });
       expect(error.issues.some((i) => i.startsWith('CANONICAL_HIERARCHY_MAX_DEPTH:'))).toBe(true);
+    }
+  });
+
+  it('M10D (plan §2.7, Q3, Q5): extension guardrails default to E4 §2.4 and refuse start-up out of range', () => {
+    expect(loadConfig(validEnv).canonical.extension).toEqual({
+      maxFieldsPerTarget: 1000,
+      maxObjects: 100,
+      maxFieldsPerObject: 300,
+      maxRelationships: 300,
+      maxEnumValues: 1000,
+      maxArrayItems: 500,
+      maxJsonBytes: 65536,
+      maxJsonDepth: 8,
+      maxRecordsPerObject: 10_000_000,
+      registryMaxBytes: 2 * 1024 * 1024,
+    });
+    expect(
+      loadConfig({ ...validEnv, EXTENSION_MAX_FIELDS_PER_TARGET: '600' }).canonical.extension
+        .maxFieldsPerTarget,
+    ).toBe(600);
+    for (const [key, value] of [
+      ['EXTENSION_MAX_FIELDS_PER_TARGET', '0'],
+      ['EXTENSION_MAX_JSON_DEPTH', '17'],
+      ['EXTENSION_REGISTRY_MAX_BYTES', String(8 * 1024 * 1024 + 1)],
+      ['EXTENSION_MAX_ARRAY_ITEMS', 'many'],
+    ] as const) {
+      const error = captureError({ ...validEnv, [key]: value });
+      expect(error.issues.some((i) => i.startsWith(`${key}:`))).toBe(true);
     }
   });
 
