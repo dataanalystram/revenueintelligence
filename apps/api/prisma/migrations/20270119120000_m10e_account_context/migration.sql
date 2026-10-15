@@ -316,10 +316,7 @@ BEGIN
 END
 $$;
 REVOKE ALL ON FUNCTION "app_line_context_guard"() FROM PUBLIC;
-CREATE CONSTRAINT TRIGGER "tenant_subscriptions_context_guard" AFTER INSERT OR UPDATE OF "context_id", "company_id" ON "tenant_subscriptions"
-  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION app_line_context_guard();
-CREATE CONSTRAINT TRIGGER "tenant_account_contexts_line_guard" AFTER UPDATE OF "company_id" ON "tenant_account_contexts"
-  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION app_line_context_guard();
+-- MUTATION VM5: line / context guard triggers removed
 
 -- ---------------------------------------------------------------------------
 -- 3. Kind CHECKs (plan §3.5)
