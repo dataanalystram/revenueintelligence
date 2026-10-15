@@ -35,10 +35,14 @@ ac_sql() { compose exec -T -e PGPASSWORD=lip postgres psql -h 127.0.0.1 -U lip -
 ac_tid() { ac_sql "SELECT id FROM tenants WHERE slug = '$AC_TENANT'"; }
 ac_count() { ac_sql "SELECT count(*) FROM $1 WHERE tenant_id = '$(ac_tid)'${2:+ AND $2}"; }
 # Evaluates a JS expression over a CLI's JSON output (r = the parsed document); empty on a parse error.
-ac_json() { node -e 'try { const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); process.stdout.write(String(eval(process.argv[2]))); } catch (e) { process.stdout.write(""); }' "$1" "$2"; }
+# The CLI's JSON document is the last top-level object on stdout (a refused write may log a
+# security event line before it).
+AC_DOC='const t = require("fs").readFileSync(process.argv[1], "utf8"); const i = t.lastIndexOf("\n{\n"); const doc = JSON.parse(i >= 0 ? t.slice(i + 1) : t);'
+ac_json() { node -e "$AC_DOC"' try { const r = doc; process.stdout.write(String(eval(process.argv[2]))); } catch (e) { process.stdout.write(""); }' "$1" "$2" 2>/dev/null; }
 # One line of the CLI output on stderr (identifiers and codes; the probe is only ever withheld).
 ac_dump() {
-  printf '    %s: %s\n' "$(basename "$1")" "$(node -e 'try { process.stdout.write(JSON.stringify(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))).slice(0, 1500)); } catch (e) { process.stdout.write("<unparseable or missing>"); }' "$1")" >&2
+  printf '    %s: %s\n' "$(basename "$1")" "$(node -e 'try { '"$AC_DOC"' process.stdout.write(JSON.stringify(doc).slice(0, 1500)); } catch (e) { process.stdout.write("<unparseable or missing> " + JSON.stringify(require("fs").existsSync(process.argv[1]) ? require("fs").readFileSync(process.argv[1], "utf8").slice(0, 600) : "")); }' "$1" 2>/dev/null)" >&2
+  printf '    cli.stderr tail: %s\n' "$(tail -n 3 "$AC_OUT/cli.stderr" | tr '\n' ' ' | cut -c1-600)" >&2
 }
 # ac_expect <file> <expr> <expected>: the expression over the file equals the expected value, else dump.
 ac_expect() {
