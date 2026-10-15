@@ -564,7 +564,7 @@ export class AccountContextWriter {
   }
 
   /** Retire (plan §4.1): never touches the account, lines or members; new assignments refused. */
-  @AuditFailures('account_context.retire', 'account_context')
+  /* MUTATION VM4: refusal audit removed */
   retire(
     actx: AuthorizedContext<'canonical.human_entry'>,
     input: OperatorContextRef,
