@@ -61,7 +61,7 @@ CREATE INDEX "tenant_person_affiliations_tenant_id_company_id_status_idx" ON "te
 CREATE INDEX "companies_tenant_parent_idx" ON "companies"("tenant_id", "parent_company_id");
 
 -- AddForeignKey
-ALTER TABLE "companies" ADD CONSTRAINT "companies_tenant_id_parent_company_id_fkey" FOREIGN KEY ("tenant_id", "parent_company_id") REFERENCES "companies"("tenant_id", "id") ON DELETE RESTRICT ON UPDATE RESTRICT;
+ALTER TABLE "companies" ADD CONSTRAINT "companies_tenant_id_parent_company_id_fkey" FOREIGN KEY ("parent_company_id") REFERENCES "companies"("id") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
 ALTER TABLE "tenant_source_authority_versions" ADD CONSTRAINT "tenant_source_authority_versions_tenant_id_account_hierarc_fkey" FOREIGN KEY ("tenant_id", "account_hierarchy_connection_id") REFERENCES "tenant_source_connections"("tenant_id", "id") ON DELETE RESTRICT ON UPDATE RESTRICT;
