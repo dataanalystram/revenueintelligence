@@ -61,7 +61,9 @@ describe('security policy (S1)', () => {
     expect(POLICY['processing.receipt']).toEqual(['system']);
     expect(POLICY['config.oauth.grant']).toEqual(['system']);
     expect(POLICY['data.sync.run']).toEqual(['operator', 'system']);
-    expect(POLICY['canonical.human_entry']).toEqual([]);
+    // M10C (policy v4, Q2): operator only, honoured only by the M10C operator commands.
+    expect(POLICY['canonical.human_entry']).toEqual(['operator']);
+    expect(POLICY['data.account_structure.read']).toEqual(['operator']);
     // M10B (policy v3): provenance reads are operator-only; evidence links system-only.
     expect(POLICY['data.provenance.read']).toEqual(['operator']);
     expect(POLICY['canonical.evidence.link']).toEqual(['system']);

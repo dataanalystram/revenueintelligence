@@ -34,6 +34,29 @@ export interface SourceCompanyLink {
   readonly primary: boolean;
 }
 
+/**
+ * M10C (plan §2.4): the parent an authoritative `account.parent` mapping
+ * states. `clear` only for an explicitly empty mapped value; an unmapped or
+ * absent field produces no `parent` at all (disappearance never unparents).
+ */
+export type SourceParent =
+  { readonly kind: 'set'; readonly ref: ExternalRef } | { readonly kind: 'clear' };
+
+/** M10C (plan §3.2): one affiliation stated by a `person.affiliation` mapping (codes and dates only). */
+export interface SourceAffiliation {
+  readonly company: ExternalRef;
+  readonly roleCodes: readonly string[];
+  readonly startsAt?: Date;
+  readonly endsAt?: Date;
+}
+
+/**
+ * The association type id under which `person.affiliation` links are kept in
+ * `tenant_source_relationships` (never primary; HubSpot ids are positive and
+ * the mapping engine's primary link uses 0).
+ */
+export const AFFILIATION_LINK_TYPE_ID = -1;
+
 interface ObservationBase {
   readonly ref: ExternalRef;
   /** When the platform read this from the source (orders reads against tombstones). */
@@ -47,6 +70,8 @@ export type SourceObservation =
       readonly sourceCreatedAt?: Date;
       readonly sourceUpdatedAt?: Date;
       readonly fields: CompanyFields;
+      /** M10C: undefined = the hierarchy is not mapped (or not authoritative) for this read. */
+      readonly parent?: SourceParent;
     })
   | (ObservationBase & {
       readonly kind: 'person';
@@ -56,6 +81,8 @@ export type SourceObservation =
       readonly fields: PersonFields;
       /** undefined = associations not read; [] = the person has no company links. */
       readonly companyLinks?: readonly SourceCompanyLink[];
+      /** M10C: undefined = `person.affiliation` not mapped; [] = mapped and empty. */
+      readonly affiliations?: readonly SourceAffiliation[];
     })
   | (ObservationBase & {
       readonly kind: ContextKind;

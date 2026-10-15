@@ -13,20 +13,38 @@ export const AuthorityFactSchema = z.enum([
   'subscription_lines',
   'subscription_state',
   'subscription_terms',
+  // M10C (ADR 0029): who may write the account hierarchy. Optional in documents.
+  'account_hierarchy',
 ]);
 export type AuthorityFact = z.infer<typeof AuthorityFactSchema>;
 
 export const AUTHORITY_FACTS = AuthorityFactSchema.options;
 
+/**
+ * The ADR 0020 facts every authority document states. Facts added later
+ * (M10C `account_hierarchy`) are optional: a document without them reads as
+ * unassigned, and the content hash covers them only when assigned.
+ */
+export const REQUIRED_AUTHORITY_FACTS = [
+  'account_profile',
+  'person_profile',
+  'subscription_lines',
+  'subscription_state',
+  'subscription_terms',
+] as const satisfies readonly AuthorityFact[];
+const OPTIONAL_AUTHORITY_FACTS = AUTHORITY_FACTS.filter(
+  (f) => !(REQUIRED_AUTHORITY_FACTS as readonly string[]).includes(f),
+);
+
 /** `{fact → connection id | null}`: every fact is stated, `null` = unassigned. */
 export const AuthorityDocumentSchema = z
   .strictObject({
-    facts: z.strictObject(
-      Object.fromEntries(AUTHORITY_FACTS.map((f) => [f, z.uuid().nullable()])) as Record<
-        AuthorityFact,
-        z.ZodNullable<z.ZodUUID>
-      >,
-    ),
+    facts: z.strictObject({
+      ...(Object.fromEntries(
+        REQUIRED_AUTHORITY_FACTS.map((f) => [f, z.uuid().nullable()]),
+      ) as Record<(typeof REQUIRED_AUTHORITY_FACTS)[number], z.ZodNullable<z.ZodUUID>>),
+      account_hierarchy: z.uuid().nullable().optional(),
+    }),
   })
   .readonly();
 export type AuthorityDocument = z.infer<typeof AuthorityDocumentSchema>;
@@ -42,7 +60,7 @@ export const UNASSIGNED_AUTHORITY: AuthorityDocument = {
 };
 
 export function authorityOf(doc: AuthorityDocument, fact: AuthorityFact): string | null {
-  return doc.facts[fact];
+  return doc.facts[fact] ?? null;
 }
 
 export function isAuthoritative(
@@ -50,7 +68,7 @@ export function isAuthoritative(
   fact: AuthorityFact,
   connectionId: string,
 ): boolean {
-  return doc.facts[fact] === connectionId;
+  return (doc.facts[fact] ?? null) === connectionId;
 }
 
 /** Facts a connection holds (sorted, for stable output). */
@@ -59,12 +77,19 @@ export function factsHeldBy(doc: AuthorityDocument, connectionId: string): Autho
 }
 
 /**
- * Content hash of an authority version: the five connection ids (or `-`)
- * joined by `|` in fact order (also computed by the M8 migration's seed).
+ * Content hash of an authority version: the five ADR 0020 connection ids (or
+ * `-`) joined by `|` in fact order (also computed by the M8 migration's seed).
+ * M10C: an optional fact is appended as `|fact=<id>` only when assigned, so the
+ * hash of every existing version is unchanged.
  */
 export function authorityContentHash(doc: AuthorityDocument): string {
+  const required = REQUIRED_AUTHORITY_FACTS.map((f) => doc.facts[f] ?? '-');
+  const optional = OPTIONAL_AUTHORITY_FACTS.flatMap((f) => {
+    const id = doc.facts[f];
+    return id ? [`${f}=${id}`] : [];
+  });
   return createHash('sha256')
-    .update(AUTHORITY_FACTS.map((f) => doc.facts[f] ?? '-').join('|'))
+    .update([...required, ...optional].join('|'))
     .digest('hex');
 }
 

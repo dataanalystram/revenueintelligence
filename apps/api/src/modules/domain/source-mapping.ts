@@ -1,4 +1,5 @@
 import { jsonbTextBytes } from './canonical/json-size';
+import { compareCanonicalVersion } from './canonical/versions';
 import type { ConnectorKind } from './connector-kinds';
 import { isAuthoritative, type AuthorityDocument, type AuthorityFact } from './source-authority';
 import {
@@ -59,6 +60,10 @@ interface RelationshipTargetSpec {
   readonly fact: AuthorityFact;
   readonly to: 'account' | 'product';
   readonly required: boolean;
+  /** M10C: mapping it needs a recorded confirmation (`account.parent`). */
+  readonly consequential?: boolean;
+  /** M10C: the minimum adopted canonical version for a mapping that uses it. */
+  readonly minCanonicalVersion?: string;
 }
 
 /** The code catalogue of mapping targets. There are no free paths. */
@@ -117,6 +122,26 @@ export const MAPPING_TARGETS = {
     fact: 'person_profile',
     to: 'account',
     required: false,
+  },
+  // M10C (ADR 0029, canonical 0.3): the account's parent, a consequential,
+  // human-confirmed choice written under the `account_hierarchy` authority.
+  'account.parent': {
+    entity: 'account',
+    kind: 'relationship',
+    fact: 'account_hierarchy',
+    to: 'account',
+    required: false,
+    consequential: true,
+    minCanonicalVersion: '0.3',
+  },
+  // M10C (Q5): a further person–account affiliation, a person_profile fact.
+  'person.affiliation': {
+    entity: 'person',
+    kind: 'relationship',
+    fact: 'person_profile',
+    to: 'account',
+    required: false,
+    minCanonicalVersion: '0.3',
   },
 } as const satisfies Record<string, CoreTargetSpec | RelationshipTargetSpec>;
 
@@ -425,6 +450,42 @@ export function validateMapping(raw: unknown, ctx: MappingValidationContext): Ma
           }
         }
         if (rel.productReference) err('invalid_target', path, 'not a product relationship');
+      }
+      if (spec.consequential && !rel.confirmation) {
+        err('unconfirmed_consequential_entry', path, `${rel.target} needs a recorded confirmation`);
+      }
+      if (rel.affiliation) {
+        if (rel.target !== 'person.affiliation') {
+          err(
+            'invalid_target',
+            `${path}.affiliation`,
+            'only person.affiliation has affiliation fields',
+          );
+        } else {
+          const a = rel.affiliation;
+          for (const [key, name] of [
+            ['roleField', a.roleField],
+            ['startsAtField', a.startsAtField],
+            ['endsAtField', a.endsAtField],
+          ] as const) {
+            if (name === undefined) continue;
+            reviewed.add(name);
+            if (!findSourceField(ctx.schema, obj.source, name)) {
+              err(
+                'unknown_source_field',
+                `${path}.affiliation.${key}`,
+                `${obj.source}.${name} is not in the snapshot`,
+              );
+            }
+          }
+          if ((a.roleField === undefined) !== (a.roleValueMap === undefined)) {
+            err(
+              'invalid_target',
+              `${path}.affiliation`,
+              'a role field needs an explicit value map (and a value map a role field)',
+            );
+          }
+        }
       }
       if (rel.fallbackVia) {
         const fb = rel.fallbackVia;
@@ -754,11 +815,43 @@ export function mappedFields(obj: ObjectMapping): string[] {
   for (const rel of obj.relationships) {
     fields.add(rel.field);
     if (rel.fallbackVia) fields.add(rel.fallbackVia.field);
+    for (const f of [
+      rel.affiliation?.roleField,
+      rel.affiliation?.startsAtField,
+      rel.affiliation?.endsAtField,
+    ]) {
+      if (f) fields.add(f);
+    }
   }
   for (const entry of obj.fields) {
     if (entry.kind === 'core' && 'source' in entry) fields.add(entry.source);
   }
   return [...fields].sort();
+}
+
+/**
+ * M10C (plan §7): the minimum adopted canonical version a mapping document
+ * needs — the highest `minCanonicalVersion` of the targets it uses, else
+ * undefined (no requirement beyond the M8–M10B baseline).
+ */
+export function mappingMinCanonicalVersion(doc: {
+  readonly objects: readonly Pick<ObjectMapping, 'relationships' | 'fields'>[];
+}): string | undefined {
+  let min: string | undefined;
+  for (const obj of doc.objects) {
+    const targets = [
+      ...obj.relationships.map((r) => r.target),
+      ...obj.fields.flatMap((f) =>
+        'target' in f && typeof f.target === 'string' ? [f.target] : [],
+      ),
+    ];
+    for (const t of targets) {
+      const spec = targetSpec(t);
+      const v = spec && 'minCanonicalVersion' in spec ? spec.minCanonicalVersion : undefined;
+      if (v && (min === undefined || compareCanonicalVersion(v, min) > 0)) min = v;
+    }
+  }
+  return min;
 }
 
 /** True when the object's holdings are confirmed (filter or all-holdings statement). */

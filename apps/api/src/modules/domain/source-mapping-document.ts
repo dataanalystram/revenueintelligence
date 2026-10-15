@@ -86,6 +86,23 @@ export const RelationshipEntrySchema = z.strictObject({
       confirmation: ConfirmationSchema.optional(),
     })
     .optional(),
+  /** M10C: a recorded confirmation of a consequential relationship (`account.parent`). */
+  confirmation: ConfirmationSchema.optional(),
+  /**
+   * M10C (`person.affiliation` only): further fields of the same record that
+   * describe the affiliation. Role values become codes only through the explicit
+   * value map (Q11); unmapped values are dropped and counted, never stored.
+   */
+  affiliation: z
+    .strictObject({
+      roleField: ApiName.optional(),
+      roleValueMap: z
+        .record(z.string().min(1).max(200), z.string().regex(/^[a-z0-9_]{1,64}$/))
+        .optional(),
+      startsAtField: ApiName.optional(),
+      endsAtField: ApiName.optional(),
+    })
+    .optional(),
 });
 export type RelationshipEntry = z.infer<typeof RelationshipEntrySchema>;
 

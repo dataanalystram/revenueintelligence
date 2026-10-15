@@ -190,8 +190,10 @@ export class EvidenceLinkWriter {
     if (!indexed) this.targetNotAllowed(kind);
     const src = ENTITY_INDEX_SOURCES[kind];
     if (src.column === 'key') return; // products are never merged (K4)
+    // M10C: affiliations carry `status` (active | ended | merged), every other kind `record_state`.
+    const stateColumn = kind === 'person_affiliation' ? 'status' : 'record_state';
     const rows = await db.$queryRawUnsafe<{ state: string }[]>(
-      `SELECT record_state AS state FROM "${src.table}" WHERE tenant_id = $1::uuid AND "${src.column}" = $2::uuid`,
+      `SELECT "${stateColumn}" AS state FROM "${src.table}" WHERE tenant_id = $1::uuid AND "${src.column}" = $2::uuid`,
       tx.tenantId,
       id,
     );

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { MAPPING_TARGETS_0_3 } from './canonical/catalogue';
 import {
   OTHER_CONNECTION_ID,
   TEST_CONNECTION_ID,
@@ -16,6 +17,7 @@ import {
 import { sourceSchemaHash } from './source-connector';
 import {
   holdingsConfirmed,
+  MAPPING_TARGETS,
   mappedFields,
   validateMapping,
   type MappingDocument,
@@ -53,6 +55,12 @@ function codes(raw: unknown, c: MappingValidationContext = ctx()): string[] {
   const r = validateMapping(raw, c);
   return r.ok ? [] : r.errors.map((e) => e.code);
 }
+
+describe('canonical 0.3 mapping-target catalogue (review n3)', () => {
+  it('the frozen 0.3 list equals the code catalogue, so the stored 0.3 hash describes the code', () => {
+    expect([...MAPPING_TARGETS_0_3].sort()).toEqual(Object.keys(MAPPING_TARGETS).sort());
+  });
+});
 
 describe('mapping validation (ADR 0020)', () => {
   it('the default test mapping is valid and hashes deterministically', () => {

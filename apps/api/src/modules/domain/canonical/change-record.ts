@@ -3,7 +3,16 @@
  * these lists (schema guard). Entity kinds are widened by each sub-milestone
  * with its entity (M10B: `product`, key-identified).
  */
-export const CHANGE_ENTITY_KINDS = ['company', 'person', 'subscription', 'product'] as const;
+export const CHANGE_ENTITY_KINDS = [
+  'company',
+  'person',
+  'subscription',
+  'product',
+  // M10C (0.3)
+  'person_affiliation',
+] as const;
+/** The change entity kinds published with canonical 0.2 (frozen for its catalogue hash). */
+export const CHANGE_ENTITY_KINDS_0_2 = ['company', 'person', 'subscription', 'product'] as const;
 export type ChangeEntityKind = (typeof CHANGE_ENTITY_KINDS)[number];
 
 /** M10B: change records of these kinds name the entity by `entity_key` (D3), every other kind by `entity_id`. */

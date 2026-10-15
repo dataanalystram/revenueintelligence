@@ -99,23 +99,30 @@ describe('V1: canonical versions', () => {
     );
   });
 
-  it('the catalogue holds exactly one current version, 0.2 (ADR 0028), 0.1 supported (ADR 0027), and nothing at 1.0 or above', () => {
-    expect(currentCanonicalVersion()).toBe('0.2');
+  it('the catalogue holds exactly one current version, 0.3 (ADR 0029), 0.1 / 0.2 supported (ADR 0027 / 0028), and nothing at 1.0 or above', () => {
+    expect(currentCanonicalVersion()).toBe('0.3');
     expect(CANONICAL_VERSIONS).toEqual([
       { version: '0.1', status: 'supported', adr: '0027' },
-      { version: '0.2', status: 'current', adr: '0028' },
+      { version: '0.2', status: 'supported', adr: '0028' },
+      { version: '0.3', status: 'current', adr: '0029' },
     ]);
     for (const v of CANONICAL_VERSIONS) expect(parseCanonicalVersion(v.version).major).toBe(0);
   });
 
-  it('M10B Q19: the stored 0.1 catalogue hash is reproduced unchanged; 0.2 hashes the new members', () => {
+  it('M10B Q19 / M10C: the stored 0.1 and 0.2 catalogue hashes are reproduced unchanged; 0.3 hashes the new members', () => {
     expect(canonicalCatalogueHash(canonicalCatalogueFor('0.1'))).toBe(
       '2fd4f7e575633de7cac4aea394a71c73adc9b73e5e18b67c0b0ee404572faf5b',
     );
     expect(canonicalCatalogueHash(canonicalCatalogueFor('0.2'))).toBe(
       'db7c0fc245cae469e8cddae88b89077c017805c7b87586b9d3e71f1936c96c98',
     );
-    expect(() => canonicalCatalogueFor('0.3')).toThrow(/no catalogue/);
+    // M10C (ADR 0029): pinned in migration 20270105120000_m10c_account_hierarchy_affiliation.
+    expect(canonicalCatalogueHash(canonicalCatalogueFor('0.3'))).toBe(
+      '70db9aa697147cf1d0d63e93a923ed8714b78da32550aaefe5699597e26eb069',
+    );
+    expect(canonicalCatalogueFor('0.3').entityKinds).toContain('person_affiliation');
+    expect(canonicalCatalogueFor('0.2').entityKinds).not.toContain('person_affiliation');
+    expect(() => canonicalCatalogueFor('0.4')).toThrow(/no catalogue/);
   });
 });
 
@@ -408,9 +415,15 @@ describe('value history decision (restricted history, control 12)', () => {
     ...over,
   });
 
-  it('the field catalogue is the six M10A2 fields (Q14, without company.customer_status), none of them a person field', () => {
+  it('the field catalogue is the six M10A2 fields (Q14, without company.customer_status) plus the M10C fields, none of them a person field', () => {
     expect(valueHistoryPairs().map((p) => `${p.entityKind}.${p.field}`)).toEqual([
       'company.name',
+      // M10C: parent_account_id (full) and the affiliation fields (value-free, Q15).
+      'company.parent_company_id',
+      'person_affiliation.status',
+      'person_affiliation.starts_at',
+      'person_affiliation.ends_at',
+      'person_affiliation.role_codes',
       'subscription.state',
       'subscription.starts_at',
       'subscription.ends_at',
@@ -482,7 +495,17 @@ describe('value history decision (restricted history, control 12)', () => {
 
 describe('entity index, change records, lifecycle and integrity vocabulary', () => {
   it('every index kind names its table and identity column (products by key, D3)', () => {
-    expect(ENTITY_INDEX_KINDS).toEqual(['company', 'person', 'product', 'subscription']);
+    expect(ENTITY_INDEX_KINDS).toEqual([
+      'company',
+      'person',
+      'product',
+      'subscription',
+      'person_affiliation',
+    ]);
+    expect(ENTITY_INDEX_SOURCES.person_affiliation).toEqual({
+      table: 'tenant_person_affiliations',
+      column: 'id',
+    });
     expect(ENTITY_INDEX_SOURCES.product).toEqual({ table: 'tenant_products', column: 'key' });
   });
 

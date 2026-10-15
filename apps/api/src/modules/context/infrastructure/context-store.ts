@@ -1,19 +1,15 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
-import type {
-  SecurityActor,
-  ContextKind,
-  ExternalRef,
-  ExternalRefState,
-  RecordState,
-  SourceCompanyLink,
-} from '../../domain';
 import {
-  changeGovernance,
-  tenantAdvisoryLock,
-  tenantClient,
-  type TenantTransaction,
-} from '../../tenancy';
+  AFFILIATION_LINK_TYPE_ID,
+  type ContextKind,
+  type ExternalRef,
+  type ExternalRefState,
+  type RecordState,
+  type SourceCompanyLink,
+} from '../../domain';
+import { insertContextChange, type ChangeWrite } from './context-changes';
+import { tenantAdvisoryLock, tenantClient, type TenantTransaction } from '../../tenancy';
 
 /**
  * Persistence for canonical context (M6, ADR 0014). Only
@@ -65,31 +61,14 @@ export interface PersonValues {
   readonly companyId: string | null;
 }
 
+export type { ChangeWrite } from './context-changes';
+export { sourceConnectionId } from './context-changes';
+
 export interface CanonicalRow<V> {
   readonly id: string;
   readonly values: V;
   readonly recordState: RecordState;
   readonly mergedIntoId: string | undefined;
-}
-
-export interface ChangeWrite {
-  readonly entityKind: ContextKind;
-  readonly entityId: string;
-  readonly changeType:
-    'created' | 'updated' | 'state_changed' | 'merged' | 'ref_added' | 'relationship_changed';
-  readonly changedFields: readonly string[];
-  readonly source: ExternalRef;
-  readonly cause: string;
-  readonly receiptDeliveryKey?: string;
-  readonly checkpointId?: string;
-  readonly sourceUpdatedAt?: Date;
-  readonly adapter: string;
-  readonly adapterVersion: string;
-  readonly correlationId: string;
-  /** M8: the versioned mapping that produced the change (versioned connections only). */
-  readonly mappingVersion?: number;
-  /** M10A1: who wrote the change. */
-  readonly actor?: SecurityActor;
 }
 
 const refKey = (r: { system: string; objectType: string; id: string }) =>
@@ -414,13 +393,19 @@ export class ContextStore {
     return r ? this.resolveCanonical(tx, 'company', r.canonicalId) : undefined;
   }
 
-  /** Replaces a person's source company links; returns whether anything changed. */
+  /**
+   * Replaces a person's source company links; returns whether anything changed
+   * and the company references that became `removed`. M10C: the
+   * `person.affiliation` links (association type AFFILIATION_LINK_TYPE_ID) are
+   * their own scope, so replacing one scope never removes the other's rows.
+   */
   async replacePersonLinks(
     tx: TenantTransaction,
     person: ExternalRef,
     links: readonly SourceCompanyLink[],
     observedAt: Date,
-  ): Promise<boolean> {
+    scope: 'company_links' | 'affiliations' = 'company_links',
+  ): Promise<{ readonly changed: boolean; readonly removed: readonly ExternalRef[] }> {
     const db = tenantClient(tx);
     const base = {
       tenantId: tx.tenantId,
@@ -428,7 +413,14 @@ export class ContextStore {
       fromObjectType: person.objectType,
       fromExternalId: person.id,
     };
-    const existing = await db.tenantSourceRelationship.findMany({ where: base });
+    const inScope = (typeId: number) =>
+      scope === 'affiliations'
+        ? typeId === AFFILIATION_LINK_TYPE_ID
+        : typeId !== AFFILIATION_LINK_TYPE_ID;
+    const existing = (await db.tenantSourceRelationship.findMany({ where: base })).filter((r) =>
+      inScope(r.associationTypeId),
+    );
+    const removed: ExternalRef[] = [];
     const key = (to: string, toType: string, typeId: number) => `${toType}:${to}:${typeId}`;
     const wanted = new Map(
       links.map((l) => [key(l.company.id, l.company.objectType, l.typeId), l] as const),
@@ -445,6 +437,11 @@ export class ContextStore {
             associationTypeId: row.associationTypeId,
           },
           data: { state: 'removed', lastSeenAt: observedAt, sourceObservedAt: observedAt },
+        });
+        removed.push({
+          system: person.system,
+          objectType: row.toObjectType,
+          id: row.toExternalId,
         });
         changed = true;
       }
@@ -488,7 +485,7 @@ export class ContextStore {
         changed ||= differs;
       }
     }
-    return changed;
+    return { changed, removed };
   }
 
   /**
@@ -516,6 +513,52 @@ export class ContextStore {
          AND pr.state = 'active' AND p.record_state <> 'merged'
          AND p.company_id IS DISTINCT FROM ${companyId}::uuid`;
     return rows.map((r) => r.id);
+  }
+
+  /**
+   * The late-company path (plan §3.2): people with an active plain company link
+   * (never a `person.affiliation` statement, whose period and codes the link
+   * does not carry; review M3) to a company reference, whose canonical record
+   * is not merged, and who have no affiliation to do: no active row with the
+   * canonical company, and no operator ending that still stands (M6). One
+   * query; an unchanged company with every link affiliated costs nothing more
+   * (review M4).
+   */
+  async peopleLinkedTo(
+    tx: TenantTransaction,
+    company: ExternalRef,
+    companyId: string,
+  ): Promise<{ personId: string; ref: ExternalRef }[]> {
+    const rows = await tenantClient(tx).$queryRaw<
+      { id: string; system: string; object_type: string; external_id: string }[]
+    >`
+      SELECT DISTINCT p.id::text AS id, pr.system, pr.object_type, pr.external_id
+        FROM tenant_source_relationships r
+        JOIN person_external_refs pr
+          ON pr.tenant_id = r.tenant_id AND pr.system = r.system
+         AND pr.object_type = r.from_object_type AND pr.external_id = r.from_external_id
+        JOIN persons p ON p.tenant_id = pr.tenant_id AND p.id = pr.person_id
+       WHERE r.tenant_id = ${tx.tenantId}::uuid
+         AND r.system = ${company.system}
+         AND r.to_object_type = ${company.objectType}
+         AND r.to_external_id = ${company.id}
+         AND r.state = 'active' AND pr.state = 'active' AND p.record_state <> 'merged'
+         AND r.association_type_id <> ${AFFILIATION_LINK_TYPE_ID}
+         AND NOT EXISTS (
+               SELECT 1 FROM tenant_person_affiliations a
+                WHERE a.tenant_id = p.tenant_id AND a.person_id = p.id
+                  AND a.company_id = ${companyId}::uuid
+                  AND (a.status = 'active'
+                       OR (a.end_reason = 'operator' AND a.released_at IS NULL)))
+       ORDER BY 1`;
+    return rows.map((r) => ({
+      personId: r.id,
+      ref: {
+        system: r.system as ExternalRef['system'],
+        objectType: r.object_type,
+        id: r.external_id,
+      },
+    }));
   }
 
   async personIdsWithEmail(
@@ -601,56 +644,6 @@ export class ContextStore {
   }
 
   async insertChange(tx: TenantTransaction, change: ChangeWrite): Promise<string> {
-    const id = randomUUID();
-    const connectionId = await sourceConnectionId(tx, change.source.system);
-    // M10A2: origin, adopted canonical version (fail closed), snapshot hash, transforms.
-    const governance = await changeGovernance(tx, {
-      sourceConnectionId: connectionId,
-      mappingVersion: change.mappingVersion ?? null,
-      sourceObjectType: change.source.objectType,
-    });
-    await tenantClient(tx).tenantContextChange.create({
-      data: {
-        tenantId: tx.tenantId,
-        id,
-        entityKind: change.entityKind,
-        entityId: change.entityId,
-        changeType: change.changeType,
-        changedFields: [...change.changedFields],
-        sourceSystem: change.source.system,
-        sourceObjectType: change.source.objectType,
-        sourceRecordId: change.source.id,
-        cause: change.cause,
-        receiptDeliveryKey: change.receiptDeliveryKey ?? null,
-        checkpointId: change.checkpointId ?? null,
-        sourceUpdatedAt: change.sourceUpdatedAt ?? null,
-        adapter: change.adapter,
-        adapterVersion: change.adapterVersion,
-        correlationId: change.correlationId,
-        // M8: every write names the tenant's connection of its source system.
-        sourceConnectionId: connectionId,
-        mappingVersion: change.mappingVersion ?? null,
-        actorKind: change.actor?.kind ?? null,
-        actorId: change.actor?.id ?? null,
-        actorAssurance: change.actor?.assurance ?? null,
-        origin: governance.origin,
-        canonicalVersion: governance.canonicalVersion,
-        schemaSnapshotHash: governance.schemaSnapshotHash,
-        transforms: governance.transforms,
-      },
-    });
-    return id;
+    return insertContextChange(tx, change);
   }
-}
-
-/** The tenant's source connection of a kind (one per kind in M8), if registered. */
-export async function sourceConnectionId(
-  tx: TenantTransaction,
-  kind: string,
-): Promise<string | null> {
-  const row = await tenantClient(tx).tenantSourceConnection.findUnique({
-    where: { tenantId_kind: { tenantId: tx.tenantId, kind } },
-    select: { id: true },
-  });
-  return row?.id ?? null;
 }

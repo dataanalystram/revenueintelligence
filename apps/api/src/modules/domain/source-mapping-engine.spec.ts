@@ -519,6 +519,46 @@ describe('context records (accounts, people)', () => {
   });
 });
 
+describe('context records: person company link and affiliation (M10C review M2, m2)', () => {
+  const people: ObjectMapping = {
+    source: 'Contacts',
+    entity: 'person',
+    identity: { field: 'id' },
+    relationships: [
+      { target: 'person.primaryCompany', field: 'account_id', object: 'Accounts' },
+      { target: 'person.affiliation', field: 'affiliation_account_id', object: 'Accounts' },
+    ],
+    fields: [],
+  };
+  const env = { kind: 'sugar' as const, profileAuthority: true, observedAt: OBSERVED };
+  const person = (values: Record<string, string>) =>
+    mapContextRecord(people, toSourceRecord('Contacts', { id: 'FIX-CON-001', ...values }), env);
+  const observation = (values: Record<string, string>) => {
+    const r = person(values);
+    if (r.outcome !== 'ingest') throw new Error('expected ingest');
+    return r as typeof r & { observation: Record<string, unknown> };
+  };
+
+  it('a primary-company field missing from the record states nothing (no companyLinks): never an ending', () => {
+    expect(observation({})).not.toHaveProperty('observation.companyLinks');
+  });
+
+  it('an explicitly empty primary company states "no company"; a value states the link', () => {
+    expect(observation({ account_id: '' }).observation.companyLinks).toEqual([]);
+    expect(observation({ account_id: 'FIX-ACC-001' }).observation.companyLinks).toMatchObject([
+      { company: { system: 'sugar', objectType: 'Accounts', id: 'FIX-ACC-001' }, primary: true },
+    ]);
+  });
+
+  it('an over-long affiliation account id states nothing and is counted, never "no affiliation"', () => {
+    const r = observation({ affiliation_account_id: 'x'.repeat(256) });
+    expect(r).not.toHaveProperty('observation.affiliations');
+    expect(r.quality).toContain('invalid_reference');
+    expect(observation({ affiliation_account_id: '' }).observation.affiliations).toEqual([]);
+    expect(observation({})).not.toHaveProperty('observation.affiliations');
+  });
+});
+
 describe('properties: state is never inferred', () => {
   const stage = fc.constantFrom(
     'Closed Won',

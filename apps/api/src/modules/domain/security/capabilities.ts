@@ -38,13 +38,15 @@ export const CAPABILITIES = [
   // M10B (policy v3)
   'canonical.evidence.link',
   'data.provenance.read',
+  // M10C (policy v4)
+  'data.account_structure.read',
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
 /** Bumped whenever a grant changes; recorded on every audit event. */
-export const POLICY_VERSION = 3;
+export const POLICY_VERSION = 4;
 
-/** Policy v3 (M10A2 added seven capabilities, M10B two): capability → actor kinds granted. `human_user` and `ai` hold nothing. */
+/** Policy v4 (M10A2 added seven capabilities, M10B two, M10C one; M10C grants canonical.human_entry to operator, Q2): capability → actor kinds granted. `human_user` and `ai` hold nothing. */
 export const POLICY: Readonly<Record<Capability, readonly ActorKind[]>> = {
   'canonical.source_sync': ['source_sync', 'system'],
   'canonical.import': ['operator'],
@@ -67,7 +69,8 @@ export const POLICY: Readonly<Record<Capability, readonly ActorKind[]>> = {
   'data.purge': ['operator'],
   'security.key.rotate': ['operator'],
   'security.audit.read': ['operator'],
-  'canonical.human_entry': [],
+  // M10C (Q2): honoured only by the M10C hierarchy / affiliation operator commands.
+  'canonical.human_entry': ['operator'],
   'config.canonical.adopt': ['operator'],
   'config.module.change': ['operator'],
   'config.registry.publish': ['operator'],
@@ -77,6 +80,7 @@ export const POLICY: Readonly<Record<Capability, readonly ActorKind[]>> = {
   'security.integrity.run': ['operator', 'system'],
   'canonical.evidence.link': ['system'],
   'data.provenance.read': ['operator'],
+  'data.account_structure.read': ['operator'],
 };
 
 export type PolicyDecision =

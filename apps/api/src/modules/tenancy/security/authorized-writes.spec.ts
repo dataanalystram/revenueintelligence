@@ -1,5 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readdirSync, readFileSync } from 'node:fs';
+import { resolve, sep } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
@@ -199,7 +199,30 @@ const SERVICES: readonly ServiceSpec[] = [
   {
     file: 'context/application/context-ingestion.service.ts',
     className: 'ContextIngestionService',
-    writes: ['ingest', 'ingestMerge', 'retireAbsentWithin'],
+    writes: ['ingest', 'ingestMerge', 'retireAbsentWithin', 'resolvePendingParent'],
+    reads: [],
+  },
+  // M10C (ADR 0029): the account-structure writers and read model. Merge
+  // participants run inside the merge's transaction under its authorization.
+  {
+    file: 'context/application/account-hierarchy.writer.ts',
+    className: 'AccountHierarchyWriter',
+    writes: ['observeParent', 'recordUnresolved', 'set', 'clear', 'release'],
+    reads: [],
+    authorizeInside: ['onCompanyMerged'],
+  },
+  {
+    file: 'context/application/person-affiliation.writer.ts',
+    className: 'PersonAffiliationWriter',
+    writes: ['observe', 'add', 'end', 'release'],
+    reads: [],
+    authorizeInside: ['onCompanyMerged', 'onPersonMerged'],
+  },
+  {
+    // The read model writes one account_structure.read audit event per call.
+    file: 'context/application/account-structure.read-model.ts',
+    className: 'AccountStructureReadModel',
+    writes: ['hierarchy', 'affiliations'],
     reads: [],
   },
   {
@@ -280,6 +303,38 @@ describe('S2: privileged service writes take an authorized context (static)', ()
     for (const read of spec.reads) {
       expect(methods.get(read) ?? '', `${spec.className}.${read}`).not.toMatch(/AuthorizedContext/);
     }
+  });
+
+  it('M10C (V18): canonical.human_entry is accepted only by the M10C operator methods', () => {
+    const accepted = new Map<string, string[]>();
+    for (const spec of SERVICES) {
+      for (const [name, type] of publicMethods(spec.file, spec.className)) {
+        if (type.includes("'canonical.human_entry'")) {
+          accepted.set(spec.className, [...(accepted.get(spec.className) ?? []), name]);
+        }
+      }
+    }
+    expect(Object.fromEntries(accepted)).toEqual({
+      AccountHierarchyWriter: ['set', 'clear', 'release'],
+      PersonAffiliationWriter: ['add', 'end', 'release'],
+    });
+  });
+
+  it('M10C (V18, review n3): no source file outside the two M10C writers takes canonical.human_entry', () => {
+    const SRC = resolve(MODULES, '..');
+    const files = (readdirSync(SRC, { recursive: true }) as string[])
+      .filter((f) => f.endsWith('.ts') && !f.endsWith('.spec.ts') && !f.startsWith('generated'))
+      .filter((f) =>
+        /AuthorizedContext<[^>]*'canonical\.human_entry'/.test(
+          readFileSync(resolve(SRC, f), 'utf8'),
+        ),
+      )
+      .map((f) => f.split(sep).join('/'))
+      .sort();
+    expect(files).toEqual([
+      'modules/context/application/account-hierarchy.writer.ts',
+      'modules/context/application/person-affiliation.writer.ts',
+    ]);
   });
 
   it('the check fails for a write method that takes a plain TenantContext', () => {

@@ -5,6 +5,7 @@ import {
   decideMerge,
   decideReferenceObservation,
   decideRetirement,
+  ACCOUNT_STRUCTURE_MIN_VERSION,
   GENERIC_REFERENCE_KINDS,
   KEY_IDENTIFIED_REFERENCE_KINDS,
   PRODUCT_REFERENCE_ADAPTER,
@@ -157,7 +158,10 @@ export class SourceReferenceService {
     const kind = this.genericKind(input.entityKind);
     this.validTriple(input);
     const entity = this.entityOf(kind, input);
-    await this.requireVersion(tx);
+    await this.requireVersion(
+      tx,
+      kind === 'person_affiliation' ? ACCOUNT_STRUCTURE_MIN_VERSION : undefined,
+    );
     await this.lock(tx, input);
     const db = tenantClient(tx);
     const stored = await this.find(tx, input);
@@ -579,12 +583,16 @@ export class SourceReferenceService {
     return byKey ? { entityKey: input.entityKey! } : { entityId: input.entityId! };
   }
 
-  private async requireVersion(tx: TenantTransaction): Promise<void> {
+  /** M10C: a `person_affiliation` reference needs canonical 0.3; every other kind 0.2. */
+  private async requireVersion(
+    tx: TenantTransaction,
+    min: string = GENERIC_REFERENCES_MIN_VERSION,
+  ): Promise<void> {
     const adopted = await adoptedCanonicalVersion(tx);
-    if (compareCanonicalVersion(adopted, GENERIC_REFERENCES_MIN_VERSION) < 0) {
+    if (compareCanonicalVersion(adopted, min) < 0) {
       throw new GovernanceError(
         'canonical_version_too_low',
-        `Observed generic references need canonical ${GENERIC_REFERENCES_MIN_VERSION} (adopted ${adopted})`,
+        `Observed generic references need canonical ${min} (adopted ${adopted})`,
       );
     }
   }

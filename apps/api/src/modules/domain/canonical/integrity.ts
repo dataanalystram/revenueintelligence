@@ -20,6 +20,13 @@ export const INTEGRITY_CHECKS = [
   'evidence_relation_unknown',
   'evidence_supersession_invalid',
   'source_reference_index_parity',
+  // M10C plan §11 (ADR 0029)
+  'hierarchy_cycle',
+  'hierarchy_depth_exceeded',
+  'hierarchy_parent_merged',
+  'hierarchy_history_parity',
+  'affiliation_endpoint_merged',
+  'affiliation_reference_parity',
 ] as const;
 export type IntegrityCheck = (typeof INTEGRITY_CHECKS)[number];
 

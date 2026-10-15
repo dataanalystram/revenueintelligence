@@ -58,7 +58,9 @@ export interface CanonicalVersionEntry {
 export const CANONICAL_VERSIONS: readonly CanonicalVersionEntry[] = [
   { version: '0.1', status: 'supported', adr: '0027' },
   // M10B (ADR 0028): generic source references, evidence links, key-identified change records.
-  { version: '0.2', status: 'current', adr: '0028' },
+  { version: '0.2', status: 'supported', adr: '0028' },
+  // M10C (ADR 0029): account hierarchy, person–account affiliation.
+  { version: '0.3', status: 'current', adr: '0029' },
 ];
 
 /**
@@ -69,6 +71,7 @@ export const CANONICAL_VERSIONS: readonly CanonicalVersionEntry[] = [
 export const CANONICAL_VERSION_FEATURES: Readonly<Record<string, readonly string[]>> = {
   '0.1': [],
   '0.2': ['observed_generic_source_references', 'evidence_links', 'key_identified_change_records'],
+  '0.3': ['account_hierarchy', 'person_affiliations', 'hierarchy_operator_entry'],
 };
 
 /** Features enabled by versions in (from, to] when moving forward, or withdrawn when moving back. */
@@ -109,6 +112,11 @@ export interface CanonicalCatalogue {
   readonly genericReferenceKinds?: readonly string[];
   readonly evidenceTypes?: readonly string[];
   readonly evidenceRoles?: readonly string[];
+  /** M10C (0.3): optional members, hashed only when present, so 0.1 / 0.2 hashes are unchanged. */
+  readonly authorityFacts?: readonly string[];
+  readonly mappingTargets?: readonly string[];
+  readonly hierarchy?: { readonly maxDepthCeiling: number };
+  readonly affiliationEndReasons?: readonly string[];
 }
 
 /**
@@ -129,6 +137,12 @@ export function canonicalCatalogueHash(catalogue: CanonicalCatalogue): string {
     genericReferenceKinds: sorted(catalogue.genericReferenceKinds),
     evidenceTypes: sorted(catalogue.evidenceTypes),
     evidenceRoles: sorted(catalogue.evidenceRoles),
+    authorityFacts: sorted(catalogue.authorityFacts),
+    mappingTargets: sorted(catalogue.mappingTargets),
+    hierarchy: catalogue.hierarchy
+      ? { maxDepthCeiling: catalogue.hierarchy.maxDepthCeiling }
+      : undefined,
+    affiliationEndReasons: sorted(catalogue.affiliationEndReasons),
   });
 }
 

@@ -71,6 +71,14 @@ export const AUDIT_ACTIONS = [
   'provenance.read',
   'evidence.link',
   'source_reference.observe',
+  // M10C
+  'account.hierarchy.set',
+  'account.hierarchy.clear',
+  'account.hierarchy.release',
+  'person.affiliation.add',
+  'person.affiliation.end',
+  'person.affiliation.release',
+  'account_structure.read',
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -106,6 +114,12 @@ export const AUDIT_REASON_CODES = [
   'evidence_relation_not_allowed',
   'evidence_target_not_allowed',
   'evidence_set_invalid',
+  // M10C
+  'hierarchy_cycle',
+  'hierarchy_depth_exceeded',
+  'hierarchy_parent_merged',
+  'affiliation_period_invalid',
+  'affiliation_endpoint_not_allowed',
 ] as const;
 export type AuditReasonCode = (typeof AUDIT_REASON_CODES)[number];
 
@@ -143,6 +157,9 @@ export const AUDIT_TARGET_KINDS = [
   'source_reference',
   'evidence_link_set',
   'provenance',
+  // M10C
+  'account_hierarchy',
+  'person_affiliation',
 ] as const;
 export type AuditTargetKind = (typeof AUDIT_TARGET_KINDS)[number];
 

@@ -126,6 +126,8 @@ const FACT_COLUMNS = {
   subscription_lines: 'subscriptionLinesConnectionId',
   subscription_state: 'subscriptionStateConnectionId',
   subscription_terms: 'subscriptionTermsConnectionId',
+  // M10C: optional fact; omitted from the read document while unassigned.
+  account_hierarchy: 'accountHierarchyConnectionId',
 } as const;
 
 /** One active source run per connection (full and incremental exclude each other). */
@@ -429,6 +431,7 @@ export class SourcesRepository {
           subscriptionLinesConnectionId: facts.subscription_lines,
           subscriptionStateConnectionId: facts.subscription_state,
           subscriptionTermsConnectionId: facts.subscription_terms,
+          accountHierarchyConnectionId: facts.account_hierarchy ?? null,
           contentHash: input.contentHash,
           publishedBy: input.publishedBy,
           proofAcceptances: input.proofAcceptances ?? [],
@@ -700,13 +703,17 @@ function toAuthority(row: {
   subscriptionLinesConnectionId: string | null;
   subscriptionStateConnectionId: string | null;
   subscriptionTermsConnectionId: string | null;
+  accountHierarchyConnectionId?: string | null;
   contentHash: string;
   publishedBy: string;
   publishedAt: Date;
   proofAcceptances?: unknown;
 }): StoredAuthorityVersion {
   const facts = Object.fromEntries(
-    Object.entries(FACT_COLUMNS).map(([fact, column]) => [fact, row[column]]),
+    Object.entries(FACT_COLUMNS).flatMap(([fact, column]) => {
+      const id = row[column] ?? null;
+      return id === null && fact === 'account_hierarchy' ? [] : [[fact, id]];
+    }),
   );
   return {
     version: row.version,

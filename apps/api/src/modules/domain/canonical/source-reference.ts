@@ -10,7 +10,13 @@
  */
 
 /** Entity kinds the generic store holds. M10B: `product` only; later sub-milestones add theirs. */
-export const GENERIC_REFERENCE_KINDS = ['product'] as const;
+export const GENERIC_REFERENCE_KINDS = [
+  'product',
+  // M10C (0.3, Q12): affiliations with their own source id (AccountContactRelation, Company Person).
+  'person_affiliation',
+] as const;
+/** The generic reference kinds published with canonical 0.2 (frozen for its catalogue hash). */
+export const GENERIC_REFERENCE_KINDS_0_2 = ['product'] as const;
 export type GenericReferenceKind = (typeof GENERIC_REFERENCE_KINDS)[number];
 
 /** Kinds whose references live in a legacy store; never written to the generic store. */

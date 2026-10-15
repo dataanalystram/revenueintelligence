@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
-import { ContextIngestionService, type IngestMeta } from '../../context';
+import { ContextIngestionService, type IngestMeta, type PendingParent } from '../../context';
 import {
   acceptsStableSnapshot,
   assertNoRawFinding,
@@ -134,6 +134,8 @@ const MAX_HELD_LISTED = 100;
 
 /** Mutable run counters: counts and codes only, never values. */
 class RunState {
+  /** M10C (plan §2.4): child→parent pairs whose parent was unknown in the first pass. */
+  readonly pendingParents: PendingParent[] = [];
   seen = 0;
   changed = 0;
   skipped = 0;
@@ -540,6 +542,7 @@ export class SourceSyncService {
         await this.readAll(rc, obj.source, mappedFields(obj), selection, onPage);
       }
     }
+    await this.resolvePendingParents(rc, state);
     const lineObjects = rc.mapping.objects.filter((o) => o.entity === 'subscription');
     if (lineObjects.length > 0) {
       // 2. Product catalogue first: a configuration gap fails before any line.
@@ -723,6 +726,7 @@ export class SourceSyncService {
         await this.ingestContext(rc, state, obj, records);
       });
     }
+    await this.resolvePendingParents(rc, state);
     const lineObjects = rc.mapping.objects.filter((o) => o.entity === 'subscription');
     let productStatus: ((id: string) => SourceProductStatus) | undefined;
     if (lineObjects.length > 0) {
@@ -799,6 +803,10 @@ export class SourceSyncService {
   ): Promise<void> {
     const fact = obj.entity === 'person' ? 'person_profile' : 'account_profile';
     const profileAuthority = isAuthoritative(rc.authority, fact, rc.connection.id);
+    // M10C: the parent is read only for the account_hierarchy authority (ADR 0029).
+    const hierarchyAuthority =
+      obj.entity === 'account' &&
+      isAuthoritative(rc.authority, 'account_hierarchy', rc.connection.id);
     for (const record of records) {
       if (record.rejection) {
         // M9B: structurally invalid — never mapped; a full run counts it as seen (no retirement).
@@ -809,6 +817,7 @@ export class SourceSyncService {
       const result = mapContextRecord(obj, record, {
         kind: rc.kind,
         profileAuthority,
+        hierarchyAuthority,
         observedAt: rc.observedAt,
       });
       if (result.outcome === 'skipped') {
@@ -819,6 +828,13 @@ export class SourceSyncService {
       const ingested = await this.context.ingest(rc.actx, result.observation, this.contextMeta(rc));
       for (const h of ingested.held ?? [])
         state.hold(obj.source, result.observation.ref.id, h.field, h.code);
+      if (ingested.unresolvedParent) {
+        state.pendingParents.push({
+          child: result.observation.ref,
+          parent: ingested.unresolvedParent,
+          observedAt: rc.observedAt,
+        });
+      }
       if (obj.entity === 'account') state.knownAccounts.add(result.observation.ref.id);
     }
     this.metrics?.increment(
@@ -826,6 +842,20 @@ export class SourceSyncService {
       { kind: rc.kind, object: obj.source.toLowerCase(), outcome: 'mapped' },
       records.length,
     );
+  }
+
+  /**
+   * M10C (plan §2.4, Q6): the run's second pass — parents unknown when their
+   * child was read are retried once every account of the run is applied; still
+   * unknown → an open `hierarchy_parent_unresolved` issue (identifiers only).
+   */
+  private async resolvePendingParents(rc: RunContext, state: RunState): Promise<void> {
+    const pending = state.pendingParents.splice(0);
+    for (const p of pending) {
+      const out = await this.context.resolvePendingParent(rc.actx, p, this.contextMeta(rc));
+      state.count(`hierarchy_parent_${out}`);
+      if (out === 'applied') state.changed += 1;
+    }
   }
 
   /** Maps and writes one page of lines (accounts and fallbacks resolved in batches). */

@@ -11,7 +11,18 @@ import { ReceiptEnqueuer } from './application/receipt-enqueuer';
 import { ContextReadModel } from './infrastructure/context-read-model';
 import { ContextStore } from './infrastructure/context-store';
 import { ProcessingRecordsRepository } from './infrastructure/processing-records.repository';
-import { COMPANY_MERGE_PARTICIPANTS, type CompanyMergeParticipant } from './merge-participants';
+import { AccountStructureModule } from './account-structure.module';
+import { AccountHierarchyMergeParticipant } from './application/account-hierarchy.writer';
+import {
+  AffiliationCompanyMergeParticipant,
+  AffiliationPersonMergeParticipant,
+} from './application/person-affiliation.writer';
+import {
+  COMPANY_MERGE_PARTICIPANTS,
+  PERSON_MERGE_PARTICIPANTS,
+  type CompanyMergeParticipant,
+  type PersonMergeParticipant,
+} from './merge-participants';
 
 /**
  * Intake side (API and worker): queues receipts after they are stored. Global
@@ -61,12 +72,23 @@ export class ContextModule {
     }
     return {
       module: ContextModule,
-      imports: [TenancyModule, options.connector, ...options.merge.imports],
+      imports: [TenancyModule, AccountStructureModule, options.connector, ...options.merge.imports],
       providers: [
         {
+          // M10C: the hierarchy and affiliation participants are part of the
+          // context module and always run, after the composition's own.
           provide: COMPANY_MERGE_PARTICIPANTS,
           useFactory: (...participants: CompanyMergeParticipant[]) => participants,
-          inject: [...options.merge.participants],
+          inject: [
+            ...options.merge.participants,
+            AccountHierarchyMergeParticipant,
+            AffiliationCompanyMergeParticipant,
+          ],
+        },
+        {
+          provide: PERSON_MERGE_PARTICIPANTS,
+          useFactory: (...participants: PersonMergeParticipant[]) => participants,
+          inject: [AffiliationPersonMergeParticipant],
         },
         ContextStore,
         ContextReadModel,

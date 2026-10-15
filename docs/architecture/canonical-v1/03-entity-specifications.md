@@ -84,6 +84,12 @@ Every label states what exists today.
   - core targets `account.name`, `account.domain` (`IMPLEMENTED TODAY`);
   - proposed additional targets: `account.parent`, `account.customerStatus` (with authority).
 
+> **Candidate note (M10C, ADR 0029).** `parent_account_id` is `IMPLEMENTED` as `companies.parent_company_id` as of
+> M10C (in review): same-tenant composite FK, no self-parent, cycles refused by a database trigger serialised per
+> tenant, platform depth guardrail `CANONICAL_HIERARCHY_MAX_DEPTH` (default 10; no per-tenant or tier override yet),
+> authority fact `account_hierarchy`, mapping target `account.parent`, full value history, merge participant, a sticky
+> human override (`parent_company_origin`). Roll-ups stay derived and the group roll-up is not built yet.
+
 ## 2. Person — Core
 
 - **Status:** `IMPLEMENTED TODAY`.
@@ -107,6 +113,14 @@ Every label states what exists today.
   - activity participations (0..n);
   - signals (0..n);
   - opportunity contact roles (0..n).
+
+> **Candidate note (M10C, ADR 0029).** Person–Account affiliation is `IMPLEMENTED` as
+> `tenant_person_affiliations` as of M10C (in review): one row per period, at most one active row per (person,
+> account), role codes from the mapping's value map only, closed end reasons, no deletes; the primary account stays
+> `persons.company_id` and "is primary" is derived. Affiliations are projected only from authoritative source
+> statements or operator entry, never inferred. Id-bearing affiliation objects (Salesforce `AccountContactRelation`,
+> Gainsight Company Person) are not mapped yet.
+
 - **Signals of movement** (champion departed): a Signal derived from affiliation end dates or source evidence; never
   inferred from email absence alone.
 - **Privacy:** personal data. Erasure is governed (tech debt #15). Person fields are excluded from AI use unless an
