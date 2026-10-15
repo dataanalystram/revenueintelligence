@@ -224,8 +224,8 @@ describe('M10D extension attribute values through a source run (Sugar adapter, f
   });
 
   /**
-   * V7 / V8 (plan §5.2, §5.3): the fake's Users module stands in for a Sugar
-   * module of sites (synthetic TEST fields, no customer schema), mapped to the
+   * V7 / V8 (plan §5.2, §5.3): the fake's Opportunities module stands in for a
+   * Sugar module of sites (synthetic TEST fields, no customer schema), mapped to the
    * `site` custom object (natural key `site_code`, required account parent)
    * with the one-to-one `site_owner` relationship to Accounts.
    */
@@ -234,7 +234,7 @@ describe('M10D extension attribute values through a source run (Sugar adapter, f
       (doc as { objects: unknown[] }).objects = [
         ...doc.objects,
         {
-          source: 'Users',
+          source: 'Opportunities',
           entity: 'custom_object:site',
           identity: { field: 'id' },
           customObject: { parent: { field: 'parent_src', object: 'Accounts' } },
@@ -248,30 +248,37 @@ describe('M10D extension attribute values through a source run (Sugar adapter, f
 
   async function customFake(): Promise<FakeSugar> {
     const fake = await new FakeSugar().start();
-    fake.addField('Users', 'code_src', 'varchar', 'S-001');
-    fake.addField('Users', 'parent_src', 'id', 'FIX-ACC-001');
-    fake.addField('Users', 'owner_src', 'id', 'FIX-ACC-001');
-    fake.upsert('Users', {
-      ...fake.data.get('Users')![0]!,
-      id: 'FIX-USR-002',
-      user_name: 'fixture.user2',
-      code_src: 'S-002',
-      parent_src: 'FIX-ACC-002',
-      owner_src: 'FIX-ACC-002',
+    fake.addField('Opportunities', 'code_src', 'varchar', null);
+    fake.addField('Opportunities', 'parent_src', 'id', null);
+    fake.addField('Opportunities', 'owner_src', 'id', null);
+    // One site per opportunity (code = its id, parent = its account); two have an owner.
+    for (const row of fake.data.get('Opportunities')!) {
+      row.code_src = `S-${String(row.id)}`;
+      row.parent_src = row.account_id ?? null;
+    }
+    setOpp(fake, 'FIX-OPP-001', { owner_src: 'FIX-ACC-001' });
+    setOpp(fake, 'FIX-OPP-002', { owner_src: 'FIX-ACC-002' });
+    // A synthetic opportunity no line refers to (removed later: absence).
+    fake.upsert('Opportunities', {
+      ...fake.data.get('Opportunities')!.find((r) => r.id === 'FIX-OPP-002')!,
+      id: 'FIX-OPP-904',
+      code_src: 'S-FIX-OPP-904',
+      parent_src: 'FIX-ACC-004',
+      owner_src: 'FIX-ACC-004',
     });
     return fake;
   }
-  const setUser = (fake: FakeSugar, id: string, values: Record<string, string | null>) =>
-    fake.upsert('Users', {
-      ...fake.data.get('Users')!.find((r) => r.id === id)!,
+  const setOpp = (fake: FakeSugar, id: string, values: Record<string, string | null>) =>
+    fake.upsert('Opportunities', {
+      ...fake.data.get('Opportunities')!.find((r) => r.id === id)!,
       ...values,
     });
 
-  /** The custom record a Sugar Users id resolves to (generic source reference). */
+  /** The custom record a Sugar Opportunities id resolves to (generic source reference). */
   const recordOf = async (t: TenantContext, userId: string) => {
     const [ref] = await c.sql<{ entity_id: string }>(
       `SELECT entity_id::text FROM tenant_source_references
-        WHERE tenant_id = $1 AND system = 'sugar' AND object_type = 'Users' AND external_id = $2
+        WHERE tenant_id = $1 AND system = 'sugar' AND object_type = 'Opportunities' AND external_id = $2
           AND entity_kind = 'custom_record'`,
       [t.tenantId, userId],
     );
@@ -288,8 +295,8 @@ describe('M10D extension attribute values through a source run (Sugar adapter, f
         await enableExtension(c, f.ctx);
         await publishExtension(c, f.ctx);
         await publishAuthority(f, true);
-        // M9A: a completed profile of the Users module covers its mapped fields.
-        expect((await runProfile(c, f, ['Users'])).status).toBe('completed');
+        // M9A: a completed profile of the Opportunities module covers its mapped fields.
+        expect((await runProfile(c, f, ['Opportunities'])).status).toBe('completed');
         const s = sourcesServices(c);
         const snapshot = await s.snapshots.latest(f.ctx, f.connectionId);
         const latest = await c.sql<{ v: number }>(
@@ -298,12 +305,14 @@ describe('M10D extension attribute values through a source run (Sugar adapter, f
         );
         await publishWithAcks(c, f, withSnapshot(customMapping(), snapshot!.hash), latest[0]!.v);
 
-        // V7: one site per Users record, parent resolved to the account, source origin.
+        // V7: one site per opportunity record, parent resolved to the account, source origin.
         const first = await runSync(c, f, 'full');
         expect(first.status).toBe('completed');
-        expect(Number(first.quality.custom_record_created)).toBe(2);
-        const site1 = await recordOf(f.ctx, 'FIX-USR-001');
-        const site2 = await recordOf(f.ctx, 'FIX-USR-002');
+        const created = Number(first.quality.custom_record_created);
+        expect(created).toBeGreaterThanOrEqual(2);
+        expect(await recordsOf(c, f.ctx)).toHaveLength(created);
+        const site1 = await recordOf(f.ctx, 'FIX-OPP-001');
+        const site2 = await recordOf(f.ctx, 'FIX-OPP-002');
         expect(site1).toMatchObject({
           object_key: 'site',
           parent_kind: 'company',
@@ -325,15 +334,15 @@ describe('M10D extension attribute values through a source run (Sugar adapter, f
         const values = await valuesOf(c, f.ctx, site1!.id);
         expect(values.site_code).toMatchObject({
           target_kind: 'custom_record',
-          value_text: 'S-001',
+          value_text: 'S-FIX-OPP-001',
           origin: 'source_provided',
           source_connection_id: f.connectionId,
-          source_object_type: 'Users',
-          source_record_id: 'FIX-USR-001',
+          source_object_type: 'Opportunities',
+          source_record_id: 'FIX-OPP-001',
         });
 
         // V8: the site_owner edge from each record to its account.
-        expect(Number(first.quality.custom_relationship_added)).toBe(2);
+        expect(Number(first.quality.custom_relationship_added)).toBe(3);
         expect(await ownerEdges(f.ctx, site1!.id)).toEqual([
           expect.objectContaining({
             from_kind: 'custom_record',
@@ -352,28 +361,28 @@ describe('M10D extension attribute values through a source run (Sugar adapter, f
         expect(repeat.status).toBe('completed');
         expect(repeat.quality).not.toHaveProperty('custom_record_created');
         expect(repeat.quality).not.toHaveProperty('custom_relationship_added');
-        expect(Number(repeat.quality.custom_record_unchanged)).toBe(2);
+        expect(Number(repeat.quality.custom_record_unchanged)).toBe(created);
         expect(await recordsOf(c, f.ctx)).toEqual(records);
         expect(await edgesOf(c, f.ctx)).toEqual(edges);
 
         // Identity by natural key: another source id with the same site_code is the same record.
-        fake.upsert('Users', {
-          ...fake.data.get('Users')!.find((r) => r.id === 'FIX-USR-001')!,
-          id: 'FIX-USR-003',
+        fake.upsert('Opportunities', {
+          ...fake.data.get('Opportunities')!.find((r) => r.id === 'FIX-OPP-001')!,
+          id: 'FIX-OPP-903',
         });
         const byKey = await runSync(c, f, 'full');
         expect(byKey.status).toBe('completed');
         expect(byKey.quality).not.toHaveProperty('custom_record_created');
-        expect(await recordsOf(c, f.ctx)).toHaveLength(2);
-        expect((await recordOf(f.ctx, 'FIX-USR-003'))?.id).toBe(site1!.id);
-        fake.remove('Users', 'FIX-USR-003');
+        expect(await recordsOf(c, f.ctx)).toHaveLength(created);
+        expect((await recordOf(f.ctx, 'FIX-OPP-903'))?.id).toBe(site1!.id);
+        fake.remove('Opportunities', 'FIX-OPP-903');
 
         // The parent and owner change in the source: the record moves, the old edge ends.
-        setUser(fake, 'FIX-USR-001', { parent_src: 'FIX-ACC-003', owner_src: 'FIX-ACC-003' });
+        setOpp(fake, 'FIX-OPP-001', { parent_src: 'FIX-ACC-003', owner_src: 'FIX-ACC-003' });
         const moved = await runSync(c, f, 'full');
         expect(moved.status).toBe('completed');
         expect(Number(moved.quality.custom_relationship_replaced)).toBe(1);
-        expect((await recordOf(f.ctx, 'FIX-USR-001'))!.parent_id).toBe(
+        expect((await recordOf(f.ctx, 'FIX-OPP-001'))!.parent_id).toBe(
           await companyOf(f.ctx, 'FIX-ACC-003'),
         );
         const afterMove = await ownerEdges(f.ctx, site1!.id);
@@ -383,12 +392,14 @@ describe('M10D extension attribute values through a source run (Sugar adapter, f
         ]);
 
         // Absence never ends an edge: the record is no longer returned.
-        fake.remove('Users', 'FIX-USR-002');
+        const site904 = await recordOf(f.ctx, 'FIX-OPP-904');
+        fake.remove('Opportunities', 'FIX-OPP-904');
         expect((await runSync(c, f, 'full')).status).toBe('completed');
+        expect((await ownerEdges(f.ctx, site904!.id)).map((e) => e.state)).toEqual(['active']);
         expect((await ownerEdges(f.ctx, site2!.id)).map((e) => e.state)).toEqual(['active']);
 
         // Authoritative removal (an explicitly empty owner) ends the edge.
-        setUser(fake, 'FIX-USR-001', { owner_src: null });
+        setOpp(fake, 'FIX-OPP-001', { owner_src: null });
         const removed = await runSync(c, f, 'full');
         expect(removed.status).toBe('completed');
         expect(Number(removed.quality.custom_relationship_ended)).toBe(1);
@@ -396,7 +407,7 @@ describe('M10D extension attribute values through a source run (Sugar adapter, f
           ['ended', 'source_removed'],
           ['ended', 'source_removed'],
         ]);
-        expect(await recordsOf(c, f.ctx)).toHaveLength(2);
+        expect(await recordsOf(c, f.ctx)).toHaveLength(created);
       } finally {
         await fake.stop();
       }
