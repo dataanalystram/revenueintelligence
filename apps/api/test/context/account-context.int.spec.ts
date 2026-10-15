@@ -187,6 +187,71 @@ describe('M10E AccountContext (writers, lines, merges, reads)', () => {
           ),
         ),
       ).rejects.toThrow(/account_context_natural_key_exists/);
+
+      // The optional `segment` dimension is part of the natural key: the same
+      // product and region with a segment set is a separate context (VM8).
+      const segmented = await observeContext(c, t, {
+        companyId: account,
+        record: 'rel-emea-enterprise',
+        dimensions: { product: 'core', region: 'emea', segment: 'enterprise' },
+        name: 'Core EMEA enterprise',
+      });
+      expect(segmented.status).toBe('created');
+      expect(segmented.contextId).not.toBe(emea.contextId);
+      const withSegment = await contextsOf(c, t, account);
+      expect(withSegment).toHaveLength(4);
+      expect(new Set(withSegment.map((r) => r.natural_key_hash)).size).toBe(4);
+      expect(withSegment.find((r) => r.id === segmented.contextId)?.dimensions).toEqual({
+        product: 'core',
+        region: 'emea',
+        segment: 'enterprise',
+      });
+    });
+
+    it('V7: two concurrent app-role sessions inserting the same natural key: one stored, the other refused account_context_natural_key_exists', async () => {
+      const t = await contextTenant(c, 'acrace');
+      const account = (await companies(c, t, ['7051']))['7051']!;
+      const seed = await observeContext(c, t, {
+        companyId: account,
+        record: 'rel-race-seed',
+        dimensions: { product: 'core', region: 'emea' },
+        name: 'Race seed',
+      });
+      const hash = 'ab'.repeat(32);
+      const insert = (db: Client, name: string) =>
+        db.query(
+          `INSERT INTO tenant_account_contexts (tenant_id, company_id, context_type_id, natural_key_hash, dimensions, name)
+           SELECT tenant_id, company_id, context_type_id, $2, '{"product":"core","region":"apac"}'::jsonb, $3
+             FROM tenant_account_contexts WHERE id = $1`,
+          [seed.contextId, hash, name],
+        );
+      const s1 = await appSession(c, t);
+      const s2 = await appSession(c, t);
+      try {
+        await insert(s1, 'Race one');
+        const second = insert(s2, 'Race two').then(
+          () => 'ok' as const,
+          (e: { message?: string }) => e.message ?? 'error',
+        );
+        // Wait (bounded) until the second session queues on the natural-key advisory lock.
+        const end = Date.now() + 5_000;
+        while (Date.now() < end) {
+          const [waiting] = await c.sql<{ n: number }>(
+            `SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`,
+          );
+          if (waiting!.n > 0) break;
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        await s1.query('COMMIT');
+        const outcome = await second;
+        await s2.query(outcome === 'ok' ? 'COMMIT' : 'ROLLBACK');
+        expect(outcome).toBe('account_context_natural_key_exists');
+      } finally {
+        await s1.end();
+        await s2.end();
+      }
+      const stored = (await contextsOf(c, t, account)).filter((r) => r.natural_key_hash === hash);
+      expect(stored.map((r) => r.name)).toEqual(['Race one']);
     });
 
     it('V8: a re-sync updates, never duplicates — by reference and by natural key; dimensions are immutable per reference', async () => {
