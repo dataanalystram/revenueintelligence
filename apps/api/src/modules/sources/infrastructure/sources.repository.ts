@@ -411,7 +411,7 @@ export class SourcesRepository {
   > {
     const db = tenantClient(tx);
     const tenantId = tx.tenantId;
-    const keys = [...new Set(objectKeys)].sort();
+    const keys = [...new Set(objectKeys)]; // MUTATION VM3: document order
     const claimed: string[] = [];
     const kept: string[] = [];
     for (const objectKey of keys) {
