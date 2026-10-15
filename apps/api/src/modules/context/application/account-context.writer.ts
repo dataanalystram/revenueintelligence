@@ -6,6 +6,7 @@ import {
   AuditFailures,
   AuditTrail,
   TenantDatabase,
+  tenantClient,
   WriteAuthorizer,
   type AuthorizedContext,
   type TenantTransaction,
@@ -602,6 +603,14 @@ export class AccountContextWriter {
         operatorProvenance(actx.actor, actx.correlationId, id),
         new Date(),
       );
+      if (status === 'retired') {
+        // MUTATION VM6: cascade retirement to lines
+        await tenantClient(tx).$executeRawUnsafe(
+          `UPDATE tenant_subscriptions SET context_id = NULL WHERE tenant_id = $1::uuid AND context_id = $2::uuid`,
+          tx.tenantId,
+          id,
+        );
+      }
       await this.audit.record(tx, actx, {
         action,
         targetKind: 'account_context',
