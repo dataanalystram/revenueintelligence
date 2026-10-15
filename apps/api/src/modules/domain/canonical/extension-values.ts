@@ -418,8 +418,6 @@ function parseItem(
       if (s === '') return { ok: false, reason: 'item_invalid' };
       const cap = Math.min(c?.max_length ?? EXTENSION_STRING_MAX_CHARS, EXTENSION_STRING_MAX_CHARS);
       if ([...s].length > cap) return { ok: false, reason: 'too_long' };
-      const pattern = findSecretLike(s);
-      if (pattern) return { ok: false, reason: 'secret_like', pattern };
       return { ok: true, item: { type: 'string', text: s } };
     }
     case 'number':
@@ -467,8 +465,6 @@ export function parseExtensionValue(
       const ceiling = type === 'text' ? EXTENSION_TEXT_MAX_CHARS : EXTENSION_STRING_MAX_CHARS;
       const cap = Math.min(c?.max_length ?? ceiling, ceiling);
       if ([...s].length > cap) return reject('too_long');
-      const pattern = findSecretLike(s);
-      if (pattern) return reject('secret_like', pattern);
       return present({ text: s });
     }
     case 'number':
@@ -550,8 +546,6 @@ export function parseExtensionValue(
       if (c?.json_schema && !matchesJsonSchema(c.json_schema, v)) {
         return reject('json_schema_mismatch');
       }
-      const found = findSecretLikeInJson(v);
-      if (found.length > 0) return reject('secret_like', found[0]!.code);
       return present({ json: v });
     }
     case 'reference':
