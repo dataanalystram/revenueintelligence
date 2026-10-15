@@ -32,8 +32,12 @@ period that later milestones (M10G champion movement, M10H contact roles) build 
    `parent_company_id`, `SECURITY INVOKER`, fixed `search_path`) takes a per-tenant transaction advisory lock, then
    refuses a `merged` parent, a cycle, and a walk longer than 64 steps without reaching a root (SQLSTATE `23514`,
    messages `hierarchy_parent_merged` / `hierarchy_cycle` / `hierarchy_ceiling`). Because the lock is taken in the
-   trigger, two raw-SQL sessions crossing A → B / B → A are serialised and cannot both pass. The owner-function
-   allow-list does not grow.
+   trigger, two raw-SQL sessions crossing A → B / B → A are serialised and cannot both pass **at READ COMMITTED**
+   (each statement after the lock takes a fresh snapshot) and at SERIALIZABLE (SSI refuses the second commit). At
+   REPEATABLE READ the snapshot predates the previous lock holder's commit, so the lock alone is not enough: both
+   guard triggers refuse a guarded write there (SQLSTATE `0A000`, `hierarchy_isolation_unsupported` /
+   `affiliation_isolation_unsupported`; review finding M1). The application writes both tables at READ COMMITTED.
+   The owner-function allow-list does not grow.
 3. **Depth is a guardrail, not semantics (Q3).** Platform configuration `CANONICAL_HIERARCHY_MAX_DEPTH` (1–50,
    default 10; out of range refuses start-up). The writer refuses `depth(new parent) + 1 + height(child subtree)`
    beyond it. The trigger's 64-step ceiling is a fail-closed backstop above any allowed configuration. No

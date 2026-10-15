@@ -14,6 +14,7 @@ import {
 import type { TenantContext } from '../../src/modules/tenancy';
 import {
   affiliationsOf,
+  appSession,
   asApp,
   auditOf,
   companies,
@@ -470,6 +471,36 @@ describe('M10C person–account affiliations', () => {
           rowCount: 1,
         });
       });
+    });
+
+    it('an active row needs READ COMMITTED or SERIALIZABLE: two REPEATABLE READ sessions are refused (affiliation_isolation_unsupported), never two active rows (M1)', async () => {
+      const { t, company, p1 } = await fixture('affiso');
+      const s1 = await appSession(c, t, 'REPEATABLE READ');
+      const s2 = await appSession(c, t, 'REPEATABLE READ');
+      try {
+        await expect(s1.query(insert, [t.tenantId, p1, company])).rejects.toMatchObject({
+          code: '0A000',
+          message: 'affiliation_isolation_unsupported',
+        });
+        await expect(s2.query(insert, [t.tenantId, p1, company])).rejects.toMatchObject({
+          code: '0A000',
+          message: 'affiliation_isolation_unsupported',
+        });
+      } finally {
+        await s1.query('ROLLBACK').catch(() => undefined);
+        await s2.query('ROLLBACK').catch(() => undefined);
+        await s1.end();
+        await s2.end();
+      }
+      expect(await affiliationsOf(c, t, p1)).toHaveLength(0);
+      const ser = await appSession(c, t, 'SERIALIZABLE');
+      try {
+        await ser.query(insert, [t.tenantId, p1, company]);
+        await ser.query('COMMIT');
+      } finally {
+        await ser.end();
+      }
+      expect((await affiliationsOf(c, t, p1)).filter((r) => r.status === 'active')).toHaveLength(1);
     });
 
     it.each([

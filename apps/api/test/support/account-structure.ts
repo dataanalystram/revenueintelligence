@@ -332,10 +332,14 @@ export async function asApp<T>(
 }
 
 /** An open app-role session with the tenant bound (concurrency tests); the caller ends it. */
-export async function appSession(c: ContextHarness, t: TenantContext): Promise<Client> {
+export async function appSession(
+  c: ContextHarness,
+  t: TenantContext,
+  isolation: 'READ COMMITTED' | 'REPEATABLE READ' | 'SERIALIZABLE' = 'READ COMMITTED',
+): Promise<Client> {
   const client = new Client({ connectionString: c.appUrl });
   await client.connect();
-  await client.query('BEGIN');
+  await client.query(`BEGIN ISOLATION LEVEL ${isolation}`);
   await client.query(`SELECT set_config('app.current_tenant', $1, true)`, [t.tenantId]);
   return client;
 }

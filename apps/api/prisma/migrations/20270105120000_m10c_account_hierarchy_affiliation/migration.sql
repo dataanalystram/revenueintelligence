@@ -129,6 +129,14 @@ BEGIN
   IF TG_OP = 'UPDATE' AND NEW.parent_company_id IS NOT DISTINCT FROM OLD.parent_company_id THEN
     RETURN NEW;
   END IF;
+  -- The lock-then-read below is sound only when each statement takes a fresh
+  -- snapshot after the lock (READ COMMITTED) or when SSI catches the crossing
+  -- (SERIALIZABLE). Under REPEATABLE READ the snapshot predates the previous
+  -- lock holder's commit, so the walk could pass a crossing: refuse (M1).
+  IF current_setting('transaction_isolation') = 'repeatable read' THEN
+    RAISE EXCEPTION 'hierarchy_isolation_unsupported' USING ERRCODE = 'feature_not_supported',
+      DETAIL = 're-parenting a company needs READ COMMITTED or SERIALIZABLE';
+  END IF;
   -- Serialise every re-parenting of this tenant, raw SQL included, so two
   -- crossing updates (A -> B, B -> A) cannot both pass the walk.
   PERFORM pg_advisory_xact_lock(app_tenant_advisory_key(NEW.tenant_id, 'account-hierarchy', 'tenant'));
@@ -208,6 +216,12 @@ BEGIN
     NEW.updated_at := CURRENT_TIMESTAMP;
   END IF;
   IF NEW.status = 'active' AND (TG_OP = 'INSERT' OR OLD.status <> 'active') THEN
+    -- Same precondition as the hierarchy guard (M1): the existence check must
+    -- see the previous lock holder's commit, which REPEATABLE READ cannot.
+    IF current_setting('transaction_isolation') = 'repeatable read' THEN
+      RAISE EXCEPTION 'affiliation_isolation_unsupported' USING ERRCODE = 'feature_not_supported',
+        DETAIL = 'an active affiliation needs READ COMMITTED or SERIALIZABLE';
+    END IF;
     PERFORM pg_advisory_xact_lock(app_tenant_advisory_key(NEW.tenant_id, 'person-affiliation',
                                                           NEW.person_id::text || '|' || NEW.company_id::text));
     IF EXISTS (SELECT 1 FROM public.tenant_person_affiliations a

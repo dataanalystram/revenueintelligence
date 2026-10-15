@@ -222,6 +222,55 @@ describe('M10C account hierarchy', () => {
       );
     });
 
+    it('REPEATABLE READ is refused (hierarchy_isolation_unsupported): the crossing cannot slip past a stale snapshot; SERIALIZABLE and READ COMMITTED re-parent (M1)', async () => {
+      const t = await c.tenant('hiso', 1001);
+      const ids = await companies(c, t, ['341', '342', '343']);
+      const [a, b, d] = [ids['341']!, ids['342']!, ids['343']!];
+      // Two crossing app-role sessions at REPEATABLE READ: both are refused before any lock or walk.
+      const s1 = await appSession(c, t, 'REPEATABLE READ');
+      const s2 = await appSession(c, t, 'REPEATABLE READ');
+      try {
+        await expect(
+          s1.query(`UPDATE companies SET parent_company_id = $2 WHERE id = $1`, [a, b]),
+        ).rejects.toMatchObject({ code: '0A000', message: 'hierarchy_isolation_unsupported' });
+        await expect(
+          s2.query(`UPDATE companies SET parent_company_id = $2 WHERE id = $1`, [b, a]),
+        ).rejects.toMatchObject({ code: '0A000', message: 'hierarchy_isolation_unsupported' });
+        // An insert with a parent is refused too; an insert without one is untouched.
+        await s1.query('ROLLBACK');
+        await s1.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
+        await s1.query(`SELECT set_config('app.current_tenant', $1, true)`, [t.tenantId]);
+        await expect(insertCompanyRow(s1, t, a)).rejects.toMatchObject({
+          message: 'hierarchy_isolation_unsupported',
+        });
+        await s1.query('ROLLBACK');
+        await s1.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
+        await s1.query(`SELECT set_config('app.current_tenant', $1, true)`, [t.tenantId]);
+        await expect(insertCompanyRow(s1, t, null)).resolves.toEqual(expect.any(String));
+      } finally {
+        await s1.query('ROLLBACK').catch(() => undefined);
+        await s2.query('ROLLBACK').catch(() => undefined);
+        await s1.end();
+        await s2.end();
+      }
+      expect([await parent(t, a), await parent(t, b)]).toEqual([null, null]);
+      const ser = await appSession(c, t, 'SERIALIZABLE');
+      try {
+        await ser.query(`UPDATE companies SET parent_company_id = $2 WHERE id = $1`, [a, b]);
+        await ser.query('COMMIT');
+      } finally {
+        await ser.end();
+      }
+      const rc = await appSession(c, t);
+      try {
+        await rc.query(`UPDATE companies SET parent_company_id = $2 WHERE id = $1`, [d, b]);
+        await rc.query('COMMIT');
+      } finally {
+        await rc.end();
+      }
+      expect([await parent(t, a), await parent(t, d)]).toEqual([b, b]);
+    });
+
     it('two concurrent operator writes crossing: one applied, the other refused hierarchy_cycle', async () => {
       const t = await c.tenant('hconcop', 1001);
       const ids = await companies(c, t, ['331', '332']);
