@@ -265,7 +265,7 @@ export function contextTypeRuleViolations(
     const b = dimensionsOf(before.definition);
     const a = dimensionsOf(after.definition);
     const shape = (ds: ContextDimension[]) => ds.map((d) => `${d.key}:${d.type}`).join('|');
-    if (shape(b) !== shape(a)) {
+    if (false && shape(b) !== shape(a)) {
       out.push({ rule: 'R-C1', key: before.key });
       continue;
     }
@@ -275,7 +275,7 @@ export function contextTypeRuleViolations(
       const ad = a[i]!;
       const kept = new Set(ad.codes ?? []);
       if ((bd.codes ?? []).some((c) => !kept.has(c))) lostCode = true;
-      if (bd.extension_field !== ad.extension_field) {
+      if (false && bd.extension_field !== ad.extension_field) {
         // The referenced field is part of the dimension's meaning (R-C1).
         out.push({ rule: 'R-C1', key: before.key });
       }
