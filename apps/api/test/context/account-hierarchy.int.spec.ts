@@ -418,6 +418,38 @@ describe('M10C account hierarchy', () => {
       expect(await historyOf(c, t, 'company', k)).toHaveLength(2);
     });
 
+    it('retiring a parent reference (an accepted full read no longer returned it) never unparents its children (VM11)', async () => {
+      const t = await c.tenant('hretire', 1001);
+      const [p, k] = await chain(c, t, ['531', '532']);
+      const runId = randomUUID();
+      await c.sql(
+        `INSERT INTO tenant_sync_checkpoints (tenant_id, id, system, kind, mode, status, correlation_id, completed_at)
+         VALUES ($1, $2, 'hubspot', 'company', 'backfill', 'completed', gen_random_uuid(), now())`,
+        [t.tenantId, runId],
+      );
+      const actx = await authz(t, 'canonical.source_sync');
+      const retired = await db().transaction(t, (tx) =>
+        c.ingestion.retireAbsentWithin(
+          actx,
+          tx,
+          {
+            system: 'hubspot',
+            objectType: 'companies',
+            seen: new Set(['532']),
+            observedAt: new Date(Date.now() + 1_000),
+            runId,
+          },
+          ingestMeta(),
+        ),
+      );
+      expect(retired).toBe(1);
+      expect(await parentOf(c, t, k!)).toMatchObject({
+        parent_company_id: p,
+        parent_company_origin: 'source_provided',
+      });
+      expect(await historyOf(c, t, 'company', k)).toHaveLength(1);
+    });
+
     it('below canonical 0.3 a stated parent is not written (disabled), and no issue is recorded', async () => {
       const t = await c.tenant('hsrc02', 1001);
       await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
