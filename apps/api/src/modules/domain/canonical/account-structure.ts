@@ -180,11 +180,11 @@ export function decideParentChange(input: ParentChangeInput): ParentDecision {
     return { outcome: 'refused', code: 'hierarchy_parent_merged' };
   }
   if (parent.path.includes(input.childId)) return { outcome: 'refused', code: 'hierarchy_cycle' };
-  if (parent.truncated || input.subtreeTruncated) {
+  if (parent.truncated) {
     return { outcome: 'refused', code: 'hierarchy_depth_exceeded' };
   }
   const parentDepth = parent.path.length - 1;
-  if (parentDepth + 1 + input.subtreeHeight > input.maxDepth) {
+  if (parentDepth + 1 > input.maxDepth) {
     return { outcome: 'refused', code: 'hierarchy_depth_exceeded' };
   }
   return { outcome: 'apply', parentId: target, origin, parentChanged: true };
