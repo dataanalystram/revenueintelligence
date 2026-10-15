@@ -36,14 +36,14 @@ cg_app_refused() {
 cg_setup() {
   (cd "$API_DIR" && DATABASE_URL="$APP_DB_URL" node dist/cli/provision-tenant.js --slug "$CG_TENANT" --name 'Runtime Canonical' >/dev/null) || return 1
   cg_cli canonical history --tenant "$CG_TENANT" >"$CG_OUT/history.json" || return 1
-  grep -q '"version": "0.3"' "$CG_OUT/history.json" && grep -q '"reason": "new_tenant"' "$CG_OUT/history.json" || return 1
+  grep -q '"version": "0.4"' "$CG_OUT/history.json" && grep -q '"reason": "new_tenant"' "$CG_OUT/history.json" || return 1
   [ "$(cg_count tenant_canonical_adoptions)" = 1 ]
 }
 check "a new tenant adopts the current canonical version (new_tenant), in the provisioning transaction" cg_setup
 
 cg_adopt_refused() {
   local code=0
-  cg_cli canonical adopt --tenant "$CG_TENANT" --version 9.9 --expected-current 0.3 >"$CG_OUT/adopt.json" || code=$?
+  cg_cli canonical adopt --tenant "$CG_TENANT" --version 9.9 --expected-current 0.4 >"$CG_OUT/adopt.json" || code=$?
   [ "$code" -eq 2 ] && grep -q '"dryRun": true' "$CG_OUT/adopt.json" && grep -q '"decision": "refused"' "$CG_OUT/adopt.json" || return 1
   [ "$(cg_count tenant_canonical_adoptions)" = 1 ]
 }

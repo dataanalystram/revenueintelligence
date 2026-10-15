@@ -171,7 +171,7 @@ describe('M10C account hierarchy through a source run (Sugar adapter, fake Sugar
           `SELECT canonical_version_min FROM tenant_source_mapping_versions WHERE tenant_id = $1 AND version = $2`,
           [f.ctx.tenantId, published.version],
         );
-        expect(stored!.canonical_version_min).toBe('0.3');
+        expect(stored!.canonical_version_min).toBe('0.4');
 
         setParent(fake, 'FIX-ACC-002', 'FIX-ACC-001');
         // FIX-ACC-003's parent is read after it (second pass, same run).
@@ -277,6 +277,11 @@ describe('M10C account hierarchy through a source run (Sugar adapter, fake Sugar
         const f = await sugarTenant(c, fake, { prefix: 'hsyncgate' });
         // Published at 0.3, before the rollback, so the mapping validates against it.
         await publishAuthority(f, true);
+        // M10D: new tenants adopt 0.4; rollback goes one MINOR at a time (0.4 → 0.3 first).
+        await adoption().adopt(await authz(f.ctx, 'config.canonical.adopt'), {
+          target: '0.3',
+          expectedCurrent: '0.4',
+        });
         await adoption().adopt(await authz(f.ctx, 'config.canonical.adopt'), {
           target: '0.2',
           expectedCurrent: '0.3',
@@ -300,6 +305,11 @@ describe('M10C account hierarchy through a source run (Sugar adapter, fake Sugar
         await adoption().adopt(await authz(f.ctx, 'config.canonical.adopt'), {
           target: '0.3',
           expectedCurrent: '0.2',
+        });
+        // M10D: back to the current version (0.4), where the authority version was published.
+        await adoption().adopt(await authz(f.ctx, 'config.canonical.adopt'), {
+          target: '0.4',
+          expectedCurrent: '0.3',
         });
         await expect(publishParentMapping(f)).resolves.toMatchObject({ version: 3 });
         expect((await runSync(c, f, 'full')).status).toBe('completed');
@@ -393,6 +403,11 @@ describe('M10C account hierarchy through a source run (Sugar adapter, fake Sugar
       try {
         const at03 = await sugarTenant(c, fake, { prefix: 'hpar03' });
         const at02 = await sugarTenant(c, fake, { prefix: 'hpar02' });
+        // M10D: new tenants adopt 0.4; rollback goes one MINOR at a time (0.4 → 0.3 first).
+        await adoption().adopt(await authz(at02.ctx, 'config.canonical.adopt'), {
+          target: '0.3',
+          expectedCurrent: '0.4',
+        });
         await adoption().adopt(await authz(at02.ctx, 'config.canonical.adopt'), {
           target: '0.2',
           expectedCurrent: '0.3',

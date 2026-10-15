@@ -34,4 +34,16 @@ describe('canonicalFeatureChanges', () => {
       disables: [],
     });
   });
+
+  it('M10D: 0.3 → 0.4 enables the extension features; 0.4 → 0.3 withdraws them', () => {
+    const v04 = [
+      'extension_registry',
+      'extension_values',
+      'custom_objects',
+      'custom_relationships',
+      'source_attribute_capture',
+    ];
+    expect(canonicalFeatureChanges('0.3', '0.4')).toEqual({ enables: v04, disables: [] });
+    expect(canonicalFeatureChanges('0.4', '0.3')).toEqual({ enables: [], disables: v04 });
+  });
 });
