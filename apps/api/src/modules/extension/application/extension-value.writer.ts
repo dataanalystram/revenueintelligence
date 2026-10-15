@@ -176,10 +176,13 @@ export class ExtensionValueWriter {
     if (gate !== 'ok') return empty(gate);
     const registry = await this.store.registry(tx);
     if (registry.version === undefined) return empty('registry_not_published');
+    // Lock the target before reading its state (review M1): a concurrent merge
+    // holds this lock until it commits, so a target merged meanwhile is seen
+    // as merged here and nothing is stranded on the loser.
+    await this.store.lockTarget(tx, input.target);
     const entity = await this.store.entity(tx, input.target);
     if (!entity.exists) return empty('target_unknown');
     if (entity.state === 'merged') return empty('target_merged');
-    await this.store.lockTarget(tx, input.target);
 
     const rejected: Record<string, number> = {};
     const reject = (reason: string) => (rejected[reason] = (rejected[reason] ?? 0) + 1);
@@ -525,6 +528,8 @@ export class ExtensionValueWriter {
       );
     }
     const registry = await this.store.registry(tx);
+    // Lock before the not-merged check (review M1); see observe().
+    await this.store.lockTarget(tx, target);
     const entity = await this.store.entity(tx, target);
     if (!entity.exists || entity.state === 'merged') {
       throw new GovernanceError('validation_failed', 'The target must exist and not be merged');
@@ -563,7 +568,6 @@ export class ExtensionValueWriter {
         'extension_value_invalid:reference_unresolved',
       );
     }
-    await this.store.lockTarget(tx, target);
     const row = (await this.store.values(tx, target, [entry.id]))[0];
     const hash = extensionValueHash(parsed.value);
     const changed =
@@ -622,6 +626,11 @@ export class ExtensionValueWriter {
   ): Promise<void> {
     const loser: ExtensionTarget = { kind, id: loserId };
     const survivor: ExtensionTarget = { kind, id: survivorId };
+    // Lock both targets, in a stable order, before reading either's rows
+    // (review M1): a writer that committed first is seen here, and a writer
+    // that comes later blocks until the merge commits and then sees the
+    // loser as merged (and the survivor's copied rows).
+    await lockMergeTargets(tx, this.store, loser, survivor);
     const loserRows = await this.store.values(tx, loser);
     if (loserRows.length === 0) return;
     const registry = await this.store.registry(tx);
@@ -656,7 +665,6 @@ export class ExtensionValueWriter {
       }
     }
     if (planned.length === 0 || registry.version === undefined) return;
-    await this.store.lockTarget(tx, survivor);
     const changeId = await this.store.insertChange(tx, {
       ...stripConnection(provenance),
       entityKind: kind,
@@ -735,3 +743,23 @@ function fieldError(
 }
 
 export type { ExtensionTargetKind };
+
+/**
+ * Takes the 'extension-target' advisory locks of a merge's loser and survivor
+ * in sorted key order, so two merges (or a merge and a writer) never deadlock.
+ */
+export async function lockMergeTargets(
+  tx: TenantTransaction,
+  store: { lockTarget(tx: TenantTransaction, target: ExtensionTarget): Promise<void> },
+  loser: ExtensionTarget,
+  survivor: ExtensionTarget,
+): Promise<void> {
+  const ordered = [loser, survivor].sort((a, b) =>
+    `${a.kind}:${a.id}` < `${b.kind}:${b.id}`
+      ? -1
+      : `${a.kind}:${a.id}` > `${b.kind}:${b.id}`
+        ? 1
+        : 0,
+  );
+  for (const t of ordered) await store.lockTarget(tx, t);
+}

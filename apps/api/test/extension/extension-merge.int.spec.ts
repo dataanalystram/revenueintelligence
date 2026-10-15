@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { TenantContext } from '../../src/modules/tenancy';
+import { advisoryLockKey } from '../../src/modules/tenancy/infrastructure/tenant-database';
 import {
+  appSession,
   companies,
   contact,
   hs,
@@ -204,5 +206,76 @@ describe('M10D extension merge participant (company and person ports)', () => {
     });
     await merge(t, 'company', '5202', ['5201']);
     expect((await valuesOf(c, t, ids['5202'])).x_text!.value_text).toBe('kept');
+  });
+
+  it('review M1 two concurrent sessions: a value write racing a company merge leaves no value stranded on the loser and no unique-index error', async () => {
+    const t = await extensionTenant(c, 'xmergerace');
+    const ids = await companies(c, t, ['5301', '5302']);
+    const [loser, survivor] = [ids['5301']!, ids['5302']!];
+    // Session A holds the loser's extension-target lock, so the merge and the
+    // writer queue behind it: the merge first, then the writer.
+    const a = await appSession(c, t);
+    let mergeDone = false;
+    let writeDone = false;
+    let pendingMerge: Promise<unknown> | undefined;
+    let pendingWrite: Promise<unknown> | undefined;
+    try {
+      await a.query(`SELECT pg_advisory_xact_lock($1::bigint)`, [
+        advisoryLockKey(t.tenantId, 'extension-target', `company:${loser}`).toString(),
+      ]);
+      pendingMerge = merge(t, 'company', '5302', ['5301']).finally(() => {
+        mergeDone = true;
+      });
+      await new Promise((r) => setTimeout(r, 500));
+      pendingWrite = observe(t, 'company', loser, { x_text: 'raced' }).finally(() => {
+        writeDone = true;
+      });
+      await new Promise((r) => setTimeout(r, 300));
+      expect(mergeDone).toBe(false); // waiting on the target lock
+      expect(writeDone).toBe(false); // waiting on the target lock, not yet past the merged check
+      await a.query('COMMIT');
+      await expect(pendingMerge).resolves.toBeDefined();
+      await expect(pendingWrite).resolves.toBeDefined();
+    } finally {
+      await a.query('ROLLBACK').catch(() => undefined);
+      await a.end();
+      await Promise.allSettled([pendingMerge, pendingWrite]);
+    }
+    const onLoser = await valuesOf(c, t, loser);
+    expect((await valuesOf(c, t, survivor)).x_text).toBeUndefined();
+    expect(onLoser.x_text).toBeUndefined();
+    expect(await extIssuesOf(c, t, 'extension_value_conflict')).toEqual([]);
+
+    // A source write to the survivor racing the merge copy: no unique-index error.
+    const ids2 = await companies(c, t, ['5303', '5304']);
+    const [loser2, survivor2] = [ids2['5303']!, ids2['5304']!];
+    await observe(t, 'company', loser2, { x_text: 'from loser' });
+    const b = await appSession(c, t);
+    try {
+      await b.query(`SELECT pg_advisory_xact_lock($1::bigint)`, [
+        advisoryLockKey(t.tenantId, 'extension-target', `company:${survivor2}`).toString(),
+      ]);
+      const m2 = merge(t, 'company', '5304', ['5303']);
+      await new Promise((r) => setTimeout(r, 300));
+      const w2 = observe(t, 'company', survivor2, { x_text: 'from survivor' });
+      await new Promise((r) => setTimeout(r, 300));
+      await b.query('COMMIT');
+      const [rm, rw] = await Promise.allSettled([m2, w2]);
+      expect(rm.status).toBe('fulfilled');
+      expect(rw.status).toBe('fulfilled');
+    } finally {
+      await b.query('ROLLBACK').catch(() => undefined);
+      await b.end();
+    }
+    // Exactly one survivor row for the field (the source write updated the copy).
+    expect(
+      (
+        await c.sql<{ n: string }>(
+          `SELECT count(*)::text AS n FROM tenant_extension_values
+            WHERE tenant_id = $1 AND target_id = $2 AND field_id = $3`,
+          [t.tenantId, survivor2, await entryId(c, t, 'x_text')],
+        )
+      )[0]!.n,
+    ).toBe('1');
   });
 });

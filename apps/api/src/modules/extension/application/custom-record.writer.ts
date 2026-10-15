@@ -33,6 +33,7 @@ import {
 } from './extension-shared';
 import {
   ExtensionValueWriter,
+  lockMergeTargets,
   type ExtensionObserveOutcome,
   type ObservedExtensionValue,
 } from './extension-value.writer';
@@ -313,6 +314,9 @@ export class CustomRecordWriter {
     }
     const id = await this.store.canonicalForRef(tx, parent.kind, parent.ref);
     if (!id) return undefined;
+    // Lock the parent before the not-merged check (review M1): a concurrent
+    // parent merge holds this lock until it commits.
+    await this.store.lockTarget(tx, { kind: parent.kind, id });
     const e = await this.store.entity(tx, { kind: parent.kind, id });
     return e.exists && e.state !== 'merged' ? { kind: parent.kind, id } : undefined;
   }
@@ -414,6 +418,7 @@ export class CustomRecordWriter {
             ? 'company'
             : parentDecl.kind
           : undefined;
+        await this.store.lockTarget(tx, parentTarget); // review M1: lock before the merged check
         const e = await this.store.entity(tx, parentTarget);
         if (!allowed || parentTarget.kind !== allowed || !e.exists || e.state === 'merged') {
           throw new GovernanceError(
@@ -566,6 +571,10 @@ export class CustomRecordWriter {
     survivorId: string,
     provenance: ExtensionProvenance,
   ): Promise<void> {
+    // Lock both parents in a stable order before reading (review M1), so a
+    // record created under the loser concurrently is either seen here or
+    // refused as merged after this merge commits.
+    await lockMergeTargets(tx, this.store, { kind, id: loserId }, { kind, id: survivorId });
     const rows = await this.store.recordsWithParent(tx, { kind, id: loserId });
     const { connectionId: _c, ...change } = provenance;
     for (const r of rows) {
