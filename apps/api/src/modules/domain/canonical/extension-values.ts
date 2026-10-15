@@ -509,8 +509,7 @@ export function parseExtensionValue(
       if (!items) return reject('type_invalid');
       if (items.length === 0) return { ok: true, value: { state: 'empty', type } };
       const cap = Math.min(
-        c?.max_items ?? guardrails.maxArrayItems,
-        guardrails.maxArrayItems,
+        c?.max_items ?? EXTENSION_ITEMS_CEILING,
         EXTENSION_ITEMS_CEILING,
       );
       if (items.length > cap) return reject('too_many_items');
