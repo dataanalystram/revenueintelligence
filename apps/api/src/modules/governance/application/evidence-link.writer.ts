@@ -4,9 +4,12 @@ import {
   compareCanonicalVersion,
   ENTITY_INDEX_SOURCES,
   EVIDENCE_KIND_MODULES,
+  evidenceRelationFacts,
+  NOT_EVIDENCE_OF_FLOOR,
   validateEvidenceSet,
   type EntityIndexKind,
   type EvidenceRelation,
+  type EvidenceLinkInput,
   type EvidenceSetInput,
 } from '../../domain';
 import {
@@ -85,6 +88,9 @@ export class EvidenceLinkWriter {
     for (const l of set.links) {
       if (l.evidenceType === 'entity') {
         await this.requireLive(tx, l.evidenceKind!, l.evidenceId, l.evidenceKey);
+        if (l.evidenceKind === 'custom_record') {
+          await this.refuseNotEvidenceOf(tx, set.subjectKind, l);
+        }
       } else if (l.evidenceType === 'change_record') {
         const found = await db.tenantContextChange.findUnique({
           where: { tenantId_id: { tenantId: tx.tenantId, id: l.evidenceChangeId! } },
@@ -169,6 +175,39 @@ export class EvidenceLinkWriter {
       })),
     });
     return { linkSetId, links: set.links.length };
+  }
+
+  /**
+   * M10D (plan §6, #71): a custom record is never evidence of a fact its
+   * object lists in `not_evidence_of` (the floor is always listed).
+   */
+  private async refuseNotEvidenceOf(
+    tx: TenantTransaction,
+    subjectKind: EntityIndexKind,
+    link: EvidenceLinkInput,
+  ): Promise<void> {
+    const facts = evidenceRelationFacts(this.relations, subjectKind, link);
+    if (facts.length === 0) return;
+    const rows = await tenantClient(tx).$queryRawUnsafe<{ not_evidence_of: unknown }[]>(
+      `SELECT o.definition -> 'not_evidence_of' AS not_evidence_of
+         FROM tenant_custom_records r
+         JOIN tenant_registry_entries o
+           ON o.tenant_id = r.tenant_id AND o.kind = r.object_registry_kind AND o.id = r.object_id
+        WHERE r.tenant_id = $1::uuid AND r.id = $2::uuid`,
+      tx.tenantId,
+      link.evidenceId,
+    );
+    const listed = new Set<string>([
+      ...NOT_EVIDENCE_OF_FLOOR,
+      ...(Array.isArray(rows[0]?.not_evidence_of) ? (rows[0].not_evidence_of as string[]) : []),
+    ]);
+    if (facts.some((f) => listed.has(f))) {
+      throw new GovernanceError(
+        'evidence_relation_not_allowed',
+        'The custom record is declared not evidence of this relation fact',
+        { reason: 'not_evidence_of', ordinal: link.ordinal },
+      );
+    }
   }
 
   /** The record exists in the tenant (entity index) and is not merged. */
