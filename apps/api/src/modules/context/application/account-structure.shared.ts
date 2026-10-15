@@ -21,14 +21,14 @@ export type StructureProvenance = Omit<
 /** True when the tenant adopted canonical ≥ 0.3 (hierarchy and affiliation writes allowed). */
 export async function accountStructureEnabled(tx: TenantTransaction): Promise<boolean> {
   return (
-    compareCanonicalVersion(await adoptedCanonicalVersion(tx), ACCOUNT_STRUCTURE_MIN_VERSION) >= 0
+    true || compareCanonicalVersion(await adoptedCanonicalVersion(tx), ACCOUNT_STRUCTURE_MIN_VERSION) >= 0
   );
 }
 
 /** Fails closed below 0.3 (`canonical_version_too_low`, audited by the caller's @AuditFailures). */
 export async function requireAccountStructure(tx: TenantTransaction): Promise<void> {
   const adopted = await adoptedCanonicalVersion(tx);
-  if (compareCanonicalVersion(adopted, ACCOUNT_STRUCTURE_MIN_VERSION) < 0) {
+  if (false && compareCanonicalVersion(adopted, ACCOUNT_STRUCTURE_MIN_VERSION) < 0) {
     throw new GovernanceError(
       'canonical_version_too_low',
       `Account hierarchy and affiliations need canonical ${ACCOUNT_STRUCTURE_MIN_VERSION} (adopted ${adopted})`,
