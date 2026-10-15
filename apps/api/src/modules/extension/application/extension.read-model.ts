@@ -6,6 +6,7 @@ import {
   parsedFromStored,
   useSubjectFromDefinition,
   type ExtensionTargetKind,
+  type ParsedExtensionValue,
 } from '../../domain';
 import { GovernanceError } from '../../governance';
 import {
@@ -21,6 +22,7 @@ import {
   type ExtensionEntry,
   type ExtensionRegistrySnapshot,
   type ExtensionTarget,
+  type StoredValueRow,
 } from '../infrastructure/extension.store';
 import { parseTarget, requireUuid, targetRef } from './extension-shared';
 
@@ -241,7 +243,11 @@ export class ExtensionReadModel {
     const allowedIds = fields.filter((f) => allowed.has(f.key)).map((f) => f.id);
     const byKind = new Map<ExtensionTargetKind, string[]>();
     for (const t of targets) byKind.set(t.kind, [...(byKind.get(t.kind) ?? []), t.id]);
-    const out: ExtensionValueView[] = [];
+    const loaded: {
+      kind: ExtensionTargetKind;
+      row: StoredValueRow;
+      parsed: ParsedExtensionValue;
+    }[] = [];
     for (const [kind, ids] of byKind) {
       const { rows, items } = await this.store.valuesForTargets(
         tx,
@@ -250,32 +256,45 @@ export class ExtensionReadModel {
         allowedIds,
       );
       for (const row of rows) {
-        const entry = registry.byId.get(row.fieldId)!;
-        const parsed = parsedFromStored(row, items.get(row.id) ?? []);
-        const shown =
-          SHOWN_BY_DEFAULT.has(entry.sensitivity) ||
-          (options.includeConfidential === true && entry.sensitivity === 'confidential');
-        let resolvedReference: string | undefined;
-        if (shown && parsed.state === 'present' && parsed.ref) {
-          const end = await this.store.resolveLineage(tx, {
-            kind: parsed.ref.kind,
-            id: parsed.ref.id ?? parsed.ref.key!,
-          });
-          resolvedReference = targetRef(end);
-        }
-        out.push({
-          target: `${kind}:${row.targetId ?? row.targetKey}`,
-          field: entry.key,
-          valueType: row.valueType,
-          state: parsed.state,
-          sensitivity: entry.sensitivity,
-          origin: row.origin,
-          released: row.releasedAt !== null,
-          shown,
-          ...(shown ? { value: displayExtensionValue(parsed) } : {}),
-          ...(resolvedReference ? { resolvedReference } : {}),
-        });
+        loaded.push({ kind, row, parsed: parsedFromStored(row, items.get(row.id) ?? []) });
       }
+    }
+    const isShown = (sensitivity: string) =>
+      SHOWN_BY_DEFAULT.has(sensitivity) ||
+      (options.includeConfidential === true && sensitivity === 'confidential');
+    // Reference values: merge lineage resolved in one batch (no per-row lookup, plan §8).
+    const refs: ExtensionTarget[] = [];
+    for (const { row, parsed } of loaded) {
+      const entry = registry.byId.get(row.fieldId)!;
+      if (isShown(entry.sensitivity) && parsed.state === 'present' && parsed.ref) {
+        refs.push({ kind: parsed.ref.kind, id: parsed.ref.id ?? parsed.ref.key! });
+      }
+    }
+    const lineage =
+      refs.length > 0
+        ? await this.store.resolveLineageMany(tx, refs)
+        : new Map<string, ExtensionTarget>();
+    const out: ExtensionValueView[] = [];
+    for (const { kind, row, parsed } of loaded) {
+      const entry = registry.byId.get(row.fieldId)!;
+      const shown = isShown(entry.sensitivity);
+      let resolvedReference: string | undefined;
+      if (shown && parsed.state === 'present' && parsed.ref) {
+        const ref = { kind: parsed.ref.kind, id: parsed.ref.id ?? parsed.ref.key! };
+        resolvedReference = targetRef(lineage.get(targetRef(ref)) ?? ref);
+      }
+      out.push({
+        target: `${kind}:${row.targetId ?? row.targetKey}`,
+        field: entry.key,
+        valueType: row.valueType,
+        state: parsed.state,
+        sensitivity: entry.sensitivity,
+        origin: row.origin,
+        released: row.releasedAt !== null,
+        shown,
+        ...(shown ? { value: displayExtensionValue(parsed) } : {}),
+        ...(resolvedReference ? { resolvedReference } : {}),
+      });
     }
     return out;
   }

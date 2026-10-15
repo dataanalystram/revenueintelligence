@@ -362,6 +362,50 @@ export class ExtensionStore {
     throw new Error('merge lineage too deep');
   }
 
+  /**
+   * Batch form of `resolveLineage` for read models (plan §8, §17: no N+1):
+   * one query per kind and lineage hop, whatever the number of targets.
+   * Returns `<kind>:<id>` → the current end of its lineage.
+   */
+  async resolveLineageMany(
+    tx: TenantTransaction,
+    targets: readonly ExtensionTarget[],
+  ): Promise<Map<string, ExtensionTarget>> {
+    const out = new Map<string, ExtensionTarget>();
+    const byKind = new Map<'company' | 'person' | 'custom_record', Set<string>>();
+    for (const t of targets) {
+      if (t.kind === 'company' || t.kind === 'person' || t.kind === 'custom_record') {
+        byKind.set(t.kind, (byKind.get(t.kind) ?? new Set()).add(t.id));
+      } else {
+        out.set(`${t.kind}:${t.id}`, t);
+      }
+    }
+    const db = tenantClient(tx);
+    for (const [kind, ids] of byKind) {
+      // start id → current id, followed hop by hop for every start at once.
+      const current = new Map([...ids].map((id) => [id, id]));
+      let pending = [...ids];
+      for (let hops = 0; pending.length > 0; hops += 1) {
+        if (hops >= 20) throw new Error('merge lineage too deep');
+        const rows = await db.$queryRawUnsafe<{ id: string; merged_into: string | null }[]>(
+          `SELECT id::text AS id, merged_into_id::text AS merged_into FROM ${ENTITY_TABLE[kind]}
+            WHERE tenant_id = $1::uuid AND id = ANY($2::uuid[]) AND record_state = 'merged'`,
+          tx.tenantId,
+          [...new Set(pending.map((start) => current.get(start)!))],
+        );
+        const next = new Map(rows.map((r) => [r.id, r.merged_into]));
+        pending = pending.filter((start) => {
+          const into = next.get(current.get(start)!);
+          if (!into) return false;
+          current.set(start, into);
+          return true;
+        });
+      }
+      for (const [start, end] of current) out.set(`${kind}:${start}`, { kind, id: end });
+    }
+    return out;
+  }
+
   /** The canonical company / person of a source reference (external refs), following merges. */
   async canonicalForRef(
     tx: TenantTransaction,
