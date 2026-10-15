@@ -528,15 +528,18 @@ export class SourceMappingsService {
    * the connection's working copy, else its published mapping; publishes
    * nothing. Codes, keys and source names only (never values).
    */
+  // Review m3: an operator command (config.mapping.draft), audited once with counts only.
+  @AuditFailures('mapping.draft.validate', 'mapping_draft')
   async captureDraft(
-    ctx: TenantContext,
+    actx: AuthorizedContext<'config.mapping.draft'>,
     connectionId: string,
     raw?: unknown,
   ): Promise<{
     readonly from: 'document' | 'draft' | 'published';
     readonly entries: CaptureDraftEntry[];
   }> {
-    return this.db.transaction(ctx, async (tx) => {
+    assertAuthorized(actx, 'config.mapping.draft');
+    return this.db.transaction(actx.tenant, async (tx) => {
       const connection = await this.repo.connection(tx, connectionId);
       if (!connection) throw new ConnectionNotFoundError(connectionId);
       const snapshot = await this.repo.latestSnapshot(tx, connectionId);
@@ -583,10 +586,19 @@ export class SourceMappingsService {
         where: { tenantId: tx.tenantId, kind: 'extension' },
         select: { key: true },
       });
-      return {
-        from,
-        entries: captureDraft(sources, new Set(existing.map((e) => e.key)), isSensitiveName),
-      };
+      const entries = captureDraft(sources, new Set(existing.map((e) => e.key)), isSensitiveName);
+      await this.audit.record(tx, actx, {
+        action: 'mapping.draft.validate',
+        targetKind: 'mapping_draft',
+        targetRef: connectionId,
+        details: {
+          capture: true,
+          from,
+          fields: entries.filter((e) => e.ok).length,
+          refused: entries.filter((e) => !e.ok).length,
+        },
+      });
+      return { from, entries };
     });
   }
 

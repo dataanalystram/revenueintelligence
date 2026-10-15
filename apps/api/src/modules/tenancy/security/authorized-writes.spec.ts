@@ -135,8 +135,16 @@ const SERVICES: readonly ServiceSpec[] = [
   {
     file: 'sources/application/source-mappings.service.ts',
     className: 'SourceMappingsService',
-    writes: ['publish', 'retire', 'saveDraft', 'validateDraft', 'publishDraft', 'discardDraft'],
-    reads: ['validate', 'show', 'states', 'showDraft', 'captureDraft'],
+    writes: [
+      'publish',
+      'retire',
+      'saveDraft',
+      'validateDraft',
+      'publishDraft',
+      'discardDraft',
+      'captureDraft',
+    ],
+    reads: ['validate', 'show', 'states', 'showDraft'],
   },
   {
     file: 'sources/application/source-authority.service.ts',

@@ -141,7 +141,7 @@ ex_capture() {
   node -e 'process.stdout.write(JSON.stringify({ objects: [
     { source: "Accounts", entity: "account", identity: { field: "id" }, fields: [{ kind: "capture", source: "website" }] },
     { source: "Contacts", entity: "person", identity: { field: "id" }, fields: [{ kind: "capture", source: "title" }] } ] }))' >"$EX_IN/capture.json"
-  ex_cli sources extension-capture-draft --tenant rtsources --connection sugar --file "$EX_IN/capture.json" >"$EX_OUT/capture-draft.json" || code=$?
+  ex_cli sources extension-capture-draft --tenant rtsources --connection sugar --file "$EX_IN/capture.json" --actor "$EX_ACTOR" >"$EX_OUT/capture-draft.json" || code=$?
   # A sensitive source field name (website is a privacy name token) is refused (exit 2); the other
   # (Contacts.title, unprofiled, not a sensitive name) is drafted as a src_ key, display only.
   [ "$code" -eq 2 ] || { ex_capture_shown "$code"; return 1; }

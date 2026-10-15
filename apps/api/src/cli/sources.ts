@@ -341,7 +341,13 @@ async function main(): Promise<void> {
           // publishes nothing (the operator dry-runs / publishes them with registry:publish).
           const conn = await connection(ctx);
           const document = values.file ? readJson(values.file) : undefined;
-          const draft = await app.get(SourceMappingsService).captureDraft(ctx, conn.id, document);
+          const auth = await op(
+            'config.mapping.draft',
+            'mapping.draft.validate',
+            'mapping_draft',
+            conn.id,
+          );
+          const draft = await app.get(SourceMappingsService).captureDraft(auth, conn.id, document);
           const refused = draft.entries.flatMap((e) =>
             e.ok ? [] : [{ source: e.source, code: e.code }],
           );
