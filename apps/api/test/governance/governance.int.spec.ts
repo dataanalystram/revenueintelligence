@@ -159,6 +159,8 @@ describe('M10A2 canonical versioning and governance', () => {
         target: '0.3',
         decision: 'rollback',
         modulesNewlyAvailable: [],
+        // M10D (Q19): nothing is enabled for this tenant, so nothing is stranded.
+        modulesStranded: [],
         registriesAboveTarget: 0,
         mappingsAboveTarget: 0,
         // M10B / M10C / M10D plan: the dry run lists what the rollback withdraws.

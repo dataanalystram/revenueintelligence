@@ -27,6 +27,11 @@ export interface AdoptionImpact {
   readonly refusal?: string;
   /** Modules whose minimum version the target reaches and the current does not. */
   readonly modulesNewlyAvailable: readonly string[];
+  /**
+   * M10D (Q19): modules enabled for the tenant whose minimum version the target
+   * no longer reaches (a rollback keeps the setting; their writes are refused).
+   */
+  readonly modulesStranded: readonly string[];
   /** Registry versions validated against a version above the target. */
   readonly registriesAboveTarget: number;
   /** Mapping versions validated against a version above the target. */
@@ -148,6 +153,14 @@ export class CanonicalAdoptionService {
       select: { moduleKey: true, minimumCanonicalVersion: true },
     });
     const known = catalogue.some((v) => v.version === target);
+    const enabled = new Set(
+      (
+        await db.tenantModuleSetting.findMany({
+          where: { enabled: true },
+          select: { moduleKey: true },
+        })
+      ).map((m) => m.moduleKey),
+    );
     const above = (v: string | null) =>
       known && v !== null && compareCanonicalVersion(v, target) > 0;
     const registries = await db.tenantRegistryVersion.findMany({
@@ -168,6 +181,17 @@ export class CanonicalAdoptionService {
                 m.minimumCanonicalVersion !== null &&
                 compareCanonicalVersion(m.minimumCanonicalVersion, target) <= 0 &&
                 compareCanonicalVersion(m.minimumCanonicalVersion, head.version) > 0,
+            )
+            .map((m) => m.moduleKey)
+            .sort()
+        : [],
+      modulesStranded: known
+        ? modules
+            .filter(
+              (m) =>
+                enabled.has(m.moduleKey) &&
+                m.minimumCanonicalVersion !== null &&
+                compareCanonicalVersion(m.minimumCanonicalVersion, target) > 0,
             )
             .map((m) => m.moduleKey)
             .sort()
