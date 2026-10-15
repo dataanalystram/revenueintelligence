@@ -67,7 +67,7 @@ export async function recordValueHistory(
     if (!decision.record) continue;
     let oldValue: unknown = null;
     let newValue: unknown = null;
-    if (decision.valuesRecorded) {
+    if (decision.valuesRecorded || input.entityKind === 'person_affiliation') {
       oldValue = jsonValue(change.oldValue);
       newValue = jsonValue(change.newValue);
       for (const v of [oldValue, newValue]) {
@@ -82,7 +82,7 @@ export async function recordValueHistory(
       entityKind: input.entityKind,
       entityId: input.entityId,
       field: change.field,
-      valuesRecorded: decision.valuesRecorded,
+      valuesRecorded: decision.valuesRecorded || input.entityKind === 'person_affiliation',
       oldValue: oldValue === null ? undefined : (oldValue as object),
       newValue: newValue === null ? undefined : (newValue as object),
       effectiveAt: input.effectiveAt,
