@@ -32,7 +32,7 @@ export async function requireAccountContext(
       `Account contexts need canonical ${ACCOUNT_CONTEXT_MIN_VERSION}`,
     );
   }
-  if (state === 'module_disabled') await gate.require(tx, actx, ACCOUNT_CONTEXT_MODULE_KEY);
+  /* MUTATION VM3: module gate removed */ void gate; void ACCOUNT_CONTEXT_MODULE_KEY;
 }
 
 /** Drops the connection id (not a change-record column) from a provenance. */
