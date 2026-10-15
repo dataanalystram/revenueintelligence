@@ -129,6 +129,11 @@ ex_records() {
 }
 check "record create / list / show; a many_to_one edge replaced by the operator's second edge (first ended)" ex_records
 
+# On failure the draft output is shown: metadata only (source field names, keys, codes), never values.
+ex_capture_shown() {
+  echo "capture-draft exit $1:" >&2
+  cat "$EX_OUT/capture-draft.json" >&2
+}
 ex_capture() {
   local code=0
   # The M8 runtime tenant's Sugar connection holds a real metadata snapshot; the draft reads it and publishes nothing.
@@ -137,10 +142,10 @@ ex_capture() {
     { source: "Contacts", entity: "person", identity: { field: "id" }, fields: [{ kind: "capture", source: "email1" }] } ] }))' >"$EX_IN/capture.json"
   ex_cli sources extension-capture-draft --tenant rtsources --connection sugar --file "$EX_IN/capture.json" >"$EX_OUT/capture-draft.json" || code=$?
   # A sensitive source field name is refused (exit 2); the other is drafted as a src_ key, display / analytics only.
-  [ "$code" -eq 2 ] || return 1
-  [ "$(ex_json "$EX_OUT/capture-draft.json" 'r.refused.map((x) => x.source + ":" + x.code).join(",")')" = "Contacts.email1:capture_sensitive_refused" ] || return 1
+  [ "$code" -eq 2 ] || { ex_capture_shown "$code"; return 1; }
+  [ "$(ex_json "$EX_OUT/capture-draft.json" 'r.refused.map((x) => x.source + ":" + x.code).join(",")')" = "Contacts.email1:capture_sensitive_refused" ] || { ex_capture_shown "$code"; return 1; }
   [ "$(ex_json "$EX_OUT/capture-draft.json" 'r.fields.map((f) => f.key + ":" + f.origin + ":" + f.allowed_uses.join("+")).join(",")')" = \
-    "src_sugar_accounts_website:source_captured:display" ] || return 1
+    "src_sugar_accounts_website:source_captured:display" ] || { ex_capture_shown "$code"; return 1; }
   [ "$(ex_sql "SELECT count(*) FROM tenant_registry_versions v JOIN tenants t ON t.id = v.tenant_id WHERE t.slug = 'rtsources' AND v.kind = 'extension'")" = 0 ]
 }
 check "capture draft from a real snapshot: sensitive field name refused (exit 2), src_ key drafted, nothing published" ex_capture

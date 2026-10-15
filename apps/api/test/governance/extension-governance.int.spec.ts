@@ -724,7 +724,11 @@ describe('M10D extension governance', () => {
           fields: [
             field('tier', { history: 'value_history' }),
             field('plain'),
-            field('site_code', { target: 'custom_object:site', history: 'value_history' }),
+            field('site_code', {
+              target: 'custom_object:site',
+              history: 'value_history',
+              categories: ['operational'],
+            }),
           ],
         },
         0,
@@ -795,7 +799,10 @@ describe('M10D extension governance', () => {
           {
             schema_version: 1,
             objects: [object('site')],
-            fields: [...fields, field('site_code', { target: 'custom_object:site' })],
+            fields: [
+              ...fields,
+              field('site_code', { target: 'custom_object:site', categories: ['operational'] }),
+            ],
           },
           0,
         );
