@@ -132,7 +132,8 @@ check "record create / list / show; a many_to_one edge replaced by the operator'
 # On failure the draft output is shown: metadata only (source field names, keys, codes), never values.
 ex_capture_shown() {
   echo "capture-draft exit $1:" >&2
-  cat "$EX_OUT/capture-draft.json" >&2
+  # One line, so the CI log tail carries it.
+  node -e 'process.stdout.write(JSON.stringify(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))) + "\n")' "$EX_OUT/capture-draft.json" >&2 || cat "$EX_OUT/capture-draft.json" >&2
 }
 ex_capture() {
   local code=0
