@@ -43,5 +43,6 @@ export {
 export {
   AccountStructureReadModel,
   type AffiliationView,
+  type AffiliationList,
   type HierarchyView,
 } from './application/account-structure.read-model';

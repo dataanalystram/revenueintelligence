@@ -375,6 +375,43 @@ export class AccountStructureStore {
     return rows.map(toAffiliation);
   }
 
+  /**
+   * Affiliations of a person or a company for the read model (review m5): one
+   * query joining the person's primary account (derived `isPrimary`), at most
+   * `limit` rows, with `truncated` when more exist.
+   */
+  async affiliationsWithPrimary(
+    tx: TenantTransaction,
+    where: {
+      readonly personId?: string;
+      readonly companyId?: string;
+      readonly activeOnly?: boolean;
+    },
+    limit = 500,
+  ): Promise<{
+    readonly rows: readonly (AffiliationRow & { readonly isPrimary: boolean })[];
+    readonly truncated: boolean;
+  }> {
+    const found = await tenantClient(tx).tenantPersonAffiliation.findMany({
+      where: {
+        tenantId: tx.tenantId,
+        ...(where.personId ? { personId: where.personId } : {}),
+        ...(where.companyId ? { companyId: where.companyId } : {}),
+        ...(where.activeOnly ? { status: 'active' } : {}),
+      },
+      include: { person: { select: { companyId: true } } },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      take: limit + 1,
+    });
+    return {
+      rows: found.slice(0, limit).map((r) => ({
+        ...toAffiliation(r),
+        isPrimary: r.person.companyId === r.companyId,
+      })),
+      truncated: found.length > limit,
+    };
+  }
+
   async insertAffiliation(
     tx: TenantTransaction,
     row: {

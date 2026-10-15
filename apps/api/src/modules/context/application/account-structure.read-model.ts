@@ -43,6 +43,12 @@ export interface AffiliationView {
   readonly isPrimary: boolean;
 }
 
+/** One page of affiliations: at most the read bound, `truncated` when more exist (review m5). */
+export interface AffiliationList {
+  readonly affiliations: readonly AffiliationView[];
+  readonly truncated: boolean;
+}
+
 /**
  * Read models of the account structure (M10C plan §5): the hierarchy around an
  * account (ancestors, root, depth, descendants; bounded by the guardrail + 1,
@@ -116,7 +122,8 @@ export class AccountStructureReadModel {
       readonly companyId?: string;
       readonly activeOnly?: boolean;
     },
-  ): Promise<readonly AffiliationView[]> {
+    limit = 500,
+  ): Promise<AffiliationList> {
     assertAuthorized(actx, 'data.account_structure.read');
     if ((query.personId === undefined) === (query.companyId === undefined)) {
       throw new GovernanceError('validation_failed', 'Name exactly one of --person / --company');
@@ -124,22 +131,26 @@ export class AccountStructureReadModel {
     const personId = query.personId ? requireUuid(query.personId, '--person') : undefined;
     const companyId = query.companyId ? requireUuid(query.companyId, '--company') : undefined;
     return this.db.transaction(actx.tenant, async (tx) => {
-      const rows = await this.store.affiliationsOf(tx, {
-        ...(personId ? { personId } : {}),
-        ...(companyId ? { companyId } : {}),
-        ...(query.activeOnly ? { activeOnly: true } : {}),
-      });
-      const primaries = new Map<string, string | null>();
-      for (const id of new Set(rows.map((r) => r.personId))) {
-        primaries.set(id, (await this.store.person(tx, id))?.companyId ?? null);
-      }
+      const { rows, truncated } = await this.store.affiliationsWithPrimary(
+        tx,
+        {
+          ...(personId ? { personId } : {}),
+          ...(companyId ? { companyId } : {}),
+          ...(query.activeOnly ? { activeOnly: true } : {}),
+        },
+        Math.min(Math.max(1, Math.trunc(limit)), 500),
+      );
       await this.audit.record(tx, actx, {
         action: 'account_structure.read',
         targetKind: 'person_affiliation',
         targetRef: personId ?? companyId!,
-        details: { subject: personId ? 'person' : 'company', affiliations: rows.length },
+        details: {
+          subject: personId ? 'person' : 'company',
+          affiliations: rows.length,
+          ...(truncated ? { truncated: true } : {}),
+        },
       });
-      return rows.map((r) => ({
+      const affiliations = rows.map((r) => ({
         id: r.id,
         personId: r.personId,
         companyId: r.companyId,
@@ -151,8 +162,9 @@ export class AccountStructureReadModel {
         endReason: r.endReason,
         mergedIntoId: r.mergedIntoId,
         origin: r.origin,
-        isPrimary: primaries.get(r.personId) === r.companyId,
+        isPrimary: r.isPrimary,
       }));
+      return { affiliations, truncated };
     });
   }
 }

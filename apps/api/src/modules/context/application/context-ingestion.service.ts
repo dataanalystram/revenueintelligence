@@ -785,7 +785,8 @@ export class ContextIngestionService {
       company: l.company,
       fields: { roleCodes: [] },
     }));
-    if (obs.affiliations) {
+    // Below canonical 0.3 the `person.affiliation` scope is not written at all (review m4).
+    if (obs.affiliations && (await accountStructureEnabled(tx))) {
       // `person.affiliation` links are kept in their own scope of the source relationships.
       const replaced = await this.store.replacePersonLinks(
         tx,

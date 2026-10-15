@@ -142,13 +142,11 @@ async function main(): Promise<void> {
             targetKind: 'person_affiliation',
             correlationId,
           });
-          return {
-            affiliations: await app.get(AccountStructureReadModel).affiliations(actx, {
-              ...(values.person ? { personId: values.person } : {}),
-              ...(values.company ? { companyId: values.company } : {}),
-              activeOnly: values.active,
-            }),
-          };
+          return await app.get(AccountStructureReadModel).affiliations(actx, {
+            ...(values.person ? { personId: values.person } : {}),
+            ...(values.company ? { companyId: values.company } : {}),
+            activeOnly: values.active,
+          });
         }
         case 'hierarchy set':
         case 'hierarchy clear':

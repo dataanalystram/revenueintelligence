@@ -85,6 +85,12 @@ period that later milestones (M10G champion movement, M10H contact roles) build 
    audited `person.affiliation.release`) sets `released_at` on the standing operator endings; the next
    authoritative statement then creates a `source_provided` row. Stickiness is per (person, company): a merge moves
    active rows only, so a standing operator ending on a loser pair does not follow the merge.
+   **Source coordinates of `person.affiliation` (review m4).** At `0.3` the stated affiliation links are kept in
+   `tenant_source_relationships` under the synthetic association type `AFFILIATION_LINK_TYPE_ID = -1` (scope
+   `affiliations` of `replacePersonLinks`, never `is_primary`), next to the plain company links (scope `links`) of
+   the same person, so an authoritative removal of a stated affiliation is detected per scope. Below `0.3` this
+   scope is not written. These rows are coordinates only: the late-company path replays plain links, never them
+   (M3), and they appear as non-primary links in `ContextReadModel` snapshots.
 10. **Merge participants (Q13, Q14).** `AccountHierarchyMergeParticipant` (company merge, always wired by
     `ContextModule`): the loser's children move to the survivor (origin kept, cycle rule kept, no depth guardrail;
     depth overshoot → `hierarchy_depth_exceeded` issue and integrity finding); a survivor under the loser takes the

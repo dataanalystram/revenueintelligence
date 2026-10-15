@@ -168,10 +168,10 @@ describe('M10C person–account affiliations', () => {
       expect(new Set(for902.map((r) => r.id)).size).toBe(2);
 
       // Derived primary (never stored): read model and view agree with persons.company_id.
-      const view = await readModel().affiliations(await authz(t, 'data.account_structure.read'), {
-        personId: person,
-        activeOnly: true,
-      });
+      const { affiliations: view } = await readModel().affiliations(
+        await authz(t, 'data.account_structure.read'),
+        { personId: person, activeOnly: true },
+      );
       expect(view.map((v) => [v.companyId, v.isPrimary]).sort()).toEqual(
         [
           [ids['901'], true],
@@ -899,19 +899,20 @@ describe('M10C person–account affiliations', () => {
         .entityId!;
       const q = (await observePerson(c, t, '13002', { links: [link('1302', true)] })).entityId!;
       await observePerson(c, t, '13001', { links: [link('1301', true)] });
-      const byPerson = await readModel().affiliations(
+      const { affiliations: byPerson, truncated } = await readModel().affiliations(
         await authz(t, 'data.account_structure.read'),
         {
           personId: p,
         },
       );
+      expect(truncated).toBe(false);
       expect(byPerson.map((v) => [v.companyId, v.status, v.isPrimary, v.endReason]).sort()).toEqual(
         [
           [ids['1301'], 'active', true, null],
           [ids['1302'], 'ended', false, 'source_removed'],
         ].sort(),
       );
-      const byCompany = await readModel().affiliations(
+      const { affiliations: byCompany } = await readModel().affiliations(
         await authz(t, 'data.account_structure.read'),
         {
           companyId: ids['1302']!,
@@ -919,6 +920,14 @@ describe('M10C person–account affiliations', () => {
         },
       );
       expect(byCompany.map((v) => [v.personId, v.isPrimary])).toEqual([[q, true]]);
+      // Over the bound: the first rows by creation and a truncation flag (review m5).
+      const bounded = await readModel().affiliations(
+        await authz(t, 'data.account_structure.read'),
+        { companyId: ids['1302']! },
+        1,
+      );
+      expect(bounded.affiliations).toHaveLength(1);
+      expect(bounded.truncated).toBe(true);
       for (const query of [{}, { personId: p, companyId: ids['1301']! }]) {
         await expect(
           readModel().affiliations(await authz(t, 'data.account_structure.read'), query),
@@ -928,6 +937,12 @@ describe('M10C person–account affiliations', () => {
       expect(reads.map((e) => [e.outcome, e.target_kind, e.target_ref, e.details])).toEqual([
         ['allowed', 'person_affiliation', p, { subject: 'person', affiliations: 2 }],
         ['allowed', 'person_affiliation', ids['1302'], { subject: 'company', affiliations: 1 }],
+        [
+          'allowed',
+          'person_affiliation',
+          ids['1302'],
+          { subject: 'company', affiliations: 1, truncated: true },
+        ],
         ['failed', 'person_affiliation', null, {}],
         ['failed', 'person_affiliation', null, {}],
       ]);
@@ -1027,10 +1042,21 @@ describe('M10C person–account affiliations', () => {
         expectedCurrent: '0.3',
       });
       const ids = await companies(c, t, ['1501', '1502']);
-      const p = (await observePerson(c, t, '15001', { links: [link('1501', true), link('1502')] }))
-        .entityId!;
+      const p = (
+        await observePerson(c, t, '15001', {
+          links: [link('1501', true), link('1502')],
+          affiliations: [{ company: hs('1502'), roleCodes: ['champion'] }],
+        })
+      ).entityId!;
       expect(await affiliationsOf(c, t, p)).toEqual([]);
       expect(await companyIdOfPerson(t, p)).toBe(ids['1501']);
+      // Nor is the `person.affiliation` scope of the source relationships written (review m4).
+      expect(
+        await c.sql(
+          `SELECT 1 FROM tenant_source_relationships WHERE tenant_id = $1 AND association_type_id = -1`,
+          [t.tenantId],
+        ),
+      ).toEqual([]);
       expect(await structureChangesOf(c, t, 'person_affiliation')).toEqual([]);
       await expect(add(t, { personId: p, companyId: ids['1501']! })).rejects.toMatchObject({
         code: 'canonical_version_too_low',
