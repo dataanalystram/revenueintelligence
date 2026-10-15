@@ -2,7 +2,14 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { MappingDocument } from '../../src/modules/domain';
 import type { TenantContext } from '../../src/modules/tenancy';
 import { startContextHarness, type ContextHarness } from '../support/context';
-import { enableExtension, publishExtension, services, valuesOf } from '../support/extension';
+import {
+  edgesOf,
+  enableExtension,
+  publishExtension,
+  recordsOf,
+  services,
+  valuesOf,
+} from '../support/extension';
 import { FakeSugar, type FakeSugarRecord } from '../support/fake-sugar';
 import {
   publishWithAcks,
@@ -209,6 +216,184 @@ describe('M10D extension attribute values through a source run (Sugar adapter, f
         expect(after.x_string!.value_text).toBe('EMEA');
         expect(after.x_enum!.value_enum).toBe('gold');
         expect(await countValues(f.ctx)).toBe(total);
+      } finally {
+        await fake.stop();
+      }
+    });
+  });
+
+  /**
+   * V7 / V8 (plan §5.2, §5.3): the fake's Users module stands in for a Sugar
+   * module of sites (synthetic TEST fields, no customer schema), mapped to the
+   * `site` custom object (natural key `site_code`, required account parent)
+   * with the one-to-one `site_owner` relationship to Accounts.
+   */
+  const customMapping = (): MappingDocument =>
+    sugarTestMapping((doc) => {
+      (doc as { objects: unknown[] }).objects = [
+        ...doc.objects,
+        {
+          source: 'Users',
+          entity: 'custom_object:site',
+          identity: { field: 'id' },
+          customObject: { parent: { field: 'parent_src', object: 'Accounts' } },
+          fields: [{ kind: 'attribute', field: 'site_code', source: 'code_src' }],
+          relationships: [
+            { target: 'custom_relationship:site_owner', field: 'owner_src', object: 'Accounts' },
+          ],
+        },
+      ];
+    });
+
+  async function customFake(): Promise<FakeSugar> {
+    const fake = await new FakeSugar().start();
+    fake.addField('Users', 'code_src', 'varchar', 'S-001');
+    fake.addField('Users', 'parent_src', 'id', 'FIX-ACC-001');
+    fake.addField('Users', 'owner_src', 'id', 'FIX-ACC-001');
+    fake.upsert('Users', {
+      ...fake.data.get('Users')![0]!,
+      id: 'FIX-USR-002',
+      user_name: 'fixture.user2',
+      code_src: 'S-002',
+      parent_src: 'FIX-ACC-002',
+      owner_src: 'FIX-ACC-002',
+    });
+    return fake;
+  }
+  const setUser = (fake: FakeSugar, id: string, values: Record<string, string | null>) =>
+    fake.upsert('Users', {
+      ...fake.data.get('Users')!.find((r) => r.id === id)!,
+      ...values,
+    });
+
+  /** The custom record a Sugar Users id resolves to (generic source reference). */
+  const recordOf = async (t: TenantContext, userId: string) => {
+    const [ref] = await c.sql<{ entity_id: string }>(
+      `SELECT entity_id::text FROM tenant_source_references
+        WHERE tenant_id = $1 AND system = 'sugar' AND object_type = 'Users' AND external_id = $2
+          AND entity_kind = 'custom_record'`,
+      [t.tenantId, userId],
+    );
+    return (await recordsOf(c, t)).find((r) => r.id === ref?.entity_id);
+  };
+  const ownerEdges = async (t: TenantContext, recordId: string) =>
+    (await edgesOf(c, t)).filter((e) => e.rel_key === 'site_owner' && e.from_id === recordId);
+
+  describe('V7 / V8: Sugar custom records and relationships', () => {
+    it('custom records with parent and natural key, idempotent re-run; relationship edges added, replaced on a source change, ended on removal, kept on absence', async () => {
+      const fake = await customFake();
+      try {
+        const f = await sugarTenant(c, fake, { prefix: 'extcustom' });
+        await enableExtension(c, f.ctx);
+        await publishExtension(c, f.ctx);
+        await publishAuthority(f, true);
+        const s = sourcesServices(c);
+        const snapshot = await s.snapshots.latest(f.ctx, f.connectionId);
+        const latest = await c.sql<{ v: number }>(
+          `SELECT max(version)::int AS v FROM tenant_source_mapping_versions WHERE tenant_id = $1`,
+          [f.ctx.tenantId],
+        );
+        await publishWithAcks(c, f, withSnapshot(customMapping(), snapshot!.hash), latest[0]!.v);
+
+        // V7: one site per Users record, parent resolved to the account, source origin.
+        const first = await runSync(c, f, 'full');
+        expect(first.status).toBe('completed');
+        expect(Number(first.quality.custom_record_created)).toBe(2);
+        const site1 = await recordOf(f.ctx, 'FIX-USR-001');
+        const site2 = await recordOf(f.ctx, 'FIX-USR-002');
+        expect(site1).toMatchObject({
+          object_key: 'site',
+          parent_kind: 'company',
+          parent_id: await companyOf(f.ctx, 'FIX-ACC-001'),
+          record_state: 'active',
+          origin: 'source_provided',
+        });
+        expect(site1!.natural_key_hash).toMatch(/^[0-9a-f]{64}$/);
+        expect(site2).toMatchObject({
+          parent_id: await companyOf(f.ctx, 'FIX-ACC-002'),
+          origin: 'source_provided',
+        });
+        expect(site2!.natural_key_hash).not.toBe(site1!.natural_key_hash);
+        const index = await c.sql<{ kind: string }>(
+          `SELECT kind FROM tenant_entity_index WHERE tenant_id = $1 AND entity_id = ANY($2::uuid[])`,
+          [f.ctx.tenantId, [site1!.id, site2!.id]],
+        );
+        expect(index.map((r) => r.kind)).toEqual(['custom_record', 'custom_record']);
+        const values = await valuesOf(c, f.ctx, site1!.id);
+        expect(values.site_code).toMatchObject({
+          target_kind: 'custom_record',
+          value_text: 'S-001',
+          origin: 'source_provided',
+          source_connection_id: f.connectionId,
+          source_object_type: 'Users',
+          source_record_id: 'FIX-USR-001',
+        });
+
+        // V8: the site_owner edge from each record to its account.
+        expect(Number(first.quality.custom_relationship_added)).toBe(2);
+        expect(await ownerEdges(f.ctx, site1!.id)).toEqual([
+          expect.objectContaining({
+            from_kind: 'custom_record',
+            to_kind: 'company',
+            to_id: await companyOf(f.ctx, 'FIX-ACC-001'),
+            state: 'active',
+            origin: 'source_provided',
+            source_connection_id: f.connectionId,
+          }),
+        ]);
+
+        // A repeated run creates nothing new; identity and natural key are stable.
+        const records = await recordsOf(c, f.ctx);
+        const edges = await edgesOf(c, f.ctx);
+        const repeat = await runSync(c, f, 'full');
+        expect(repeat.status).toBe('completed');
+        expect(repeat.quality).not.toHaveProperty('custom_record_created');
+        expect(repeat.quality).not.toHaveProperty('custom_relationship_added');
+        expect(Number(repeat.quality.custom_record_unchanged)).toBe(2);
+        expect(await recordsOf(c, f.ctx)).toEqual(records);
+        expect(await edgesOf(c, f.ctx)).toEqual(edges);
+
+        // Identity by natural key: another source id with the same site_code is the same record.
+        fake.upsert('Users', {
+          ...fake.data.get('Users')!.find((r) => r.id === 'FIX-USR-001')!,
+          id: 'FIX-USR-003',
+        });
+        const byKey = await runSync(c, f, 'full');
+        expect(byKey.status).toBe('completed');
+        expect(byKey.quality).not.toHaveProperty('custom_record_created');
+        expect(await recordsOf(c, f.ctx)).toHaveLength(2);
+        expect((await recordOf(f.ctx, 'FIX-USR-003'))?.id).toBe(site1!.id);
+        fake.remove('Users', 'FIX-USR-003');
+
+        // The parent and owner change in the source: the record moves, the old edge ends.
+        setUser(fake, 'FIX-USR-001', { parent_src: 'FIX-ACC-003', owner_src: 'FIX-ACC-003' });
+        const moved = await runSync(c, f, 'full');
+        expect(moved.status).toBe('completed');
+        expect(Number(moved.quality.custom_relationship_replaced)).toBe(1);
+        expect((await recordOf(f.ctx, 'FIX-USR-001'))!.parent_id).toBe(
+          await companyOf(f.ctx, 'FIX-ACC-003'),
+        );
+        const afterMove = await ownerEdges(f.ctx, site1!.id);
+        expect(afterMove.map((e) => [e.to_id, e.state, e.end_reason])).toEqual([
+          [await companyOf(f.ctx, 'FIX-ACC-001'), 'ended', 'source_removed'],
+          [await companyOf(f.ctx, 'FIX-ACC-003'), 'active', null],
+        ]);
+
+        // Absence never ends an edge: the record is no longer returned.
+        fake.remove('Users', 'FIX-USR-002');
+        expect((await runSync(c, f, 'full')).status).toBe('completed');
+        expect((await ownerEdges(f.ctx, site2!.id)).map((e) => e.state)).toEqual(['active']);
+
+        // Authoritative removal (an explicitly empty owner) ends the edge.
+        setUser(fake, 'FIX-USR-001', { owner_src: null });
+        const removed = await runSync(c, f, 'full');
+        expect(removed.status).toBe('completed');
+        expect(Number(removed.quality.custom_relationship_ended)).toBe(1);
+        expect((await ownerEdges(f.ctx, site1!.id)).map((e) => [e.state, e.end_reason])).toEqual([
+          ['ended', 'source_removed'],
+          ['ended', 'source_removed'],
+        ]);
+        expect(await recordsOf(c, f.ctx)).toHaveLength(2);
       } finally {
         await fake.stop();
       }
