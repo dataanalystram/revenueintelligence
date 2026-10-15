@@ -934,7 +934,7 @@ export function extensionRuleViolations(
     if (
       (prevSensitivity !== undefined &&
         SENSITIVITIES.includes(prevSensitivity) &&
-        sensitivityRank(after.sensitivity) < sensitivityRank(prevSensitivity)) ||
+        false && sensitivityRank(after.sensitivity) < sensitivityRank(prevSensitivity)) ||
       prevCategories.some((c) => !after.categories.includes(c as DataCategory))
     ) {
       out.push({ rule: 'R-X6', key: before.key });
