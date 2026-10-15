@@ -12,7 +12,9 @@ import { ReceiptEnqueuer } from './application/receipt-enqueuer';
 import { ContextReadModel } from './infrastructure/context-read-model';
 import { ContextStore } from './infrastructure/context-store';
 import { ProcessingRecordsRepository } from './infrastructure/processing-records.repository';
+import { AccountContextModule } from './account-context.module';
 import { AccountStructureModule } from './account-structure.module';
+import { AccountContextMergeParticipant } from './application/account-context-merge.participant';
 import { AccountHierarchyMergeParticipant } from './application/account-hierarchy.writer';
 import {
   AffiliationCompanyMergeParticipant,
@@ -76,6 +78,7 @@ export class ContextModule {
       imports: [
         TenancyModule,
         AccountStructureModule,
+        AccountContextModule,
         ExtensionModule,
         options.connector,
         ...options.merge.imports,
@@ -91,13 +94,19 @@ export class ContextModule {
             ...options.merge.participants,
             AccountHierarchyMergeParticipant,
             AffiliationCompanyMergeParticipant,
+            // M10E (plan §7, Q15): contexts re-pointed / collisions merged.
+            AccountContextMergeParticipant,
             ExtensionMergeParticipant,
           ],
         },
         {
           provide: PERSON_MERGE_PARTICIPANTS,
           useFactory: (...participants: PersonMergeParticipant[]) => participants,
-          inject: [AffiliationPersonMergeParticipant, ExtensionMergeParticipant],
+          inject: [
+            AffiliationPersonMergeParticipant,
+            AccountContextMergeParticipant,
+            ExtensionMergeParticipant,
+          ],
         },
         ContextStore,
         ContextReadModel,

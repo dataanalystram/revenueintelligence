@@ -1,6 +1,8 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { APP_CONFIG, type AppConfig } from '../../../platform/config';
 import {
+  ACCOUNT_CONTEXT_MIN_VERSION,
+  ACCOUNT_CONTEXT_MODULE_KEY,
   DEFAULT_EXTENSION_GUARDRAILS,
   displayExtensionValue,
   extensionFieldToken,
@@ -174,6 +176,9 @@ export class ExtensionValueWriter {
     if (input.values.length === 0) return empty('ok');
     const gate = await this.store.gate(tx);
     if (gate !== 'ok') return empty(gate);
+    // M10E (Q19): values on an account context also need 0.5 + module account_context.
+    const targetGate = await this.store.targetGate(tx, input.target);
+    if (targetGate !== 'ok') return empty(targetGate);
     const registry = await this.store.registry(tx);
     if (registry.version === undefined) return empty('registry_not_published');
     // Lock the target before reading its state (review M1): a concurrent merge
@@ -465,6 +470,7 @@ export class ExtensionValueWriter {
         { allowRetired: true },
       );
       if (!check.ok) throw fieldError(check.reason);
+      await this.requireTargetGate(tx, actx, target);
       await this.store.lockTarget(tx, target);
       const row = (await this.store.values(tx, target, [check.entry.id]))[0];
       if (!row || row.origin !== 'human' || row.releasedAt !== null) {
@@ -532,6 +538,7 @@ export class ExtensionValueWriter {
         { value: raw },
       );
     }
+    await this.requireTargetGate(tx, actx, target);
     const registry = await this.store.registry(tx);
     // Lock before the not-merged check (review M1); see observe().
     await this.store.lockTarget(tx, target);
@@ -614,6 +621,24 @@ export class ExtensionValueWriter {
   }
 
   // --- Merge (plan §7, Q22) -------------------------------------------------------
+
+  /** M10E (Q19): operator values on an account context need 0.5 + module account_context (audited). */
+  private async requireTargetGate(
+    tx: TenantTransaction,
+    actx: AuthorizedContext,
+    target: ExtensionTarget,
+  ): Promise<void> {
+    const state = await this.store.targetGate(tx, target);
+    if (state === 'canonical_version_too_low') {
+      throw new GovernanceError(
+        'canonical_version_too_low',
+        `Values on an account context need canonical ${ACCOUNT_CONTEXT_MIN_VERSION}`,
+      );
+    }
+    if (state === 'module_disabled') {
+      await this.moduleGate.require(tx, actx, ACCOUNT_CONTEXT_MODULE_KEY);
+    }
+  }
 
   /**
    * For each loser value: survivor has none → copy (origin kept, change record

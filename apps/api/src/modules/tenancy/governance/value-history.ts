@@ -48,7 +48,7 @@ function jsonValue(v: unknown): unknown {
 export async function recordValueHistory(
   tx: TenantTransaction,
   input: {
-    readonly entityKind: 'company' | 'subscription' | 'person_affiliation';
+    readonly entityKind: 'company' | 'subscription' | 'person_affiliation' | 'account_context';
     readonly entityId: string;
     readonly changeId: string;
     readonly effectiveAt: Date;
