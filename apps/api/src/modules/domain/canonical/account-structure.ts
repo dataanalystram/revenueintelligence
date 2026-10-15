@@ -163,9 +163,6 @@ export function decideParentChange(input: ParentChangeInput): ParentDecision {
   if (request.kind === 'absent') return { outcome: 'unchanged' };
   const target = request.kind === 'set' ? request.parentId : null;
   const origin: ParentCompanyOrigin = writer === 'human' ? 'human' : 'source_provided';
-  if (writer === 'source' && current.origin === 'human') {
-    return target === current.parentId ? { outcome: 'unchanged' } : { outcome: 'human_override' };
-  }
   if (target === current.parentId) {
     // An operator confirming the current value makes it sticky; a source repeat is a no-op.
     return writer === 'human' && current.origin !== 'human'
