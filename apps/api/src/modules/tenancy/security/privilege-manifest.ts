@@ -68,6 +68,12 @@ export const PRIVILEGE_MANIFEST: Readonly<Record<string, readonly TablePrivilege
   tenant_source_references: APPEND_UPDATE,
   // M10C: affiliations end, never disappear (plan §3.1).
   tenant_person_affiliations: APPEND_UPDATE,
+  // M10D: values (explicit empty), records (retire) and edges (end) never disappear.
+  tenant_extension_values: APPEND_UPDATE,
+  tenant_custom_records: APPEND_UPDATE,
+  tenant_custom_relationships: APPEND_UPDATE,
+  // M10D (Q26): collection items are replaced on change — the only M10D DELETE grant.
+  tenant_extension_value_items: ['SELECT', 'INSERT', 'DELETE'],
   companies: DML,
   company_external_refs: DML,
   person_external_refs: DML,

@@ -67,6 +67,26 @@ const affiliationFact = (
   history,
   subject: { entity: 'person', action: 'erase' },
 });
+/**
+ * M10D (Q34): a typed extension value column. Per row, the classification is the
+ * field's registry definition (`classifiedBy: 'registry'`); statically the column
+ * is bounded by the strictest class (restricted; any category; linked to the
+ * person subject because a value may describe a person or a person's records).
+ */
+const extensionValue = (kind: ColumnClassification['kind']): ColumnClassification => ({
+  sensitivity: 'restricted',
+  categories: ['personal', 'financial', 'commercial', 'communication', 'operational', 'security'],
+  kind,
+  retention: 'canonical_lifecycle',
+  history: 'none',
+  subject: { entity: 'person', action: 'erase' },
+  classifiedBy: 'registry',
+});
+/** M10D: a polymorphic entity reference that may name a person (data-subject map hook). */
+const subjectRef = (retention: Retention): ColumnClassification => ({
+  ...op('reference', retention),
+  subject: { entity: 'person', action: 'erase' },
+});
 const CV: Retention = 'configuration_version';
 const CL: Retention = 'canonical_lifecycle';
 const SA: Retention = 'security_audit';
@@ -3356,6 +3376,94 @@ export const CLASSIFICATION_MANIFEST: Readonly<
     end_reason: affiliationFact('code', 'none'),
     origin: op('code', CL),
     is_primary: affiliationFact('boolean', 'none'),
+  },
+  // M10D (plan §3, Q34): typed extension storage. Value columns are classified
+  // per row by the registry; identifiers, codes, hashes and timestamps are operational.
+  tenant_extension_values: {
+    tenant_id: op('identifier', CL),
+    id: op('identifier', CL),
+    target_kind: op('code', CL),
+    target_id: subjectRef(CL),
+    target_key: op('reference', CL),
+    field_registry_kind: op('code', CL),
+    field_id: op('reference', CL),
+    value_type: op('code', CL),
+    value_state: op('code', CL),
+    value_text: extensionValue('free_text'),
+    value_number: extensionValue('number'),
+    value_bool: extensionValue('boolean'),
+    value_date: extensionValue('timestamp'),
+    value_ts: extensionValue('timestamp'),
+    value_money_minor: extensionValue('number'),
+    value_currency: extensionValue('code'),
+    value_enum: extensionValue('code'),
+    value_item_count: op('number', CL),
+    value_json: extensionValue('json'),
+    value_ref_kind: op('code', CL),
+    value_ref_id: extensionValue('reference'),
+    value_ref_key: extensionValue('reference'),
+    origin: op('code', CL),
+    source_connection_id: op('reference', CL),
+    source_object_type: op('code', CL),
+    source_record_id: op('identifier', CL),
+    observed_at: op('timestamp', CL),
+    source_updated_at: op('timestamp', CL),
+    field_hash: op('hash', CL),
+    registry_version: op('number', CL),
+    released_at: op('timestamp', CL),
+    last_change_id: op('reference', CL),
+    created_at: op('timestamp', CL),
+    updated_at: op('timestamp', CL),
+  },
+  tenant_extension_value_items: {
+    tenant_id: op('identifier', CL),
+    value_id: op('reference', CL),
+    ordinal: op('number', CL),
+    item_type: op('code', CL),
+    item_text: extensionValue('free_text'),
+    item_number: extensionValue('number'),
+    item_date: extensionValue('timestamp'),
+    item_enum: extensionValue('code'),
+  },
+  tenant_custom_records: {
+    tenant_id: op('identifier', CL),
+    id: op('identifier', CL),
+    object_registry_kind: op('code', CL),
+    object_id: op('reference', CL),
+    parent_kind: op('code', CL),
+    parent_id: subjectRef(CL),
+    parent_key: op('reference', CL),
+    natural_key_hash: op('hash', CL),
+    record_state: op('code', CL),
+    merged_into_id: op('reference', CL),
+    origin: op('code', CL),
+    field_hash: op('hash', CL),
+    last_change_id: op('reference', CL),
+    created_at: op('timestamp', CL),
+    updated_at: op('timestamp', CL),
+  },
+  tenant_custom_relationships: {
+    tenant_id: op('identifier', CL),
+    id: op('identifier', CL),
+    rel_registry_kind: op('code', CL),
+    rel_def_id: op('reference', CL),
+    from_kind: op('code', CL),
+    from_id: subjectRef(CL),
+    from_key: op('reference', CL),
+    to_kind: op('code', CL),
+    to_id: subjectRef(CL),
+    to_key: op('reference', CL),
+    role_code: op('code', CL),
+    state: op('code', CL),
+    ended_at: op('timestamp', CL),
+    end_reason: op('code', CL),
+    origin: op('code', CL),
+    source_connection_id: op('reference', CL),
+    source_object_type: op('code', CL),
+    source_record_id: op('identifier', CL),
+    last_change_id: op('reference', CL),
+    created_at: op('timestamp', CL),
+    updated_at: op('timestamp', CL),
   },
 };
 
