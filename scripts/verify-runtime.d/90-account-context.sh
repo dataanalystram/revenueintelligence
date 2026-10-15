@@ -16,7 +16,7 @@
 # is adopted again; the confidential probe never reaches a log, CLI output,
 # stderr or audit details.
 
-AC_TENANT="rtcontext"
+AC_TENANT="rtacctctx"
 AC_OUT="$WORK/account-context"
 AC_IN="$WORK/account-context-input"
 mkdir -p "$AC_OUT" "$AC_IN"

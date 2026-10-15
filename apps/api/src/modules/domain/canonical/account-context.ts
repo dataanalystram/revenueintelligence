@@ -110,6 +110,25 @@ export const ContextTypeDefinitionSchema = z.strictObject({
 });
 export type ContextTypeDefinition = z.infer<typeof ContextTypeDefinitionSchema>;
 
+/**
+ * Parses a stored (projected) `context_type` registry entry definition: the
+ * projection adds `kind` and `codes` (= member roles, for the generic R-X3) to
+ * the published type (M10E 2b fix: the strict schema refused the projection).
+ */
+export function parseStoredContextType(
+  definition: unknown,
+): ReturnType<typeof ContextTypeDefinitionSchema.safeParse> {
+  const value =
+    definition && typeof definition === 'object' && !Array.isArray(definition)
+      ? Object.fromEntries(
+          Object.entries(definition as Record<string, unknown>).filter(
+            ([k]) => k !== 'kind' && k !== 'codes',
+          ),
+        )
+      : definition;
+  return ContextTypeDefinitionSchema.safeParse(value);
+}
+
 export const ContextTypeDocumentSchema = z.strictObject({
   schema_version: z.literal(CONTEXT_TYPE_DOCUMENT_SCHEMA_VERSION),
   types: z.array(ContextTypeDefinitionSchema).max(200),

@@ -5,7 +5,7 @@ import {
   ACCOUNT_CONTEXT_MIN_VERSION,
   ACCOUNT_CONTEXT_MODULE_KEY,
   CANONICAL_MODULES,
-  ContextTypeDefinitionSchema,
+  parseStoredContextType,
   CONTEXT_REF_TARGET,
   type AccountContextMappingContext,
   type AccountContextMappingType,
@@ -663,7 +663,7 @@ export class SourceMappingsService {
     });
     const types = new Map<string, AccountContextMappingType>();
     for (const r of rows) {
-      const parsed = ContextTypeDefinitionSchema.safeParse(r.definition);
+      const parsed = parseStoredContextType(r.definition);
       if (!parsed.success) continue;
       types.set(r.key, {
         status: r.status === 'active' && parsed.data.status === 'active' ? 'active' : 'retired',

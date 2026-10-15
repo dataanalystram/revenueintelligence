@@ -19,7 +19,7 @@ import {
   type EvidenceRelation,
   type IntegrityFinding,
   type IntegrityOutcome,
-  ContextTypeDefinitionSchema,
+  parseStoredContextType,
   contextNaturalKeyHash,
 } from '../../domain';
 import {
@@ -362,7 +362,7 @@ export class IntegrityVerificationService {
     const stored = new Map(hashes.map((h) => [h.id, h.hash]));
     const drift: string[] = [];
     for (const r of rows) {
-      const def = ContextTypeDefinitionSchema.safeParse(r.definition);
+      const def = parseStoredContextType(r.definition);
       if (!def.success) continue; // reported by account_context_type_mismatch
       const dims = (r.dimensions ?? {}) as Record<string, string | number | null>;
       const hash = contextNaturalKeyHash(

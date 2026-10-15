@@ -6,6 +6,7 @@ import {
   contextExtensionRefs,
   contextNaturalKeyHash,
   contextTypeRuleViolations,
+  parseStoredContextType,
   validateContextTypeDocument,
   type ContextTypeDocument,
 } from './account-context';
@@ -267,5 +268,19 @@ describe('natural key (Q4)', () => {
       contextNaturalKeyHash(order, { product: 'p1', region: null }),
     );
     expect(contextNaturalKeyHash(order, { product: 'p1', region: 'emea', extra: 'x' })).toBe(emea);
+  });
+});
+
+describe('stored context_type entries (M10E 2b)', () => {
+  it('a projected entry definition (with kind and codes) parses back to the type', () => {
+    const v = validateContextTypeDocument({ schema_version: 1, types: [type()] });
+    expect(v.ok).toBe(true);
+    if (!v.ok) return;
+    const stored = JSON.parse(JSON.stringify(v.entries[0]!.definition)) as Record<string, unknown>;
+    expect(stored.kind).toBe('context_type');
+    const parsed = parseStoredContextType(stored);
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.member_roles).toEqual(['csm']);
+    expect(parseStoredContextType({ ...stored, extra: 1 }).success).toBe(false);
   });
 });

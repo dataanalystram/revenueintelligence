@@ -4,7 +4,7 @@ import {
   ACCOUNT_CONTEXT_MIN_VERSION,
   ACCOUNT_CONTEXT_MODULE_KEY,
   compareCanonicalVersion,
-  ContextTypeDefinitionSchema,
+  parseStoredContextType,
   fieldSpecFromDefinition,
   parseExtensionValue,
   type ContextTypeDefinition,
@@ -176,7 +176,7 @@ export class AccountContextStore {
     });
     const entries: ContextTypeEntry[] = [];
     for (const r of rows) {
-      const parsed = ContextTypeDefinitionSchema.safeParse(r.definition);
+      const parsed = parseStoredContextType(r.definition);
       if (parsed.success) {
         entries.push({ id: r.id, key: r.key, status: r.status, definition: parsed.data });
       }
