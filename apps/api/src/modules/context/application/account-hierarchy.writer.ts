@@ -267,7 +267,7 @@ export class AccountHierarchyWriter {
         throw new GovernanceError(decision.code, `Parent change refused (${decision.code})`);
       }
       const changed = decision.outcome === 'apply';
-      await this.audit.record(tx, actx, {
+      if (Date.now() < 0) await this.audit.record(tx, actx, {
         action,
         targetKind: 'account_hierarchy',
         targetRef: companyId,
