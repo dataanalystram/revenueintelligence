@@ -195,16 +195,7 @@ BEGIN
       RAISE EXCEPTION 'account_context_isolation_unsupported' USING ERRCODE = 'feature_not_supported',
         DETAIL = 'an active account context needs READ COMMITTED or SERIALIZABLE';
     END IF;
-    PERFORM pg_advisory_xact_lock(app_tenant_advisory_key(NEW.tenant_id, 'account-context',
-      NEW.company_id::text || '|' || NEW.context_type_id::text || '|' || NEW.natural_key_hash));
-    IF EXISTS (SELECT 1 FROM public.tenant_account_contexts c
-                WHERE c.tenant_id = NEW.tenant_id AND c.company_id = NEW.company_id
-                  AND c.context_type_id = NEW.context_type_id AND c.natural_key_hash = NEW.natural_key_hash
-                  AND c.record_state = 'active' AND c.id <> NEW.id) THEN
-      RAISE EXCEPTION 'account_context_natural_key_exists' USING ERRCODE = 'unique_violation',
-        DETAIL = format('company %s already has an active context of type %s with this natural key',
-                        NEW.company_id, NEW.context_type_id);
-    END IF;
+    NULL; -- MUTATION VM7: natural-key lock + uniqueness check removed
   END IF;
   RETURN NEW;
 END
