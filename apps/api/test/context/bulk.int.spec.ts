@@ -45,7 +45,8 @@ describe('context bulk sync: backfill, reconciliation, historical receipts', () 
       correlation_id: string;
     }>(
       `SELECT entity_kind, cause, checkpoint_id::text, correlation_id::text
-         FROM tenant_context_changes WHERE tenant_id = $1 AND change_type = 'created'`,
+         FROM tenant_context_changes WHERE tenant_id = $1 AND change_type = 'created'
+          AND entity_kind IN ('company', 'person')`,
       [tenant.tenantId],
     );
 
@@ -97,6 +98,16 @@ describe('context bulk sync: backfill, reconciliation, historical receipts', () 
       if (p.entity_kind === 'person') expect(p.checkpoint_id).toBe(runs[1]!.checkpointId);
       else expect([runs[0]!.checkpointId, null]).toContain(p.checkpoint_id);
     }
+    // M10C (canonical 0.3, Q9): the same writer projects the people's company links
+    // into affiliations, with the run's provenance; never more than one per link.
+    const affiliations = await c.sql<{ cause: string; correlation_id: string }>(
+      `SELECT cause, correlation_id::text FROM tenant_context_changes
+        WHERE tenant_id = $1 AND entity_kind = 'person_affiliation' AND change_type = 'created'`,
+      [t.tenantId],
+    );
+    expect(affiliations.length).toBe(await count('tenant_person_affiliations'));
+    for (const a of affiliations)
+      expect([a.cause, a.correlation_id]).toEqual(['backfill', correlationId]);
     // Every person with a primary company is linked (company created by the other run or a follow-up).
     await c.until(
       async () =>
