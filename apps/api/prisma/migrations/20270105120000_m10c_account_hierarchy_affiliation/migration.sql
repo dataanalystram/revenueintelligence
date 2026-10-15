@@ -131,7 +131,6 @@ BEGIN
   END IF;
   -- Serialise every re-parenting of this tenant, raw SQL included, so two
   -- crossing updates (A -> B, B -> A) cannot both pass the walk.
-  PERFORM pg_advisory_xact_lock(app_tenant_advisory_key(NEW.tenant_id, 'account-hierarchy', 'tenant'));
   SELECT c.record_state INTO parent_state FROM public.companies c
    WHERE c.tenant_id = NEW.tenant_id AND c.id = NEW.parent_company_id;
   IF NOT FOUND THEN
