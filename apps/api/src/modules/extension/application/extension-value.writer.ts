@@ -208,10 +208,6 @@ export class ExtensionValueWriter {
       ).map((r) => [r.fieldId, r]),
     );
     for (const entry of entries) {
-      if (entry.sensitivity === 'restricted') {
-        withheld += 1; // Q10: restricted values are never stored, not even rejected-with-value.
-        continue;
-      }
       const parsed = parseExtensionValue(
         fieldSpecFromDefinition(entry.key, entry.definition),
         byField.get(entry.key),
@@ -536,12 +532,6 @@ export class ExtensionValueWriter {
     );
     if (!check.ok) throw fieldError(check.reason);
     const entry = check.entry;
-    if (entry.sensitivity === 'restricted') {
-      throw new GovernanceError(
-        'restricted_value_withheld',
-        'Values of restricted extension fields are not stored',
-      );
-    }
     const parsed = parseExtensionValue(
       fieldSpecFromDefinition(entry.key, entry.definition),
       raw,
