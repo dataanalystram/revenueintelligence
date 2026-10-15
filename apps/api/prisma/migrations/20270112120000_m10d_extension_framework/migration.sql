@@ -305,28 +305,6 @@ ALTER TABLE "tenant_extension_values"
   ADD CONSTRAINT "tenant_extension_values_value_type_valid" CHECK ("value_type" IN ('string', 'text', 'number', 'integer', 'boolean', 'date', 'datetime', 'money', 'enum', 'multi_enum', 'array', 'json', 'reference')),
   ADD CONSTRAINT "tenant_extension_values_value_state_valid" CHECK ("value_state" IN ('present', 'empty')),
   -- Exactly the column(s) of value_type when present; every value column NULL when empty.
-  ADD CONSTRAINT "tenant_extension_values_typed" CHECK (
-    CASE
-      WHEN "value_state" = 'empty' THEN num_nonnulls("value_text", "value_number", "value_bool", "value_date", "value_ts", "value_money_minor", "value_currency", "value_enum", "value_item_count", "value_json", "value_ref_kind", "value_ref_id", "value_ref_key") = 0
-      ELSE num_nonnulls("value_text", "value_number", "value_bool", "value_date", "value_ts", "value_money_minor", "value_currency", "value_enum", "value_item_count", "value_json", "value_ref_kind", "value_ref_id", "value_ref_key")
-           = CASE WHEN "value_type" IN ('money', 'reference') THEN 2 ELSE 1 END
-        AND CASE "value_type"
-              WHEN 'string' THEN "value_text" IS NOT NULL
-              WHEN 'text' THEN "value_text" IS NOT NULL
-              WHEN 'number' THEN "value_number" IS NOT NULL
-              WHEN 'integer' THEN "value_number" IS NOT NULL
-              WHEN 'boolean' THEN "value_bool" IS NOT NULL
-              WHEN 'date' THEN "value_date" IS NOT NULL
-              WHEN 'datetime' THEN "value_ts" IS NOT NULL
-              WHEN 'money' THEN "value_money_minor" IS NOT NULL AND "value_currency" IS NOT NULL
-              WHEN 'enum' THEN "value_enum" IS NOT NULL
-              WHEN 'multi_enum' THEN "value_item_count" IS NOT NULL
-              WHEN 'array' THEN "value_item_count" IS NOT NULL
-              WHEN 'json' THEN "value_json" IS NOT NULL
-              WHEN 'reference' THEN "value_ref_kind" IS NOT NULL AND ("value_ref_id" IS NULL) <> ("value_ref_key" IS NULL)
-              ELSE false
-            END
-    END),
   ADD CONSTRAINT "tenant_extension_values_text_length" CHECK ("value_text" IS NULL OR char_length("value_text") <= CASE WHEN "value_type" = 'text' THEN 32768 ELSE 1000 END),
   ADD CONSTRAINT "tenant_extension_values_integer_scale" CHECK ("value_type" <> 'integer' OR "value_number" IS NULL OR "value_number" = trunc("value_number")),
   ADD CONSTRAINT "tenant_extension_values_currency_format" CHECK ("value_currency" IS NULL OR "value_currency" ~ '^[A-Z]{3}$'),
