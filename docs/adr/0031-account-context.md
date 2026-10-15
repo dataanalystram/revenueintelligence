@@ -36,6 +36,12 @@ governance (gating by canonical version and module, audit, classification, integ
    registry kind. Every write path needs adopted ≥ 0.5 **and** the module enabled; reads work whatever the gate
    (Q18 / Q20). Rollback 0.5 → 0.4 with the module on is allowed: data kept and readable, writes refused, the
    adoption dry run lists `modulesStranded`; the 0.4 → 0.5 dry run lists `modulesNewlyAvailable`.
+   The extension gate (Q19, review M2) covers every place an extension definition can name `account_context`:
+   a field's `target`, a reference field's `reference_to`, and either end of a custom relationship. Publish and dry
+   run apply 0.5 + module `account_context` to all three; `CustomRelationshipWriter` (source observe, operator
+   add / end) and the reference-value path of `ExtensionValueWriter` refuse with `canonical_version_too_low` /
+   `module_disabled` (operator refusals audited, source refusals counted by code); the down-script refuses while
+   any extension entry names `account_context` in any of these places.
 4. **Single writers (plan §4).** `AccountContextWriter` writes contexts and the line's `context_id`;
    `AccountContextMembershipWriter` writes persons and explicit products. Source writes resolve by source reference
    (kind `account_context`, following merge lineage), else by natural key; operator writes

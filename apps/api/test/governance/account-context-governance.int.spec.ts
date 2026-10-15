@@ -14,7 +14,14 @@ import {
 import type { TenantContext } from '../../src/modules/tenancy';
 import { companies } from '../support/account-structure';
 import { startContextHarness, type ContextHarness } from '../support/context';
-import { field as extensionField, enableExtension, publishExtension } from '../support/extension';
+import {
+  field as extensionField,
+  enableExtension,
+  publishExtension,
+  registryVersion,
+  services as extensionServices,
+  sourceProvenance,
+} from '../support/extension';
 import { authz } from '../support/security';
 
 /** Pattern-shaped test strings are assembled at runtime: no real secret is in the repository. */
@@ -711,6 +718,183 @@ describe('M10E account context governance', () => {
         }),
       ).resolves.toMatchObject({ contextId: ctx.contextId, created: false, changed: true });
       expect((await contextsOf(t))[0]).toMatchObject({ name: 'Synthetic EMEA scope renamed' });
+    });
+  });
+
+  describe('Review M2: relationship ends and reference values naming account_context are gated (Q19)', () => {
+    const ctxRel = {
+      key: 'acct_scope',
+      display_name: 'Account scope',
+      description: 'Synthetic relationship from an account to one of its contexts',
+      from: 'account',
+      to: 'account_context',
+      cardinality: 'many_to_many',
+      sensitivity: 'internal',
+      categories: ['operational'],
+    };
+    const ctxRelReversed = { ...ctxRel, key: 'scope_acct', from: 'account_context', to: 'account' };
+    const ctxRef = extensionField('scope_ref', 'reference', {
+      constraints: { reference_to: ['account_context'] },
+    });
+    const extDoc = (over: Record<string, unknown>) => ({
+      schema_version: 1,
+      fields: [],
+      objects: [],
+      relationships: [],
+      ...over,
+    });
+    async function extRefusal(t: TenantContext, document: unknown) {
+      try {
+        await registry().publish(await authz(t, 'config.registry.publish'), 'extension', {
+          document,
+          expectedBaseVersion: await registryVersion(c, t),
+          expectedContentHash: 'a'.repeat(64),
+        });
+      } catch (e) {
+        return (e as { code?: string }).code;
+      }
+      throw new Error('publish was not refused');
+    }
+
+    it('publish: a relationship end or a reference_to naming account_context needs 0.5 + module account_context (dry run issues, refusals audited)', async () => {
+      const low = await c.tenant('acm2low', 1001);
+      await enableExtension(c, low);
+      await adoption().adopt(await authz(low, 'config.canonical.adopt'), {
+        target: '0.4',
+        expectedCurrent: '0.5',
+      });
+      const off = await c.tenant('acm2off', 1001);
+      await enableExtension(c, off);
+      for (const document of [
+        extDoc({ relationships: [ctxRel] }),
+        extDoc({ relationships: [ctxRelReversed] }),
+        extDoc({ fields: [ctxRef] }),
+      ]) {
+        for (const [t, code] of [
+          [low, 'canonical_version_too_low'],
+          [off, 'module_disabled'],
+        ] as const) {
+          expect(await registry().dryRun(t, 'extension', document)).toMatchObject({
+            valid: false,
+            issues: expect.arrayContaining([code]) as unknown,
+          });
+          expect(await extRefusal(t, document)).toBe(code);
+          expect((await audit(t)).at(-1)).toMatchObject({
+            outcome: 'failed',
+            reason_code: code,
+          });
+        }
+      }
+      expect(await registryVersion(c, low)).toBe(0);
+      expect(await registryVersion(c, off)).toBe(0);
+      // With the gate open the same definitions publish.
+      await enableContexts(off);
+      await expect(
+        publishExtension(c, off, extDoc({ fields: [ctxRef], relationships: [ctxRel] })),
+      ).resolves.toMatchObject({ version: 1 });
+    });
+
+    it('writers: with the gate closed after publish, relationship edges and reference values naming a context are refused (operator audited, source counted by code)', async () => {
+      const t = await c.tenant('acm2wr', 1001);
+      const ids = await companies(c, t, ['6301']);
+      const account = ids['6301']!;
+      await enableExtension(c, t);
+      await enableContexts(t);
+      await publishExtension(c, t, extDoc({ fields: [ctxRef], relationships: [ctxRel] }));
+      const [row] = await c.sql<{ version: number }>(
+        `SELECT version FROM tenant_module_settings WHERE tenant_id = $1 AND module_key = 'account_context'`,
+        [t.tenantId],
+      );
+      await modules().disable(await authz(t, 'config.module.change'), {
+        module: 'account_context',
+        expectedVersion: row!.version,
+      });
+      const ext = extensionServices(c);
+      const human = () => authz(t, 'canonical.human_entry');
+      const ctxId = randomUUID();
+
+      await expect(
+        ext.relationships.add(await human(), {
+          relationship: 'acct_scope',
+          from: `account:${account}`,
+          to: `account_context:${ctxId}`,
+          reason: REASON,
+        }),
+      ).rejects.toMatchObject({ code: 'module_disabled' });
+      expect((await audit(t)).at(-1)).toMatchObject({
+        action: 'extension.relationship.add',
+        outcome: 'failed',
+        reason_code: 'module_disabled',
+      });
+      await expect(
+        ext.relationships.observeSource(await authz(t, 'canonical.source_sync'), {
+          relationshipKey: 'acct_scope',
+          from: { kind: 'company', id: account },
+          to: null,
+          observedAt: new Date(),
+          provenance: sourceProvenance('m2-rel'),
+        }),
+      ).resolves.toEqual({ status: 'module_disabled' });
+
+      await expect(
+        ext.values.set(await human(), {
+          target: `account:${account}`,
+          field: 'scope_ref',
+          value: `account_context:${ctxId}`,
+          reason: REASON,
+        }),
+      ).rejects.toMatchObject({ code: 'module_disabled' });
+      expect((await audit(t)).at(-1)).toMatchObject({
+        action: 'extension.value.set',
+        outcome: 'failed',
+        reason_code: 'module_disabled',
+      });
+      await expect(
+        ext.values.observeSource(await authz(t, 'canonical.source_sync'), {
+          target: { kind: 'company', id: account },
+          values: [{ field: 'scope_ref', raw: `account_context:${ctxId}` }],
+          observedAt: new Date(),
+          provenance: sourceProvenance('m2-val'),
+        }),
+      ).resolves.toMatchObject({ status: 'ok', written: 0, rejected: { module_disabled: 1 } });
+
+      // Below 0.5 the code is canonical_version_too_low.
+      await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
+        target: '0.4',
+        expectedCurrent: '0.5',
+      });
+      await expect(
+        ext.relationships.add(await human(), {
+          relationship: 'acct_scope',
+          from: `account:${account}`,
+          to: `account_context:${ctxId}`,
+          reason: REASON,
+        }),
+      ).rejects.toMatchObject({ code: 'canonical_version_too_low' });
+      expect((await audit(t)).at(-1)).toMatchObject({
+        action: 'extension.relationship.add',
+        outcome: 'failed',
+        reason_code: 'canonical_version_too_low',
+      });
+      await expect(
+        ext.values.set(await human(), {
+          target: `account:${account}`,
+          field: 'scope_ref',
+          value: `account_context:${ctxId}`,
+          reason: REASON,
+        }),
+      ).rejects.toMatchObject({ code: 'canonical_version_too_low' });
+      expect(
+        await count(
+          `SELECT count(*)::int AS n FROM tenant_custom_relationships WHERE tenant_id = $1`,
+          [t.tenantId],
+        ),
+      ).toBe(0);
+      expect(
+        await count(`SELECT count(*)::int AS n FROM tenant_extension_values WHERE tenant_id = $1`, [
+          t.tenantId,
+        ]),
+      ).toBe(0);
     });
   });
 });

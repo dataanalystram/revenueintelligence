@@ -918,6 +918,27 @@ ${OFF}`;
           `DELETE FROM tenant_registry_entries WHERE kind = 'extension'`,
           /refusing rollback: 1 extension definitions target account_context/,
         ],
+        // Review M2: a relationship end or a reference_to naming account_context also refuses.
+        [
+          `INSERT INTO tenant_registry_entries (tenant_id, id, kind, key, definition, introduced_in, last_changed_in, updated_at)
+           VALUES ('${tA}', gen_random_uuid(), 'extension', 'scope_rel', '{"kind": "custom_relationship", "from": "account", "to": "account_context"}', 1, 1, now())`,
+          `DELETE FROM tenant_registry_entries WHERE kind = 'extension'`,
+          /refusing rollback: 1 extension definitions reference account_context/,
+        ],
+        // Review M2: a relationship end or a reference_to naming account_context also refuses.
+        [
+          `INSERT INTO tenant_registry_entries (tenant_id, id, kind, key, definition, introduced_in, last_changed_in, updated_at)
+           VALUES ('${tA}', gen_random_uuid(), 'extension', 'rel_scope', '{"kind": "custom_relationship", "from": "account_context", "to": "account"}', 1, 1, now())`,
+          `DELETE FROM tenant_registry_entries WHERE kind = 'extension'`,
+          /refusing rollback: 1 extension definitions reference account_context/,
+        ],
+        // Review M2: a relationship end or a reference_to naming account_context also refuses.
+        [
+          `INSERT INTO tenant_registry_entries (tenant_id, id, kind, key, definition, introduced_in, last_changed_in, updated_at)
+           VALUES ('${tA}', gen_random_uuid(), 'extension', 'scope_ref', '{"kind": "field", "target": "account", "constraints": {"reference_to": ["person", "account_context"]}}', 1, 1, now())`,
+          `DELETE FROM tenant_registry_entries WHERE kind = 'extension'`,
+          /refusing rollback: 1 extension definitions reference account_context/,
+        ],
         [
           `INSERT INTO tenant_account_contexts (tenant_id, company_id, context_type_id, natural_key_hash, name)
            VALUES ('${tA}', '${cA1}', gen_random_uuid(), repeat('a', 64), 'X')`,

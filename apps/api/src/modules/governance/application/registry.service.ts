@@ -261,6 +261,11 @@ export class RegistryService {
         issues: parsed.issues.length,
       });
     }
+    // M10E (Q19, review M2): a document naming account_context anywhere is gated before
+    // anything else is checked (re-checked under the registry lock below).
+    if (kind === 'extension' && this.targetsAccountContext(parsed.value.document)) {
+      await this.db.transaction(actx.tenant, (tx) => this.requireContextGate(tx, actx));
+    }
     const contentHash = registryContentHash(parsed.value.document);
     if (input.expectedContentHash !== contentHash) {
       throw new GovernanceError(
