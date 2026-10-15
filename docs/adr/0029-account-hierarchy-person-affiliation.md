@@ -164,6 +164,12 @@ period that later milestones (M10G champion movement, M10H contact roles) build 
   only, classified column by column), not named in the plan.
 - **No issue for source vs operator affiliation disagreement** (plan §3.2 "disagreement → open issue"): a source
   observation leaves a human row untouched, but no issue kind records the disagreement yet (tech debt #76).
+- **Review decisions (2026-10-15, orchestrator under Ram's standing no-stop instruction, pending his sign-off at
+  the `main` merge).** M1: both guard triggers refuse REPEATABLE READ (§2). M6: operator affiliation endings are
+  sticky until `release` (§9). m1: a survivor whose parent an operator cleared does not inherit the loser's parent
+  (recorded as `hierarchy_human_override_disagrees`). **m6: the Q23 group roll-up (tech debt #74) and the Q12
+  production `person_affiliation` reference writer (#75) stay deferred**; both are approved-default scope, so this is
+  a recorded shortfall against the approved plan, not a plan change.
 - **The M10C migration cases live in their own suite** (`migrations-m10c.int.spec.ts`; helpers moved to
   `test/support/migrations.ts`) because `migrations.int.spec.ts` runs close to the hook timeout (tech debt #72).
 

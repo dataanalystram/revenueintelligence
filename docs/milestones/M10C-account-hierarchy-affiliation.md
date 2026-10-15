@@ -1,8 +1,8 @@
 # M10C — Account hierarchy + Person–Account affiliation (record)
 
-- Status: **implementation complete, ready for independent review.** PR #32 (`m10c-impl` → `integration`), not
-  merged. Mutation proofs VM1–VM21 recorded (see [Mutation proofs](#mutation-proofs)); independent review
-  (`review-milestone`), owner approval and merge open (see [Remaining](#remaining)).
+- Status: **independent review `PASS WITH FINDINGS` (head `455475a`); every finding fixed or logged on the PR, see
+  [Review](#review).** PR #32 (`m10c-impl` → `integration`), not merged. Mutation proofs VM1–VM21 recorded (see
+  [Mutation proofs](#mutation-proofs)); owner approval and merge open (see [Remaining](#remaining)).
 - Plan: [M10C plan](M10C-account-hierarchy-affiliation-plan.md) (plan PR #31, merge `598ab9c`); owner instruction of
   2026-10-14: the `DEFAULT` answers Q1–Q24 apply unless overridden.
 - ADR: [0029 Account hierarchy, person–account affiliation and canonical 0.3](../adr/0029-account-hierarchy-person-affiliation.md)
@@ -23,10 +23,10 @@
 | Merge                | `AccountHierarchyMergeParticipant` and the affiliation company participant (always wired); new `PersonMergeParticipant` port (`PERSON_MERGE_PARTICIPANTS`) invoked by the person merge                                                      |
 | History / changes    | `company.parent_company_id` full value history; value-free history for affiliation status / period / role codes; change entity kind `person_affiliation`                                                                                    |
 | Read model / views   | `AccountStructureReadModel` (ancestors, root, depth, bounded descendants, affiliations with derived `isPrimary`; audited); views `account_hierarchy_paths`, `person_affiliation_index` (`security_invoker`, `SELECT` only)                  |
-| CLI                  | `account:hierarchy show / set / clear / release`, `person:affiliations`, `person:affiliation add / end` (JSON, identifiers / codes / dates only; exit 2 on refusal)                                                                         |
+| CLI                  | `account:hierarchy show / set / clear / release`, `person:affiliations`, `person:affiliation add / end / release` (JSON, identifiers / codes / dates only; exit 2 on refusal)                                                               |
 | Canonical `0.3`      | catalogue with optional hash members (`0.1` / `0.2` hashes unchanged), explicit adoption with dry-run features, new tenants at `0.3`, writers / operator entry / publishes gated (`canonical_version_too_low`)                              |
 | Security / integrity | policy v4 (`canonical.human_entry` → `operator`, `data.account_structure.read`), audit vocabulary, six interim issue kinds, manifests, data-subject link, six integrity checks                                                              |
-| Migration / rollback | `20270105120000_m10c_account_hierarchy_affiliation` (no backfill) and its down-script (ten refusal branches, exact M10B restore)                                                                                                            |
+| Migration / rollback | `20270105120000_m10c_account_hierarchy_affiliation` (no backfill) and its down-script (nine refusal checks, ten planted conditions in V21, exact M10B restore)                                                                              |
 | Runtime              | `scripts/verify-runtime.d/88-account-hierarchy-affiliation.sh` (V22)                                                                                                                                                                        |
 
 ## Definition of done
@@ -44,19 +44,21 @@
 
 ## Plan vs actual (deviations)
 
-| #   | Deviation                                          | Why                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| --- | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D1  | One active row per pair by trigger + per-pair lock | the partial unique index `… WHERE status = 'active'` is not expressible in the Prisma schema without schema-guard drift; `app_person_affiliation_guard` refuses a second active row (`affiliation_active_exists`). Like the hierarchy guard, it is sound at READ COMMITTED (fresh snapshot after the lock) and SERIALIZABLE (SSI); a REPEATABLE READ transaction is refused `affiliation_isolation_unsupported` (review M1) |
-| D2  | `app_tenant_advisory_key(uuid, text, text)`        | new `IMMUTABLE` invoker SQL helper with the same key as `advisoryLockKey`, so trigger and writer share one lock (V19 asserts equality)                                                                                                                                                                                                                                                                                      |
-| D3  | Operator reason is a code token                    | `^[a-z][a-z0-9_]{1,63}$`, audit details only; the plan's bounded secret-scanned text is not supported (a code carries no personal data or secret; tech debt #79)                                                                                                                                                                                                                                                            |
-| D4  | `person.affiliation` as a relationship on person   | natural key (person, company); id-bearing affiliation objects not mapped and no production `person_affiliation` reference writer (no connector supplies them; tech debt #75)                                                                                                                                                                                                                                                |
-| D5  | Group roll-up deferred                             | the read model is structural only; derived group ownership belongs to the products module (Q23; tech debt #74)                                                                                                                                                                                                                                                                                                              |
-| D6  | Operator refusals not logged to stdout             | returned (exit 2) and audited `failed`; logging them broke the CLI's JSON output (found by runtime script 88, run `38666973882`; fixed in `24a3a5f`). Source refusals are recorded as issues and logged (code only)                                                                                                                                                                                                         |
-| D7  | Merge inheritance that would cycle is skipped      | a parentless survivor does not inherit a loser parent that descends from it; `hierarchy_cycle_refused` names both ids (case not covered by the plan)                                                                                                                                                                                                                                                                        |
-| D8  | Extra read-only views                              | `account_hierarchy_paths`, `person_affiliation_index` (`security_invoker`, `SELECT` only, classified)                                                                                                                                                                                                                                                                                                                       |
-| D9  | No issue for source vs human affiliation           | a source observation leaves a human row untouched but records no issue (plan §3.2; tech debt #76)                                                                                                                                                                                                                                                                                                                           |
-| D10 | M10C migration cases in their own suite            | `migrations-m10c.int.spec.ts`, helpers in `test/support/migrations.ts` (tech debt #72, partly addressed)                                                                                                                                                                                                                                                                                                                    |
-| D11 | VM7, VM8, VM11 split into two variants each        | the plan's wording fits two code paths each (writer vs pure rule, runtime vs static check, retirement vs absence)                                                                                                                                                                                                                                                                                                           |
+| #   | Deviation                                           | Why                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| --- | --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | One active row per pair by trigger + per-pair lock  | the partial unique index `… WHERE status = 'active'` is not expressible in the Prisma schema without schema-guard drift; `app_person_affiliation_guard` refuses a second active row (`affiliation_active_exists`). Like the hierarchy guard, it is sound at READ COMMITTED (fresh snapshot after the lock) and SERIALIZABLE (SSI); a REPEATABLE READ transaction is refused `affiliation_isolation_unsupported` (review M1) |
+| D2  | `app_tenant_advisory_key(uuid, text, text)`         | new `IMMUTABLE` invoker SQL helper with the same key as `advisoryLockKey`, so trigger and writer share one lock (V19 asserts equality)                                                                                                                                                                                                                                                                                      |
+| D3  | Operator reason is a code token                     | `^[a-z][a-z0-9_]{1,63}$`, audit details only; the plan's bounded secret-scanned text is not supported (a code carries no personal data or secret; tech debt #79)                                                                                                                                                                                                                                                            |
+| D4  | `person.affiliation` as a relationship on person    | natural key (person, company); id-bearing affiliation objects not mapped and no production `person_affiliation` reference writer (no connector supplies them; tech debt #75)                                                                                                                                                                                                                                                |
+| D5  | Group roll-up deferred                              | the read model is structural only; derived group ownership belongs to the products module (Q23; tech debt #74)                                                                                                                                                                                                                                                                                                              |
+| D6  | Operator refusals not logged to stdout              | returned (exit 2) and audited `failed`; logging them broke the CLI's JSON output (found by runtime script 88, run `38666973882`; fixed in `24a3a5f`). Source refusals are recorded as issues and logged (code only)                                                                                                                                                                                                         |
+| D7  | Merge inheritance that would cycle is skipped       | a parentless survivor does not inherit a loser parent that descends from it; `hierarchy_cycle_refused` names both ids (case not covered by the plan)                                                                                                                                                                                                                                                                        |
+| D8  | Extra read-only views                               | `account_hierarchy_paths`, `person_affiliation_index` (`security_invoker`, `SELECT` only, classified)                                                                                                                                                                                                                                                                                                                       |
+| D9  | No issue for source vs human affiliation            | a source observation leaves a human row untouched but records no issue (plan §3.2; tech debt #76)                                                                                                                                                                                                                                                                                                                           |
+| D10 | M10C migration cases in their own suite             | `migrations-m10c.int.spec.ts`, helpers in `test/support/migrations.ts` (tech debt #72, partly addressed)                                                                                                                                                                                                                                                                                                                    |
+| D12 | Operator affiliation endings are sticky (review M6) | orchestrator decision under Ram's standing no-stop instruction, mirroring hierarchy stickiness (CLAUDE.md "Human overrides win"): a source statement never re-creates a pair an operator ended until `person:affiliation release`; new column `released_at`, audit action `person.affiliation.release` (ADR 0029 §9)                                                                                                        |
+| D13 | Guard triggers refuse REPEATABLE READ (review M1)   | the lock-then-read is sound at READ COMMITTED and SERIALIZABLE only; both triggers raise `hierarchy_isolation_unsupported` / `affiliation_isolation_unsupported` (`0A000`) at REPEATABLE READ (ADR 0029 §2)                                                                                                                                                                                                                 |
+| D11 | VM7, VM8, VM11 split into two variants each         | the plan's wording fits two code paths each (writer vs pure rule, runtime vs static check, retirement vs absence)                                                                                                                                                                                                                                                                                                           |
 
 ## Tests
 
@@ -102,6 +104,9 @@ were already undeletable since M10A2. No legitimate path breaks, so work did not
 - V12 group ownership roll-up is not built (D5, tech debt #74).
 - No production `person_affiliation` reference writer (D4, tech debt #75); `affiliation_reference_parity` is tested
   with references written through `SourceReferenceService.observe` directly.
+- **Q23 group roll-up (#74) and the Q12 production reference writer (#75) are deferred by the orchestrator under
+  Ram's standing no-stop instruction, pending his sign-off at the `main` merge** (review m6). Both are part of the
+  approved defaults, so the PR delivers less than the approved plan on these two points.
 - V20: the explicit 0.2 / 0.3 parity test uses the Sugar fake; the Chargebee suites run unchanged with new tenants
   at 0.3 but there is no separate Chargebee 0.2 / 0.3 parity test.
 - Reference retirement is exercised by the VM11 test through `retireAbsentWithin` (HubSpot companies); the Sugar
@@ -132,12 +137,47 @@ runtime, docker):
 | `38666973882` | `43100e9` | lint / unit, integration, docker ✅; runtime ❌ only on the script-88 operator check (refusal warning on CLI stdout) → fixed in `24a3a5f` (D6)                                                             |
 | `38668037349` | `24a3a5f` | **all four jobs ✅** (phase-3a tests and runtime script 88; the reviewed head of the mutation proofs); jobs lint `116204365577`, integration `116204365216`, runtime `116204365539`, docker `116204365488` |
 
-The phase-3c commits (VM11 test, V19 self-parent assertion, ADR 0029, this record, README / tech-debt / E3 notes)
-are verified by the final run listed in the PR #32 description.
+| `38670675748` | `455475a` | **all four jobs ✅** (phase-3c head: VM11 test, V19 self-parent assertion, ADR 0029, this record; the reviewed head); jobs lint `116212814172`, integration `116212814339` (634/634), runtime `116212814212`, docker `116212814075` |
+
+The review-fix commits are verified by the run in [Review](#review).
 
 **Fresh-clone run.** Every CI job checks the branch out fresh and runs `pnpm install --frozen-lockfile` and the full
 verification, so the final run in the PR description is recorded as the fresh-clone run. A local fresh clone was
 not run: the sandbox has no Docker and not enough memory for a full install, typecheck and integration run.
+
+## Review
+
+Independent review of head `455475a` (`review-milestone`, 2026-10-15): **PASS WITH FINDINGS**, six majors, six minors,
+seven nits, no blockers. Every finding is fixed on PR #32 except where stated; each fix carries a guarding test.
+
+| Finding | Fix                                                                                                                                                                     | Commit(s)            |
+| ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
+| M1      | both guard triggers refuse REPEATABLE READ (`0A000`); V3 / V10 two-session tests; ADR §2, plan trigger row, D1, D13                                                     | `ae55dc2`            |
+| M2      | an unread primary-company field states nothing (no `companyLinks`), never an ending; engine unit tests                                                                  | `85ac456`, `dfa2008` |
+| M3      | the late-company path replays plain company links only, never a `person.affiliation` statement; V9 test with a past and a current statement                             | `678a5c7`            |
+| M4      | the late-company query anti-joins affiliations (people still missing one only); V9 test: unchanged re-reads never call the writer                                       | `678a5c7`            |
+| M5      | company merges take the hierarchy lock before reading children; V8 two-session race test                                                                                | `7753f01`            |
+| M6      | operator endings sticky until `person:affiliation release` (`released_at`, audited); V9 re-observation and release tests; runtime 88; ADR §9, D12                       | `b8ea1f9`            |
+| m1      | a human-cleared survivor does not inherit the loser's parent; `hierarchy_human_override_disagrees` recorded; V8 test                                                    | `7753f01`            |
+| m2      | an over-long affiliation account id states nothing (`invalid_reference` quality code); engine unit test                                                                 | `85ac456`            |
+| m3      | operator `add` keeps the stored period when the flags are omitted (re-validated); V9 assertion                                                                          | `b6a7ab8`            |
+| m4      | the `person.affiliation` source scope is written only at `0.3`; `AFFILIATION_LINK_TYPE_ID` documented (ADR §9); V15 assertion                                           | `db0cf23`            |
+| m5      | affiliation read model: one join for `isPrimary`, `truncated` flag (bound 1–500, audited); V12 test                                                                     | `db0cf23`            |
+| m6      | **not built**: Q23 roll-up (#74) and Q12 reference writer (#75) deferred by the orchestrator under Ram's standing instruction, pending his sign-off at the `main` merge | this record, ADR     |
+| n1      | `hierarchy_history_parity` tolerates rows tied at one `recorded_at`; test                                                                                               | `64f9df7`            |
+| n2      | dead reason codes and `parseHierarchyMaxDepth` removed                                                                                                                  | `1cba796`            |
+| n3      | V18 scans all of `src/`; `MAPPING_TARGETS_0_3` pinned to `MAPPING_TARGETS`                                                                                              | `64d4ca3`            |
+| n4      | runtime 88 scans CLI stderr too; the remaining weakness (names never pass the API / worker in that script) is stated in the script and logged (#80)                     | `9ca4489`            |
+| n5      | no unresolved-company issue for a past period, no unresolved-parent issue for a human child; `humanRows` documented                                                     | `37c581e`            |
+| n6      | CLI usage names the real scripts; zone-less instants refused; the vanished-parent label kept (fail closed, commented)                                                   | `fffd09b`, `37c581e` |
+| n7      | ten → nine refusal checks; evidence row for `38670675748`; plan status in the milestone index; M10A2 / M10B status in the root README                                   | docs commit          |
+
+Owner decisions taken by the orchestrator under Ram's standing pre-approval (no stop to ask): M6 sticky endings with
+`release`; M1 refusal at REPEATABLE READ with the M10C migration edited in place (it is not merged into `integration`,
+so no deployed database carries it; the down-script needed only the new audit action); m6 deferral. All three wait
+for Ram's sign-off at the `main` merge.
+
+Final CI for the review fixes: see the PR #32 description (updated with the run id once all four jobs are green).
 
 ## Mutation proofs
 
@@ -189,7 +229,7 @@ translation).
 
 ## Remaining
 
-- Independent review (`review-milestone`), owner approval, merge to `integration`.
+- Owner approval (including the orchestrator decisions in [Review](#review)) and merge to `integration`.
 - Group roll-up (#74); id-bearing affiliations and the production reference writer (#75); affiliation disagreement
   issue (#76); person delete translation (#77); trigger-error translation (#78); free-text reasons (#79).
 - Integrity worker job (tech debt #65, inherited); data-quality store (M10L) to take over the interim issue kinds.
