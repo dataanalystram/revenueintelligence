@@ -229,7 +229,7 @@ export function contextProvenance(
     adapterVersion: '1',
     correlationId: randomUUID(),
     ...over,
-  } as ContextProvenance;
+  };
 }
 
 /** One source observation through `AccountContextWriter.observeSource` (present unless stated). */
