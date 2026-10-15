@@ -109,9 +109,9 @@ export function canonicalCatalogueFor(version: string): CanonicalCatalogue {
 function catalogue0_3(base: CanonicalCatalogue): CanonicalCatalogue {
   return {
     ...base,
-    entityKinds: ENTITY_INDEX_KINDS_0_3,
-    changeEntityKinds: CHANGE_ENTITY_KINDS_0_3,
-    genericReferenceKinds: GENERIC_REFERENCE_KINDS_0_3,
+    entityKinds: ENTITY_INDEX_KINDS,
+    changeEntityKinds: CHANGE_ENTITY_KINDS,
+    genericReferenceKinds: GENERIC_REFERENCE_KINDS,
     evidenceTypes: EVIDENCE_TYPES,
     evidenceRoles: EVIDENCE_ROLES,
     authorityFacts: AUTHORITY_FACTS_0_3,
