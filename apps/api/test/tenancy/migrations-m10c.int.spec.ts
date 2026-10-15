@@ -34,6 +34,8 @@ const M10C = '20270105120000_m10c_account_hierarchy_affiliation';
 const M10C_DOWN = resolve(`prisma/rollback/${M10C}.down.sql`);
 /** M10D sits on top of M10C: its (data-free) down-script runs first in the round trip. */
 const M10D_DOWN = resolve('prisma/rollback/20270112120000_m10d_extension_framework.down.sql');
+/** M10E sits on top of M10D: its (data-free) down-script runs before M10D's. */
+const M10E_DOWN = resolve('prisma/rollback/20270119120000_m10e_account_context.down.sql');
 /** Stored catalogue hashes of the earlier versions (their own migrations); never recomputed into new values. */
 const STORED_HASHES = {
   '0.1': '2fd4f7e575633de7cac4aea394a71c73adc9b73e5e18b67c0b0ee404572faf5b',
@@ -81,7 +83,7 @@ describe('M10C migration and schema guard', () => {
   };
 
   describe('V14: canonical catalogue in the database', () => {
-    it('0.3 published (supported since M10D, 0.4 current); stored 0.1–0.3 hashes unchanged and reproduced by the code; 1.0 refused', async () => {
+    it('0.3 published (supported since M10D; 0.5 current since M10E); stored 0.1–0.3 hashes unchanged and reproduced by the code; 1.0 refused', async () => {
       const rows = await q<{
         version: string;
         status: string;
@@ -98,14 +100,21 @@ describe('M10C migration and schema guard', () => {
         // M10D (ADR 0030) sits on top.
         {
           version: '0.4',
-          status: 'current',
+          status: 'supported',
           adr: '0030',
           catalogue_hash: canonicalCatalogueHash(canonicalCatalogueFor('0.4')),
+        },
+        // M10E (ADR 0031) sits on top.
+        {
+          version: '0.5',
+          status: 'current',
+          adr: '0031',
+          catalogue_hash: canonicalCatalogueHash(canonicalCatalogueFor('0.5')),
         },
       ]);
       expect(
         CANONICAL_VERSIONS.filter((v) => v.status === 'current').map((v) => v.version),
-      ).toEqual(['0.4']);
+      ).toEqual(['0.5']);
       for (const v of ['0.1', '0.2', '0.3'] as const) {
         expect(canonicalCatalogueHash(canonicalCatalogueFor(v)), v).toBe(STORED_HASHES[v]);
       }
@@ -381,9 +390,10 @@ INSERT INTO tenant_source_authority_versions (tenant_id, version, base_version, 
       expect(versions).toEqual([
         { version: '0.1', status: 'supported' },
         { version: '0.2', status: 'supported' },
-        // M10D sits on top: 0.3 is supported and 0.4 current once every migration applied.
+        // M10D / M10E sit on top: 0.3 and 0.4 are supported and 0.5 current once every migration applied.
         { version: '0.3', status: 'supported' },
-        { version: '0.4', status: 'current' },
+        { version: '0.4', status: 'supported' },
+        { version: '0.5', status: 'current' },
       ]);
       // No tenant adopts 0.3 by migration (explicit adoption, Q19).
       expect(
@@ -398,7 +408,8 @@ INSERT INTO tenant_source_authority_versions (tenant_id, version, base_version, 
       const url = await m10bDatabase('m10c_down_db');
       await migrate(url);
       const latest = await schemaSnapshot(url);
-      // M10D sits on top of M10C: its (data-free) rollback runs first.
+      // M10E and M10D sit on top of M10C: their (data-free) rollbacks run first.
+      await withAdmin(url, (db) => db.query(readFileSync(M10E_DOWN, 'utf8')));
       await withAdmin(url, (db) => db.query(readFileSync(M10D_DOWN, 'utf8')));
       const down = readFileSync(M10C_DOWN, 'utf8');
       const ON = 'SET session_replication_role = replica;';

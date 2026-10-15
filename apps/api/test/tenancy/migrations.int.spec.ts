@@ -108,8 +108,18 @@ const M10C_DOWN = resolve(`prisma/rollback/${M10C_MIGRATIONS[0]}.down.sql`);
 const M10D_MIGRATIONS = ['20270112120000_m10d_extension_framework'];
 const M10D_DOWN = resolve(`prisma/rollback/${M10D_MIGRATIONS[0]}.down.sql`);
 
-/** Rolls M10D back; every M10C and older down-script runs after this. */
+/** M10E migration (AccountContext, canonical 0.5). */
+const M10E_MIGRATIONS = ['20270119120000_m10e_account_context'];
+const M10E_DOWN = resolve(`prisma/rollback/${M10E_MIGRATIONS[0]}.down.sql`);
+
+/** Rolls M10E back; every M10D and older down-script runs after this. */
+async function rollbackM10E(url: string): Promise<void> {
+  await withAdmin(url, (db) => db.query(readFileSync(M10E_DOWN, 'utf8')));
+}
+
+/** Rolls M10E, then M10D back; every M10C and older down-script runs after this. */
 async function rollbackM10D(url: string): Promise<void> {
+  await rollbackM10E(url);
   await withAdmin(url, (db) => db.query(readFileSync(M10D_DOWN, 'utf8')));
 }
 
@@ -143,6 +153,7 @@ const POST_M7_DOWNS = [
   ...M10B_MIGRATIONS,
   ...M10C_MIGRATIONS,
   ...M10D_MIGRATIONS,
+  ...M10E_MIGRATIONS,
 ]
   .reverse()
   .map((name) => resolve(`prisma/rollback/${name}.down.sql`));
@@ -199,6 +210,7 @@ describe('database migrations and schema guard', () => {
         ...M10B_MIGRATIONS,
         ...M10C_MIGRATIONS,
         ...M10D_MIGRATIONS,
+        ...M10E_MIGRATIONS,
       ]);
       expect(rows.every((r) => r.finished_at !== null)).toBe(true);
     });
@@ -462,7 +474,7 @@ describe('database migrations and schema guard', () => {
       );
     });
 
-    it('canonical_modules equals the code catalogue (unavailable except extension, available at 0.4 since M10D)', async () => {
+    it('canonical_modules equals the code catalogue (unavailable except extension, available at 0.4 since M10D, and account_context, at 0.5 since M10E)', async () => {
       const { rows } = await withAdmin(cleanUrl, (db) =>
         db.query<{
           module_key: string;
@@ -488,7 +500,10 @@ describe('database migrations and schema guard', () => {
           }))
           .sort((a, b) => a.module_key.localeCompare(b.module_key)),
       );
-      expect(rows.filter((r) => r.available).map((r) => r.module_key)).toEqual(['extension']);
+      expect(rows.filter((r) => r.available).map((r) => r.module_key)).toEqual([
+        'account_context',
+        'extension',
+      ]);
     });
 
     it('the M10A2 closed-set CHECKs equal the code catalogues', async () => {
@@ -2556,12 +2571,13 @@ INSERT INTO tenant_subscriptions (tenant_id, id, company_id, product_key, state,
             )
           ).rows,
       );
-      // M10C and M10D sit on top: 0.2 / 0.3 are supported and 0.4 current once every migration applied.
+      // M10C, M10D and M10E sit on top: 0.2–0.4 are supported and 0.5 current once every migration applied.
       expect(versions).toEqual([
         { version: '0.1', status: 'supported' },
         { version: '0.2', status: 'supported' },
         { version: '0.3', status: 'supported' },
-        { version: '0.4', status: 'current' },
+        { version: '0.4', status: 'supported' },
+        { version: '0.5', status: 'current' },
       ]);
       await expect(migrate(url)).resolves.toMatch(/No pending migrations/);
       expect(await backfilled(url)).toEqual(BACKFILL);
@@ -2572,7 +2588,7 @@ INSERT INTO tenant_subscriptions (tenant_id, id, company_id, product_key, state,
       const url = await m10a2Database('m10b_down_db');
       await migrate(url);
       const latest = await schemaSnapshot(url);
-      // M10C and M10D sit on top of M10B: their (data-free) rollbacks run first.
+      // M10C, M10D and M10E sit on top of M10B: their (data-free) rollbacks run first.
       await rollbackM10C(url);
       const down = readFileSync(M10B_DOWN, 'utf8');
       const ON = 'SET session_replication_role = replica;';

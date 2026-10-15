@@ -195,7 +195,7 @@ describe('M10D extension governance', () => {
         valid: true,
         issues: [],
         currentVersion: 0,
-        canonicalVersionMin: '0.4',
+        canonicalVersionMin: '0.5',
       });
       expect(dry.contentHash).toMatch(/^[0-9a-f]{64}$/);
       expect(await registry().dryRun(t, 'extension', structuredClone(doc))).toMatchObject({
@@ -836,14 +836,19 @@ describe('M10D extension governance', () => {
   });
 
   describe('V18: adoption and module (Q18 / Q19)', () => {
-    it('a new tenant is at 0.4 with the module disabled; the rollback dry run lists the stranded module; at 0.3 reads work and writes are refused (audited); 0.4 again restores writes', async () => {
+    it('a new tenant is at 0.5 (M10E) with the module disabled; the rollback dry run lists the stranded module; at 0.3 reads work and writes are refused (audited); 0.4 again restores writes', async () => {
       const t = await c.tenant('xadopt', 1001);
       expect(
         await c.sql(
           `SELECT version, reason FROM tenant_canonical_adoptions WHERE tenant_id = $1 ORDER BY seq`,
           [t.tenantId],
         ),
-      ).toEqual([{ version: '0.4', reason: 'new_tenant' }]);
+      ).toEqual([{ version: '0.5', reason: 'new_tenant' }]);
+      // M10E: new tenants adopt 0.5; this test exercises the 0.4 <-> 0.3 boundary.
+      await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
+        target: '0.4',
+        expectedCurrent: '0.5',
+      });
       expect(
         await count(
           `SELECT count(*)::int AS n FROM tenant_module_settings WHERE tenant_id = $1 AND module_key = 'extension' AND enabled`,

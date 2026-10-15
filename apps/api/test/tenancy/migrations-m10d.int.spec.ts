@@ -96,7 +96,7 @@ describe('M10D migration and schema guard', () => {
   const sorted = (list: readonly string[]) => [...list].sort();
 
   describe('V17: canonical catalogue and module in the database', () => {
-    it('0.4 current (ADR 0030) with the pinned hash the code reproduces; 0.1–0.3 supported and unchanged; one current; 1.0 refused', async () => {
+    it('0.4 published (ADR 0030; supported since M10E, 0.5 current) with the pinned hash the code reproduces; 0.1–0.3 supported and unchanged; one current; 1.0 refused', async () => {
       const rows = await q<Record<string, unknown>>(
         cleanUrl,
         'SELECT version, status, adr, catalogue_hash FROM canonical_model_versions ORDER BY major, minor',
@@ -105,7 +105,14 @@ describe('M10D migration and schema guard', () => {
         { version: '0.1', status: 'supported', adr: '0027', catalogue_hash: STORED_HASHES['0.1'] },
         { version: '0.2', status: 'supported', adr: '0028', catalogue_hash: STORED_HASHES['0.2'] },
         { version: '0.3', status: 'supported', adr: '0029', catalogue_hash: STORED_HASHES['0.3'] },
-        { version: '0.4', status: 'current', adr: '0030', catalogue_hash: STORED_HASHES['0.4'] },
+        { version: '0.4', status: 'supported', adr: '0030', catalogue_hash: STORED_HASHES['0.4'] },
+        // M10E (ADR 0031) sits on top.
+        {
+          version: '0.5',
+          status: 'current',
+          adr: '0031',
+          catalogue_hash: canonicalCatalogueHash(canonicalCatalogueFor('0.5')),
+        },
       ]);
       for (const v of ['0.1', '0.2', '0.3', '0.4'] as const) {
         expect(canonicalCatalogueHash(canonicalCatalogueFor(v)), v).toBe(STORED_HASHES[v]);
@@ -114,7 +121,8 @@ describe('M10D migration and schema guard', () => {
         ['0.1', 'supported'],
         ['0.2', 'supported'],
         ['0.3', 'supported'],
-        ['0.4', 'current'],
+        ['0.4', 'supported'],
+        ['0.5', 'current'],
       ]);
       // 0.4 adds the extension members; 0.3 does not carry them (frozen lists).
       const c03 = canonicalCatalogueFor('0.3') as unknown as Record<string, unknown>;
@@ -142,7 +150,7 @@ describe('M10D migration and schema guard', () => {
       ).rejects.toThrow();
     });
 
-    it('module extension is available at 0.4 (row = code), every other module unavailable; no tenant has it enabled by migration', async () => {
+    it('module extension is available at 0.4 (row = code), every other module but account_context (M10E) unavailable; no tenant has it enabled by migration', async () => {
       const rows = await q<{
         module_key: string;
         available: boolean;
@@ -161,6 +169,8 @@ describe('M10D migration and schema guard', () => {
           .sort((a, b) => a.module_key.localeCompare(b.module_key)),
       );
       expect(rows.filter((r) => r.available)).toEqual([
+        // M10E: account_context available at 0.5.
+        { module_key: 'account_context', available: true, minimum_canonical_version: '0.5' },
         { module_key: 'extension', available: true, minimum_canonical_version: '0.4' },
       ]);
       expect(CANONICAL_MODULES.find((m) => m.key === 'extension')!.entityKinds).toEqual([
@@ -546,6 +556,15 @@ ${OFF}`;
       if (seed) await withAdmin(url, (db) => db.query(SEED));
       return url;
     }
+    /** M10E sits on top: the V24 round trip applies (and re-applies) migrations through M10D only. */
+    async function migrateThroughM10D(url: string, name: string): Promise<string> {
+      const dir = resolve(`test/.tmp/${name}-m10d`);
+      try {
+        return await migrate(url, ['--config', migrationsBefore(dir, '20270119')]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
     const state = (url: string) =>
       q<Record<string, unknown>>(
         url,
@@ -579,7 +598,7 @@ ${OFF}`;
 
     it('applies with no backfill: no definition, value, record, setting or adoption is invented; data_policy entries stay unclassified; 0.4 current; rerun is a no-op', async () => {
       const url = await m10cDatabase('m10d_on_m10c');
-      const output = await migrate(url);
+      const output = await migrateThroughM10D(url, 'm10d_on_m10c');
       expect(output).toMatch(new RegExp(M10D));
       expect(await state(url)).toEqual([EXPECTED_STATE]);
       expect(
@@ -590,14 +609,16 @@ ${OFF}`;
         { version: '0.3', status: 'supported' },
         { version: '0.4', status: 'current' },
       ]);
-      await expect(migrate(url)).resolves.toMatch(/No pending migrations/);
+      await expect(migrateThroughM10D(url, 'm10d_on_m10c')).resolves.toMatch(
+        /No pending migrations/,
+      );
       expect(await state(url)).toEqual([EXPECTED_STATE]);
     });
 
     it('the down-script refuses each M10D-only data class (changing nothing), then restores exactly the M10C schema, and M10D re-applies', async () => {
       const before = await m10cDatabase('m10d_before_db', false);
       const url = await m10cDatabase('m10d_down_db');
-      await migrate(url);
+      await migrateThroughM10D(url, 'm10d_down_db');
       const latest = await schemaSnapshot(url);
       const down = readFileSync(M10D_DOWN, 'utf8');
       const audit = (capability: string, action: string) =>
@@ -793,7 +814,7 @@ ${OFF}`;
       expect(
         await q(url, `SELECT parent_company_id::text AS parent FROM companies WHERE id = '${cA1}'`),
       ).toEqual([{ parent: cA2 }]);
-      const output = await migrate(url);
+      const output = await migrateThroughM10D(url, 'm10d_down_db');
       expect(output).toMatch(new RegExp(M10D));
       expect(await schemaSnapshot(url)).toEqual(latest);
       expect(await state(url)).toEqual([EXPECTED_STATE]);
