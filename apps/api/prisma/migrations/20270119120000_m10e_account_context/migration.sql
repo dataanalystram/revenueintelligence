@@ -399,7 +399,9 @@ BEGIN
   FOREACH t IN ARRAY ARRAY['tenant_account_contexts', 'tenant_account_context_persons',
                            'tenant_account_context_products'] LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
-    EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+    IF t <> 'tenant_account_contexts' THEN
+      EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+    END IF;
     EXECUTE format(
       'CREATE POLICY tenant_isolation ON %I USING (tenant_id = app_current_tenant()) WITH CHECK (tenant_id = app_current_tenant())',
       t);
