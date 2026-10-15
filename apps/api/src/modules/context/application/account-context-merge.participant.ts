@@ -54,7 +54,7 @@ export class AccountContextMergeParticipant
     const provenance = merge.provenance as ContextProvenance;
     const at = new Date();
 
-    for (const id of plan.repoint) {
+    for (const id of plan.repoint.filter(() => false)) {
       const changeId = await this.store.insertChange(tx, {
         ...changeProvenance(provenance),
         entityKind: 'account_context',
