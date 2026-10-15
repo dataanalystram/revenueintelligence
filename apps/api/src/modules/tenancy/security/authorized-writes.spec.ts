@@ -1,5 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readdirSync, readFileSync } from 'node:fs';
+import { resolve, sep } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
@@ -214,7 +214,7 @@ const SERVICES: readonly ServiceSpec[] = [
   {
     file: 'context/application/person-affiliation.writer.ts',
     className: 'PersonAffiliationWriter',
-    writes: ['observe', 'add', 'end'],
+    writes: ['observe', 'add', 'end', 'release'],
     reads: [],
     authorizeInside: ['onCompanyMerged', 'onPersonMerged'],
   },
@@ -318,6 +318,23 @@ describe('S2: privileged service writes take an authorized context (static)', ()
       AccountHierarchyWriter: ['set', 'clear', 'release'],
       PersonAffiliationWriter: ['add', 'end', 'release'],
     });
+  });
+
+  it('M10C (V18, review n3): no source file outside the two M10C writers takes canonical.human_entry', () => {
+    const SRC = resolve(MODULES, '..');
+    const files = (readdirSync(SRC, { recursive: true }) as string[])
+      .filter((f) => f.endsWith('.ts') && !f.endsWith('.spec.ts') && !f.startsWith('generated'))
+      .filter((f) =>
+        /AuthorizedContext<[^>]*'canonical\.human_entry'/.test(
+          readFileSync(resolve(SRC, f), 'utf8'),
+        ),
+      )
+      .map((f) => f.split(sep).join('/'))
+      .sort();
+    expect(files).toEqual([
+      'modules/context/application/account-hierarchy.writer.ts',
+      'modules/context/application/person-affiliation.writer.ts',
+    ]);
   });
 
   it('the check fails for a write method that takes a plain TenantContext', () => {
