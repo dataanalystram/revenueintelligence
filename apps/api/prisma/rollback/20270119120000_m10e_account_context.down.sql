@@ -30,6 +30,11 @@ BEGIN
   IF n > 0 THEN RAISE EXCEPTION 'refusing rollback: % context_type registry entries exist', n; END IF;
   SELECT count(*) INTO n FROM tenant_registry_entries WHERE kind = 'extension' AND definition ->> 'target' = 'account_context';
   IF n > 0 THEN RAISE EXCEPTION 'refusing rollback: % extension definitions target account_context', n; END IF;
+  -- Review M2: relationship ends and reference_to lists naming account_context, too.
+  SELECT count(*) INTO n FROM tenant_registry_entries WHERE kind = 'extension'
+    AND (definition ->> 'from' = 'account_context' OR definition ->> 'to' = 'account_context'
+         OR COALESCE(definition #> '{constraints,reference_to}', '[]'::jsonb) ? 'account_context');
+  IF n > 0 THEN RAISE EXCEPTION 'refusing rollback: % extension definitions reference account_context', n; END IF;
   SELECT count(*) INTO n FROM tenant_account_contexts;
   IF n > 0 THEN RAISE EXCEPTION 'refusing rollback: % account contexts exist', n; END IF;
   SELECT count(*) INTO n FROM tenant_account_context_persons;

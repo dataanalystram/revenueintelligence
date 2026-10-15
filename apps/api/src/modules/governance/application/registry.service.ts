@@ -688,18 +688,27 @@ export class RegistryService {
     return setting?.enabled === true;
   }
 
-  /** M10E (Q19): an extension document with a field on the `account_context` target. */
+  /**
+   * M10E (Q19, review M2): an extension document that names `account_context`
+   * anywhere a definition can — a field's target, a reference field's
+   * `reference_to`, or either end of a custom relationship.
+   */
   private targetsAccountContext(document: Record<string, unknown>): boolean {
-    const fields = document.fields;
-    return (
-      Array.isArray(fields) &&
-      fields.some(
-        (f) =>
-          f !== null &&
-          typeof f === 'object' &&
-          (f as { target?: unknown }).target === 'account_context',
-      )
-    );
+    const CTX = 'account_context';
+    const items = (k: string): Record<string, unknown>[] => {
+      const v = document[k];
+      return Array.isArray(v)
+        ? v.filter((x): x is Record<string, unknown> => x !== null && typeof x === 'object')
+        : [];
+    };
+    const fieldHit = items('fields').some((f) => {
+      if (f.target === CTX) return true;
+      const c = f.constraints;
+      const refs =
+        c !== null && typeof c === 'object' ? (c as { reference_to?: unknown }).reference_to : [];
+      return Array.isArray(refs) && refs.includes(CTX);
+    });
+    return fieldHit || items('relationships').some((r) => r.from === CTX || r.to === CTX);
   }
 
   /**

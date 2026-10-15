@@ -247,6 +247,12 @@ export class ExtensionValueWriter {
         }
         continue;
       }
+      // M10E (Q19, review M2): a reference to an account context needs the context gate.
+      const refGate = await this.refGate(tx, parsed.value);
+      if (refGate !== 'ok') {
+        reject(refGate);
+        continue;
+      }
       if (!(await this.referenceOk(tx, input.target, entry, parsed.value))) {
         reject('reference_unresolved');
         continue;
@@ -319,6 +325,19 @@ export class ExtensionValueWriter {
       return { ok: false, reason: 'target_mismatch' };
     }
     return { ok: true, entry };
+  }
+
+  /** M10E (Q19, review M2): the account_context gate for a reference value naming a context. */
+  private async refGate(
+    tx: TenantTransaction,
+    value: ParsedExtensionValue,
+  ): Promise<'ok' | 'canonical_version_too_low' | 'module_disabled'> {
+    if (value.state !== 'present' || value.ref?.kind !== 'account_context') return 'ok';
+    const state = await this.store.targetGate(tx, {
+      kind: 'account_context',
+      id: value.ref.id ?? '',
+    });
+    return state === 'canonical_version_too_low' || state === 'module_disabled' ? state : 'ok';
   }
 
   /** Reference values: the target exists in the tenant, is of an allowed kind (and object) and is not merged. */
@@ -573,6 +592,12 @@ export class ExtensionValueWriter {
           : 'extension_value_invalid',
         `extension_value_invalid:${parsed.reason}`,
       );
+    }
+    if (parsed.value.state === 'present' && parsed.value.ref?.kind === 'account_context') {
+      await this.requireTargetGate(tx, actx, {
+        kind: 'account_context',
+        id: parsed.value.ref.id ?? '',
+      });
     }
     if (!(await this.referenceOk(tx, target, entry, parsed.value))) {
       throw new GovernanceError(
