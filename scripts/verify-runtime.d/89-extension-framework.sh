@@ -140,13 +140,14 @@ ex_capture() {
   # The M8 runtime tenant's Sugar connection holds a real metadata snapshot; the draft reads it and publishes nothing.
   node -e 'process.stdout.write(JSON.stringify({ objects: [
     { source: "Accounts", entity: "account", identity: { field: "id" }, fields: [{ kind: "capture", source: "website" }] },
-    { source: "Contacts", entity: "person", identity: { field: "id" }, fields: [{ kind: "capture", source: "email1" }] } ] }))' >"$EX_IN/capture.json"
+    { source: "Contacts", entity: "person", identity: { field: "id" }, fields: [{ kind: "capture", source: "title" }] } ] }))' >"$EX_IN/capture.json"
   ex_cli sources extension-capture-draft --tenant rtsources --connection sugar --file "$EX_IN/capture.json" >"$EX_OUT/capture-draft.json" || code=$?
-  # A sensitive source field name is refused (exit 2); the other is drafted as a src_ key, display / analytics only.
+  # A sensitive source field name (website is a privacy name token) is refused (exit 2); the other
+  # (Contacts.title, unprofiled, not a sensitive name) is drafted as a src_ key, display only.
   [ "$code" -eq 2 ] || { ex_capture_shown "$code"; return 1; }
-  [ "$(ex_json "$EX_OUT/capture-draft.json" 'r.refused.map((x) => x.source + ":" + x.code).join(",")')" = "Contacts.email1:capture_sensitive_refused" ] || { ex_capture_shown "$code"; return 1; }
+  [ "$(ex_json "$EX_OUT/capture-draft.json" 'r.refused.map((x) => x.source + ":" + x.code).join(",")')" = "Accounts.website:capture_sensitive_refused" ] || { ex_capture_shown "$code"; return 1; }
   [ "$(ex_json "$EX_OUT/capture-draft.json" 'r.fields.map((f) => f.key + ":" + f.origin + ":" + f.allowed_uses.join("+")).join(",")')" = \
-    "src_sugar_accounts_website:source_captured:display" ] || { ex_capture_shown "$code"; return 1; }
+    "src_sugar_contacts_title:source_captured:display" ] || { ex_capture_shown "$code"; return 1; }
   [ "$(ex_sql "SELECT count(*) FROM tenant_registry_versions v JOIN tenants t ON t.id = v.tenant_id WHERE t.slug = 'rtsources' AND v.kind = 'extension'")" = 0 ]
 }
 check "capture draft from a real snapshot: sensitive field name refused (exit 2), src_ key drafted, nothing published" ex_capture
