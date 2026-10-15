@@ -725,21 +725,36 @@ describe('M10E account context governance', () => {
     const ctxRel = {
       key: 'acct_scope',
       display_name: 'Account scope',
-      description: 'Synthetic relationship from an account to one of its contexts',
-      from: 'account',
+      description: 'Synthetic relationship from a custom record to an account context',
+      from: 'custom_object:asset',
       to: 'account_context',
       cardinality: 'many_to_many',
       sensitivity: 'internal',
       categories: ['operational'],
     };
-    const ctxRelReversed = { ...ctxRel, key: 'scope_acct', from: 'account_context', to: 'account' };
+    const ctxRelReversed = {
+      ...ctxRel,
+      key: 'scope_asset',
+      from: 'account_context',
+      to: 'custom_object:asset',
+    };
+    // A custom relationship needs a custom-object end (canonical_relationship_not_extension).
+    const asset = {
+      key: 'asset',
+      display_name: 'Asset',
+      description: 'Synthetic test object without a required parent',
+      parent: { kind: 'account', required: false },
+      sensitivity: 'internal',
+      categories: ['operational'],
+      allowed_uses: ['display', 'analytics'],
+    };
     const ctxRef = extensionField('scope_ref', 'reference', {
       constraints: { reference_to: ['account_context'] },
     });
     const extDoc = (over: Record<string, unknown>) => ({
       schema_version: 1,
       fields: [],
-      objects: [],
+      objects: [asset],
       relationships: [],
       ...over,
     });
@@ -812,11 +827,13 @@ describe('M10E account context governance', () => {
       const ext = extensionServices(c);
       const human = () => authz(t, 'canonical.human_entry');
       const ctxId = randomUUID();
+      // The gate is checked before the ends are resolved: no record has to exist.
+      const recordId = randomUUID();
 
       await expect(
         ext.relationships.add(await human(), {
           relationship: 'acct_scope',
-          from: `account:${account}`,
+          from: `custom_record:${recordId}`,
           to: `account_context:${ctxId}`,
           reason: REASON,
         }),
@@ -829,7 +846,7 @@ describe('M10E account context governance', () => {
       await expect(
         ext.relationships.observeSource(await authz(t, 'canonical.source_sync'), {
           relationshipKey: 'acct_scope',
-          from: { kind: 'company', id: account },
+          from: { kind: 'custom_record', id: recordId },
           to: null,
           observedAt: new Date(),
           provenance: sourceProvenance('m2-rel'),
@@ -866,7 +883,7 @@ describe('M10E account context governance', () => {
       await expect(
         ext.relationships.add(await human(), {
           relationship: 'acct_scope',
-          from: `account:${account}`,
+          from: `custom_record:${recordId}`,
           to: `account_context:${ctxId}`,
           reason: REASON,
         }),
