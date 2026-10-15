@@ -37,7 +37,7 @@
 | Migration + down-script (up / rerun / down-refusal / restore / re-apply)  | done (V24, `migrations-m10d.int.spec.ts`)                                              |
 | V1–V24 tests                                                              | done (see [Tests](#tests)); V9 unit + runtime only (deviation D15)                     |
 | V25 runtime script `89-extension-framework.sh`                            | done (CI runtime job)                                                                  |
-| Format, lint, typecheck, boundaries, unit, integration, runtime, docker   | CI — final run `TBD-CI` (see [Evidence](#evidence))                                    |
+| Format, lint, typecheck, boundaries, unit, integration, runtime, docker   | CI — final run `38743598001` (see [Evidence](#evidence))                               |
 | ADR 0030, this record, README status, tech-debt entries                   | done; tech debt #82–#88 added (`docs/tech-debt.md`)                                    |
 | Mutation proofs VM1–VM27                                                  | done: 27 proofs, all killed or held (see [Mutation proofs](#mutation-proofs))          |
 | Fresh-clone run                                                           | CI (every job checks out fresh); local fresh clone not possible (no Docker in sandbox) |
@@ -116,7 +116,7 @@ runtime, docker):
 | ------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `38688781224` | `5189657` | **all four jobs ✅** (phase-1 head: schema, migration, down-script, manifests, registry kind); jobs lint `116269635246`, integration `116269635314`, runtime `116269635257`, docker `116269635075` |
 | `38698286584` | `6a98f06` | **all four jobs ✅** (phase-2 head: writers, mapping kinds, merge, read models, CLI, X5, integrity, unit tests)                                                                                    |
-| `TBD-CI`      | `TBD-CI`  | final head (phase-3 tests, runtime script 89, this record)                                                                                                                                         |
+| `38743598001` | `33e7756` | **all four jobs ✅** (phase-3 head: V1–V25 incl. V4/V13 database tests, V6–V8 source sync, M1 race test, review fixes, runtime script 89, this record)                                             |
 
 **Fresh-clone run.** Every CI job checks the branch out fresh and runs `pnpm install --frozen-lockfile` and the full
 verification. A local fresh clone was not run: the sandbox has no Docker.
@@ -196,6 +196,6 @@ rolled back by the down-script. Production is forward-fix only; tenant-level rol
 
 ## Remaining
 
-- Final CI run (`TBD-CI`), owner approval (including the #83 sign-off), merge to `integration`.
+- Owner sign-off on tech debt #83 (review m1) before the merge to `main`.
 - E4 candidate note and the `canonical-extension-and-source-mapping.md` superseded note (plan §23).
 - Tech debt #82–#88; integrity worker job (#65, inherited); data-quality store (M10L) for per-record rejections.

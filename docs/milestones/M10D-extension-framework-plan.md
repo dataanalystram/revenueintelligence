@@ -340,7 +340,7 @@ kind = `0.4`.
 
 - `ExtensionReadModel.valuesFor(actx, use, targets[], fieldKeys?)`: batch loads by `target_id = ANY($1)` /
   `target_key = ANY($1)` (no N+1, M10 §13), items in one query, merge lineage resolved for references, use-filtered.
-- `CustomRecordReadModel`: records of an object (keyset pagination), record with fields and relationships.
+- `CustomRecordReadModel` (implemented as `ExtensionReadModel.records` / `.record`, record D-m2): records of an object (keyset pagination), record with fields and relationships.
 - Capability `data.extension.read` (`operator`); one audit event per read call (identifiers, counts; Q29).
 - CLI (JSON, identifiers / codes / dates; field values printed only for `public` / `internal` fields unless
   `--include-confidential`, which is audited; exit 2 on refusal): `extension registry show`, `extension capture-draft`,
