@@ -62,7 +62,9 @@ export const CANONICAL_VERSIONS: readonly CanonicalVersionEntry[] = [
   // M10C (ADR 0029): account hierarchy, person–account affiliation.
   { version: '0.3', status: 'supported', adr: '0029' },
   // M10D (ADR 0030): extension framework (registry, typed values, custom objects / relationships).
-  { version: '0.4', status: 'current', adr: '0030' },
+  { version: '0.4', status: 'supported', adr: '0030' },
+  // M10E (ADR 0031): AccountContext (context types, contexts, memberships, line context).
+  { version: '0.5', status: 'current', adr: '0031' },
 ];
 
 /**
@@ -81,6 +83,7 @@ export const CANONICAL_VERSION_FEATURES: Readonly<Record<string, readonly string
     'custom_relationships',
     'source_attribute_capture',
   ],
+  '0.5': ['account_context', 'context_type_registry', 'context_membership', 'line_context'],
 };
 
 /** Features enabled by versions in (from, to] when moving forward, or withdrawn when moving back. */
@@ -131,6 +134,9 @@ export interface CanonicalCatalogue {
   readonly extensionTargets?: readonly string[];
   readonly extensionAllowedUses?: readonly string[];
   readonly mappingEntryKinds?: readonly string[];
+  /** M10E (0.5): optional members, hashed only when present, so 0.1–0.4 hashes are unchanged. */
+  readonly mappingEntities?: readonly string[];
+  readonly registryKinds?: readonly string[];
 }
 
 /**
@@ -161,6 +167,8 @@ export function canonicalCatalogueHash(catalogue: CanonicalCatalogue): string {
     extensionTargets: sorted(catalogue.extensionTargets),
     extensionAllowedUses: sorted(catalogue.extensionAllowedUses),
     mappingEntryKinds: sorted(catalogue.mappingEntryKinds),
+    mappingEntities: sorted(catalogue.mappingEntities),
+    registryKinds: sorted(catalogue.registryKinds),
   });
 }
 

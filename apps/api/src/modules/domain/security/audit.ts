@@ -90,6 +90,13 @@ export const AUDIT_ACTIONS = [
   'extension.relationship.add',
   'extension.relationship.end',
   'extension.read',
+  // M10E (plan §15)
+  'account_context.write',
+  'account_context.retire',
+  'account_context.member.set',
+  'account_context.line.assign',
+  'account_context.release',
+  'account_context.read',
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -141,6 +148,8 @@ export const AUDIT_REASON_CODES = [
   'classification_required',
   'credential_like_definition',
   'extension_guardrail_exceeded',
+  // M10E (R-C5, Q11)
+  'restricted_dimension_refused',
 ] as const;
 export type AuditReasonCode = (typeof AUDIT_REASON_CODES)[number];
 
@@ -185,6 +194,8 @@ export const AUDIT_TARGET_KINDS = [
   'extension_value',
   'custom_record',
   'custom_relationship',
+  // M10E
+  'account_context',
 ] as const;
 export type AuditTargetKind = (typeof AUDIT_TARGET_KINDS)[number];
 

@@ -16,11 +16,19 @@ export const GENERIC_REFERENCE_KINDS = [
   'person_affiliation',
   // M10D (0.4, Q15): a custom record's source id.
   'custom_record',
+  // M10E (0.5): an account context's source id (Gainsight Relationship, plan §5.1).
+  'account_context',
 ] as const;
 /** The generic reference kinds published with canonical 0.2 (frozen for its catalogue hash). */
 export const GENERIC_REFERENCE_KINDS_0_2 = ['product'] as const;
 /** The generic reference kinds published with canonical 0.3 (frozen for its catalogue hash). */
 export const GENERIC_REFERENCE_KINDS_0_3 = ['product', 'person_affiliation'] as const;
+/** The generic reference kinds published with canonical 0.4 (frozen for its catalogue hash). */
+export const GENERIC_REFERENCE_KINDS_0_4 = [
+  'product',
+  'person_affiliation',
+  'custom_record',
+] as const;
 export type GenericReferenceKind = (typeof GENERIC_REFERENCE_KINDS)[number];
 
 /** Kinds whose references live in a legacy store; never written to the generic store. */

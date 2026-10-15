@@ -16,8 +16,12 @@ export const REGISTRY_KINDS = [
 ] as const;
 export type RegistryKind = (typeof REGISTRY_KINDS)[number];
 
-/** Kinds with a registered document schema (M10D: `extension`, plan §2). */
-export const AVAILABLE_REGISTRY_KINDS: readonly RegistryKind[] = ['data_policy', 'extension'];
+/** Kinds with a registered document schema (M10D: `extension`, plan §2; M10E: `context_type`). */
+export const AVAILABLE_REGISTRY_KINDS: readonly RegistryKind[] = [
+  'data_policy',
+  'extension',
+  'context_type',
+];
 
 export const REGISTRY_ENTRY_STATUSES = ['active', 'retired', 'promoted'] as const;
 export type RegistryEntryStatus = (typeof REGISTRY_ENTRY_STATUSES)[number];

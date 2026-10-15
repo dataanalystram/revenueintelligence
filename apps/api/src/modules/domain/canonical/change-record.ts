@@ -13,6 +13,9 @@ export const CHANGE_ENTITY_KINDS = [
   // M10D (0.4): custom records and custom relationship edges (Q24)
   'custom_record',
   'custom_relationship',
+  // M10E (0.5): account contexts and their person memberships (Q24).
+  'account_context',
+  'account_context_person',
 ] as const;
 /** The change entity kinds published with canonical 0.2 (frozen for its catalogue hash). */
 export const CHANGE_ENTITY_KINDS_0_2 = ['company', 'person', 'subscription', 'product'] as const;
@@ -23,6 +26,16 @@ export const CHANGE_ENTITY_KINDS_0_3 = [
   'subscription',
   'product',
   'person_affiliation',
+] as const;
+/** The change entity kinds published with canonical 0.4 (frozen for its catalogue hash). */
+export const CHANGE_ENTITY_KINDS_0_4 = [
+  'company',
+  'person',
+  'subscription',
+  'product',
+  'person_affiliation',
+  'custom_record',
+  'custom_relationship',
 ] as const;
 export type ChangeEntityKind = (typeof CHANGE_ENTITY_KINDS)[number];
 

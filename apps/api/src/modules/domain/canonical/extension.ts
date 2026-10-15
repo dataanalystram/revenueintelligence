@@ -70,12 +70,25 @@ export const EXTENSION_CANONICAL_TARGETS = {
   subscription: 'subscription',
   product: 'product',
   person_affiliation: 'person_affiliation',
+  // M10E (Q19): a target from canonical 0.5 with module account_context enabled.
+  account_context: 'account_context',
 } as const;
 export type ExtensionCanonicalTarget = keyof typeof EXTENSION_CANONICAL_TARGETS;
 export const EXTENSION_CUSTOM_OBJECT_PREFIX = 'custom_object:';
 
 /** Entity-index kinds a value / reference / relationship end may name (`*_kind` CHECKs). */
 export const EXTENSION_TARGET_KINDS = [
+  'company',
+  'person',
+  'subscription',
+  'product',
+  'person_affiliation',
+  'custom_record',
+  // M10E (0.5, Q19)
+  'account_context',
+] as const;
+/** The extension target kinds published with canonical 0.4 (frozen for its catalogue hash). */
+export const EXTENSION_TARGET_KINDS_0_4 = [
   'company',
   'person',
   'subscription',
@@ -178,6 +191,8 @@ export const IDENTITY_CONFLICT_ENTITY_KINDS = [
   'product',
   'person_affiliation',
   'custom_record',
+  // M10E (plan §3.5): account-context data-quality issues name the context.
+  'account_context',
 ] as const;
 
 /** `changed_fields` / value-history token of an extension field (Q23, Q24). */

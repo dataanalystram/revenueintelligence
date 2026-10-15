@@ -59,6 +59,8 @@ export const EVIDENCE_RELATIONS: readonly EvidenceRelation[] = [];
 export const EVIDENCE_KIND_MODULES: Readonly<Partial<Record<EntityIndexKind, ModuleKey>>> = {
   // M10D (#71): custom records are the first module-owned entity kind.
   custom_record: 'extension',
+  // M10E (#71): account contexts are the second module-owned entity kind.
+  account_context: 'account_context',
 };
 
 /** A derivation key / version: identifiers only (secret-like refusal, M10A1 A1). */
