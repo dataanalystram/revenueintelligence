@@ -147,16 +147,30 @@ Independent review of `26da394`: **PASS WITH FINDINGS** — no blockers, three m
 | m1 attribute flapping after a merge collision                                           | minor    | fixed `775c7f4`: the loser's record observes its reference only (D16)                             |
 | m2 no DB rule for new members / products on a merged or retired context                 | minor    | deferred (#89)                                                                                    |
 | m3 no concurrency coverage                                                              | minor    | fixed: merge vs operator write (`775c7f4`) and the two-session natural-key race in V7             |
-| m4 `includeConfidential` needs only `data.account_context.read`                         | minor    | deferred (#90): **owner question at the `main` merge**                                            |
+| m4 `includeConfidential` needs only `data.account_context.read`                         | minor    | **fixed** (hardening #90, PR #115): `data.account_context.read_confidential` (below)              |
 | m5 context-side line guard re-reads the context row                                     | minor    | deferred (#91)                                                                                    |
 | n1 ADR: no DELETE on product memberships either                                         | nit      | fixed (ADR 0031 §2)                                                                               |
 | n2 merged-context refusal could name the survivor                                       | nit      | fixed `775c7f4`                                                                                   |
 | n3 raised natural-key error mapped to a refusal                                         | nit      | fixed `775c7f4`                                                                                   |
 
+### Hardening #90 (m4, owner decision: fix)
+
+Branch `m10e-h90`, PR #115 into `integration`. Policy v7 adds `data.account_context.read_confidential` (no actor kind
+holds it) and `security.capability.grant` (operator). An operator holds the confidential read only through an
+explicit, tenant-scoped grant by another operator (`tenant_capability_grants`, migration `20270126130000`; `security
+grant|revoke`). `includeConfidential` without it is refused and audited as `denied` with that capability; with it the
+read is audited under that capability with the released keys only. Ordinary reads unchanged. Tests: policy /
+authorizer unit (`security.spec.ts`, `write-authorizer-grants.spec.ts`, S2 static guard), integration
+(`account-context-confidential.int.spec.ts`: default redaction, refusal + denied audit, success + allowed audit,
+revoke, tenant isolation of contexts and grants, grant rules, adversarial), migration round trip
+(`migrations-h90.int.spec.ts`), runtime script 90. Mutation proof: skipping the extra capability check fails the
+refusal test (notes: `work/h90-notes.md`). ADR 0031 addendum.
+
 ## Known gaps / judgment calls
 
 - The database does not refuse new members or products on a merged or retired context; the writers do (#89).
-- Confidential reads are authorised by `data.account_context.read` plus an audited flag (#90, owner question).
+- Confidential reads need `data.account_context.read_confidential` (explicit tenant grant; #90 resolved). Operator
+  ids stay asserted until M15, so the grant is an audited two-person control, not proof of identity.
 - Extension values on a merged-away context are not moved; readers follow lineage (#92).
 - Inherited: integrity worker job (#65), evidence partitioning (#71), migration suite timing (#72).
 - Live Gainsight / Salesforce context sources: not run (synthetic fixtures only).
@@ -170,5 +184,5 @@ writes refused, `modulesStranded: ['account_context']` listed).
 
 ## Remaining
 
-- Owner decision on m4 / tech debt #90 (separate capability for `includeConfidential`) before the merge to `main`.
-- Tech debt #89–#92; inherited #65, #71, #72.
+- Tech debt #90 resolved by hardening PR #115 (owner approval still needed before `main`).
+- Tech debt #89, #91, #92; inherited #65, #71, #72.

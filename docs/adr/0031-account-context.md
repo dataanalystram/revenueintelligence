@@ -151,3 +151,34 @@ Phase 2b (mapping, sync, CLI, integrity, runtime):
 - Fix `26da394` (phase 3): after a merge collision, re-observing the loser's source record observes the reference
   against its bound (merged-away) id when lineage resolves it to the written context, so the binding is kept and
   never re-bound to the survivor (no `reference_identity_conflict`).
+
+## Addendum: confidential reads need their own capability (hardening #90, PR #115)
+
+Tech debt #90 (review m4): `includeConfidential` released the renewal date and confidential dimensions to any holder
+of `data.account_context.read`, with only an audited flag. Owner decision: fix it with a separate capability.
+
+- **Capability.** `data.account_context.read_confidential` (policy v7). Name: the platform's read capabilities are
+  `data.<area>.read` (`data.provenance.read`, `data.account_structure.read`, `data.extension.read`,
+  `data.account_context.read`); a widened read keeps the area and qualifies the verb segment in snake_case, as other
+  capabilities qualify a segment (`processing.dead_letter.resolve`, `config.product_model.publish`). No existing
+  confidential capability existed to mirror: M10D `--include-confidential` on extension values is still a flag
+  (outside #90's scope).
+- **Grant model.** The policy grants it to **no actor kind**: an actor-kind grant to `operator` would give it to every
+  operator and make the separation nominal. It is held only through an explicit, tenant-scoped grant to one operator
+  id (`tenant_capability_grants`, migration `20270126130000`), made with `security.capability.grant` (operator, policy
+  v7) by **another** operator (`security grant|revoke`; self-grant refused by the service and a DB CHECK). Grants are
+  revoked (`active = false`), never deleted; history is the grant / revoke audit events. Default mapping: no operator
+  holds it; there are no operator roles yet (M15).
+- **No generic bypass.** `GRANTABLE_CAPABILITIES` is closed to this one capability (code and DB CHECK); the
+  WriteAuthorizer consults grants only for a grantable capability the policy denied with `capability_not_granted`, so
+  no other capability (and no "all restricted data" grant) is reachable through the table. Only `operator` grantees
+  (DB CHECK); a grant names its tenant (forced RLS), so tenant A's grant never authorizes tenant B.
+- **Read path.** The read model authorizes `includeConfidential` itself, for the read's own actor and tenant, after the
+  base `data.account_context.read` check. Without the grant the read is **refused** (`AuthorizationDeniedError`, exit
+  2 in the CLI, one `denied` audit event with capability `data.account_context.read_confidential`, reason
+  `capability_not_granted`) — never silently redacted. With it the read's `allowed` audit event is recorded under that
+  capability with `includeConfidential: true` and `releasedKeys` (attribute keys only, never values). Ordinary reads
+  are unchanged (redacted by default, `withheld` keys). Restricted dimension values are never stored (R-C5) and are
+  never released even with the grant. Line reads carry no confidential values and are unchanged.
+- **Limitation.** Operator ids are asserted, not authenticated, until M15: the grant is an explicit, audited,
+  two-person control, not proof of identity (the same limit as every operator control).
