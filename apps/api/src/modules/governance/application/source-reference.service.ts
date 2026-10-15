@@ -5,6 +5,7 @@ import {
   decideMerge,
   decideReferenceObservation,
   decideRetirement,
+  ACCOUNT_CONTEXT_MIN_VERSION,
   ACCOUNT_STRUCTURE_MIN_VERSION,
   GENERIC_REFERENCE_KINDS,
   KEY_IDENTIFIED_REFERENCE_KINDS,
@@ -160,7 +161,12 @@ export class SourceReferenceService {
     const entity = this.entityOf(kind, input);
     await this.requireVersion(
       tx,
-      kind === 'person_affiliation' ? ACCOUNT_STRUCTURE_MIN_VERSION : undefined,
+      kind === 'person_affiliation'
+        ? ACCOUNT_STRUCTURE_MIN_VERSION
+        : // M10E (phase 2b): an `account_context` reference needs canonical 0.5.
+          kind === 'account_context'
+          ? ACCOUNT_CONTEXT_MIN_VERSION
+          : undefined,
     );
     await this.lock(tx, input);
     const db = tenantClient(tx);
@@ -583,7 +589,7 @@ export class SourceReferenceService {
     return byKey ? { entityKey: input.entityKey! } : { entityId: input.entityId! };
   }
 
-  /** M10C: a `person_affiliation` reference needs canonical 0.3; every other kind 0.2. */
+  /** M10C: a `person_affiliation` reference needs canonical 0.3; M10E `account_context` 0.5; every other kind 0.2. */
   private async requireVersion(
     tx: TenantTransaction,
     min: string = GENERIC_REFERENCES_MIN_VERSION,

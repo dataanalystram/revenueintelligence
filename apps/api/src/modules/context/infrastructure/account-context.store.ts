@@ -252,6 +252,43 @@ export class AccountContextStore {
 
   // --- Entities -----------------------------------------------------------------
 
+  /**
+   * M10E 2b: the canonical company / person a source reference names,
+   * following merge lineage (undefined when the reference is unknown).
+   */
+  async canonicalForRef(
+    tx: TenantTransaction,
+    kind: 'company' | 'person',
+    ref: { system: string; objectType: string; id: string },
+  ): Promise<string | undefined> {
+    const db = tenantClient(tx);
+    const where = {
+      tenantId: tx.tenantId,
+      system: ref.system,
+      objectType: ref.objectType,
+      externalId: ref.id,
+    };
+    let id =
+      kind === 'company'
+        ? (await db.companyExternalRef.findFirst({ where, select: { companyId: true } }))?.companyId
+        : (await db.personExternalRef.findFirst({ where, select: { personId: true } }))?.personId;
+    for (let hops = 0; id && hops < 20; hops += 1) {
+      const row =
+        kind === 'company'
+          ? await db.company.findFirst({
+              where: { tenantId: tx.tenantId, id },
+              select: { recordState: true, mergedIntoId: true },
+            })
+          : await db.person.findFirst({
+              where: { tenantId: tx.tenantId, id },
+              select: { recordState: true, mergedIntoId: true },
+            });
+      if (!row || row.recordState !== 'merged' || !row.mergedIntoId) return id;
+      id = row.mergedIntoId;
+    }
+    return id;
+  }
+
   async company(
     tx: TenantTransaction,
     id: string,

@@ -1,6 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
-import { ContextIngestionService, type IngestMeta, type PendingParent } from '../../context';
+import {
+  AccountContextSourceSync,
+  ContextIngestionService,
+  type ContextProvenance,
+  type IngestMeta,
+  type PendingParent,
+} from '../../context';
 import {
   acceptsStableSnapshot,
   assertNoRawFinding,
@@ -24,6 +30,10 @@ import {
   isAuthoritative,
   isConnectorError,
   isCustomObjectEntity,
+  isAccountContextEntity,
+  CONTEXT_REF_TARGET,
+  mapAccountContextRecord,
+  mapLineContextRef,
   mapContextRecord,
   MappingDocumentSchema,
   mappedFields,
@@ -229,6 +239,8 @@ export class SourceSyncService {
     private readonly audit: AuditTrail,
     // M10D: attribute / capture / custom-object / custom-relationship statements.
     private readonly extensions: SourceExtensionSync,
+    // M10E: account_context objects and subscription.contextRef.
+    private readonly accountContextSync: AccountContextSourceSync,
     @Optional() @Inject(QueueService) private readonly queues?: QueueService,
     @Optional() @Inject(MetricsService) private readonly metrics?: MetricsService,
   ) {}
@@ -547,6 +559,8 @@ export class SourceSyncService {
       }
     }
     await this.resolvePendingParents(rc, state);
+    // M10E: account contexts after accounts and people (their account and persons exist).
+    await this.accountContexts(rc, state, selection);
     const lineObjects = rc.mapping.objects.filter((o) => o.entity === 'subscription');
     if (lineObjects.length > 0) {
       // 2. Product catalogue first: a configuration gap fails before any line.
@@ -733,6 +747,8 @@ export class SourceSyncService {
       });
     }
     await this.resolvePendingParents(rc, state);
+    // M10E: account contexts after accounts and people.
+    await this.accountContexts(rc, state, selection);
     const lineObjects = rc.mapping.objects.filter((o) => o.entity === 'subscription');
     let productStatus: ((id: string) => SourceProductStatus) | undefined;
     if (lineObjects.length > 0) {
@@ -1105,6 +1121,14 @@ export class SourceSyncService {
               { kind: 'subscription', id: out.subscriptionId },
               (code, by) => state.count(code, by),
             );
+          }
+          // M10E (plan §5.2): the line's context, under the account_context authority only.
+          if (
+            result.observation.presence === 'present' &&
+            'subscriptionId' in out &&
+            out.subscriptionId
+          ) {
+            await this.lineContext(rc, state, obj, record, out.subscriptionId);
           }
           if (result.observation.presence === 'present') {
             // A later accepted occurrence moves the key to the holdings (§9.3).
@@ -1664,6 +1688,115 @@ export class SourceSyncService {
         );
       });
     }
+  }
+
+  /** M10E: the change provenance of a source account-context write (identifiers only). */
+  private contextProvenance(
+    rc: RunContext,
+    objectType: string,
+    id: string,
+    sourceUpdatedAt?: Date,
+  ): ContextProvenance {
+    return {
+      source: { system: rc.kind, objectType, id },
+      cause: rc.cause,
+      checkpointId: rc.run.id,
+      ...(sourceUpdatedAt ? { sourceUpdatedAt } : {}),
+      adapter: rc.kind,
+      adapterVersion: rc.connector.capabilities().adapterVersion,
+      correlationId: rc.run.correlationId,
+      mappingVersion: rc.mappingVersion,
+      actor: rc.actx.actor,
+      origin: 'source_provided',
+      connectionId: rc.connection.id,
+    };
+  }
+
+  /**
+   * M10E (plan §5.1): records of `account_context` objects, written only when
+   * the run's connection holds the `account_context` authority fact (else
+   * nothing is read: `account_context_not_authoritative`). Read like custom
+   * objects: no holdings, no retirement; absence never clears.
+   */
+  private async accountContexts(
+    rc: RunContext,
+    state: RunState,
+    selection: ReadSelection,
+  ): Promise<void> {
+    const objects = rc.mapping.objects.filter((o) => isAccountContextEntity(o.entity));
+    if (objects.length === 0) return;
+    if (!isAuthoritative(rc.authority, 'account_context', rc.connection.id)) {
+      state.count('account_context_not_authoritative');
+      return;
+    }
+    for (const obj of objects) {
+      await this.readAll(rc, obj.source, mappedFields(obj), selection, async (records) => {
+        this.observe(rc, state, obj, records);
+        for (const record of records) {
+          if (record.rejection) {
+            state.count('record_rejected');
+            continue;
+          }
+          const mapped = mapAccountContextRecord(obj, record, rc.kind);
+          if (mapped.outcome === 'skipped') {
+            state.count(mapped.code);
+            continue;
+          }
+          mapped.quality.forEach((q) => state.count(q));
+          const out = await this.accountContextSync.observeRecord(rc.actx, {
+            typeKey: mapped.typeKey,
+            ref: mapped.ref,
+            accountRef: mapped.accountRef,
+            presence: mapped.presence,
+            dimensions: mapped.dimensions,
+            ...(mapped.name !== undefined ? { name: mapped.name } : {}),
+            ...(mapped.status !== undefined ? { status: mapped.status } : {}),
+            ...(mapped.ownerRef !== undefined ? { ownerRef: mapped.ownerRef } : {}),
+            ...(mapped.renewalDate !== undefined ? { renewalDate: mapped.renewalDate } : {}),
+            persons: mapped.persons,
+            observedAt: rc.observedAt,
+            provenance: this.contextProvenance(
+              rc,
+              obj.source,
+              mapped.ref.id,
+              mapped.sourceUpdatedAt,
+            ),
+          });
+          state.count(`account_context_${out.context.status}`);
+          if (out.context.reason) state.count(`account_context_rejected_${out.context.reason}`);
+          if (out.context.humanOverride) {
+            state.count('account_context_human_override_active', out.context.humanOverride);
+          }
+          if (['created', 'updated'].includes(out.context.status)) state.changed += 1;
+          for (const [code, n] of Object.entries(out.members)) {
+            state.count(`account_context_member_${code}`, n);
+          }
+        }
+      });
+    }
+  }
+
+  /** M10E (plan §5.2): one line's `subscription.contextRef`, after the line was written. */
+  private async lineContext(
+    rc: RunContext,
+    state: RunState,
+    obj: ObjectMapping,
+    record: SourceRecord,
+    lineId: string,
+  ): Promise<void> {
+    if (!obj.relationships.some((r) => r.target === CONTEXT_REF_TARGET)) return;
+    if (!isAuthoritative(rc.authority, 'account_context', rc.connection.id)) {
+      state.count('context_assignment_not_authoritative');
+      return;
+    }
+    const contextRef = mapLineContextRef(obj, record, rc.kind);
+    if (!contextRef) return;
+    const outcome = await this.accountContextSync.assignLine(rc.actx, {
+      lineId,
+      contextRef,
+      provenance: this.contextProvenance(rc, obj.source, lineIdOf(obj, record) ?? lineId),
+    });
+    state.count(`context_assignment_${outcome}`);
   }
 
   private contextMeta(rc: RunContext): IngestMeta {

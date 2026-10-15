@@ -4,6 +4,7 @@ import { TenancyModule } from '../tenancy';
 import { AccountContextMembershipWriter } from './application/account-context-membership.writer';
 import { AccountContextMergeParticipant } from './application/account-context-merge.participant';
 import { AccountContextReadModel } from './application/account-context.read-model';
+import { AccountContextSourceSync } from './application/account-context-source';
 import { AccountContextWriter } from './application/account-context.writer';
 import { AccountContextStore } from './infrastructure/account-context.store';
 
@@ -23,12 +24,14 @@ import { AccountContextStore } from './infrastructure/account-context.store';
     AccountContextMembershipWriter,
     AccountContextMergeParticipant,
     AccountContextReadModel,
+    AccountContextSourceSync,
   ],
   exports: [
     AccountContextWriter,
     AccountContextMembershipWriter,
     AccountContextMergeParticipant,
     AccountContextReadModel,
+    AccountContextSourceSync,
   ],
 })
 export class AccountContextModule {}

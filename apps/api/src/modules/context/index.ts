@@ -48,6 +48,13 @@ export {
 } from './application/account-structure.read-model';
 // M10E (ADR 0031): AccountContext.
 export { AccountContextModule } from './account-context.module';
+export type { ContextProvenance } from './application/account-context.shared';
+export {
+  AccountContextSourceSync,
+  type ContextSourceOutcome,
+  type ContextSourceRecord,
+  type ContextSourceRef,
+} from './application/account-context-source';
 export {
   AccountContextWriter,
   type AccountContextObservation,

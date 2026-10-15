@@ -1,5 +1,6 @@
 import { Module, type DynamicModule } from '@nestjs/common';
 import type { SourceAdapterFactory } from '../domain';
+import { AccountContextModule } from '../context';
 import { ExtensionModule } from '../extension';
 import { ProductsModule } from '../products';
 import { TenancyModule } from '../tenancy';
@@ -52,7 +53,13 @@ export class SourcesModule {
     ];
     return {
       module: SourcesModule,
-      imports: [TenancyModule, ProductsModule, ExtensionModule, options.context],
+      imports: [
+        TenancyModule,
+        ProductsModule,
+        ExtensionModule,
+        AccountContextModule,
+        options.context,
+      ],
       providers: [
         { provide: SOURCE_ADAPTERS, useValue: options.adapters },
         SourceAdapterRegistry,
