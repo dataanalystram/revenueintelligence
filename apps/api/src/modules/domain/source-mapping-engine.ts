@@ -554,7 +554,14 @@ export function mapExtensionStatements(
   const values: MappedExtensionValue[] = [];
   for (const entry of obj.fields) {
     if (entry.kind !== 'attribute' && entry.kind !== 'capture') continue;
-    if (!Object.hasOwn(record.values, entry.source)) continue;
+    if (!Object.hasOwn(record.values, entry.source)) {
+      if (process.env.VM19_MODE === 'missing')
+        values.push({
+          field: entry.kind === 'attribute' ? entry.field : capturedKey(obj.source, entry.source),
+          raw: null,
+        });
+      continue;
+    }
     const field = entry.kind === 'attribute' ? entry.field : capturedKey(obj.source, entry.source);
     const result = applyTransforms(
       record.values[entry.source],

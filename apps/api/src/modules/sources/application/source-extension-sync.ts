@@ -19,6 +19,9 @@ import {
 } from '../../extension';
 import { tenantClient, TenantDatabase, type AuthorizedContext } from '../../tenancy';
 
+/** MUTATION VM19: account records each run handed to the extension writers. */
+export const vm19Seen = new Map<string, Set<string>>();
+
 /** The run coordinates an extension write records (identifiers only). */
 export interface ExtensionRunMeta {
   readonly actx: AuthorizedContext<'canonical.source_sync'>;
@@ -84,6 +87,38 @@ export class SourceExtensionSync {
     };
   }
 
+  /** MUTATION VM19: clears this connection's source values (failed run / absence). */
+  async vm19Clear(meta: ExtensionRunMeta, keep?: ReadonlySet<string>): Promise<void> {
+    const rows = await this.db.transaction(meta.actx.tenant, (tx) =>
+      tenantClient(tx).$queryRawUnsafe<
+        { kind: string; id: string; key: string; rid: string | null; ot: string | null }[]
+      >(
+        `SELECT v.target_kind AS kind, v.target_id::text AS id, e.key, v.source_record_id AS rid,
+                v.source_object_type AS ot
+           FROM tenant_extension_values v JOIN tenant_registry_entries e
+             ON e.tenant_id = v.tenant_id AND e.kind = v.field_registry_kind AND e.id = v.field_id
+          WHERE v.tenant_id = $1::uuid AND v.origin = 'source_provided' AND v.value_state = 'present'
+            AND v.source_connection_id = $2::uuid AND v.target_id IS NOT NULL`,
+        meta.actx.tenant.tenantId,
+        meta.connectionId,
+      ),
+    );
+    const byTarget = new Map<string, typeof rows>();
+    for (const r of rows) {
+      if (keep && r.rid && keep.has(r.rid)) continue;
+      byTarget.set(`${r.kind}|${r.id}`, [...(byTarget.get(`${r.kind}|${r.id}`) ?? []), r]);
+    }
+    for (const group of byTarget.values()) {
+      const first = group[0]!;
+      await this.values.observeSource(meta.actx, {
+        target: { kind: first.kind, id: first.id } as never,
+        values: group.map((r) => ({ field: r.key, raw: null })),
+        observedAt: meta.observedAt,
+        provenance: this.provenance(meta, first.ot ?? 'Accounts', first.rid ?? first.id),
+      });
+    }
+  }
+
   /** The extension statements of one applied canonical record (account, person, subscription). */
   async canonicalRecord(
     meta: ExtensionRunMeta,
@@ -99,6 +134,8 @@ export class SourceExtensionSync {
     );
     quality.forEach((q) => count(q));
     const recordId = String(record.values[obj.identity.field] ?? record.id);
+    if (!vm19Seen.has(meta.runId)) vm19Seen.set(meta.runId, new Set());
+    vm19Seen.get(meta.runId)!.add(recordId);
     const provenance = this.provenance(meta, obj.source, recordId, record.modifiedAt);
     if (statements.values.length > 0) {
       const out = await this.values.observeSource(meta.actx, {

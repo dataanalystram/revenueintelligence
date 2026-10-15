@@ -68,7 +68,7 @@ import {
 } from '../infrastructure/sources.repository';
 import { SOURCE_SYNC_JOB, SOURCES_QUEUE, sourceSyncJobId } from '../jobs';
 import { SourceConnectionsService } from './source-connections.service';
-import { SourceExtensionSync, type ExtensionRunMeta } from './source-extension-sync';
+import { SourceExtensionSync, vm19Seen, type ExtensionRunMeta } from './source-extension-sync';
 import { AuditFailures } from '../../tenancy';
 
 export type SyncMode = 'full' | 'incremental';
@@ -213,6 +213,8 @@ class RunState {
  * writers. A run that cannot prove completeness never establishes coverage
  * and never tombstones.
  */
+let vm19Last: RunContext | undefined; // MUTATION VM19
+
 @Injectable()
 export class SourceSyncService {
   private readonly logger = new Logger('SourceSync');
@@ -383,9 +385,12 @@ export class SourceSyncService {
         observedAt: new Date(),
         cause: run.mode === 'backfill' ? 'backfill' : 'reconciliation',
       };
+      vm19Last = rc;
       await this.checkDrift(rc, state);
       if (run.mode === 'backfill') await this.full(rc, state);
       else await this.incremental(rc, state);
+      if (process.env.VM19_MODE === 'absence')
+        await this.extensions.vm19Clear(this.extensionMeta(rc), vm19Seen.get(rc.run.id) ?? new Set());
       await this.db.transaction(ctx, (tx) =>
         this.audit.record(
           tx,
@@ -408,6 +413,8 @@ export class SourceSyncService {
     } catch (err) {
       if (isConnectorError(err) && err.retryable) throw err;
       const code = errorCode(err);
+      if (process.env.VM19_MODE === 'failed' && vm19Last)
+        await this.extensions.vm19Clear(this.extensionMeta(vm19Last));
       state.count(code === 'schema_drift' || code === 'unstable_read' ? code : 'run_failed');
       await this.db.transaction(ctx, async (tx) => {
         await this.repo.finishRun(tx, runId, {
@@ -523,6 +530,7 @@ export class SourceSyncService {
       state.detail.drift = drift
         .filter((d) => d.blocking)
         .map((d) => `${d.code}:${d.object}${d.field ? `.${d.field}` : ''}`);
+      if (process.env.VM19_MODE === 'failed') await this.extensions.vm19Clear(this.extensionMeta(rc));
       throw new SyncRefusedError('schema_drift', 'The mapped source schema changed');
     }
   }
