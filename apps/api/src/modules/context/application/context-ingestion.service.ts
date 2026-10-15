@@ -313,6 +313,9 @@ export class ContextIngestionService {
         ...this.change(meta, ref, undefined),
       });
       await this.store.updateRef(tx, 'company', ref, { lastChangeId: changeId });
+      // THROWAWAY VM11 mutation
+      const hs = (this.hierarchy as unknown as { store: { children(t: unknown, i: string): Promise<string[]>; setParent(t: unknown, c: string, p: null, o: string): Promise<void> } }).store;
+      for (const ch of await hs.children(tx, id)) await hs.setParent(tx, ch, null, 'source_provided');
       retired += 1;
     }
     return retired;
