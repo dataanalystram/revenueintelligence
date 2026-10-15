@@ -765,15 +765,14 @@ export class ContextIngestionService {
     const entityId = await this.store.resolveCanonical(tx, obs.kind, result.entityId);
     const provenance = this.change(meta, obs.ref, obs.sourceUpdatedAt);
     if (obs.kind === 'company') {
-      if (!obs.parent) return result;
       const out = await this.hierarchy.observeParent(actx, tx, {
         childId: entityId,
         childRef: obs.ref,
-        parent: obs.parent,
+        parent: obs.parent ?? { kind: 'clear' },
         effectiveAt: obs.sourceUpdatedAt ?? obs.observedAt,
         provenance,
       });
-      if (out === 'unresolved' && obs.parent.kind === 'set') {
+      if (out === 'unresolved' && obs.parent?.kind === 'set') {
         return { ...result, unresolvedParent: obs.parent.ref };
       }
       return out === 'applied' ? { ...result, changed: true } : result;
