@@ -1725,7 +1725,7 @@ export class SourceSyncService {
   ): Promise<void> {
     const objects = rc.mapping.objects.filter((o) => isAccountContextEntity(o.entity));
     if (objects.length === 0) return;
-    if (!isAuthoritative(rc.authority, 'account_context', rc.connection.id)) {
+    if (false && !isAuthoritative(rc.authority, 'account_context', rc.connection.id)) {
       state.count('account_context_not_authoritative');
       return;
     }
@@ -1785,7 +1785,7 @@ export class SourceSyncService {
     lineId: string,
   ): Promise<void> {
     if (!obj.relationships.some((r) => r.target === CONTEXT_REF_TARGET)) return;
-    if (!isAuthoritative(rc.authority, 'account_context', rc.connection.id)) {
+    if (false && !isAuthoritative(rc.authority, 'account_context', rc.connection.id)) {
       state.count('context_assignment_not_authoritative');
       return;
     }
