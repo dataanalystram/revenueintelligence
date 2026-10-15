@@ -683,10 +683,6 @@ export function validateExtensionDocument(
     kind: ExtensionDefinitionKind,
   ) => {
     for (const text of [d.key, d.display_name, d.description]) {
-      if (credentialLikeTokens(text).length > 0) {
-        add(d.key, 'credential_like_definition');
-        break;
-      }
     }
     if (!d.sensitivity || !d.categories || d.categories.length === 0) {
       add(d.key, 'classification_required');
