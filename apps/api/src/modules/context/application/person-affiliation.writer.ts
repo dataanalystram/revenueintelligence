@@ -201,6 +201,20 @@ export class PersonAffiliationWriter {
     return out;
   }
 
+  /** MUTATION VM14: absence ends every active source row. */
+  async endAllOnAbsence(
+    tx: TenantTransaction,
+    personId: string,
+    observedAt: Date,
+    provenance: StructureProvenance,
+  ): Promise<void> {
+    if (!(await accountStructureEnabled(tx))) return;
+    for (const row of await this.store.affiliationsOf(tx, { personId, activeOnly: true })) {
+      if (row.origin !== 'source_provided') continue;
+      await this.endRow(tx, row, { status: 'ended', reason: 'source_removed', endedAt: observedAt, provenance });
+    }
+  }
+
   private async applyObserved(
     tx: TenantTransaction,
     input: AffiliationObservation,

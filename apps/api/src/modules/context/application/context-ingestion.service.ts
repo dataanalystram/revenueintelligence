@@ -778,7 +778,10 @@ export class ContextIngestionService {
       }
       return out === 'applied' ? { ...result, changed: true } : result;
     }
-    if (!obs.companyLinks && !obs.affiliations) return result;
+    if (!obs.companyLinks && !obs.affiliations) {
+      await this.affiliations.endAllOnAbsence(tx, entityId, obs.observedAt, provenance);
+      return result;
+    }
     const removed = [...removedLinks];
     const present: ObservedAffiliation[] = (obs.companyLinks ?? []).map((l) => ({
       company: l.company,
