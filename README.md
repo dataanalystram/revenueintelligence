@@ -24,7 +24,8 @@ See [docs/architecture.md](docs/architecture.md) for the design and
 | M3 — HubSpot developer environment / read connector   | ✅ Complete incl. live validation, awaiting review — [record](docs/milestones/M03-hubspot-test-environment.md)                      |
 | M10A2 — Canonical versioning & governance             | ✅ Merged into `integration` (PR #2) — [record](docs/milestones/M10A2-canonical-versioning-governance.md)                           |
 | M10B — Generic SourceReference + EvidenceLink         | ✅ Merged into `integration` (PR #5, `e23dfd4`, canonical `0.2`) — [record](docs/milestones/M10B-source-reference-evidence-link.md) |
-| M10C — Account hierarchy + Person–Account affiliation | 🔍 Review fixes on PR #32 (→ `integration`, canonical `0.3`) — [record](docs/milestones/M10C-account-hierarchy-affiliation.md)      |
+| M10C — Account hierarchy + Person–Account affiliation | ✅ Merged into `integration` (PR #32, `ce9b052`, canonical `0.3`) — [record](docs/milestones/M10C-account-hierarchy-affiliation.md) |
+| M10D — Extension framework foundation                 | 📝 Plan (→ `integration`, canonical `0.4`) — [plan](docs/milestones/M10D-extension-framework-plan.md)                               |
 
 ## Stack
 
