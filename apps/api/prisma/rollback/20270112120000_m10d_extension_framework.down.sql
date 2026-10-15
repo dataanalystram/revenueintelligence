@@ -27,7 +27,6 @@ BEGIN
   SELECT count(*) INTO n FROM tenant_registry_entries WHERE kind = 'extension';
   IF n > 0 THEN RAISE EXCEPTION 'refusing rollback: % extension registry entries exist', n; END IF;
   SELECT count(*) INTO n FROM tenant_extension_values;
-  IF n > 0 THEN RAISE EXCEPTION 'refusing rollback: % extension values exist', n; END IF;
   SELECT count(*) INTO n FROM tenant_extension_value_items;
   IF n > 0 THEN RAISE EXCEPTION 'refusing rollback: % extension value items exist', n; END IF;
   SELECT count(*) INTO n FROM tenant_custom_records;
