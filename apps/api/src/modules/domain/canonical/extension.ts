@@ -135,6 +135,7 @@ export const EXTENSION_EVIDENCE_FACTS = [
   'whitespace',
   'coverage',
 ] as const;
+export type ExtensionEvidenceFact = (typeof EXTENSION_EVIDENCE_FACTS)[number];
 export const NOT_EVIDENCE_OF_FLOOR = [
   'account_identity',
   'person_identity',
@@ -884,7 +885,7 @@ export function validateExtensionDocument(
 }
 
 /** Extension cross-version rules beyond the generic R-K / R-X1 / R-X3 / R-X4 (plan §2.5). */
-export type ExtensionRule = 'R-X2' | 'R-X4' | 'R-X6';
+export type ExtensionRule = 'R-X2' | 'R-X4' | 'R-X5' | 'R-X6';
 export interface ExtensionRuleViolation {
   readonly rule: ExtensionRule;
   readonly key: string;
@@ -958,4 +959,136 @@ export function keysTighteningToRestricted(
       (e) => e.sensitivity === 'restricted' && prev.has(e.key) && prev.get(e.key) !== 'restricted',
     )
     .map((e) => e.key);
+}
+
+/**
+ * X5 (plan §2.5): a constraint that narrows between the stored and the next
+ * definition. Each one is checked at publish with a bounded probe of the
+ * stored values; a narrowing is allowed only when no stored value violates it.
+ */
+export type ExtensionNarrowing =
+  | { readonly key: string; readonly check: 'max_length'; readonly limit: number }
+  | { readonly key: string; readonly check: 'min' | 'max'; readonly limit: number }
+  | { readonly key: string; readonly check: 'max_items'; readonly limit: number }
+  | { readonly key: string; readonly check: 'enum_codes'; readonly codes: readonly string[] }
+  | { readonly key: string; readonly check: 'json_schema'; readonly schema: JsonSchemaSubset }
+  | {
+      readonly key: string;
+      readonly check: 'reference_to';
+      readonly kinds: readonly string[];
+      readonly objectKeys: readonly string[];
+    }
+  | {
+      readonly key: string;
+      readonly check: 'cardinality';
+      readonly cardinality: CustomRelationshipCardinality;
+    };
+
+const CARDINALITY_RANK: Readonly<Record<CustomRelationshipCardinality, number>> = {
+  one_to_one: 0,
+  many_to_one: 1,
+  many_to_many: 2,
+};
+
+function constraintsOf(def: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  const c = def.constraints;
+  return c && typeof c === 'object' && !Array.isArray(c) ? (c as Record<string, unknown>) : {};
+}
+function num(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+function activeCodes(def: Readonly<Record<string, unknown>>): Set<string> {
+  const out = new Set<string>();
+  if (!Array.isArray(def.allowed_values)) return out;
+  for (const v of def.allowed_values as unknown[]) {
+    if (!v || typeof v !== 'object') continue;
+    const o = v as Record<string, unknown>;
+    if (typeof o.code === 'string' && (o.status ?? 'active') === 'active') out.add(o.code);
+  }
+  return out;
+}
+function sameJson(a: unknown, b: unknown): boolean {
+  return stableJson(a) === stableJson(b);
+}
+function stableJson(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(stableJson).join(',')}]`;
+  if (v && typeof v === 'object') {
+    const o = v as Record<string, unknown>;
+    return `{${Object.keys(o)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${stableJson(o[k])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(v ?? null);
+}
+
+/** The X5 narrowings between a stored projection and the next version (pure). */
+export function extensionNarrowings(
+  previous: readonly StoredExtensionEntry[],
+  next: readonly ExtensionEntryDraft[],
+): ExtensionNarrowing[] {
+  const out: ExtensionNarrowing[] = [];
+  const byKey = new Map(next.map((e) => [e.key, e]));
+  for (const before of previous) {
+    const after = byKey.get(before.key);
+    if (!after) continue;
+    const b = before.definition;
+    const a = after.definition;
+    const key = before.key;
+    if (str(a.kind) === 'custom_relationship') {
+      const pb = str(b.cardinality) as CustomRelationshipCardinality | undefined;
+      const pa = str(a.cardinality) as CustomRelationshipCardinality | undefined;
+      if (
+        pb !== undefined &&
+        pa !== undefined &&
+        pa in CARDINALITY_RANK &&
+        pb in CARDINALITY_RANK &&
+        CARDINALITY_RANK[pa] < CARDINALITY_RANK[pb]
+      ) {
+        out.push({ key, check: 'cardinality', cardinality: pa });
+      }
+      continue;
+    }
+    if (str(a.kind) !== 'field') continue;
+    const cb = constraintsOf(b);
+    const ca = constraintsOf(a);
+    const narrowsDown = (k: 'max_length' | 'max_items' | 'max'): number | undefined => {
+      const n = num(ca[k]);
+      if (n === undefined) return undefined;
+      const o = num(cb[k]);
+      return o === undefined || n < o ? n : undefined;
+    };
+    const maxLength = narrowsDown('max_length');
+    if (maxLength !== undefined) out.push({ key, check: 'max_length', limit: maxLength });
+    const maxItems = narrowsDown('max_items');
+    if (maxItems !== undefined) out.push({ key, check: 'max_items', limit: maxItems });
+    const max = narrowsDown('max');
+    if (max !== undefined) out.push({ key, check: 'max', limit: max });
+    const min = num(ca.min);
+    if (min !== undefined && (num(cb.min) === undefined || min > num(cb.min)!)) {
+      out.push({ key, check: 'min', limit: min });
+    }
+    const retired = [...activeCodes(b)].filter((c) => !activeCodes(a).has(c)).sort();
+    if (retired.length > 0) out.push({ key, check: 'enum_codes', codes: retired });
+    if (
+      ca.json_schema &&
+      typeof ca.json_schema === 'object' &&
+      !sameJson(cb.json_schema, ca.json_schema)
+    ) {
+      out.push({ key, check: 'json_schema', schema: ca.json_schema as JsonSchemaSubset });
+    }
+    const refB = Array.isArray(cb.reference_to) ? (cb.reference_to as string[]) : [];
+    const refA = Array.isArray(ca.reference_to) ? (ca.reference_to as string[]) : [];
+    if (refA.length > 0 && refB.some((t) => !refA.includes(t))) {
+      const kinds = [
+        ...new Set(refA.map(extensionTargetKind).filter((k): k is ExtensionTargetKind => !!k)),
+      ].sort();
+      const objectKeys = refA
+        .filter((t) => t.startsWith(EXTENSION_CUSTOM_OBJECT_PREFIX))
+        .map((t) => t.slice(EXTENSION_CUSTOM_OBJECT_PREFIX.length))
+        .sort();
+      out.push({ key, check: 'reference_to', kinds, objectKeys });
+    }
+  }
+  return out;
 }

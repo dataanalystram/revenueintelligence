@@ -9,8 +9,13 @@ import {
   EXTENSION_MIN_VERSION,
   EXTENSION_MODULE_KEY,
   EXTENSION_REFUSAL_CODES,
+  extensionNarrowings,
   extensionRuleViolations,
+  extensionTargetKind,
+  isExtensionHistoryField,
   keysTighteningToRestricted,
+  matchesJsonSchema,
+  type ExtensionNarrowing,
   validateExtensionDocument,
   type ExtensionEntryDraft,
   type ExtensionGuardrails,
@@ -44,6 +49,9 @@ import {
 import { valueHistoryColumn } from '../../domain';
 import { GovernanceError } from '../errors';
 import { ModuleGate } from './module-settings.service';
+
+/** Page size of the X5 JSON-schema keyset scan (bounded memory per page). */
+const X5_JSON_PAGE = 500;
 
 export interface RegistryPublishInput {
   /** The version the document was edited from (0 for the first). */
@@ -261,6 +269,9 @@ export class RegistryService {
         previous.map((e) => ({ key: e.key, definition: e.definition as Record<string, unknown> })),
         parsed.value.entries,
       );
+      if (kind === 'data_policy') {
+        violations.push(...(await this.extensionAllowViolations(tx, parsed.value.document)));
+      }
       if (kind === 'extension') {
         await this.checkExtensionRules(
           tx,
@@ -434,6 +445,14 @@ export class RegistryService {
       categories: p.sensitivity === null ? null : p.categories,
     }));
     violations.push(...extensionRuleViolations(stored, next));
+    // X5: a narrowed constraint is refused while a stored value violates it.
+    const idByKey = new Map(previous.map((p) => [p.key, p.id]));
+    for (const n of extensionNarrowings(stored, next)) {
+      const id = idByKey.get(n.key);
+      if (id && (await this.narrowingViolated(tx, id, n))) {
+        violations.push({ rule: 'R-X5', key: n.key });
+      }
+    }
     const tightened = keysTighteningToRestricted(stored, next);
     if (tightened.length === 0) return;
     const ids = previous.filter((p) => tightened.includes(p.key));
@@ -449,6 +468,131 @@ export class RegistryService {
         p.id,
       );
       if (rows[0]?.present) violations.push({ rule: 'R-X6', key: p.key });
+    }
+  }
+
+  /**
+   * M10D (Q23): each `ext:<key>` value-history allow entry of a data policy
+   * names a current extension field of that target kind that records value
+   * history; anything else refuses the publish (`R-DP-EXT`, entry key only).
+   */
+  private async extensionAllowViolations(
+    tx: TenantTransaction,
+    document: Record<string, unknown>,
+  ): Promise<{ rule: string; key: string }[]> {
+    const parsed = DataPolicyDocumentSchema.safeParse(document);
+    if (!parsed.success) return [];
+    const ext = parsed.data.value_history.allow.filter((a) =>
+      isExtensionHistoryField(a.entity_kind, a.field),
+    );
+    if (ext.length === 0) return [];
+    const keys = ext.map((a) => a.field.slice('ext:'.length));
+    const entries = await tenantClient(tx).tenantRegistryEntry.findMany({
+      where: { kind: 'extension', key: { in: keys } },
+      select: { key: true, definition: true },
+    });
+    const byKey = new Map(entries.map((e) => [e.key, e.definition as Record<string, unknown>]));
+    const out: { rule: string; key: string }[] = [];
+    for (const a of ext) {
+      const def = byKey.get(a.field.slice('ext:'.length));
+      const target = typeof def?.target === 'string' ? def.target : '';
+      if (
+        !def ||
+        def.kind !== 'field' ||
+        def.history !== 'value_history' ||
+        extensionTargetKind(target) !== a.entity_kind
+      ) {
+        out.push({ rule: 'R-DP-EXT', key: `${a.entity_kind}.${a.field}` });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * X5 probe (plan §2.5, §17): one bounded EXISTS query on the typed columns /
+   * the items table; a JSON schema change is checked by a keyset scan in
+   * bounded pages that stops at the first violating value.
+   */
+  private async narrowingViolated(
+    tx: TenantTransaction,
+    id: string,
+    n: ExtensionNarrowing,
+  ): Promise<boolean> {
+    const db = tenantClient(tx);
+    const present = `FROM tenant_extension_values v
+                      WHERE v.tenant_id = $1::uuid AND v.field_id = $2::uuid AND v.value_state = 'present'`;
+    const items = `FROM tenant_extension_values v
+                     JOIN tenant_extension_value_items i ON i.tenant_id = v.tenant_id AND i.value_id = v.id
+                    WHERE v.tenant_id = $1::uuid AND v.field_id = $2::uuid AND v.value_state = 'present'`;
+    const exists = async (sql: string, ...params: unknown[]): Promise<boolean> => {
+      const rows = await db.$queryRawUnsafe<{ present: boolean }[]>(
+        `SELECT EXISTS (${sql}) AS present`,
+        tx.tenantId,
+        id,
+        ...params,
+      );
+      return rows[0]?.present === true;
+    };
+    switch (n.check) {
+      case 'max_length':
+        return (
+          (await exists(`SELECT 1 ${present} AND char_length(v.value_text) > $3::int`, n.limit)) ||
+          (await exists(`SELECT 1 ${items} AND char_length(i.item_text) > $3::int`, n.limit))
+        );
+      case 'min':
+      case 'max': {
+        const op = n.check === 'min' ? '<' : '>';
+        return (
+          (await exists(
+            `SELECT 1 ${present} AND (v.value_number ${op} $3::numeric OR v.value_money_minor ${op} $3::numeric)`,
+            String(n.limit),
+          )) ||
+          (await exists(`SELECT 1 ${items} AND i.item_number ${op} $3::numeric`, String(n.limit)))
+        );
+      }
+      case 'max_items':
+        return exists(`SELECT 1 ${present} AND v.value_item_count > $3::int`, n.limit);
+      case 'enum_codes':
+        return (
+          (await exists(`SELECT 1 ${present} AND v.value_enum = ANY($3::text[])`, [...n.codes])) ||
+          (await exists(`SELECT 1 ${items} AND i.item_enum = ANY($3::text[])`, [...n.codes]))
+        );
+      case 'reference_to':
+        return exists(
+          `SELECT 1 ${present}
+              AND (v.value_ref_kind <> ALL($3::text[])
+                   OR (v.value_ref_kind = 'custom_record' AND NOT EXISTS (
+                         SELECT 1 FROM tenant_custom_records r
+                           JOIN tenant_registry_entries e
+                             ON e.tenant_id = r.tenant_id AND e.kind = r.object_registry_kind AND e.id = r.object_id
+                          WHERE r.tenant_id = v.tenant_id AND r.id = v.value_ref_id
+                            AND e.key = ANY($4::text[]))))`,
+          [...n.kinds],
+          [...n.objectKeys],
+        );
+      case 'cardinality': {
+        const end = (side: 'from' | 'to'): string =>
+          `SELECT 1 FROM tenant_custom_relationships c
+            WHERE c.tenant_id = $1::uuid AND c.rel_def_id = $2::uuid AND c.state = 'active'
+            GROUP BY c.${side}_kind, c.${side}_id, c.${side}_key HAVING count(*) > 1`;
+        if (await exists(end('from'))) return true;
+        return n.cardinality === 'one_to_one' ? exists(end('to')) : false;
+      }
+      case 'json_schema': {
+        let after = '00000000-0000-0000-0000-000000000000';
+        for (;;) {
+          const page = await db.$queryRawUnsafe<{ id: string; value_json: unknown }[]>(
+            `SELECT v.id::text AS id, v.value_json ${present} AND v.value_json IS NOT NULL
+                AND v.id > $3::uuid ORDER BY v.id LIMIT ${X5_JSON_PAGE}`,
+            tx.tenantId,
+            id,
+            after,
+          );
+          if (page.some((r) => !matchesJsonSchema(n.schema, r.value_json))) return true;
+          if (page.length < X5_JSON_PAGE) return false;
+          after = page[page.length - 1]!.id;
+        }
+      }
     }
   }
 
@@ -491,6 +635,8 @@ export class RegistryService {
     }
     // Each allowed field must be a value-history field present in the classification manifest.
     const missing = parsed.data.value_history.allow.filter((a) => {
+      // `ext:<key>` entries are checked against the current extension registry at publish (Q23).
+      if (isExtensionHistoryField(a.entity_kind, a.field)) return false;
       const column = valueHistoryColumn(a.entity_kind, a.field);
       return !column || !CLASSIFICATION_MANIFEST[column.table]?.[column.column];
     });
