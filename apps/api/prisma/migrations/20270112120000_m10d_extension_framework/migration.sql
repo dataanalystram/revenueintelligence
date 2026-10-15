@@ -613,3 +613,5 @@ GRANT SELECT, INSERT, UPDATE ON TABLE "tenant_custom_records" TO lip_app;
 GRANT SELECT, INSERT, UPDATE ON TABLE "tenant_custom_relationships" TO lip_app;
 -- Collection items are replaced on change (Q26): the only M10D DELETE grant.
 GRANT SELECT, INSERT, DELETE ON TABLE "tenant_extension_value_items" TO lip_app;
+
+GRANT DELETE ON TABLE "tenant_extension_values" TO lip_app;
