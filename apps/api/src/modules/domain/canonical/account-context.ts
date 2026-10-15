@@ -204,7 +204,6 @@ export function validateContextTypeDocument(raw: unknown): ContextTypeDocumentVa
         add(where, 'dimension_extension_field_invalid');
       }
       if (!d.sensitivity || !d.categories || d.categories.length === 0) {
-        add(where, 'classification_required');
         continue;
       }
       if (new Set(d.categories).size !== d.categories.length) add(where, 'duplicate_category');
