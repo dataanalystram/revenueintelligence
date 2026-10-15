@@ -805,8 +805,7 @@ export class SourceSyncService {
     const profileAuthority = isAuthoritative(rc.authority, fact, rc.connection.id);
     // M10C: the parent is read only for the account_hierarchy authority (ADR 0029).
     const hierarchyAuthority =
-      obj.entity === 'account' &&
-      isAuthoritative(rc.authority, 'account_hierarchy', rc.connection.id);
+      obj.entity === 'account';
     for (const record of records) {
       if (record.rejection) {
         // M9B: structurally invalid — never mapped; a full run counts it as seen (no retirement).
