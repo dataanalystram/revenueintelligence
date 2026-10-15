@@ -58,7 +58,11 @@ function codes(raw: unknown, c: MappingValidationContext = ctx()): string[] {
 
 describe('canonical 0.3 mapping-target catalogue (review n3)', () => {
   it('the frozen 0.3 list equals the code catalogue, so the stored 0.3 hash describes the code', () => {
-    expect([...MAPPING_TARGETS_0_3].sort()).toEqual(Object.keys(MAPPING_TARGETS).sort());
+    // M10E: `subscription.contextRef` is hashed at 0.5 through the mapping entity
+    // `account_context` (MAPPING_ENTITIES_0_5), not as a 0.3 target (ADR 0031).
+    expect([...MAPPING_TARGETS_0_3, 'subscription.contextRef'].sort()).toEqual(
+      Object.keys(MAPPING_TARGETS).sort(),
+    );
   });
 });
 
