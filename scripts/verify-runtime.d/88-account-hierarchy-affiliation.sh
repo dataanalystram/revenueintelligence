@@ -64,7 +64,7 @@ as_adoption() {
   as_cli canonical adopt --tenant "$AS_TENANT" --version 0.2 --expected-current 0.3 >"$AS_OUT/adopt-02-dry.json" || return 1
   grep -q '"dryRun": true' "$AS_OUT/adopt-02-dry.json" && grep -q 'account_hierarchy' "$AS_OUT/adopt-02-dry.json" &&
     grep -q 'person_affiliations' "$AS_OUT/adopt-02-dry.json" || return 1
-  [ "$(as_count tenant_canonical_adoptions)" = 2 ] || return 1
+  [ "$(as_count tenant_canonical_adoptions)" = 3 ] || return 1
   as_cli canonical adopt --tenant "$AS_TENANT" --version 0.2 --expected-current 0.3 --actor "$AS_ACTOR" --execute >"$AS_OUT/adopt-02.json" || return 1
   # Below 0.3 operator entry is refused (exit 2), audited as failed, nothing written.
   local code=0

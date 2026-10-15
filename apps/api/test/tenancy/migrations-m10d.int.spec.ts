@@ -491,13 +491,20 @@ describe('M10D migration and schema guard', () => {
           classifiedBy: 'registry',
         });
       }
-      // The registry marker is used only by the typed extension columns.
+      // The registry marker is used only by the typed extension columns and (M10E, plan §6)
+      // the account-context dimensions, classified per row by their context type.
       const marked = Object.entries(CLASSIFICATION_MANIFEST).flatMap(([t, cols]) =>
         Object.entries(cols)
           .filter(([, c]) => (c as { classifiedBy?: string }).classifiedBy === 'registry')
           .map(([col]) => `${t}.${col}`),
       );
-      expect(marked.every((m) => /^tenant_extension_value(s|_items)\./.test(m))).toBe(true);
+      expect(
+        marked.every(
+          (m) =>
+            /^tenant_extension_value(s|_items)\./.test(m) ||
+            m === 'tenant_account_contexts.dimensions',
+        ),
+      ).toBe(true);
       for (const column of ['target_kind', 'field_id', 'value_type', 'value_state', 'field_hash']) {
         expect(values[column]!.sensitivity, column).not.toBe('restricted');
         expect((values[column] as { classifiedBy?: string }).classifiedBy, column).toBeUndefined();
