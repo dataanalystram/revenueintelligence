@@ -649,6 +649,17 @@ describe('M10D extension values (ExtensionValueWriter)', () => {
       await expect(
         authz(t, 'canonical.human_entry', sourceSyncActor('run:x')),
       ).rejects.toMatchObject({ reason: 'capability_not_granted' });
+      // The writer checks the capability itself (S2): a context issued for another
+      // capability is refused before anything is stored.
+      const other = (await authz(t, 'data.extension.read')) as never;
+      const req = { target: `company:${company}`, field: 'x_string', reason: REASON };
+      for (const call of [
+        () => writer().set(other, { ...req, value: 'a' }),
+        () => writer().clear(other, req),
+        () => writer().release(other, req),
+      ]) {
+        await expect(call()).rejects.toThrow(/canonical\.human_entry is required/);
+      }
       await expect(
         writer().set(await authz(t, 'canonical.human_entry'), {
           target: `company:${company}`,

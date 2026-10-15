@@ -315,6 +315,13 @@ describe('captured field keys and the capture draft (Q20)', () => {
           field: 'Notes',
           profileSensitivity: 'sensitive_by_value',
         },
+        {
+          connectionKind: 'sugar',
+          object: 'Accounts',
+          entity: 'account',
+          field: 'Owner',
+          profileSensitivity: 'sensitive_by_name',
+        },
         { connectionKind: 'sugar', object: 'Accounts', entity: 'account', field: 'ssn' },
         { connectionKind: 'sugar', object: 'Accounts', entity: 'account', field: 'region' },
         { connectionKind: 'sugar', object: 'Accounts', entity: 'account', field: 'Size' },
@@ -324,6 +331,7 @@ describe('captured field keys and the capture draft (Q20)', () => {
     );
     expect(draft.map((d) => (d.ok ? 'ok' : d.code))).toEqual([
       'ok',
+      'capture_sensitive_refused',
       'capture_sensitive_refused',
       'capture_sensitive_refused',
       'capture_key_collision',
