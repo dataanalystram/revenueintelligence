@@ -19,6 +19,8 @@ import {
   type EvidenceRelation,
   type IntegrityFinding,
   type IntegrityOutcome,
+  ContextTypeDefinitionSchema,
+  contextNaturalKeyHash,
 } from '../../domain';
 import {
   AuditFailures,
@@ -319,7 +321,90 @@ export class IntegrityVerificationService {
     await this.accountStructureChecks(tx, add);
     // M10D plan §14 (ADR 0030).
     await this.extensionChecks(tx, add);
+    // M10E plan §14 (ADR 0031).
+    await this.accountContextChecks(tx, add);
     return findings;
+  }
+
+  /** The five M10E checks: read-only, identifiers only, nothing repaired. */
+  private async accountContextChecks(
+    tx: TenantTransaction,
+    add: (check: IntegrityFinding['check'], refs: readonly string[]) => void,
+  ): Promise<void> {
+    const db = tenantClient(tx);
+    const t = tx.tenantId;
+    const refs = async (sql: string): Promise<string[]> =>
+      (
+        await db.$queryRawUnsafe<{ ref: string }[]>(
+          `${sql} ORDER BY 1 LIMIT ${INTEGRITY_MAX_FINDINGS}`,
+          t,
+        )
+      ).map((r) => r.ref);
+    const type = `LEFT JOIN tenant_registry_entries e
+                    ON e.tenant_id = c.tenant_id AND e.kind = c.context_type_registry_kind
+                   AND e.id = c.context_type_id`;
+    // 27. A line's context belongs to the line's account (the deferred trigger's invariant).
+    add(
+      'account_context_company_mismatch',
+      await refs(`SELECT s.id::text AS ref FROM tenant_subscriptions s
+                    JOIN tenant_account_contexts c ON c.tenant_id = s.tenant_id AND c.id = s.context_id
+                   WHERE s.tenant_id = $1::uuid AND s.company_id <> c.company_id`),
+    );
+    // 28. The stored natural-key hash equals the hash recomputed from the stored dimensions.
+    const rows = await db.$queryRaw<{ id: string; dimensions: unknown; definition: unknown }[]>`
+      SELECT c.id::text AS id, c.dimensions, e.definition FROM tenant_account_contexts c
+        JOIN tenant_registry_entries e
+          ON e.tenant_id = c.tenant_id AND e.kind = c.context_type_registry_kind AND e.id = c.context_type_id
+       WHERE c.tenant_id = ${t}::uuid ORDER BY c.id`;
+    const hashes = await db.$queryRaw<{ id: string; hash: string }[]>`
+      SELECT id::text AS id, natural_key_hash AS hash FROM tenant_account_contexts
+       WHERE tenant_id = ${t}::uuid`;
+    const stored = new Map(hashes.map((h) => [h.id, h.hash]));
+    const drift: string[] = [];
+    for (const r of rows) {
+      const def = ContextTypeDefinitionSchema.safeParse(r.definition);
+      if (!def.success) continue; // reported by account_context_type_mismatch
+      const dims = (r.dimensions ?? {}) as Record<string, string | number | null>;
+      const hash = contextNaturalKeyHash(
+        def.data.dimensions.map((d) => d.key),
+        dims,
+      );
+      if (hash !== stored.get(r.id)) drift.push(r.id);
+    }
+    add('account_context_natural_key_drift', drift.slice(0, INTEGRITY_MAX_FINDINGS));
+    // 29. The dimensions fit the type: entry exists, no unknown key, every required key present.
+    add(
+      'account_context_type_mismatch',
+      await refs(`SELECT c.id::text AS ref FROM tenant_account_contexts c ${type}
+                   WHERE c.tenant_id = $1::uuid AND (
+                         e.id IS NULL
+                      OR EXISTS (SELECT 1 FROM jsonb_object_keys(c.dimensions) k
+                                  WHERE NOT EXISTS (
+                                        SELECT 1 FROM jsonb_array_elements(e.definition -> 'dimensions') d
+                                         WHERE d ->> 'key' = k))
+                      OR EXISTS (SELECT 1 FROM jsonb_array_elements(e.definition -> 'dimensions') d
+                                  WHERE (d ->> 'required')::boolean AND NOT c.dimensions ? (d ->> 'key')))`),
+    );
+    // 30. merged ⇔ merged_into_id set; the survivor exists, is another context and is not merged.
+    add(
+      'account_context_dangling_merge',
+      await refs(`SELECT c.id::text AS ref FROM tenant_account_contexts c
+                    LEFT JOIN tenant_account_contexts s ON s.tenant_id = c.tenant_id AND s.id = c.merged_into_id
+                   WHERE c.tenant_id = $1::uuid AND (
+                         (c.record_state = 'merged') <> (c.merged_into_id IS NOT NULL)
+                      OR (c.merged_into_id IS NOT NULL
+                          AND (s.id IS NULL OR s.id = c.id OR s.record_state = 'merged')))`),
+    );
+    // 31. Every active membership's role is a member role of its context's type.
+    add(
+      'account_context_member_role_unknown',
+      await refs(`SELECT m.context_id::text || '/' || m.person_id::text || '/' || m.role_code AS ref
+                    FROM tenant_account_context_persons m
+                    JOIN tenant_account_contexts c ON c.tenant_id = m.tenant_id AND c.id = m.context_id
+                    ${type}
+                   WHERE m.tenant_id = $1::uuid AND m.status = 'active'
+                     AND NOT COALESCE((e.definition -> 'member_roles') ? m.role_code, false)`),
+    );
   }
 
   /** The eight M10D checks: read-only, identifiers only, nothing repaired. */

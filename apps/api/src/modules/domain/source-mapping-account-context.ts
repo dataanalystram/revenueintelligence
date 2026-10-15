@@ -297,7 +297,7 @@ export type MappedAccountContext =
       readonly accountRef: SourceTripleRef;
       readonly presence: 'present' | 'absent';
       /** Stated dimension values only (an empty or unmapped value is omitted). */
-      readonly dimensions: Readonly<Record<string, string | number | boolean>>;
+      readonly dimensions: Readonly<Record<string, string>>;
       /** undefined = not mapped or empty (unchanged; absence never clears). */
       readonly name?: string;
       readonly status?: AccountContextStatus;
@@ -366,7 +366,7 @@ export function mapAccountContextRecord(
   if (record.deleted) {
     return { ...base, presence: 'absent', dimensions: {}, persons: [], quality };
   }
-  const dimensions: Record<string, string | number | boolean> = {};
+  const dimensions: Record<string, string> = {};
   for (const d of ac.dimensions ?? []) {
     const raw = record.values[d.field];
     if (raw === null || raw === undefined || (typeof raw === 'string' && raw.trim() === ''))
@@ -381,7 +381,7 @@ export function mapAccountContextRecord(
       }
       dimensions[d.key] = mapped;
     } else {
-      dimensions[d.key] = typeof raw === 'string' ? raw.trim() : raw;
+      dimensions[d.key] = String(raw).trim();
     }
   }
   let status: AccountContextStatus | undefined;
