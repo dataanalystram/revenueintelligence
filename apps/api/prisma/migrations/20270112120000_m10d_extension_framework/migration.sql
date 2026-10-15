@@ -524,8 +524,6 @@ BEGIN
 END
 $$;
 REVOKE ALL ON FUNCTION "app_custom_relationship_guard"() FROM PUBLIC;
-CREATE TRIGGER "tenant_custom_relationships_guard" BEFORE INSERT OR UPDATE ON "tenant_custom_relationships"
-  FOR EACH ROW EXECUTE FUNCTION app_custom_relationship_guard();
 
 -- ---------------------------------------------------------------------------
 -- 4. Kind CHECKs (plan §4.4, §9, §11 step 4)
