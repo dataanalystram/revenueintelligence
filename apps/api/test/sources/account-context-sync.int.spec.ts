@@ -462,9 +462,13 @@ describe('M10E account contexts through a source run (Sugar adapter, fake Sugar)
         ),
       ).toContain('identity_unsuitable');
 
-      // Valid now: published at canonical 0.5.
+      // Valid now (only the profile findings to acknowledge remain): published at canonical 0.5.
       const report = await s.mappings.validate(f.ctx, f.connectionId, mapping);
-      expect(report.errors).toEqual([]);
+      expect(
+        report.errors.filter(
+          (e) => !['finding_unacknowledged', 'profile_low_coverage'].includes(e.code),
+        ),
+      ).toEqual([]);
       const published = await publishWithAcks(c, f, mapping, base);
       expect(published.version).toBe(base + 1);
       expect(
