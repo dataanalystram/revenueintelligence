@@ -96,7 +96,6 @@ END
 $$;
 
 ALTER TABLE "companies"
-  ADD CONSTRAINT "companies_parent_not_self" CHECK ("parent_company_id" IS NULL OR "parent_company_id" <> "id"),
   ADD CONSTRAINT "companies_parent_origin_valid" CHECK ("parent_company_origin" IS NULL OR "parent_company_origin" IN ('source_provided', 'human'));
 
 -- The tenant-scoped advisory-lock key, identical to tenantAdvisoryLock /
