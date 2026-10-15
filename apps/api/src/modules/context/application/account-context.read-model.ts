@@ -154,14 +154,12 @@ export class AccountContextReadModel {
       }
       const rows = await this.store.linesOfContexts(tx, [id], ACCOUNT_CONTEXT_READ_BOUND + 1);
       const truncated = rows.length > ACCOUNT_CONTEXT_READ_BOUND;
-      const lines = rows
-        .slice(0, ACCOUNT_CONTEXT_READ_BOUND)
-        .map((l) => ({
-          id: l.id,
-          companyId: l.companyId,
-          productKey: l.productKey,
-          state: l.state,
-        }));
+      const lines = rows.slice(0, ACCOUNT_CONTEXT_READ_BOUND).map((l) => ({
+        id: l.id,
+        companyId: l.companyId,
+        productKey: l.productKey,
+        state: l.state,
+      }));
       await this.audit.record(tx, actx, {
         action: 'account_context.read',
         targetKind: 'account_context',

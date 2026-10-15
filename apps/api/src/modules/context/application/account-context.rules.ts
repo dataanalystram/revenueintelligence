@@ -215,7 +215,7 @@ export function decideSourceAttributes(
     apply[attr] = next;
     changedFields.push(attr);
   }
-  return { apply: apply as Partial<ContextAttributes>, changedFields, disagreements };
+  return { apply: apply, changedFields, disagreements };
 }
 
 /** An operator write: every differing given attribute applies (the operator always wins, may reactivate). */
@@ -238,7 +238,7 @@ function withStatus(
     apply[attr] = next;
     changedFields.push(attr);
   }
-  return { apply: apply as Partial<ContextAttributes>, changedFields, disagreements: [] };
+  return { apply: apply, changedFields, disagreements: [] };
 }
 
 // ---------------------------------------------------------------------------

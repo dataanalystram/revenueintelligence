@@ -139,7 +139,7 @@ export class AccountContextMergeParticipant
       from,
       to,
       (r) => ({ ...r, personId: merge.survivorId }),
-      merge.provenance as ContextProvenance,
+      merge.provenance,
       new Date(),
     );
   }

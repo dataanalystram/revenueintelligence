@@ -190,10 +190,14 @@ export class AccountContextStore {
   /** Product key → active, for the given keys. */
   async products(tx: TenantTransaction, keys: readonly string[]): Promise<Map<string, boolean>> {
     if (keys.length === 0) return new Map();
-    const rows = await tenantClient(tx).tenantProduct.findMany({
-      where: { tenantId: tx.tenantId, key: { in: [...new Set(keys)] } },
-      select: { key: true, active: true },
-    });
+    // Read-only existence / active check of the published product projection
+    // (ADR 0016: written only by the products module; ADR 0008 config delegates
+    // stay untouched here).
+    const rows = await tenantClient(tx).$queryRawUnsafe<{ key: string; active: boolean }[]>(
+      'SELECT key, active FROM tenant_products WHERE tenant_id = $1::uuid AND key = ANY($2::text[])',
+      tx.tenantId,
+      [...new Set(keys)],
+    );
     return new Map(rows.map((r) => [r.key, r.active]));
   }
 
@@ -387,7 +391,7 @@ export class AccountContextStore {
         companyId: input.companyId,
         contextTypeId: input.contextTypeId,
         naturalKeyHash: input.naturalKeyHash,
-        dimensions: input.dimensions as object,
+        dimensions: input.dimensions,
         name: input.name,
         status: input.status,
         ownerRef: input.ownerRef,
