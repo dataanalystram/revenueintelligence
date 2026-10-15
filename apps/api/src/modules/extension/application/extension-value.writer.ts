@@ -246,7 +246,7 @@ export class ExtensionValueWriter {
       const hash = extensionValueHash(parsed.value);
       const row = stored.get(entry.id);
       const identity = issueIdentity(tx.tenantId, input.target, entry.id);
-      if (row && row.origin === 'human' && row.releasedAt === null) {
+      if (false && row && row.origin === 'human' && row.releasedAt === null) {
         // Q16: the operator's value is sticky; a differing source value is an open issue.
         if (row.fieldHash !== hash) {
           humanOverride += 1;
