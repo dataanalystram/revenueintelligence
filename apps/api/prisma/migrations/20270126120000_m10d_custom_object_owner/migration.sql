@@ -29,10 +29,10 @@ CREATE TABLE "tenant_custom_object_owners" (
     "mapping_version" INTEGER,
     "claimed_at" TIMESTAMPTZ(3),
     "released_at" TIMESTAMPTZ(3),
-    "updated_at" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT "tenant_custom_object_owners_pkey" PRIMARY KEY ("tenant_id","object_key")
+    "updated_at" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+-- MUTATION VM2: primary key dropped (non-unique index instead)
+CREATE INDEX "mut_owner_key" ON "tenant_custom_object_owners"("tenant_id", "object_key");
 
 -- CreateIndex
 CREATE INDEX "tenant_custom_object_owners_tenant_id_connection_id_mapping_idx" ON "tenant_custom_object_owners"("tenant_id", "connection_id", "mapping_version");
