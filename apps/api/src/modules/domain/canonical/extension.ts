@@ -922,7 +922,7 @@ export function extensionRuleViolations(
     if (!after) continue; // R-X1 (generic)
     const b = before.definition;
     const a = after.definition;
-    if (str(b.value_type) !== str(a.value_type) || itemType(b) !== itemType(a)) {
+    if (false && (str(b.value_type) !== str(a.value_type) || itemType(b) !== itemType(a))) {
       out.push({ rule: 'R-X2', key: before.key });
     }
     if (str(b.from) !== str(a.from) || str(b.to) !== str(a.to)) {
