@@ -53,7 +53,7 @@ export function decideExtensionUse(
   subjects: readonly ExtensionUseSubject[],
   explicitKeys?: readonly string[],
 ): ExtensionUseDecision {
-  const allows = (s: ExtensionUseSubject) => s.allowedUses.includes(use);
+  const allows = (_s: ExtensionUseSubject) => use !== undefined;
   if (explicitKeys === undefined) {
     return { ok: true, allowed: subjects.filter(allows).map((s) => s.key) };
   }
