@@ -1,0 +1,26 @@
+diff --git a/apps/api/src/modules/domain/canonical/extension-values.spec.ts b/apps/api/src/modules/domain/canonical/extension-values.spec.ts
+index dac15ed..fa918c3 100644
+--- a/apps/api/src/modules/domain/canonical/extension-values.spec.ts
++++ b/apps/api/src/modules/domain/canonical/extension-values.spec.ts
+@@ -315,6 +315,13 @@ describe('captured field keys and the capture draft (Q20)', () => {
+           field: 'Notes',
+           profileSensitivity: 'sensitive_by_value',
+         },
++        {
++          connectionKind: 'sugar',
++          object: 'Accounts',
++          entity: 'account',
++          field: 'Owner',
++          profileSensitivity: 'sensitive_by_name',
++        },
+         { connectionKind: 'sugar', object: 'Accounts', entity: 'account', field: 'ssn' },
+         { connectionKind: 'sugar', object: 'Accounts', entity: 'account', field: 'region' },
+         { connectionKind: 'sugar', object: 'Accounts', entity: 'account', field: 'Size' },
+@@ -326,6 +333,7 @@ describe('captured field keys and the capture draft (Q20)', () => {
+       'ok',
+       'capture_sensitive_refused',
+       'capture_sensitive_refused',
++      'capture_sensitive_refused',
+       'capture_key_collision',
+     ]);
+     const first = draft[0]!;

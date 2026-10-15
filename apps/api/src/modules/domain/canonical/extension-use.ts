@@ -157,7 +157,6 @@ export function captureDraft(
   for (const s of sources) {
     const label = `${s.object}.${s.field}`;
     if (
-      s.profileSensitivity === 'sensitive_by_name' ||
       s.profileSensitivity === 'sensitive_by_value' ||
       (s.profileSensitivity === undefined && isSensitiveName(s.field))
     ) {
