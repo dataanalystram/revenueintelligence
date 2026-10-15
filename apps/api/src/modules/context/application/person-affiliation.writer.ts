@@ -180,6 +180,8 @@ export class PersonAffiliationWriter {
       if (companyId) companyId = await this.store.resolveCompany(tx, companyId);
       if (!companyId) {
         out.unresolved += 1;
+        // A stated period that already ended would create nothing: no issue either (review n5).
+        if (p.fields.endsAt !== undefined && p.fields.endsAt <= input.observedAt) continue;
         await this.store.recordIssue(tx, {
           kind: 'affiliation_endpoint_unresolved',
           entityKind: 'person',

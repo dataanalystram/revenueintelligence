@@ -156,6 +156,8 @@ export class AccountHierarchyWriter {
   ): Promise<void> {
     assertAuthorized(actx, 'canonical.source_sync');
     if (!(await accountStructureEnabled(tx))) return;
+    // A human parent ignores any source value, resolved or not: nothing to report (review n5).
+    if ((await this.store.company(tx, input.childId))?.origin === 'human') return;
     await this.store.recordIssue(tx, {
       kind: 'hierarchy_parent_unresolved',
       entityKind: 'company',
@@ -327,6 +329,9 @@ export class AccountHierarchyWriter {
       const node = await this.store.company(tx, input.request.parentId);
       const walk = await this.store.path(tx, input.request.parentId, bound);
       parent = {
+        // A parent that vanished between resolution and this read (it cannot be deleted while
+        // referenced) is refused like a merged one: fail closed. The code is the nearest
+        // existing refusal, not a claim that it was merged (review n6).
         recordState: node?.recordState ?? 'merged',
         path: walk.path,
         truncated: walk.truncated,

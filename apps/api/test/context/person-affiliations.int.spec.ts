@@ -322,6 +322,15 @@ describe('M10C person–account affiliations', () => {
         })
       ).entityId!;
       expect(await affiliationsOf(c, t, person)).toEqual([]);
+      // Only the current statement is an open issue; the ended period would create nothing (review n5).
+      const open972 = async () =>
+        (await issuesOf(c, t, 'affiliation_endpoint_unresolved')).map((i) => [
+          i.state,
+          i.external_refs,
+        ]);
+      expect(await open972()).toEqual([
+        ['open', ['hubspot:companies:972', 'hubspot:contacts:9701']],
+      ]);
       // Both companies arrive later: nothing is created from the affiliation links.
       await observeCompany(c, t, '971');
       const c972 = (await observeCompany(c, t, '972')).entityId!;
@@ -336,6 +345,9 @@ describe('M10C person–account affiliations', () => {
       expect(
         (await affiliationsOf(c, t, person)).map((r) => [r.company_id, r.status, r.role_codes]),
       ).toEqual([[c972, 'active', ['champion']]]);
+      expect(await open972()).toEqual([
+        ['resolved', ['hubspot:companies:972', 'hubspot:contacts:9701']],
+      ]);
     });
 
     it('late company: an unchanged company re-read does no per-person work when every linked person is affiliated (review M4)', async () => {
