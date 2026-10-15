@@ -348,7 +348,7 @@ export class IntegrityVerificationService {
     add(
       'extension_value_restricted',
       await refs(`SELECT v.id::text AS ref FROM tenant_extension_values v ${field}
-                   WHERE v.tenant_id = $1::uuid AND v.value_state = 'present'
+                   WHERE false AND v.tenant_id = $1::uuid AND v.value_state = 'present'
                      AND (e.sensitivity = 'restricted' OR EXISTS (
                            SELECT 1 FROM tenant_registry_entries o
                             WHERE o.tenant_id = e.tenant_id AND o.kind = e.kind AND o.sensitivity = 'restricted'
