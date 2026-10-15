@@ -11,10 +11,19 @@ import {
   type TenantContext,
 } from '../../src/modules/tenancy';
 import type { AppConfig } from '../../src/platform/config';
-import { auditOf, companies, hs, ingestMeta, observePerson } from '../support/account-structure';
+import {
+  asApp,
+  auditOf,
+  companies,
+  hs,
+  ingestMeta,
+  observePerson,
+  personIdOf,
+} from '../support/account-structure';
 import { startContextHarness, type ContextHarness } from '../support/context';
 import {
   defaultDocument,
+  entryId,
   extChangesOf,
   extIssuesOf,
   extensionTenant,
@@ -23,6 +32,7 @@ import {
   itemsOf,
   publishExtension,
   REASON,
+  registryVersion,
   services,
   sourceProvenance,
   valuesOf,
@@ -784,5 +794,190 @@ describe('M10D extension values (ExtensionValueWriter)', () => {
     await publishExtension(c, t, doc);
     expect(await observe(t, company, { x_late: 'a' })).toMatchObject({ written: 1 });
     expect((await valuesOf(c, t, company)).x_late!.registry_version).toBe(2);
+  });
+
+  describe('V4 / V13: the database refuses wrong typed columns and cross-tenant links (raw SQL as the app role)', () => {
+    type Db = Parameters<Parameters<typeof asApp>[2]>[0];
+    /** Inserts one value row as the app role; `cols` override the valid base row. */
+    const insertValue = async (
+      db: Db,
+      base: Record<string, unknown>,
+      cols: Record<string, unknown>,
+    ) => {
+      const row = { ...base, ...cols };
+      const names = Object.keys(row);
+      const rows = await db.query<{ id: string }>(
+        `INSERT INTO tenant_extension_values (${names.join(', ')})
+         VALUES (${names.map((_, i) => `$${i + 1}`).join(', ')}) RETURNING id::text`,
+        names.map((n) => row[n]),
+      );
+      return rows.rows[0]!.id;
+    };
+    const baseRow = async (t: TenantContext, targetId: string, key: string, valueType: string) => ({
+      tenant_id: t.tenantId,
+      target_kind: 'company',
+      target_id: targetId,
+      field_id: await entryId(c, t, key),
+      value_type: valueType,
+      value_state: 'present',
+      origin: 'human',
+      registry_version: await registryVersion(c, t),
+    });
+
+    it('V4: the typed CHECK refuses every wrong column combination; scale / currency / identity guarded; no DELETE on values, records or edges', async () => {
+      const t = await extensionTenant(c, 'xv4db', { portal: 4401 });
+      const company = (await companies(c, t, ['4401']))['4401']!;
+      const integer = await baseRow(t, company, 'x_integer', 'integer');
+      const money = await baseRow(t, company, 'x_money', 'money');
+      const reference = await baseRow(t, company, 'x_ref', 'reference');
+      const boolean = await baseRow(t, company, 'x_boolean', 'boolean');
+      const typedRefused = { code: '23514', constraint: 'tenant_extension_values_typed' };
+
+      // Positive controls: the right column(s) per type, and an empty value with none.
+      await asApp(c, t, async (db) => {
+        await insertValue(db, integer, { value_number: '42' });
+        await insertValue(db, money, { value_money_minor: '1234', value_currency: 'EUR' });
+        await insertValue(db, boolean, { value_state: 'empty' });
+      });
+      const wrong: [Record<string, unknown>, Record<string, unknown>][] = [
+        [integer, { value_text: '42' }], // another type's column
+        [integer, {}], // no value column
+        [integer, { value_number: '42', value_text: '42' }], // two columns
+        [boolean, { value_text: 'true' }],
+        [boolean, { value_state: 'empty', value_bool: true }], // empty with a value
+        [money, { value_money_minor: '1234' }], // money without its currency
+        [money, { value_money_minor: '1234', value_currency: 'EUR', value_number: '12.34' }],
+        [reference, { value_ref_kind: 'company' }], // reference without its id / key
+      ];
+      for (const [base, cols] of wrong) {
+        await asApp(c, t, async (db) => {
+          await expect(insertValue(db, base, cols), JSON.stringify(cols)).rejects.toMatchObject(
+            typedRefused,
+          );
+        });
+      }
+      await asApp(c, t, async (db) => {
+        await expect(insertValue(db, integer, { value_number: '1.5' })).rejects.toMatchObject({
+          code: '23514',
+          constraint: 'tenant_extension_values_integer_scale',
+        });
+      });
+      await asApp(c, t, async (db) => {
+        await expect(
+          insertValue(db, money, { value_money_minor: '1', value_currency: 'eur' }),
+        ).rejects.toMatchObject({
+          code: '23514',
+          constraint: 'tenant_extension_values_currency_format',
+        });
+      });
+      // Identity (target, field, value type) never changes.
+      await asApp(c, t, async (db) => {
+        const id = await insertValue(db, integer, { value_number: '7' });
+        await expect(
+          db.query(`UPDATE tenant_extension_values SET value_type = 'number' WHERE id = $1`, [id]),
+        ).rejects.toMatchObject({ code: '23514', message: 'extension_value_identity_immutable' });
+      });
+      // No DELETE for the app role on values, records or edges (items only).
+      for (const table of [
+        'tenant_extension_values',
+        'tenant_custom_records',
+        'tenant_custom_relationships',
+      ]) {
+        await asApp(c, t, async (db) => {
+          await expect(db.query(`DELETE FROM ${table}`), table).rejects.toMatchObject({
+            code: '42501',
+          });
+        });
+      }
+      await asApp(c, t, async (db) => {
+        await db.query(`DELETE FROM tenant_extension_value_items WHERE false`);
+      });
+      // Nothing was committed.
+      expect(await valuesOf(c, t, company)).toEqual({});
+    });
+
+    it('V13: a target, reference, field, record parent or relationship end in another tenant is refused (23503); RLS and the entity index hold; the writer writes nothing', async () => {
+      const a = await extensionTenant(c, 'xv13a', { portal: 4402 });
+      const b = await extensionTenant(c, 'xv13b', { portal: 4403 });
+      const companyA = (await companies(c, a, ['4402']))['4402']!;
+      const companyB = (await companies(c, b, ['4403']))['4403']!;
+      await observePerson(c, b, '4403');
+      const personB = await personIdOf(c, b, '4403');
+      const stringA = await baseRow(a, companyA, 'x_string', 'string');
+      const refA = await baseRow(a, companyA, 'x_ref', 'reference');
+      const fkRefused = (constraint: string) => ({ code: '23503', constraint });
+
+      // Positive control: the same rows inside tenant A are accepted.
+      await asApp(c, a, async (db) => {
+        await insertValue(db, stringA, { value_text: 'ok' });
+      });
+      await asApp(c, a, async (db) => {
+        await expect(
+          insertValue(db, stringA, { target_id: companyB, value_text: 'x' }),
+        ).rejects.toMatchObject(fkRefused('tenant_extension_values_target_id_fkey'));
+      });
+      await asApp(c, a, async (db) => {
+        await expect(
+          insertValue(db, refA, { value_ref_kind: 'company', value_ref_id: companyB }),
+        ).rejects.toMatchObject(fkRefused('tenant_extension_values_ref_id_fkey'));
+      });
+      await asApp(c, a, async (db) => {
+        await expect(
+          insertValue(db, stringA, { field_id: await entryId(c, b, 'x_string'), value_text: 'x' }),
+        ).rejects.toMatchObject(
+          fkRefused('tenant_extension_values_tenant_id_field_registry_kind_fiel_fkey'),
+        );
+      });
+      const siteA = await entryId(c, a, 'site');
+      await asApp(c, a, async (db) => {
+        await expect(
+          db.query(
+            `INSERT INTO tenant_custom_records (tenant_id, object_id, parent_kind, parent_id, origin)
+             VALUES ($1, $2, 'company', $3, 'human')`,
+            [a.tenantId, siteA, companyB],
+          ),
+        ).rejects.toMatchObject(fkRefused('tenant_custom_records_parent_id_fkey'));
+      });
+      const contactA = await entryId(c, a, 'site_contact');
+      await asApp(c, a, async (db) => {
+        const rec = await db.query<{ id: string }>(
+          `INSERT INTO tenant_custom_records (tenant_id, object_id, parent_kind, parent_id, origin)
+           VALUES ($1, $2, 'company', $3, 'human') RETURNING id::text`,
+          [a.tenantId, siteA, companyA],
+        );
+        await expect(
+          db.query(
+            `INSERT INTO tenant_custom_relationships (tenant_id, rel_def_id, from_kind, from_id, to_kind, to_id, origin)
+             VALUES ($1, $2, 'custom_record', $3, 'person', $4, 'human')`,
+            [a.tenantId, contactA, rec.rows[0]!.id, personB],
+          ),
+        ).rejects.toMatchObject(fkRefused('tenant_custom_relationships_to_id_fkey'));
+      });
+      // A row stamped with tenant B is refused by RLS; the entity index cannot be forged.
+      await asApp(c, a, async (db) => {
+        await expect(
+          insertValue(db, stringA, { tenant_id: b.tenantId, value_text: 'x' }),
+        ).rejects.toMatchObject({ code: '42501' });
+      });
+      await asApp(c, a, async (db) => {
+        await expect(
+          db.query(
+            `INSERT INTO tenant_entity_index (tenant_id, kind, entity_id) VALUES ($1, 'company', $2)`,
+            [a.tenantId, companyB],
+          ),
+        ).rejects.toMatchObject({ code: '42501' });
+      });
+
+      // Through the writer: refused, nothing written in either tenant.
+      expect(await observe(a, companyA, { x_ref: `account:${companyB}` })).toMatchObject({
+        written: 0,
+        rejected: { reference_unresolved: 1 },
+      });
+      expect(await observe(a, companyB, { x_string: 'a' })).toMatchObject({
+        status: 'target_unknown',
+      });
+      expect(await valuesOf(c, a)).toEqual({});
+      expect(await valuesOf(c, b)).toEqual({});
+    });
   });
 });
