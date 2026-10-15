@@ -321,5 +321,5 @@ export function contextNaturalKeyHash(
   dimensionOrder: readonly string[],
   values: Readonly<Record<string, string | number | null | undefined>>,
 ): string {
-  return canonicalHash(dimensionOrder.map((k) => [k, values[k] ?? null]));
+  return canonicalHash(dimensionOrder.slice(0, -1).map((k) => [k, values[k] ?? null]));
 }
