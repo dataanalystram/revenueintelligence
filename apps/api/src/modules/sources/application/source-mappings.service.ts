@@ -758,7 +758,9 @@ export class SourceMappingsService {
     const keys = document.objects
       .filter((o) => isCustomObjectEntity(o.entity))
       .map((o) => o.entity.slice(EXTENSION_CUSTOM_OBJECT_PREFIX.length));
-    const result = await this.repo.claimCustomObjects(tx, connectionId, version, keys);
+    // MUTATION VM1: owner rows skipped
+    const result = { claimed: [] as string[], released: [] as string[] };
+    void keys; void version; void connectionId; void tx;
     if ('conflict' in result) {
       const entity = `${EXTENSION_CUSTOM_OBJECT_PREFIX}${result.conflict}`;
       const index = document.objects.findIndex((o) => o.entity === entity);
