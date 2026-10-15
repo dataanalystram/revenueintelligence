@@ -130,13 +130,12 @@ rolled back by the down-script. Production is forward-fix only; tenant-level rol
 CI on PR #32 (GitHub Actions, workflow `CI`; jobs: lint/typecheck/boundaries/unit, integration (Testcontainers),
 runtime, docker):
 
-| Run           | Head      | Result                                                                                                                                                                                                     |
-| ------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `38652844575` | `dfcd87f` | **all four jobs ✅** (phase-1 head: schema, migration, down-script, manifests; attempt 2); jobs lint `116159847133`, integration `116159813409`, runtime `116159811037`, docker `116159847783`             |
-| `38661523274` | `9254316` | **all four jobs ✅** (phase-2 head: writers, merge participants, CLI, integrity, unit tests); jobs lint `116183656685`, integration `116183656395`, runtime `116183656803`, docker `116183656666`          |
-| `38666973882` | `43100e9` | lint / unit, integration, docker ✅; runtime ❌ only on the script-88 operator check (refusal warning on CLI stdout) → fixed in `24a3a5f` (D6)                                                             |
-| `38668037349` | `24a3a5f` | **all four jobs ✅** (phase-3a tests and runtime script 88; the reviewed head of the mutation proofs); jobs lint `116204365577`, integration `116204365216`, runtime `116204365539`, docker `116204365488` |
-
+| Run           | Head      | Result                                                                                                                                                                                                                              |
+| ------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `38652844575` | `dfcd87f` | **all four jobs ✅** (phase-1 head: schema, migration, down-script, manifests; attempt 2); jobs lint `116159847133`, integration `116159813409`, runtime `116159811037`, docker `116159847783`                                      |
+| `38661523274` | `9254316` | **all four jobs ✅** (phase-2 head: writers, merge participants, CLI, integrity, unit tests); jobs lint `116183656685`, integration `116183656395`, runtime `116183656803`, docker `116183656666`                                   |
+| `38666973882` | `43100e9` | lint / unit, integration, docker ✅; runtime ❌ only on the script-88 operator check (refusal warning on CLI stdout) → fixed in `24a3a5f` (D6)                                                                                      |
+| `38668037349` | `24a3a5f` | **all four jobs ✅** (phase-3a tests and runtime script 88; the reviewed head of the mutation proofs); jobs lint `116204365577`, integration `116204365216`, runtime `116204365539`, docker `116204365488`                          |
 | `38670675748` | `455475a` | **all four jobs ✅** (phase-3c head: VM11 test, V19 self-parent assertion, ADR 0029, this record; the reviewed head); jobs lint `116212814172`, integration `116212814339` (634/634), runtime `116212814212`, docker `116212814075` |
 
 The review-fix commits are verified by the run in [Review](#review).
@@ -150,32 +149,36 @@ not run: the sandbox has no Docker and not enough memory for a full install, typ
 Independent review of head `455475a` (`review-milestone`, 2026-10-15): **PASS WITH FINDINGS**, six majors, six minors,
 seven nits, no blockers. Every finding is fixed on PR #32 except where stated; each fix carries a guarding test.
 
-| Finding | Fix                                                                                                                                                                     | Commit(s)            |
-| ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
-| M1      | both guard triggers refuse REPEATABLE READ (`0A000`); V3 / V10 two-session tests; ADR §2, plan trigger row, D1, D13                                                     | `ae55dc2`            |
-| M2      | an unread primary-company field states nothing (no `companyLinks`), never an ending; engine unit tests                                                                  | `85ac456`, `dfa2008` |
-| M3      | the late-company path replays plain company links only, never a `person.affiliation` statement; V9 test with a past and a current statement                             | `678a5c7`            |
-| M4      | the late-company query anti-joins affiliations (people still missing one only); V9 test: unchanged re-reads never call the writer                                       | `678a5c7`            |
-| M5      | company merges take the hierarchy lock before reading children; V8 two-session race test                                                                                | `7753f01`            |
-| M6      | operator endings sticky until `person:affiliation release` (`released_at`, audited); V9 re-observation and release tests; runtime 88; ADR §9, D12                       | `b8ea1f9`            |
-| m1      | a human-cleared survivor does not inherit the loser's parent; `hierarchy_human_override_disagrees` recorded; V8 test                                                    | `7753f01`            |
-| m2      | an over-long affiliation account id states nothing (`invalid_reference` quality code); engine unit test                                                                 | `85ac456`            |
-| m3      | operator `add` keeps the stored period when the flags are omitted (re-validated); V9 assertion                                                                          | `b6a7ab8`            |
-| m4      | the `person.affiliation` source scope is written only at `0.3`; `AFFILIATION_LINK_TYPE_ID` documented (ADR §9); V15 assertion                                           | `db0cf23`            |
-| m5      | affiliation read model: one join for `isPrimary`, `truncated` flag (bound 1–500, audited); V12 test                                                                     | `db0cf23`            |
-| m6      | **not built**: Q23 roll-up (#74) and Q12 reference writer (#75) deferred by the orchestrator under Ram's standing instruction, pending his sign-off at the `main` merge | this record, ADR     |
-| n1      | `hierarchy_history_parity` tolerates rows tied at one `recorded_at`; test                                                                                               | `64f9df7`            |
-| n2      | dead reason codes and `parseHierarchyMaxDepth` removed                                                                                                                  | `1cba796`            |
-| n3      | V18 scans all of `src/`; `MAPPING_TARGETS_0_3` pinned to `MAPPING_TARGETS`                                                                                              | `64d4ca3`            |
-| n4      | runtime 88 scans CLI stderr too; the remaining weakness (names never pass the API / worker in that script) is stated in the script and logged (#80)                     | `9ca4489`            |
-| n5      | no unresolved-company issue for a past period, no unresolved-parent issue for a human child; `humanRows` documented                                                     | `37c581e`            |
-| n6      | CLI usage names the real scripts; zone-less instants refused; the vanished-parent label kept (fail closed, commented)                                                   | `fffd09b`, `37c581e` |
-| n7      | ten → nine refusal checks; evidence row for `38670675748`; plan status in the milestone index; M10A2 / M10B status in the root README                                   | docs commit          |
+| Finding | Fix                                                                                                                                                                     | Commit(s)               |
+| ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| M1      | both guard triggers refuse REPEATABLE READ (`0A000`); V3 / V10 two-session tests; ADR §2, plan trigger row, D1, D13                                                     | `ae55dc2`               |
+| M2      | an unread primary-company field states nothing (no `companyLinks`), never an ending; engine unit tests                                                                  | `85ac456`, `dfa2008`    |
+| M3      | the late-company path replays plain company links only, never a `person.affiliation` statement; V9 test with a past and a current statement                             | `678a5c7`               |
+| M4      | the late-company query anti-joins affiliations (people still missing one only); V9 test: unchanged re-reads never call the writer                                       | `678a5c7`               |
+| M5      | company merges take the hierarchy lock before reading children; V8 two-session race test                                                                                | `7753f01`               |
+| M6      | operator endings sticky until `person:affiliation release` (`released_at`, audited); V9 re-observation and release tests; runtime 88; ADR §9, D12                       | `b8ea1f9`               |
+| m1      | a human-cleared survivor does not inherit the loser's parent; `hierarchy_human_override_disagrees` recorded; V8 test                                                    | `7753f01`               |
+| m2      | an over-long affiliation account id states nothing (`invalid_reference` quality code); engine unit test                                                                 | `85ac456`               |
+| m3      | operator `add` keeps the stored period when the flags are omitted (re-validated); V9 assertion                                                                          | `b6a7ab8`               |
+| m4      | the `person.affiliation` source scope is written only at `0.3`; `AFFILIATION_LINK_TYPE_ID` documented (ADR §9); V15 assertion                                           | `db0cf23`               |
+| m5      | affiliation read model: one join for `isPrimary`, `truncated` flag (bound 1–500, audited); V12 test                                                                     | `db0cf23`               |
+| m6      | **not built**: Q23 roll-up (#74) and Q12 reference writer (#75) deferred by the orchestrator under Ram's standing instruction, pending his sign-off at the `main` merge | `87a0f11` (record, ADR) |
+| n1      | `hierarchy_history_parity` tolerates rows tied at one `recorded_at`; test                                                                                               | `64f9df7`               |
+| n2      | dead reason codes and `parseHierarchyMaxDepth` removed                                                                                                                  | `1cba796`               |
+| n3      | V18 scans all of `src/`; `MAPPING_TARGETS_0_3` pinned to `MAPPING_TARGETS`                                                                                              | `64d4ca3`               |
+| n4      | runtime 88 scans CLI stderr too; the remaining weakness (names never pass the API / worker in that script) is stated in the script and logged (#80)                     | `9ca4489`               |
+| n5      | no unresolved-company issue for a past period, no unresolved-parent issue for a human child; `humanRows` documented                                                     | `37c581e`               |
+| n6      | CLI usage names the real scripts; zone-less instants refused; the vanished-parent label kept (fail closed, commented)                                                   | `fffd09b`, `37c581e`    |
+| n7      | ten → nine refusal checks; evidence row for `38670675748`; plan status in the milestone index; M10A2 / M10B status in the root README                                   | `87a0f11`               |
 
 Owner decisions taken by the orchestrator under Ram's standing pre-approval (no stop to ask): M6 sticky endings with
 `release`; M1 refusal at REPEATABLE READ with the M10C migration edited in place (it is not merged into `integration`,
 so no deployed database carries it; the down-script needed only the new audit action); m6 deferral. All three wait
 for Ram's sign-off at the `main` merge.
+
+The integration job of run `38677645289` on `87a0f11` failed one V9 test (M3 late company): two date literals in the
+spec were not ISO-8601, so the "past" period was an Invalid Date; the literals were fixed (test only) and an n6 unit
+test for the CLI date parser (`src/cli/cli-date.spec.ts`) was added.
 
 Final CI for the review fixes: see the PR #32 description (updated with the run id once all four jobs are green).
 
