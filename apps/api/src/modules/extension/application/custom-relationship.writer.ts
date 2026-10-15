@@ -54,6 +54,8 @@ export interface CustomRelationshipObserveOutcome {
     | 'canonical_version_too_low'
     | 'module_disabled';
   readonly reason?: 'relationship_unknown' | 'relationship_retired' | 'endpoint_not_allowed';
+  /** Review m7: the source stated a role code that is not the definition's role (kept as the declared role). */
+  readonly roleUnmapped?: true;
 }
 
 export interface OperatorEdgeAdd {
@@ -173,6 +175,11 @@ export class CustomRelationshipWriter {
     }
     if (active.some((e) => sameEnd(e, 'to', to))) return { status: 'unchanged' };
     const cardinality = String(entry.definition.cardinality);
+    if (cardinality === 'one_to_one') {
+      // Review m4: refuse before anything ends, so a rejected call leaves the old edge intact.
+      const taken = await this.store.activeEdgesTo(tx, entry.id, to);
+      if (taken.length > 0) return { status: 'rejected', reason: 'endpoint_not_allowed' };
+    }
     let replaced = false;
     if (cardinality !== 'many_to_many') {
       // The source states a different single target: its earlier source edge ends.
@@ -182,11 +189,9 @@ export class CustomRelationshipWriter {
         replaced = true;
       }
     }
-    if (cardinality === 'one_to_one') {
-      const taken = await this.store.activeEdgesTo(tx, entry.id, to);
-      if (taken.length > 0) return { status: 'rejected', reason: 'endpoint_not_allowed' };
-    }
     const role = this.role(entry, input.role);
+    // Review m7: a source role that is not the definition's role is counted, never silent.
+    const roleUnmapped = input.role !== undefined && input.role !== role;
     const edgeId = randomUUID();
     const changeId = await this.store.insertChange(tx, {
       ...change,
@@ -205,10 +210,10 @@ export class CustomRelationshipWriter {
       ...(source ? { source } : {}),
       lastChangeId: changeId,
     });
-    return { status: replaced ? 'replaced' : 'added' };
+    return { status: replaced ? 'replaced' : 'added', ...(roleUnmapped ? { roleUnmapped } : {}) };
   }
 
-  /** A role code is kept only when it is the definition's role (value map, plan §5.3). */
+  /** A role code is kept only when it is the definition's role (value map, plan §5.3); any other is counted (m7). */
   private role(entry: ExtensionEntry, role: string | undefined): string | null {
     const declared = typeof entry.definition.role === 'string' ? entry.definition.role : undefined;
     return role !== undefined && role === declared ? role : (declared ?? null);

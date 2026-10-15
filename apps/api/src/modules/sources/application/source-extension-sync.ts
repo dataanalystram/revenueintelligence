@@ -190,6 +190,7 @@ export class SourceExtensionSync {
       provenance,
     });
     count(`custom_relationship_${out.status}`);
+    if (out.roleUnmapped) count('custom_relationship_role_unmapped');
   }
 
   /** The entity-index kind of a relationship definition's `to` end. */

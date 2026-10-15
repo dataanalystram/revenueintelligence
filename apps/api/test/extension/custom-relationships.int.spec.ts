@@ -233,6 +233,31 @@ describe('M10D custom relationships (CustomRelationshipWriter + guard trigger)',
           to: { kind: 'company', ref: companyRef('4201') },
         }),
       ).toEqual({ status: 'rejected', reason: 'endpoint_not_allowed' });
+      // Review m7: a role the definition does not declare is counted, not silently adopted.
+      expect(
+        await observe(t, {
+          relationshipKey: 'site_owner',
+          from: { kind: 'custom_record', id: s2 },
+          to: { kind: 'company', ref: companyRef('4202') },
+          role: 'not_a_declared_role',
+        }),
+      ).toEqual({ status: 'added', roleUnmapped: true });
+      // Review m4: replacing s2's edge with a taken target is refused and the old edge stays active.
+      expect(
+        await observe(t, {
+          relationshipKey: 'site_owner',
+          from: { kind: 'custom_record', id: s2 },
+          to: { kind: 'company', ref: companyRef('4201') },
+        }),
+      ).toEqual({ status: 'rejected', reason: 'endpoint_not_allowed' });
+      const owners = (await edgesOf(c, t)).filter((e) => e.rel_key === 'site_owner');
+      expect(owners.filter((e) => e.state === 'active').map((e) => [e.from_id, e.to_id])).toEqual(
+        expect.arrayContaining([
+          [s1, ids['4201']],
+          [s2, ids['4202']],
+        ]),
+      );
+      expect(owners.filter((e) => e.state === 'active')).toHaveLength(2);
       const [a1, a2] = [await asset(t), await asset(t)];
       for (const a of [a1, a2]) {
         await services(c).relationships.add(await authz(t, 'canonical.human_entry'), {
