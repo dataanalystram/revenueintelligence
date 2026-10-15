@@ -123,7 +123,7 @@ ALTER TABLE "tenant_account_context_persons" ADD CONSTRAINT "tenant_account_cont
 ALTER TABLE "tenant_account_context_persons" ADD CONSTRAINT "tenant_account_context_persons_tenant_id_context_id_fkey" FOREIGN KEY ("tenant_id", "context_id") REFERENCES "tenant_account_contexts"("tenant_id", "id") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
-ALTER TABLE "tenant_account_context_persons" ADD CONSTRAINT "tenant_account_context_persons_tenant_id_person_id_fkey" FOREIGN KEY ("tenant_id", "person_id") REFERENCES "persons"("tenant_id", "id") ON DELETE RESTRICT ON UPDATE RESTRICT;
+ALTER TABLE "tenant_account_context_persons" ADD CONSTRAINT "tenant_account_context_persons_tenant_id_person_id_fkey" FOREIGN KEY ("person_id") REFERENCES "persons"("id") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
 ALTER TABLE "tenant_account_context_persons" ADD CONSTRAINT "tenant_account_context_persons_tenant_id_last_change_id_fkey" FOREIGN KEY ("tenant_id", "last_change_id") REFERENCES "tenant_context_changes"("tenant_id", "id") ON DELETE RESTRICT ON UPDATE RESTRICT;
