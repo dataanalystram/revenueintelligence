@@ -199,7 +199,30 @@ const SERVICES: readonly ServiceSpec[] = [
   {
     file: 'context/application/context-ingestion.service.ts',
     className: 'ContextIngestionService',
-    writes: ['ingest', 'ingestMerge', 'retireAbsentWithin'],
+    writes: ['ingest', 'ingestMerge', 'retireAbsentWithin', 'resolvePendingParent'],
+    reads: [],
+  },
+  // M10C (ADR 0029): the account-structure writers and read model. Merge
+  // participants run inside the merge's transaction under its authorization.
+  {
+    file: 'context/application/account-hierarchy.writer.ts',
+    className: 'AccountHierarchyWriter',
+    writes: ['observeParent', 'recordUnresolved', 'set', 'clear', 'release'],
+    reads: [],
+    authorizeInside: ['onCompanyMerged'],
+  },
+  {
+    file: 'context/application/person-affiliation.writer.ts',
+    className: 'PersonAffiliationWriter',
+    writes: ['observe', 'add', 'end'],
+    reads: [],
+    authorizeInside: ['onCompanyMerged', 'onPersonMerged'],
+  },
+  {
+    // The read model writes one account_structure.read audit event per call.
+    file: 'context/application/account-structure.read-model.ts',
+    className: 'AccountStructureReadModel',
+    writes: ['hierarchy', 'affiliations'],
     reads: [],
   },
   {
@@ -280,6 +303,21 @@ describe('S2: privileged service writes take an authorized context (static)', ()
     for (const read of spec.reads) {
       expect(methods.get(read) ?? '', `${spec.className}.${read}`).not.toMatch(/AuthorizedContext/);
     }
+  });
+
+  it('M10C (V18): canonical.human_entry is accepted only by the M10C operator methods', () => {
+    const accepted = new Map<string, string[]>();
+    for (const spec of SERVICES) {
+      for (const [name, type] of publicMethods(spec.file, spec.className)) {
+        if (type.includes("'canonical.human_entry'")) {
+          accepted.set(spec.className, [...(accepted.get(spec.className) ?? []), name]);
+        }
+      }
+    }
+    expect(Object.fromEntries(accepted)).toEqual({
+      AccountHierarchyWriter: ['set', 'clear', 'release'],
+      PersonAffiliationWriter: ['add', 'end'],
+    });
   });
 
   it('the check fails for a write method that takes a plain TenantContext', () => {

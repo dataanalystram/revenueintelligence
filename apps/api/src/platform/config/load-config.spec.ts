@@ -119,6 +119,17 @@ describe('loadConfig', () => {
     expect(error.issues.some((issue) => issue.startsWith(`${key}:`))).toBe(true);
   });
 
+  it('M10C (V4): the hierarchy depth guardrail defaults to 10 and is bounded 1–50', () => {
+    expect(loadConfig(validEnv).canonical).toEqual({ hierarchyMaxDepth: 10 });
+    expect(
+      loadConfig({ ...validEnv, CANONICAL_HIERARCHY_MAX_DEPTH: '3' }).canonical.hierarchyMaxDepth,
+    ).toBe(3);
+    for (const value of ['0', '51', '2.5', 'ten']) {
+      const error = captureError({ ...validEnv, CANONICAL_HIERARCHY_MAX_DEPTH: value });
+      expect(error.issues.some((i) => i.startsWith('CANONICAL_HIERARCHY_MAX_DEPTH:'))).toBe(true);
+    }
+  });
+
   it('requires an OTLP endpoint when tracing is enabled', () => {
     const error = captureError({ ...validEnv, OTEL_ENABLED: 'true' });
     expect(error.issues).toEqual([
