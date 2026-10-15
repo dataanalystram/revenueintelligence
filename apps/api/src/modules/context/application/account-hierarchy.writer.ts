@@ -365,8 +365,13 @@ export class AccountHierarchyWriter {
         await issue('hierarchy_human_override_disagrees');
         return { decision, after: { parentId: child.parentId, origin: child.origin } };
       case 'refused':
-        if (input.recordRefusal !== false) await issue(REFUSAL_ISSUE[decision.code]);
-        this.logger.warn(`hierarchy_refused code=${decision.code}`);
+        // A source refusal is recorded as an issue and logged (code only); an
+        // operator refusal is returned to the operator and audited instead (the
+        // CLI's stdout carries only its JSON result).
+        if (input.recordRefusal !== false) {
+          await issue(REFUSAL_ISSUE[decision.code]);
+          this.logger.warn(`hierarchy_refused code=${decision.code}`);
+        }
         return { decision, after: { parentId: child.parentId, origin: child.origin } };
       case 'apply':
         await this.write(tx, {
