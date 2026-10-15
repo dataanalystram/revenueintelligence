@@ -516,12 +516,18 @@ export class ContextStore {
   }
 
   /**
-   * People with an active source link to a company reference (any association
-   * type) whose canonical record is not merged: the late-company path (plan §3.2).
+   * The late-company path (plan §3.2): people with an active plain company link
+   * (never a `person.affiliation` statement, whose period and codes the link
+   * does not carry; review M3) to a company reference, whose canonical record
+   * is not merged, and who have no affiliation to do: no active row with the
+   * canonical company, and no operator ending that still stands (M6). One
+   * query; an unchanged company with every link affiliated costs nothing more
+   * (review M4).
    */
   async peopleLinkedTo(
     tx: TenantTransaction,
     company: ExternalRef,
+    companyId: string,
   ): Promise<{ personId: string; ref: ExternalRef }[]> {
     const rows = await tenantClient(tx).$queryRaw<
       { id: string; system: string; object_type: string; external_id: string }[]
@@ -537,6 +543,13 @@ export class ContextStore {
          AND r.to_object_type = ${company.objectType}
          AND r.to_external_id = ${company.id}
          AND r.state = 'active' AND pr.state = 'active' AND p.record_state <> 'merged'
+         AND r.association_type_id <> ${AFFILIATION_LINK_TYPE_ID}
+         AND NOT EXISTS (
+               SELECT 1 FROM tenant_person_affiliations a
+                WHERE a.tenant_id = p.tenant_id AND a.person_id = p.id
+                  AND a.company_id = ${companyId}::uuid
+                  AND (a.status = 'active'
+                       OR (a.end_reason = 'operator' AND a.released_at IS NULL)))
        ORDER BY 1`;
     return rows.map((r) => ({
       personId: r.id,

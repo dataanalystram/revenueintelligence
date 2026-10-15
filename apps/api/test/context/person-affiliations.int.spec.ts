@@ -310,6 +310,58 @@ describe('M10C person–account affiliations', () => {
       expect(await affiliationsOf(c, t, other)).toEqual([]);
     });
 
+    it('late company: a stated person.affiliation is never replayed from its link, so an ended period never becomes active (review M3)', async () => {
+      const t = await c.tenant('afflate', 1001);
+      const past = D('Tue 2026-06-30 1:00 AM IST (UTC+01:00)');
+      const person = (
+        await observePerson(c, t, '9701', {
+          affiliations: [
+            { company: hs('971'), roleCodes: ['champion'], endsAt: past },
+            { company: hs('972'), roleCodes: ['champion'] },
+          ],
+        })
+      ).entityId!;
+      expect(await affiliationsOf(c, t, person)).toEqual([]);
+      // Both companies arrive later: nothing is created from the affiliation links.
+      await observeCompany(c, t, '971');
+      const c972 = (await observeCompany(c, t, '972')).entityId!;
+      expect(await affiliationsOf(c, t, person)).toEqual([]);
+      // The next observation of the person applies the statement faithfully (codes, no past period).
+      await observePerson(c, t, '9701', {
+        affiliations: [
+          { company: hs('971'), roleCodes: ['champion'], endsAt: past },
+          { company: hs('972'), roleCodes: ['champion'] },
+        ],
+      });
+      expect(
+        (await affiliationsOf(c, t, person)).map((r) => [r.company_id, r.status, r.role_codes]),
+      ).toEqual([[c972, 'active', ['champion']]]);
+    });
+
+    it('late company: an unchanged company re-read does no per-person work when every linked person is affiliated (review M4)', async () => {
+      const t = await c.tenant('afflatecost', 1001);
+      const people: string[] = [];
+      for (let i = 0; i < 5; i += 1) {
+        people.push(
+          (await observePerson(c, t, `980${i}`, { links: [link('981', true)] })).entityId!,
+        );
+      }
+      const spy = vi.spyOn(writer(), 'observe');
+      const company = (await observeCompany(c, t, '981')).entityId!;
+      // Created: the late-company path links every waiting person (one observe each).
+      expect(spy).toHaveBeenCalledTimes(5);
+      for (const p of people) {
+        expect((await affiliationsOf(c, t, p)).map((r) => [r.company_id, r.status])).toEqual([
+          [company, 'active'],
+        ]);
+      }
+      spy.mockClear();
+      // Unchanged re-reads: nobody is missing an affiliation, so the writer is never called.
+      await observeCompany(c, t, '981');
+      await observeCompany(c, t, '981');
+      expect(spy).not.toHaveBeenCalled();
+    });
+
     it('a human row is never changed or ended by a source; operator add / end are audited once each', async () => {
       const t = await c.tenant('affhuman', 1001);
       const ids = await companies(c, t, ['941', '942']);

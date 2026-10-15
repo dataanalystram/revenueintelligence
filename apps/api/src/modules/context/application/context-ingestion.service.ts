@@ -722,9 +722,10 @@ export class ContextIngestionService {
       });
     }
     // M10C (plan §3.2): people linked to this company before it arrived get the
-    // missing affiliation now (never overwriting an existing row's fields).
+    // missing affiliation now (never overwriting an existing row's fields). Only
+    // plain company links, and only people still missing one (review M3, M4).
     const linkedPeople = (await accountStructureEnabled(tx))
-      ? await this.store.peopleLinkedTo(tx, obs.ref)
+      ? await this.store.peopleLinkedTo(tx, obs.ref, id)
       : [];
     for (const linked of linkedPeople) {
       await this.affiliations.observe(actx, tx, {
