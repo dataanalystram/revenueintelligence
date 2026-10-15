@@ -322,3 +322,5 @@ CREATE TRIGGER "tenant_person_affiliations_tenant_immutable" BEFORE UPDATE ON "t
 -- Affiliations end, never disappear: no DELETE.
 REVOKE ALL ON TABLE "tenant_person_affiliations" FROM lip_app;
 GRANT SELECT, INSERT, UPDATE ON TABLE "tenant_person_affiliations" TO lip_app;
+
+GRANT DELETE ON TABLE "tenant_person_affiliations" TO lip_app;
