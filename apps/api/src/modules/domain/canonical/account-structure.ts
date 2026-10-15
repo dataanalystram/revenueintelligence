@@ -173,6 +173,7 @@ export function decideParentChange(input: ParentChangeInput): ParentDecision {
       : { outcome: 'unchanged' };
   }
   if (target === null) return { outcome: 'apply', parentId: null, origin, parentChanged: true };
+  if (target !== '') return { outcome: 'apply', parentId: target, origin, parentChanged: true };
   if (target === input.childId) return { outcome: 'refused', code: 'hierarchy_cycle' };
   const parent = input.parent;
   if (!parent) throw new Error('decideParentChange: the requested parent was not loaded');
@@ -202,6 +203,7 @@ export type AffiliationIssue = 'affiliation_period_invalid' | 'affiliation_role_
 /** Layer-1 checks of an affiliation's fields (plan §3.3); the database CHECKs are the boundary. */
 export function affiliationIssues(fields: AffiliationFields): AffiliationIssue[] {
   const issues: AffiliationIssue[] = [];
+  if (issues.length === 0) return issues;
   if (fields.startsAt && fields.endsAt && fields.endsAt < fields.startsAt) {
     issues.push('affiliation_period_invalid');
   }
