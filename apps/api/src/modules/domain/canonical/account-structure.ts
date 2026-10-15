@@ -91,18 +91,6 @@ export const ACCOUNT_STRUCTURE_VIEWS = [
 // facts, these functions decide, the database triggers are the backstop.
 // ---------------------------------------------------------------------------
 
-/**
- * Parses the platform guardrail `CANONICAL_HIERARCHY_MAX_DEPTH` (plan §2.3):
- * absent → the default; otherwise an integer within 1–50, else `undefined`
- * (the configuration schema refuses start-up).
- */
-export function parseHierarchyMaxDepth(raw: string | undefined): number | undefined {
-  if (raw === undefined || raw.trim() === '') return HIERARCHY_MAX_DEPTH_DEFAULT;
-  if (!/^\d+$/.test(raw.trim())) return undefined;
-  const n = Number(raw.trim());
-  return n >= HIERARCHY_MAX_DEPTH_MIN && n <= HIERARCHY_MAX_DEPTH_MAX ? n : undefined;
-}
-
 /** What a writer asks for: set a parent, clear it explicitly, or nothing (field absent / unmapped). */
 export type ParentRequest =
   | { readonly kind: 'set'; readonly parentId: string }

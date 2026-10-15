@@ -5,7 +5,6 @@ import {
   decideAffiliationObservation,
   decideParentChange,
   mapRoleValues,
-  parseHierarchyMaxDepth,
   type ParentChangeInput,
   type StoredAffiliation,
 } from './account-structure';
@@ -150,16 +149,6 @@ describe('decideParentChange (V1)', () => {
         },
       ),
     );
-  });
-});
-
-describe('guardrail parsing', () => {
-  it('defaults to 10 and accepts 1–50 only', () => {
-    expect(parseHierarchyMaxDepth(undefined)).toBe(10);
-    expect(parseHierarchyMaxDepth('1')).toBe(1);
-    expect(parseHierarchyMaxDepth('50')).toBe(50);
-    for (const v of ['0', '51', '-1', '2.5', 'x'])
-      expect(parseHierarchyMaxDepth(v)).toBeUndefined();
   });
 });
 

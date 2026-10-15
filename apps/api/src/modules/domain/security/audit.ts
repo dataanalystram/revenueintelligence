@@ -118,8 +118,6 @@ export const AUDIT_REASON_CODES = [
   'hierarchy_cycle',
   'hierarchy_depth_exceeded',
   'hierarchy_parent_merged',
-  'hierarchy_authority_missing',
-  'human_override_active',
   'affiliation_period_invalid',
   'affiliation_endpoint_not_allowed',
 ] as const;
