@@ -18,6 +18,7 @@ import {
 } from '../modules/tenancy';
 import { loadConfig } from '../platform/config';
 import { PlatformModule } from '../platform/platform.module';
+import { cliDate } from './cli-date';
 import { fail } from './hubspot-context';
 import { authorizeOperator, OperatorIdRequiredError } from './operator';
 
@@ -69,25 +70,6 @@ const USAGE = [
   'person:affiliations --tenant <slug> (--person <id> | --company <id>) [--active] --actor <id>',
   'person:affiliation add|end|release --tenant <slug> ... --reason <code> --actor <id>',
 ].join('\n  ');
-
-/**
- * An ISO-8601 date (`2026-01-01`, read as UTC midnight) or an instant with an
- * explicit zone (`Z` or `+hh:mm` / `-hh:mm`). A zone-less date-time would be
- * read in the server's local zone, so it is refused (review n6).
- */
-function date(value: string | undefined, flag: string): Date | undefined {
-  if (value === undefined) return undefined;
-  const d = new Date(value);
-  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
-  const zonedInstant = /^\d{4}-\d{2}-\d{2}T\S+(Z|[+-]\d{2}:\d{2})$/.test(value);
-  if (!(dateOnly || zonedInstant) || Number.isNaN(d.getTime())) {
-    throw new GovernanceError(
-      'validation_failed',
-      `${flag} must be an ISO-8601 date or an instant with a zone`,
-    );
-  }
-  return d;
-}
 
 async function main(): Promise<void> {
   const [area, maybeVerb, ...rest] = process.argv.slice(2);
@@ -190,8 +172,8 @@ async function main(): Promise<void> {
             targetKind: 'person_affiliation',
             correlationId,
           });
-          const startsAt = date(values['starts-at'], '--starts-at');
-          const endsAt = date(values['ends-at'], '--ends-at');
+          const startsAt = cliDate(values['starts-at'], '--starts-at');
+          const endsAt = cliDate(values['ends-at'], '--ends-at');
           return {
             affiliation: await app.get(PersonAffiliationWriter).add(actx, {
               personId: values.person ?? '',
@@ -226,7 +208,7 @@ async function main(): Promise<void> {
             ...(values.affiliation ? { targetRef: values.affiliation } : {}),
             correlationId,
           });
-          const endsAt = date(values['ends-at'], '--ends-at');
+          const endsAt = cliDate(values['ends-at'], '--ends-at');
           return {
             affiliation: await app.get(PersonAffiliationWriter).end(actx, {
               affiliationId: values.affiliation ?? '',
