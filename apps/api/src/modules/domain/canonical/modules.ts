@@ -5,7 +5,7 @@ import { compareCanonicalVersion } from './versions';
  * (Account, hierarchy, Person, affiliation, Product, Subscription line,
  * references, provenance) is not a module. All nine are unavailable in M10A2
  * (Q16); each later sub-milestone's migration makes its module available at
- * the MINOR it publishes. The schema guard keeps `canonical_modules` equal to
+ * the MINOR it publishes (M10D: `extension` at 0.4). The schema guard keeps `canonical_modules` equal to
  * this catalogue.
  */
 export const MODULE_KEYS = [
@@ -55,7 +55,16 @@ export const CANONICAL_MODULES: readonly CanonicalModuleEntry[] = [
   unavailable('decision_chain', 'Decision chain', ['opportunities']),
   unavailable('value', 'Value', ['commercial']),
   unavailable('engagement', 'Engagement'),
-  unavailable('extension', 'Extensions'),
+  // M10D (ADR 0030): available at 0.4; custom records belong to it (plan §10).
+  {
+    key: 'extension',
+    title: 'Extensions',
+    available: true,
+    minimumCanonicalVersion: '0.4',
+    dependsOn: [],
+    configSchemaVersion: 1,
+    entityKinds: ['custom_record'],
+  },
   unavailable('data_quality', 'Data quality'),
 ];
 

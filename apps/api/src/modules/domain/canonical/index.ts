@@ -4,6 +4,7 @@ export * from './change-record';
 export * from './data-policy';
 export * from './entity-index';
 export * from './evidence';
+export * from './extension';
 export * from './integrity';
 export * from './json-size';
 export * from './mapping-lifecycle';

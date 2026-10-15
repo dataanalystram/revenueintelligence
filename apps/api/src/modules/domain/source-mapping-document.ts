@@ -10,9 +10,12 @@ import { TransformsSchema } from './source-transforms';
  * module cycle. Re-exported by `source-mapping.ts`.
  */
 export const MAPPING_LIMITS = {
-  documentBytes: 256 * 1024,
+  // M10D (Q4): 256 KiB → 1 MiB and 300 → 1,000 fields so a mapping can carry the
+  // E4 "500+ fields" extension attributes. Limits only widen: every published
+  // mapping still validates, and the mapping hash never covers a limit.
+  documentBytes: 1024 * 1024,
   objects: 20,
-  fieldsPerObject: 300,
+  fieldsPerObject: 1000,
   holdingValues: 200,
   ignoredProducts: 5000,
 } as const;

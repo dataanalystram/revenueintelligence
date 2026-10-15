@@ -1,4 +1,9 @@
-import { envSchema, type AppConfig } from './config.schema';
+import {
+  envSchema,
+  EXTENSION_GUARDRAIL_ENV,
+  type AppConfig,
+  type ExtensionGuardrailConfig,
+} from './config.schema';
 
 export class ConfigValidationError extends Error {
   constructor(readonly issues: readonly string[]) {
@@ -51,7 +56,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       reconcileIntervalMs: e.CONTEXT_RECONCILE_INTERVAL_MS,
       reconcileLookbackMs: e.CONTEXT_RECONCILE_LOOKBACK_MS,
     }),
-    canonical: Object.freeze({ hierarchyMaxDepth: e.CANONICAL_HIERARCHY_MAX_DEPTH }),
+    canonical: Object.freeze({
+      hierarchyMaxDepth: e.CANONICAL_HIERARCHY_MAX_DEPTH,
+      extension: Object.freeze(
+        Object.fromEntries(
+          Object.entries(EXTENSION_GUARDRAIL_ENV).map(([key, spec]) => [key, e[spec.env]]),
+        ) as unknown as ExtensionGuardrailConfig,
+      ),
+    }),
     telemetry: Object.freeze({
       otelEnabled: e.OTEL_ENABLED,
       serviceName: e.OTEL_SERVICE_NAME,

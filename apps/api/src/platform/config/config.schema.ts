@@ -1,5 +1,39 @@
 import { z } from 'zod';
 
+/**
+ * M10D (plan §2.7, Q3, Q5): the extension guardrails — environment variable,
+ * default and bounded range. Equal to `EXTENSION_GUARDRAIL_SPECS` in the domain
+ * (pinned by a unit test; platform code may not import modules).
+ */
+export const EXTENSION_GUARDRAIL_ENV = {
+  maxFieldsPerTarget: { env: 'EXTENSION_MAX_FIELDS_PER_TARGET', default: 1000, min: 1, max: 2000 },
+  maxObjects: { env: 'EXTENSION_MAX_OBJECTS', default: 100, min: 1, max: 500 },
+  maxFieldsPerObject: { env: 'EXTENSION_MAX_FIELDS_PER_OBJECT', default: 300, min: 1, max: 1000 },
+  maxRelationships: { env: 'EXTENSION_MAX_RELATIONSHIPS', default: 300, min: 1, max: 1000 },
+  maxEnumValues: { env: 'EXTENSION_MAX_ENUM_VALUES', default: 1000, min: 1, max: 5000 },
+  maxArrayItems: { env: 'EXTENSION_MAX_ARRAY_ITEMS', default: 500, min: 1, max: 10000 },
+  maxJsonBytes: { env: 'EXTENSION_MAX_JSON_BYTES', default: 65536, min: 1024, max: 65536 },
+  maxJsonDepth: { env: 'EXTENSION_MAX_JSON_DEPTH', default: 8, min: 1, max: 16 },
+  maxRecordsPerObject: {
+    env: 'EXTENSION_MAX_RECORDS_PER_OBJECT',
+    default: 10_000_000,
+    min: 1,
+    max: 100_000_000,
+  },
+  registryMaxBytes: {
+    env: 'EXTENSION_REGISTRY_MAX_BYTES',
+    default: 2 * 1024 * 1024,
+    min: 256 * 1024,
+    max: 8 * 1024 * 1024,
+  },
+} as const;
+export type ExtensionGuardrailConfig = {
+  readonly [K in keyof typeof EXTENSION_GUARDRAIL_ENV]: number;
+};
+const guardrail = (spec: { default: number; min: number; max: number }) =>
+  z.coerce.number().int().min(spec.min).max(spec.max).default(spec.default);
+const G = EXTENSION_GUARDRAIL_ENV;
+
 const booleanFromEnv = z.stringbool({ truthy: ['true', '1', 'yes'], falsy: ['false', '0', 'no'] });
 
 /**
@@ -83,6 +117,22 @@ export const envSchema = z
      */
     CANONICAL_HIERARCHY_MAX_DEPTH: z.coerce.number().int().min(1).max(50).default(10),
 
+    /**
+     * M10D (plan §2.7, Q3, Q5): extension guardrails, enforced at registry publish
+     * and at write time. Bounded ranges; out of range refuses start-up. Exceeding
+     * one is a refusal, never truncation. Not canonical semantics.
+     */
+    EXTENSION_MAX_FIELDS_PER_TARGET: guardrail(G.maxFieldsPerTarget),
+    EXTENSION_MAX_OBJECTS: guardrail(G.maxObjects),
+    EXTENSION_MAX_FIELDS_PER_OBJECT: guardrail(G.maxFieldsPerObject),
+    EXTENSION_MAX_RELATIONSHIPS: guardrail(G.maxRelationships),
+    EXTENSION_MAX_ENUM_VALUES: guardrail(G.maxEnumValues),
+    EXTENSION_MAX_ARRAY_ITEMS: guardrail(G.maxArrayItems),
+    EXTENSION_MAX_JSON_BYTES: guardrail(G.maxJsonBytes),
+    EXTENSION_MAX_JSON_DEPTH: guardrail(G.maxJsonDepth),
+    EXTENSION_MAX_RECORDS_PER_OBJECT: guardrail(G.maxRecordsPerObject),
+    EXTENSION_REGISTRY_MAX_BYTES: guardrail(G.registryMaxBytes),
+
     SENTRY_DSN: z.url().optional(),
     SENTRY_ENVIRONMENT: z.string().min(1).optional(),
   })
@@ -130,7 +180,11 @@ export interface AppConfig {
     readonly reconcileLookbackMs: number;
   };
   /** M10C: canonical guardrails (platform configuration, not canonical semantics). */
-  readonly canonical: { readonly hierarchyMaxDepth: number };
+  readonly canonical: {
+    readonly hierarchyMaxDepth: number;
+    /** M10D: extension guardrails (plan §2.7). */
+    readonly extension: ExtensionGuardrailConfig;
+  };
   readonly telemetry: {
     readonly otelEnabled: boolean;
     readonly serviceName: string;

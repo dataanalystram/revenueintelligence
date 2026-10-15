@@ -5,6 +5,8 @@
  * (schema guard).
  */
 
+import { EXTENSION_CONFLICT_KINDS } from './extension';
+
 /** Minimum canonical version for hierarchy / affiliation writes and the new mapping targets (plan §7). */
 export const ACCOUNT_STRUCTURE_MIN_VERSION = '0.3';
 
@@ -71,12 +73,13 @@ export const ACCOUNT_STRUCTURE_CONFLICT_KINDS = [
   'affiliation_endpoint_unresolved',
 ] as const;
 
-/** Every `tenant_identity_conflicts.kind` (M6 kinds + M10C); the CHECK equals this list. */
+/** Every `tenant_identity_conflicts.kind` (M6 kinds + M10C + M10D); the CHECK equals this list. */
 export const IDENTITY_CONFLICT_KINDS = [
   'shared_email',
   'merge_across_systems',
   'ambiguous_primary_company',
   ...ACCOUNT_STRUCTURE_CONFLICT_KINDS,
+  ...EXTENSION_CONFLICT_KINDS,
 ] as const;
 export type IdentityConflictKind = (typeof IDENTITY_CONFLICT_KINDS)[number];
 
