@@ -161,8 +161,6 @@ END
 $$;
 REVOKE ALL ON FUNCTION "app_company_hierarchy_guard"() FROM PUBLIC;
 
-CREATE TRIGGER "companies_hierarchy_guard" BEFORE INSERT OR UPDATE OF "parent_company_id" ON "companies"
-  FOR EACH ROW EXECUTE FUNCTION app_company_hierarchy_guard();
 
 -- ---------------------------------------------------------------------------
 -- 3. Person–Account affiliations (plan §3.1; Q9–Q13, Q21)
