@@ -342,8 +342,8 @@ export class AccountHierarchyWriter {
       request: input.request,
       writer: input.writer,
       ...(parent ? { parent } : {}),
-      subtreeHeight: subtree.height,
-      subtreeTruncated: subtree.truncated,
+      subtreeHeight: 0,
+      subtreeTruncated: false,
       maxDepth: this.maxDepth,
     });
     const issue = (kind: IdentityConflictKind) =>
