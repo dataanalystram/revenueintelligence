@@ -60,8 +60,7 @@ export class WriteAuthorizer {
     if (!decision.allowed) {
       const explicitlyGranted =
         decision.reason === 'capability_not_granted' &&
-        isGrantableCapability(capability) &&
-        (await this.grants.holds(tenant, actor, capability));
+        isGrantableCapability(capability); // MUTATION VM2: grant lookup bypassed
       if (!explicitlyGranted) {
         await this.deny(tenant, actor, capability, decision.reason, { ...attempt, correlationId });
       }
