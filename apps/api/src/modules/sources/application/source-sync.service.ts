@@ -23,6 +23,7 @@ import {
   runProof,
   isAuthoritative,
   isConnectorError,
+  isCustomObjectEntity,
   mapContextRecord,
   MappingDocumentSchema,
   mappedFields,
@@ -67,6 +68,7 @@ import {
 } from '../infrastructure/sources.repository';
 import { SOURCE_SYNC_JOB, SOURCES_QUEUE, sourceSyncJobId } from '../jobs';
 import { SourceConnectionsService } from './source-connections.service';
+import { SourceExtensionSync, type ExtensionRunMeta } from './source-extension-sync';
 import { AuditFailures } from '../../tenancy';
 
 export type SyncMode = 'full' | 'incremental';
@@ -225,6 +227,8 @@ export class SourceSyncService {
     private readonly gaps: OwnershipGapService,
     private readonly profiles: ProfilesRepository,
     private readonly audit: AuditTrail,
+    // M10D: attribute / capture / custom-object / custom-relationship statements.
+    private readonly extensions: SourceExtensionSync,
     @Optional() @Inject(QueueService) private readonly queues?: QueueService,
     @Optional() @Inject(MetricsService) private readonly metrics?: MetricsService,
   ) {}
@@ -528,7 +532,7 @@ export class SourceSyncService {
   private async full(rc: RunContext, state: RunState): Promise<void> {
     const selection: ReadSelection = { mode: 'full', boundary: rc.boundary };
     // 1. Accounts and people: references (and profiles with authority).
-    for (const obj of rc.mapping.objects.filter((o) => o.entity !== 'subscription')) {
+    for (const obj of rc.mapping.objects.filter(isContextObject)) {
       const onPage = async (records: readonly SourceRecord[]) => {
         this.observe(rc, state, obj, records);
         this.noteSeen(state, obj, records);
@@ -565,6 +569,8 @@ export class SourceSyncService {
         state.populations.set(obj.source, population);
       }
     }
+    // M10D: custom objects after accounts, people and lines (their parents and ends exist).
+    await this.customObjects(rc, state, selection);
     // 4a. M9A: pre-tombstone B guards over the whole run, then unattributable rejections.
     this.guardAll(rc, state, 'pre_tombstone');
     this.refuseUnattributable(state);
@@ -720,7 +726,7 @@ export class SourceSyncService {
       since: rc.run.windowSince!,
       boundary: rc.boundary,
     };
-    for (const obj of rc.mapping.objects.filter((o) => o.entity !== 'subscription')) {
+    for (const obj of rc.mapping.objects.filter(isContextObject)) {
       await this.readAll(rc, obj.source, mappedFields(obj), selection, async (records) => {
         this.observe(rc, state, obj, records);
         await this.ingestContext(rc, state, obj, records);
@@ -770,6 +776,8 @@ export class SourceSyncService {
         );
       }
     }
+    // M10D: custom objects after accounts, people and lines.
+    await this.customObjects(rc, state, selection);
     // Incremental runs never tombstone and never replace gaps: they only add.
     this.guardAll(rc, state, 'pre_tombstone');
     this.refuseUnattributable(state);
@@ -836,6 +844,21 @@ export class SourceSyncService {
         });
       }
       if (obj.entity === 'account') state.knownAccounts.add(result.observation.ref.id);
+      // M10D (Q13): extension statements follow the record's profile authority.
+      if (
+        profileAuthority &&
+        ingested.entityId &&
+        result.observation.presence === 'present' &&
+        SourceExtensionSync.hasStatements(obj)
+      ) {
+        await this.extensions.canonicalRecord(
+          this.extensionMeta(rc),
+          obj,
+          record,
+          { kind: obj.entity === 'person' ? 'person' : 'company', id: ingested.entityId },
+          (code, by) => state.count(code, by),
+        );
+      }
     }
     this.metrics?.increment(
       'lip_source_records',
@@ -1068,6 +1091,21 @@ export class SourceSyncService {
           }
           if (['created', 'updated', 'restored', 'deleted'].includes(out.outcome))
             state.changed += 1;
+          // M10D (Q13): line attributes follow the subscription_lines authority of the run.
+          if (
+            result.observation.presence === 'present' &&
+            'subscriptionId' in out &&
+            out.subscriptionId &&
+            SourceExtensionSync.hasStatements(obj)
+          ) {
+            await this.extensions.canonicalRecord(
+              this.extensionMeta(rc),
+              obj,
+              record,
+              { kind: 'subscription', id: out.subscriptionId },
+              (code, by) => state.count(code, by),
+            );
+          }
           if (result.observation.presence === 'present') {
             // A later accepted occurrence moves the key to the holdings (§9.3).
             state.seenButRejected.delete(key);
@@ -1593,6 +1631,41 @@ export class SourceSyncService {
     };
   }
 
+  /** M10D: the coordinates extension writes record (identifiers only). */
+  private extensionMeta(rc: RunContext): ExtensionRunMeta {
+    return {
+      actx: rc.actx,
+      kind: rc.kind,
+      connectionId: rc.connection.id,
+      mappingVersion: rc.mappingVersion,
+      correlationId: rc.run.correlationId,
+      runId: rc.run.id,
+      cause: rc.cause,
+      adapterVersion: rc.connector.capabilities().adapterVersion,
+      observedAt: rc.observedAt,
+    };
+  }
+
+  /**
+   * M10D (plan §5.2): records of `custom_object:<key>` objects (the owning
+   * connection only, Q14), read like accounts: no holdings, no retirement,
+   * absence changes nothing.
+   */
+  private async customObjects(
+    rc: RunContext,
+    state: RunState,
+    selection: ReadSelection,
+  ): Promise<void> {
+    for (const obj of rc.mapping.objects.filter((o) => isCustomObjectEntity(o.entity))) {
+      await this.readAll(rc, obj.source, mappedFields(obj), selection, async (records) => {
+        this.observe(rc, state, obj, records);
+        await this.extensions.customObjectPage(this.extensionMeta(rc), obj, records, (code, by) =>
+          state.count(code, by),
+        );
+      });
+    }
+  }
+
   private contextMeta(rc: RunContext): IngestMeta {
     return {
       cause: rc.cause,
@@ -1603,6 +1676,11 @@ export class SourceSyncService {
       actor: rc.actx.actor,
     };
   }
+}
+
+/** Account and person object mappings (the context writer); M10D custom objects are separate. */
+function isContextObject(o: ObjectMapping): boolean {
+  return o.entity === 'account' || o.entity === 'person';
 }
 
 /** The canonical source id of a line record: its mapped identity value, else the record id. */

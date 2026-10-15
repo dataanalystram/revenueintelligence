@@ -6,6 +6,11 @@ import {
   canonicalHash,
   compareCanonicalVersion,
   disabledModuleTargets,
+  EXTENSION_MIN_VERSION,
+  EXTENSION_MODULE_KEY,
+  isCustomObjectEntity,
+  type ExtensionMappingContext,
+  type ExtensionMappingDefinition,
   MAPPING_RETIRE_REASONS,
   type MappingRetireReason,
   MappingDocumentSchema,
@@ -524,7 +529,8 @@ export class SourceMappingsService {
       (await moduleSettings(tx)).filter((s) => s.enabled).map((s) => s.moduleKey),
     );
     const blocked = disabledModuleTargets(
-      document.objects.map((o) => o.entity),
+      // M10D: custom objects land on entity kind custom_record (module extension).
+      document.objects.map((o) => (isCustomObjectEntity(o.entity) ? 'custom_record' : o.entity)),
       CANONICAL_MODULES,
       enabled,
     );
@@ -534,6 +540,63 @@ export class SourceMappingsService {
         `Mapping targets ${blocked[0]!.entityKind} of disabled module ${blocked[0]!.module}`,
       );
     }
+  }
+
+  /**
+   * M10D (plan §5, Q14, Q18): the 0.4 + module gate, the current published
+   * extension registry and, per custom object, the connection whose published
+   * mapping maps it (a second connection is refused at publish).
+   */
+  private async extensionContext(
+    tx: TenantTransaction,
+    connectionId: string,
+  ): Promise<ExtensionMappingContext> {
+    const adopted = await adoptedCanonicalVersion(tx);
+    const enabled = (await moduleSettings(tx)).some(
+      (m) => m.moduleKey === EXTENSION_MODULE_KEY && m.enabled,
+    );
+    const gate =
+      compareCanonicalVersion(adopted, EXTENSION_MIN_VERSION) < 0
+        ? ('canonical_version_too_low' as const)
+        : enabled
+          ? ('ok' as const)
+          : ('module_disabled' as const);
+    const db = tenantClient(tx);
+    const entries = await db.tenantRegistryEntry.findMany({
+      where: { tenantId: tx.tenantId, kind: 'extension' },
+      select: { key: true, status: true, definition: true, sensitivity: true, categories: true },
+    });
+    const definitions = new Map<string, ExtensionMappingDefinition>(
+      entries.map((e) => {
+        const definition = (e.definition ?? {}) as Record<string, unknown>;
+        return [
+          e.key,
+          {
+            kind: definition.kind as ExtensionMappingDefinition['kind'],
+            status: e.status,
+            definition,
+            sensitivity: e.sensitivity ?? 'restricted',
+            categories: e.categories,
+          },
+        ];
+      }),
+    );
+    const objectOwners = new Map<string, string>();
+    const connections = await db.tenantSourceConnection.findMany({
+      where: { tenantId: tx.tenantId, id: { not: connectionId } },
+      select: { id: true },
+    });
+    for (const c of connections) {
+      const published = await this.repo.publishedMapping(tx, c.id);
+      const doc = published ? MappingDocumentSchema.safeParse(published.document) : undefined;
+      if (!doc?.success) continue;
+      for (const o of doc.data.objects) {
+        if (isCustomObjectEntity(o.entity)) {
+          objectOwners.set(o.entity.slice('custom_object:'.length), c.id);
+        }
+      }
+    }
+    return { gate, definitions, objectOwners };
   }
 
   /** D5 safeguards: an override attempt is always logged and counted (refused in M9A). */
@@ -611,6 +674,7 @@ export class SourceMappingsService {
         // No authenticated operator channel exists (A1): the CLI actor is unauthenticated.
         operator: { authenticated: false, actor: options.actor ?? 'cli' },
       },
+      extension: await this.extensionContext(tx, connectionId),
     });
     return {
       validation,

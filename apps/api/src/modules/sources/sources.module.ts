@@ -1,10 +1,12 @@
 import { Module, type DynamicModule } from '@nestjs/common';
 import type { SourceAdapterFactory } from '../domain';
+import { ExtensionModule } from '../extension';
 import { ProductsModule } from '../products';
 import { TenancyModule } from '../tenancy';
 import { MappingPreviewService } from './application/mapping-preview.service';
 import { ProfilePurgeService } from './application/profile-purge.service';
 import { SchemaSnapshotsService } from './application/schema-snapshots.service';
+import { SourceExtensionSync } from './application/source-extension-sync';
 import { SourceAuthorityService } from './application/source-authority.service';
 import { SourceConnectionsService } from './application/source-connections.service';
 import { SourceMappingsService } from './application/source-mappings.service';
@@ -50,13 +52,14 @@ export class SourcesModule {
     ];
     return {
       module: SourcesModule,
-      imports: [TenancyModule, ProductsModule, options.context],
+      imports: [TenancyModule, ProductsModule, ExtensionModule, options.context],
       providers: [
         { provide: SOURCE_ADAPTERS, useValue: options.adapters },
         SourceAdapterRegistry,
         SourcesRepository,
         ProfilesRepository,
         ProfilePurgeStore,
+        SourceExtensionSync,
         ...services,
         ...(options.processors ? [SourceSyncProcessor] : []),
       ],
