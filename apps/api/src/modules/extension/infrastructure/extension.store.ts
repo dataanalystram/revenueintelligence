@@ -499,6 +499,20 @@ export class ExtensionStore {
     return tenantAdvisoryLock(tx, 'custom-object', objectId);
   }
 
+  /**
+   * Tech debt #83 (Q14): the connection that owns the custom object (null =
+   * released or never claimed). The row is read FOR SHARE, so a publish or
+   * retire that releases or moves the ownership waits for this write to
+   * commit: the owner cannot change between the check and the write.
+   */
+  async customObjectOwner(tx: TenantTransaction, objectKey: string): Promise<string | null> {
+    const rows = await tenantClient(tx).$queryRaw<{ connection_id: string | null }[]>`
+      SELECT connection_id::text AS connection_id FROM tenant_custom_object_owners
+       WHERE tenant_id = ${tx.tenantId}::uuid AND object_key = ${objectKey}
+         FOR SHARE`;
+    return rows[0]?.connection_id ?? null;
+  }
+
   // --- Values ---------------------------------------------------------------------
 
   async values(

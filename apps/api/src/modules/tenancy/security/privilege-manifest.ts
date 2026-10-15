@@ -72,6 +72,8 @@ export const PRIVILEGE_MANIFEST: Readonly<Record<string, readonly TablePrivilege
   tenant_extension_values: APPEND_UPDATE,
   tenant_custom_records: APPEND_UPDATE,
   tenant_custom_relationships: APPEND_UPDATE,
+  // M10D hardening #83 (Q14): owners are claimed and released in place, never deleted.
+  tenant_custom_object_owners: APPEND_UPDATE,
   // M10D (Q26): collection items are replaced on change — the only M10D DELETE grant.
   tenant_extension_value_items: ['SELECT', 'INSERT', 'DELETE'],
   // M10E: contexts retire / merge, memberships end, product memberships stay (no DELETE).

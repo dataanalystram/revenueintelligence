@@ -9,7 +9,12 @@ import {
   type ProofAcceptance,
   type ConnectorKind,
 } from '../../domain';
-import { tenantClient, translateDatabaseError, type TenantTransaction } from '../../tenancy';
+import {
+  tenantClient,
+  translateDatabaseError,
+  UniqueConstraintError,
+  type TenantTransaction,
+} from '../../tenancy';
 
 export interface SourceConnection {
   readonly id: string;
@@ -366,6 +371,119 @@ export class SourcesRepository {
         auditEventId: input.auditEventId,
       },
     });
+  }
+
+  // --- M10D hardening #83 (Q14): custom object owners --------------------------
+
+  /** The custom objects each OTHER connection holds as owner (object key → connection id). */
+  async otherCustomObjectOwners(
+    tx: TenantTransaction,
+    connectionId: string,
+  ): Promise<Map<string, string>> {
+    const rows = await tenantClient(tx).tenantCustomObjectOwner.findMany({
+      where: { tenantId: tx.tenantId, connectionId: { not: null } },
+      select: { objectKey: true, connectionId: true },
+    });
+    return new Map(
+      rows
+        .filter((r) => r.connectionId !== null && r.connectionId !== connectionId)
+        .map((r) => [r.objectKey, r.connectionId!]),
+    );
+  }
+
+  /**
+   * Makes `connectionId` (at its new published `version`) the owner of exactly
+   * `objectKeys`, in this transaction. Claims run in ascending key order (the
+   * deterministic lock order of ADR 0030 addendum #83): each key is kept (already
+   * ours), taken from released, or inserted — and the insert raises a unique
+   * violation on the primary key when another connection holds or is claiming
+   * the object, which is returned as `conflict`. Releases of the connection's
+   * other objects run after every claim.
+   */
+  async claimCustomObjects(
+    tx: TenantTransaction,
+    connectionId: string,
+    version: number,
+    objectKeys: readonly string[],
+  ): Promise<
+    | { readonly claimed: string[]; readonly kept: string[]; readonly released: string[] }
+    | { readonly conflict: string }
+  > {
+    const db = tenantClient(tx);
+    const tenantId = tx.tenantId;
+    const keys = [...new Set(objectKeys)].sort();
+    const claimed: string[] = [];
+    const kept: string[] = [];
+    for (const objectKey of keys) {
+      const now = new Date();
+      const ours = await db.tenantCustomObjectOwner.updateMany({
+        where: { tenantId, objectKey, connectionId },
+        data: { mappingVersion: version, updatedAt: now },
+      });
+      if (ours.count === 1) {
+        kept.push(objectKey);
+        continue;
+      }
+      const taken = await db.tenantCustomObjectOwner.updateMany({
+        where: { tenantId, objectKey, connectionId: null },
+        data: {
+          connectionId,
+          mappingVersion: version,
+          claimedAt: now,
+          releasedAt: null,
+          updatedAt: now,
+        },
+      });
+      if (taken.count === 1) {
+        claimed.push(objectKey);
+        continue;
+      }
+      try {
+        await db.tenantCustomObjectOwner.create({
+          data: {
+            tenantId,
+            objectKey,
+            registryKind: 'extension',
+            connectionId,
+            mappingVersion: version,
+            claimedAt: now,
+            updatedAt: now,
+          },
+        });
+      } catch (error) {
+        if (isUniqueViolation(error)) return { conflict: objectKey };
+        throw error;
+      }
+      claimed.push(objectKey);
+    }
+    const released = await this.releaseCustomObjects(tx, connectionId, keys);
+    return { claimed, kept, released };
+  }
+
+  /** Releases the connection's owned custom objects (all, or all but `keep`); returns their keys. */
+  async releaseCustomObjects(
+    tx: TenantTransaction,
+    connectionId: string,
+    keep: readonly string[] = [],
+  ): Promise<string[]> {
+    const db = tenantClient(tx);
+    const where = {
+      tenantId: tx.tenantId,
+      connectionId,
+      ...(keep.length > 0 ? { objectKey: { notIn: [...keep] } } : {}),
+    };
+    const rows = await db.tenantCustomObjectOwner.findMany({
+      where,
+      select: { objectKey: true },
+      orderBy: { objectKey: 'asc' },
+    });
+    if (rows.length === 0) return [];
+    const now = new Date();
+    await db.tenantCustomObjectOwner.updateMany({
+      where: { ...where, objectKey: { in: rows.map((r) => r.objectKey) } },
+      data: { connectionId: null, mappingVersion: null, releasedAt: now, updatedAt: now },
+    });
+    return rows.map((r) => r.objectKey);
   }
 
   async mappingVersion(
@@ -730,4 +848,14 @@ function toAuthority(row: {
     publishedBy: row.publishedBy,
     publishedAt: row.publishedAt,
   };
+}
+
+/** A primary-key / unique violation (Prisma P2002 or PostgreSQL 23505), translated once. */
+function isUniqueViolation(error: unknown): boolean {
+  try {
+    translateDatabaseError(error, 'custom_object_owner');
+  } catch (translated) {
+    return translated instanceof UniqueConstraintError;
+  }
+  return false;
 }

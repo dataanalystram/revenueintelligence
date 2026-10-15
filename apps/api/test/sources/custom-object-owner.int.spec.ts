@@ -222,4 +222,133 @@ describe('M10D hardening #83: single-owner custom objects under concurrent publi
     // Exactly one connection's published mapping sources the object.
     expect(await sourcedBy(f.ctx, 'asset')).toHaveLength(1);
   });
+
+  /** The tenant's owner rows (tech debt #83). */
+  const ownersOf = (t: TenantContext) =>
+    c.sql<{
+      object_key: string;
+      connection_id: string | null;
+      mapping_version: number | null;
+      released: boolean;
+    }>(
+      `SELECT object_key, connection_id::text, mapping_version, released_at IS NOT NULL AS released
+         FROM tenant_custom_object_owners WHERE tenant_id = $1 ORDER BY object_key`,
+      [t.tenantId],
+    );
+  const auditDetails = async (t: TenantContext, action: string) =>
+    (
+      await c.sql<{ details: Record<string, unknown> }>(
+        `SELECT details FROM tenant_audit_events
+          WHERE tenant_id = $1 AND action = $2 AND outcome = 'allowed' ORDER BY seq`,
+        [t.tenantId, action],
+      )
+    ).map((r) => r.details);
+
+  it('owner rows follow the published mappings: claimed at publish, released by retiring the published version or by a version that no longer maps the object; audited', async () => {
+    const f = await twoConnections('h83life');
+    const s = sourcesServices(c);
+    const sugarId = f.sugar.connectionId;
+    const cbId = f.chargebee.connectionId;
+    await (
+      await prepare(f.sugar, customOnly([['Opportunities', 'asset']]))
+    )();
+    expect(await ownersOf(f.ctx)).toEqual([
+      { object_key: 'asset', connection_id: sugarId, mapping_version: 1, released: false },
+    ]);
+    // Retiring a SUPERSEDED version releases nothing; retiring the PUBLISHED one releases.
+    await (
+      await prepare(f.sugar, customOnly([['Opportunities', 'asset']]), 1)
+    )();
+    expect((await ownersOf(f.ctx))[0]).toMatchObject({
+      connection_id: sugarId,
+      mapping_version: 2,
+    });
+    await s.mappings.retire(
+      await authz(f.ctx, 'config.mapping.retire'),
+      sugarId,
+      1,
+      'operator_retired',
+    );
+    expect((await ownersOf(f.ctx))[0]).toMatchObject({
+      connection_id: sugarId,
+      mapping_version: 2,
+    });
+    await s.mappings.retire(
+      await authz(f.ctx, 'config.mapping.retire'),
+      sugarId,
+      2,
+      'operator_retired',
+    );
+    expect(await ownersOf(f.ctx)).toEqual([
+      { object_key: 'asset', connection_id: null, mapping_version: null, released: true },
+    ]);
+    // Released: the other connection may now claim it.
+    await (
+      await prepare(f.chargebee, customOnly([['Customers', 'asset']]))
+    )();
+    expect(await ownersOf(f.ctx)).toEqual([
+      { object_key: 'asset', connection_id: cbId, mapping_version: 1, released: false },
+    ]);
+    // A version that maps gadget instead releases asset and claims gadget.
+    await (
+      await prepare(f.chargebee, customOnly([['Customers', 'gadget']]), 1)
+    )();
+    expect(await ownersOf(f.ctx)).toEqual([
+      { object_key: 'asset', connection_id: null, mapping_version: null, released: true },
+      { object_key: 'gadget', connection_id: cbId, mapping_version: 2, released: false },
+    ]);
+    const publishes = await auditDetails(f.ctx, 'mapping.publish');
+    expect(publishes.map((d) => [d.customObjectsClaimed, d.customObjectsReleased])).toEqual([
+      [['asset'], undefined],
+      [undefined, undefined],
+      [['asset'], undefined],
+      [['gadget'], ['asset']],
+    ]);
+    const retires = await auditDetails(f.ctx, 'mapping.retire');
+    expect(retires.map((d) => d.customObjectsReleased)).toEqual([undefined, ['asset']]);
+  });
+
+  it('no deadlock: two publications claiming two custom objects in opposite document order — one wins both, the other gets the Q14 refusal', async () => {
+    const f = await twoConnections('h83order');
+    const publications = [
+      await prepare(
+        f.sugar,
+        customOnly([
+          ['Opportunities', 'asset'],
+          ['RevenueLineItems', 'gadget'],
+        ]),
+      ),
+      await prepare(
+        f.chargebee,
+        customOnly([
+          ['Customers', 'gadget'],
+          ['Items', 'asset'],
+        ]),
+      ),
+    ];
+    // Barrier at the owner table itself: both publications validate, then wait
+    // at their first owner-row write, and are released together.
+    const barrier = await appSession(c, f.ctx);
+    const pending: Promise<unknown>[] = [];
+    try {
+      await barrier.query('LOCK TABLE tenant_custom_object_owners IN SHARE MODE');
+      for (const p of publications) pending.push(p());
+      await c.until(async () => (await waiting()) >= 2, 30_000, 'both wait');
+      await barrier.query('COMMIT');
+    } finally {
+      await barrier.query('ROLLBACK').catch(() => undefined);
+      await barrier.end();
+    }
+    const results = await Promise.allSettled(pending);
+    const rejected = results.filter((r) => r.status === 'rejected');
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(rejected.map(refusalCodes)).toEqual([
+      { code: 'mapping_invalid', issues: ['custom_object_owned_by_other_connection'] },
+    ]);
+    const winner = results[0]!.status === 'fulfilled' ? f.sugar : f.chargebee;
+    expect((await ownersOf(f.ctx)).map((o) => [o.object_key, o.connection_id])).toEqual([
+      ['asset', winner.connectionId],
+      ['gadget', winner.connectionId],
+    ]);
+  });
 });

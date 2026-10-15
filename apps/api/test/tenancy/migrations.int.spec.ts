@@ -112,8 +112,13 @@ const M10D_DOWN = resolve(`prisma/rollback/${M10D_MIGRATIONS[0]}.down.sql`);
 const M10E_MIGRATIONS = ['20270119120000_m10e_account_context'];
 const M10E_DOWN = resolve(`prisma/rollback/${M10E_MIGRATIONS[0]}.down.sql`);
 
-/** Rolls M10E back; every M10D and older down-script runs after this. */
+/** M10D hardening #83 (single-owner custom objects, ADR 0030 addendum): sits on top of M10E. */
+const H83_MIGRATIONS = ['20270126120000_m10d_custom_object_owner'];
+const H83_DOWN = resolve(`prisma/rollback/${H83_MIGRATIONS[0]}.down.sql`);
+
+/** Rolls #83, then M10E back; every M10D and older down-script runs after this. */
 async function rollbackM10E(url: string): Promise<void> {
+  await withAdmin(url, (db) => db.query(readFileSync(H83_DOWN, 'utf8')));
   await withAdmin(url, (db) => db.query(readFileSync(M10E_DOWN, 'utf8')));
 }
 
@@ -154,6 +159,7 @@ const POST_M7_DOWNS = [
   ...M10C_MIGRATIONS,
   ...M10D_MIGRATIONS,
   ...M10E_MIGRATIONS,
+  ...H83_MIGRATIONS,
 ]
   .reverse()
   .map((name) => resolve(`prisma/rollback/${name}.down.sql`));
@@ -211,6 +217,7 @@ describe('database migrations and schema guard', () => {
         ...M10C_MIGRATIONS,
         ...M10D_MIGRATIONS,
         ...M10E_MIGRATIONS,
+        ...H83_MIGRATIONS,
       ]);
       expect(rows.every((r) => r.finished_at !== null)).toBe(true);
     });
