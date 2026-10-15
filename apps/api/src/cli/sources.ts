@@ -334,6 +334,23 @@ async function main(): Promise<void> {
             .show(ctx, conn.id, int(values.version, 'version'));
           return shown ? { ...shown } : { found: false };
         }
+        case 'extension-capture-draft': {
+          // M10D (plan §5.4, Q20): prints the registry additions the capture entries need;
+          // publishes nothing (the operator dry-runs / publishes them with registry:publish).
+          const conn = await connection(ctx);
+          const document = values.file ? readJson(values.file) : undefined;
+          const draft = await app.get(SourceMappingsService).captureDraft(ctx, conn.id, document);
+          const refused = draft.entries.flatMap((e) =>
+            e.ok ? [] : [{ source: e.source, code: e.code }],
+          );
+          if (refused.length > 0) exitCode = 2;
+          return {
+            connectionId: conn.id,
+            from: draft.from,
+            fields: draft.entries.flatMap((e) => (e.ok ? [e.definition] : [])),
+            refused,
+          };
+        }
         case 'mapping-draft-save': {
           const conn = await connection(ctx);
           const document = readJson(values.file);
@@ -589,7 +606,7 @@ async function main(): Promise<void> {
         }
         default:
           throw new Error(
-            'Usage: sources <list|configure|test|schema|mappings-validate|mappings-preview|mappings-publish|mappings-show|mappings-draft|mapping-draft-save|mapping-draft-validate|mapping-draft-publish|mapping-draft-discard|mapping-draft-show|mapping-states|mapping-retire|authority-show|authority-publish|sync-full|sync-incremental|sync-status|report|profile-run|profile-status|profile-show|profile-findings|profile-drift|profile-purge> --tenant <slug> [...]',
+            'Usage: sources <list|configure|test|schema|mappings-validate|mappings-preview|mappings-publish|mappings-show|mappings-draft|mapping-draft-save|mapping-draft-validate|mapping-draft-publish|mapping-draft-discard|mapping-draft-show|mapping-states|mapping-retire|authority-show|authority-publish|sync-full|sync-incremental|sync-status|report|profile-run|profile-status|profile-show|profile-findings|profile-drift|profile-purge|extension-capture-draft> --tenant <slug> [...]',
           );
       }
     } catch (error) {

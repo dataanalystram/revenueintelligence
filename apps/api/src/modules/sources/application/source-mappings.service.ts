@@ -4,11 +4,17 @@ import { MetricsService } from '../../../platform/metrics';
 import {
   CANONICAL_MODULES,
   canonicalHash,
+  captureDraft,
   compareCanonicalVersion,
   disabledModuleTargets,
   EXTENSION_MIN_VERSION,
   EXTENSION_MODULE_KEY,
+  findSourceField,
   isCustomObjectEntity,
+  isSensitiveName,
+  profiledSensitivity,
+  type CaptureDraftEntry,
+  type CaptureSource,
   type ExtensionMappingContext,
   type ExtensionMappingDefinition,
   MAPPING_RETIRE_REASONS,
@@ -514,6 +520,74 @@ export class SourceMappingsService {
       }),
     );
     return row ? toDraftView(row) : undefined;
+  }
+
+  /**
+   * M10D (plan §5.4, Q20): the registry additions the capture entries of a
+   * mapping need (`extension capture-draft`). Reads the given document, else
+   * the connection's working copy, else its published mapping; publishes
+   * nothing. Codes, keys and source names only (never values).
+   */
+  async captureDraft(
+    ctx: TenantContext,
+    connectionId: string,
+    raw?: unknown,
+  ): Promise<{
+    readonly from: 'document' | 'draft' | 'published';
+    readonly entries: CaptureDraftEntry[];
+  }> {
+    return this.db.transaction(ctx, async (tx) => {
+      const connection = await this.repo.connection(tx, connectionId);
+      if (!connection) throw new ConnectionNotFoundError(connectionId);
+      const snapshot = await this.repo.latestSnapshot(tx, connectionId);
+      if (!snapshot) {
+        throw new SourcesError('no_schema_snapshot', 'Capture a schema snapshot before mapping');
+      }
+      let from: 'document' | 'draft' | 'published' = 'document';
+      let document = raw;
+      if (document === undefined) {
+        const draft = await tenantClient(tx).tenantSourceMappingDraft.findUnique({
+          where: { tenantId_connectionId: { tenantId: tx.tenantId, connectionId } },
+          select: { document: true },
+        });
+        from = draft ? 'draft' : 'published';
+        document =
+          draft?.document ?? (await this.repo.publishedMapping(tx, connectionId))?.document;
+      }
+      const parsed = MappingDocumentSchema.safeParse(document);
+      if (!parsed.success) {
+        throw new SourcesError(
+          'mapping_invalid',
+          'No valid mapping document to read capture entries from',
+        );
+      }
+      const schema = SourceSchemaSchema.parse(snapshot.document);
+      const profiles = await this.profiles.candidateProfiles(tx, connectionId, snapshot.hash);
+      const sources: CaptureSource[] = [];
+      for (const o of parsed.data.objects) {
+        for (const f of o.fields) {
+          if (!('kind' in f) || f.kind !== 'capture') continue;
+          const field = findSourceField(schema, o.source, f.source);
+          const sensitivity = profiledSensitivity(schema, profiles, o.source, f.source);
+          sources.push({
+            connectionKind: connection.kind,
+            object: o.source,
+            entity: o.entity,
+            field: f.source,
+            ...(sensitivity !== undefined ? { profileSensitivity: sensitivity } : {}),
+            ...(field ? { sourceType: field.type } : {}),
+          });
+        }
+      }
+      const existing = await tenantClient(tx).tenantRegistryEntry.findMany({
+        where: { tenantId: tx.tenantId, kind: 'extension' },
+        select: { key: true },
+      });
+      return {
+        from,
+        entries: captureDraft(sources, new Set(existing.map((e) => e.key)), isSensitiveName),
+      };
+    });
   }
 
   /** The lifecycle state of every published version (M10A2). */
