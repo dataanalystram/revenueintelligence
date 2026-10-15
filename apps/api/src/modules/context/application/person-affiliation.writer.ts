@@ -318,10 +318,24 @@ export class PersonAffiliationWriter {
       let id: string;
       let changed = true;
       if (active?.origin === 'human') {
-        // The operator's own row: its fields are updated in place.
+        // The operator's own row: its fields are updated in place. An omitted
+        // --starts-at / --ends-at keeps the stored value (review m3).
         id = active.id;
-        changed = affiliationFieldHash(active) !== affiliationFieldHash(fields);
-        if (changed) await this.update(tx, active, fields, provenance, effectiveAt);
+        const merged: AffiliationFields = {
+          roleCodes: fields.roleCodes,
+          ...((fields.startsAt ?? active.startsAt)
+            ? { startsAt: fields.startsAt ?? active.startsAt! }
+            : {}),
+          ...((fields.endsAt ?? active.endsAt) ? { endsAt: fields.endsAt ?? active.endsAt! } : {}),
+        };
+        if (affiliationIssues(merged).includes('affiliation_period_invalid')) {
+          throw new GovernanceError(
+            'affiliation_period_invalid',
+            'The period ends before it starts',
+          );
+        }
+        changed = affiliationFieldHash(active) !== affiliationFieldHash(merged);
+        if (changed) await this.update(tx, active, merged, provenance, effectiveAt);
       } else {
         if (active) {
           // A source row is ended by the operator, then the operator's row is created (origin is immutable).

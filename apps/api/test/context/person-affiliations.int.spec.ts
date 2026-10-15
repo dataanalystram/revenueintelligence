@@ -415,10 +415,13 @@ describe('M10C person–account affiliations', () => {
         }),
       ).resolves.toMatchObject({ affiliationId: added.affiliationId, changed: false });
       await add(t, { personId: person, companyId: ids['941']!, roleCodes: ['sponsor', 'billing'] });
-      expect((await affiliationsOf(c, t, person)).at(-1)!.role_codes).toEqual([
-        'billing',
-        'sponsor',
-      ]);
+      const updated = (await affiliationsOf(c, t, person)).at(-1)!;
+      expect(updated.role_codes).toEqual(['billing', 'sponsor']);
+      // Omitted period flags keep the stored period (review m3).
+      expect(updated.starts_at!.getTime()).toBe(
+        D('Sun 2026-02-01 12:00 AM GMT (UTC+00:00)').getTime(),
+      );
+      expect(updated.ends_at).toBeNull();
       // End: operator, terminal; ending again is refused.
       await expect(end(t, added.affiliationId, D('2026-09-30T00:00:00Z'))).resolves.toMatchObject({
         status: 'ended',
