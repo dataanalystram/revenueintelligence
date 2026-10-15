@@ -104,7 +104,7 @@ describe('M10E migration and schema guard', () => {
         await db.query('SET LOCAL ROLE lip_app');
         await db.query(`SELECT set_config('app.current_tenant', $1, true)`, [tenant]);
         const out: Record<string, unknown>[][] = [];
-        for (const sql of statements) out.push((await db.query(sql)).rows);
+        for (const sql of statements) out.push((await db.query<Record<string, unknown>>(sql)).rows);
         await db.query(options.rollback ? 'ROLLBACK' : 'COMMIT');
         return out;
       } catch (error) {
