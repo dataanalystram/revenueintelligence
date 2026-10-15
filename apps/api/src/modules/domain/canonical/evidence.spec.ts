@@ -74,7 +74,11 @@ describe('validateEvidenceSet', () => {
       Array(4).fill('evidence_relation_not_allowed'),
     );
     // M10D (#71): custom records are the first module-owned kind.
-    expect(EVIDENCE_KIND_MODULES).toEqual({ custom_record: 'extension' });
+    // M10E (#71): account contexts are the second.
+    expect(EVIDENCE_KIND_MODULES).toEqual({
+      custom_record: 'extension',
+      account_context: 'account_context',
+    });
   });
 
   it('set size 1–200 and unique ordinals in range', () => {

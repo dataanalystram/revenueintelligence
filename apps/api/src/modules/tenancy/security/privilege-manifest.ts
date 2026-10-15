@@ -74,6 +74,10 @@ export const PRIVILEGE_MANIFEST: Readonly<Record<string, readonly TablePrivilege
   tenant_custom_relationships: APPEND_UPDATE,
   // M10D (Q26): collection items are replaced on change — the only M10D DELETE grant.
   tenant_extension_value_items: ['SELECT', 'INSERT', 'DELETE'],
+  // M10E: contexts retire / merge, memberships end, product memberships stay (no DELETE).
+  tenant_account_contexts: APPEND_UPDATE,
+  tenant_account_context_persons: APPEND_UPDATE,
+  tenant_account_context_products: APPEND_UPDATE,
   companies: DML,
   company_external_refs: DML,
   person_external_refs: DML,

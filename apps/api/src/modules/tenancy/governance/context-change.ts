@@ -22,7 +22,10 @@ export interface ChangeWrite {
     | 'subscription'
     | 'product'
     | 'custom_record'
-    | 'custom_relationship';
+    | 'custom_relationship'
+    // M10E (Q24): account contexts and their person memberships.
+    | 'account_context'
+    | 'account_context_person';
   /** Exactly one of `entityId` / `entityKey` (products are key-identified, M10B). */
   readonly entityId: string;
   readonly changeType:

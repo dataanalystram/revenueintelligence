@@ -1829,6 +1829,8 @@ export const CLASSIFICATION_MANIFEST: Readonly<
     },
     // M10C: who may write the account hierarchy.
     account_hierarchy_connection_id: op('reference', CV),
+    // M10E (Q16): who may write account contexts.
+    account_context_connection_id: op('reference', CV),
     content_hash: {
       sensitivity: 'internal',
       categories: ['operational'],
@@ -2636,6 +2638,14 @@ export const CLASSIFICATION_MANIFEST: Readonly<
       kind: 'reference',
       retention: 'canonical_lifecycle',
       history: 'none',
+    },
+    // M10E (Q23): the line's account context (full value history).
+    context_id: {
+      sensitivity: 'internal',
+      categories: ['operational'],
+      kind: 'reference',
+      retention: 'canonical_lifecycle',
+      history: 'full',
     },
   },
   tenant_sync_checkpoints: {
@@ -3464,6 +3474,90 @@ export const CLASSIFICATION_MANIFEST: Readonly<
     last_change_id: op('reference', CL),
     created_at: op('timestamp', CL),
     updated_at: op('timestamp', CL),
+  },
+  // M10E (plan §6): account contexts. Dimension values are classified per row by
+  // the context type (classifiedBy 'registry'; restricted dimensions are refused
+  // at publish while tech debt #15 is open, so confidential is the static bound).
+  tenant_account_contexts: {
+    tenant_id: op('identifier', CL),
+    id: op('identifier', CL),
+    company_id: op('reference', CL),
+    context_type_registry_kind: op('code', CL),
+    context_type_id: op('reference', CL),
+    natural_key_hash: op('hash', CL),
+    dimensions: {
+      sensitivity: 'confidential',
+      categories: ['commercial', 'financial', 'operational'],
+      kind: 'json',
+      retention: 'canonical_lifecycle',
+      history: 'none',
+      classifiedBy: 'registry',
+    },
+    name: {
+      sensitivity: 'internal',
+      categories: ['commercial'],
+      kind: 'free_text',
+      retention: 'canonical_lifecycle',
+      history: 'none',
+    },
+    status: {
+      sensitivity: 'internal',
+      categories: ['operational'],
+      kind: 'code',
+      retention: 'canonical_lifecycle',
+      history: 'full',
+    },
+    // Q12: an opaque source owner id (CSM is a vendor user; email-like values refused).
+    owner_ref: {
+      sensitivity: 'internal',
+      categories: ['operational'],
+      kind: 'identifier',
+      retention: 'canonical_lifecycle',
+      history: 'full',
+    },
+    renewal_date: {
+      sensitivity: 'confidential',
+      categories: ['financial'],
+      kind: 'timestamp',
+      retention: 'canonical_lifecycle',
+      history: 'none',
+    },
+    record_state: op('code', CL),
+    merged_into_id: op('reference', CL),
+    last_change_id: op('reference', CL),
+    created_at: op('timestamp', CL),
+    updated_at: op('timestamp', CL),
+  },
+  // M10E: person memberships link the context to a person (data-subject map).
+  tenant_account_context_persons: {
+    tenant_id: op('identifier', CL),
+    context_id: op('reference', CL),
+    person_id: {
+      sensitivity: 'confidential',
+      categories: ['personal'],
+      kind: 'reference',
+      retention: 'canonical_lifecycle',
+      history: 'none',
+      subject: { entity: 'person', action: 'erase' },
+    },
+    role_code: op('code', CL),
+    status: op('code', CL),
+    started_at: op('timestamp', CL),
+    ended_at: op('timestamp', CL),
+    last_change_id: op('reference', CL),
+  },
+  tenant_account_context_products: {
+    tenant_id: op('identifier', CL),
+    context_id: op('reference', CL),
+    product_key: {
+      sensitivity: 'internal',
+      categories: ['commercial'],
+      kind: 'reference',
+      retention: 'canonical_lifecycle',
+      history: 'none',
+    },
+    origin: op('code', CL),
+    created_at: op('timestamp', CL),
   },
 };
 

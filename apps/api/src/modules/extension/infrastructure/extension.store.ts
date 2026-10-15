@@ -236,6 +236,8 @@ const ENTITY_TABLE: Readonly<Record<Exclude<ExtensionTargetKind, 'product'>, str
   subscription: 'tenant_subscriptions',
   person_affiliation: 'tenant_person_affiliations',
   custom_record: 'tenant_custom_records',
+  // M10E (Q19): account contexts carry record_state / merged_into_id like custom records.
+  account_context: 'tenant_account_contexts',
 };
 
 @Injectable()
