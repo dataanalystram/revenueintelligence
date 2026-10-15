@@ -13,6 +13,7 @@ import {
 import { FakeSugar, type FakeSugarRecord } from '../support/fake-sugar';
 import {
   publishWithAcks,
+  runProfile,
   runSync,
   sourcesServices,
   sugarTenant,
@@ -287,6 +288,8 @@ describe('M10D extension attribute values through a source run (Sugar adapter, f
         await enableExtension(c, f.ctx);
         await publishExtension(c, f.ctx);
         await publishAuthority(f, true);
+        // M9A: a completed profile of the Users module covers its mapped fields.
+        expect((await runProfile(c, f, ['Users'])).status).toBe('completed');
         const s = sourcesServices(c);
         const snapshot = await s.snapshots.latest(f.ctx, f.connectionId);
         const latest = await c.sql<{ v: number }>(
