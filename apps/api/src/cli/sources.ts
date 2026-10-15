@@ -129,7 +129,9 @@ function int(value: string | undefined, name: string): number | undefined {
 
 function readJson(path: string | undefined): unknown {
   if (!path) throw new Error('--file <path> is required');
-  if (statSync(path).size > 1024 * 1024) throw new Error('--file exceeds 1 MiB');
+  // M10D (Q4): a mapping document may hold 1 MiB of JSON (jsonb text); an indented file of it is
+  // larger, so the file is bounded at 4 MiB and the validator enforces the document cap.
+  if (statSync(path).size > 4 * 1024 * 1024) throw new Error('--file exceeds 4 MiB');
   try {
     return JSON.parse(readFileSync(path, 'utf8')) as unknown;
   } catch {
