@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import {
+  ACCOUNT_STRUCTURE_MIN_VERSION,
   AUTHORITY_FACTS,
+  compareCanonicalVersion,
   authorityContentHashWith,
   AuthorityDocumentSchema,
   ProofAcceptanceSchema,
@@ -11,6 +13,7 @@ import {
   type AuthorityFact,
 } from '../../domain';
 import {
+  adoptedCanonicalVersion,
   assertAuthorized,
   AuditTrail,
   WriteAuthorizer,
@@ -122,6 +125,17 @@ export class SourceAuthorityService {
             code: 'authority_not_supported',
             path: `facts.${fact}`,
             message: `${connection.kind} cannot provide ${fact}`,
+          });
+        }
+      }
+      // M10C (plan §7): only a tenant at canonical ≥ 0.3 can name a hierarchy authority.
+      if (doc.facts.account_hierarchy) {
+        const adopted = await adoptedCanonicalVersion(tx);
+        if (compareCanonicalVersion(adopted, ACCOUNT_STRUCTURE_MIN_VERSION) < 0) {
+          issues.push({
+            code: 'canonical_version_too_low',
+            path: 'facts.account_hierarchy',
+            message: `account_hierarchy needs canonical ${ACCOUNT_STRUCTURE_MIN_VERSION} (adopted ${adopted})`,
           });
         }
       }

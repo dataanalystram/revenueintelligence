@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
+import { APP_CONFIG, type AppConfig } from '../../../platform/config';
 import {
   canonicalHash,
+  HIERARCHY_MAX_DEPTH_CEILING,
   ENTITY_INDEX_SOURCES,
   evidenceRelationAllowed,
   INTEGRITY_MAX_FINDINGS,
@@ -53,6 +55,7 @@ export class IntegrityVerificationService {
     private readonly events: SecurityEventsService,
     private readonly privileges: PrivilegeManifestCheck,
     @Inject(EVIDENCE_RELATION_CATALOGUE) private readonly relations: readonly EvidenceRelation[],
+    @Optional() @Inject(APP_CONFIG) private readonly config?: AppConfig,
   ) {}
 
   /** Dry run: the report only, nothing recorded. */
@@ -301,7 +304,96 @@ export class IntegrityVerificationService {
 
     // M10B plan §11 (ADR 0028).
     await this.referenceChecks(tx, add);
+    // M10C plan §11 (ADR 0029).
+    await this.accountStructureChecks(tx, add);
     return findings;
+  }
+
+  /** The six M10C checks: read-only, identifiers only, nothing repaired. */
+  private async accountStructureChecks(
+    tx: TenantTransaction,
+    add: (check: IntegrityFinding['check'], refs: readonly string[]) => void,
+  ): Promise<void> {
+    const db = tenantClient(tx);
+    const t = tx.tenantId;
+    const maxDepth =
+      (this.config as Partial<AppConfig> | undefined)?.canonical?.hierarchyMaxDepth ?? 10;
+    // Walk ancestors from every account with a parent, bounded by the trigger ceiling.
+    const walk = await db.$queryRaw<{ id: string; reached: boolean; steps: number }[]>`
+      WITH RECURSIVE up (start_id, cur, steps, reached) AS (
+        SELECT c.id, c.parent_company_id, 1, c.parent_company_id = c.id FROM companies c
+         WHERE c.tenant_id = ${t}::uuid AND c.parent_company_id IS NOT NULL
+        UNION ALL
+        SELECT up.start_id, c.parent_company_id, up.steps + 1, c.parent_company_id = up.start_id
+          FROM up JOIN companies c ON c.tenant_id = ${t}::uuid AND c.id = up.cur
+         WHERE NOT up.reached AND c.parent_company_id IS NOT NULL AND up.steps < ${HIERARCHY_MAX_DEPTH_CEILING + 1}
+      )
+      SELECT start_id::text AS id, bool_or(reached) AS reached, max(steps)::int AS steps
+        FROM up GROUP BY start_id ORDER BY 1`;
+    // 13. No account reaches itself (impossible with the trigger; detects owner tampering).
+    add(
+      'hierarchy_cycle',
+      walk
+        .filter((r) => r.reached)
+        .slice(0, INTEGRITY_MAX_FINDINGS)
+        .map((r) => r.id),
+    );
+    // 14. No account deeper than the current guardrail (depth = edges to the root).
+    add(
+      'hierarchy_depth_exceeded',
+      walk
+        .filter((r) => !r.reached && r.steps > maxDepth)
+        .slice(0, INTEGRITY_MAX_FINDINGS)
+        .map((r) => r.id),
+    );
+    // 15. No live account has a merged parent.
+    const mergedParent = await db.$queryRaw<{ ref: string }[]>`
+      SELECT c.id::text AS ref FROM companies c
+        JOIN companies p ON p.tenant_id = c.tenant_id AND p.id = c.parent_company_id
+       WHERE c.tenant_id = ${t}::uuid AND c.record_state <> 'merged' AND p.record_state = 'merged'
+       ORDER BY 1 LIMIT ${INTEGRITY_MAX_FINDINGS}`;
+    add(
+      'hierarchy_parent_merged',
+      mergedParent.map((r) => r.ref),
+    );
+    // 16. The current parent equals the new value of its latest value-history row (when one exists).
+    const parity = await db.$queryRaw<{ ref: string }[]>`
+      SELECT c.id::text AS ref FROM companies c
+        JOIN LATERAL (
+          SELECT h.new_value, h.values_recorded FROM tenant_value_history h
+           WHERE h.tenant_id = c.tenant_id AND h.entity_kind = 'company' AND h.entity_id = c.id
+             AND h.field = 'parent_company_id'
+           ORDER BY h.recorded_at DESC, h.id DESC LIMIT 1) last ON true
+       WHERE c.tenant_id = ${t}::uuid AND last.values_recorded
+         AND (last.new_value #>> '{}') IS DISTINCT FROM c.parent_company_id::text
+       ORDER BY 1 LIMIT ${INTEGRITY_MAX_FINDINGS}`;
+    add(
+      'hierarchy_history_parity',
+      parity.map((r) => r.ref),
+    );
+    // 17. No active affiliation points at a merged person or company.
+    const endpoint = await db.$queryRaw<{ ref: string }[]>`
+      SELECT a.id::text AS ref FROM tenant_person_affiliations a
+        JOIN persons p ON p.tenant_id = a.tenant_id AND p.id = a.person_id
+        JOIN companies c ON c.tenant_id = a.tenant_id AND c.id = a.company_id
+       WHERE a.tenant_id = ${t}::uuid AND a.status = 'active'
+         AND (p.record_state = 'merged' OR c.record_state = 'merged')
+       ORDER BY 1 LIMIT ${INTEGRITY_MAX_FINDINGS}`;
+    add(
+      'affiliation_endpoint_merged',
+      endpoint.map((r) => r.ref),
+    );
+    // 18. Every person_affiliation generic reference resolves to an affiliation of the tenant.
+    const orphanRefs = await db.$queryRaw<{ ref: string }[]>`
+      SELECT r.id::text AS ref FROM tenant_source_references r
+       WHERE r.tenant_id = ${t}::uuid AND r.entity_kind = 'person_affiliation'
+         AND NOT EXISTS (SELECT 1 FROM tenant_person_affiliations a
+                          WHERE a.tenant_id = r.tenant_id AND a.id = r.entity_id)
+       ORDER BY 1 LIMIT ${INTEGRITY_MAX_FINDINGS}`;
+    add(
+      'affiliation_reference_parity',
+      orphanRefs.map((r) => r.ref),
+    );
   }
 
   private async referenceChecks(

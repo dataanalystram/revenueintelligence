@@ -4,11 +4,13 @@ import { MetricsService } from '../../../platform/metrics';
 import {
   CANONICAL_MODULES,
   canonicalHash,
+  compareCanonicalVersion,
   disabledModuleTargets,
   MAPPING_RETIRE_REASONS,
   type MappingRetireReason,
   MappingDocumentSchema,
   MappingDraftValidationStampSchema,
+  mappingMinCanonicalVersion,
   PROFILE_FRESHNESS,
   SourceProfileSettingsSchema,
   SourceSchemaSchema,
@@ -176,6 +178,17 @@ export class SourceMappingsService {
       }
       // M10A2 mapping hook: no entry may target an entity of a disabled module.
       await this.refuseDisabledModuleTargets(tx, validation.document);
+      // M10C (plan §7): a mapping using a 0.3 target (account.parent,
+      // person.affiliation) needs the tenant at canonical ≥ 0.3; it then records
+      // canonical_version_min = the adopted version (≥ 0.3).
+      const needs = mappingMinCanonicalVersion(validation.document);
+      const adopted = await adoptedCanonicalVersion(tx);
+      if (needs && compareCanonicalVersion(adopted, needs) < 0) {
+        throw new SourcesError(
+          'canonical_version_too_low',
+          `This mapping uses targets of canonical ${needs}; the tenant adopted ${adopted}`,
+        );
+      }
       const previouslyPublished = await this.repo.publishedMapping(tx, connectionId);
       const stored = await this.repo.insertMapping(tx, {
         connectionId,
