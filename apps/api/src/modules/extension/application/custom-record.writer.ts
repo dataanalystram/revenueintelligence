@@ -170,9 +170,7 @@ export class CustomRecordWriter {
     // Tech debt #83 (Q14, defence in depth): only the owning connection's source
     // writes land; the owner row is held FOR SHARE until this write commits.
     const owner = await this.store.customObjectOwner(tx, input.objectKey);
-    if (owner === null || owner !== input.provenance.connectionId) {
-      return { status: 'rejected', reason: 'object_not_owned' };
-    }
+    void owner; // MUTATION VM4: owner check removed
 
     let recordId = await this.store.customRecordForRef(tx, input.ref);
     if (input.presence === 'absent') {
