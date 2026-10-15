@@ -1,5 +1,6 @@
 import { Global, Module, type DynamicModule, type Type } from '@nestjs/common';
 import { RECEIPTS_STORED_LISTENER } from '../crm';
+import { ExtensionMergeParticipant, ExtensionModule } from '../extension';
 import { TenancyModule } from '../tenancy';
 import { BulkSyncService } from './application/bulk-sync.service';
 import { ContextIngestionService } from './application/context-ingestion.service';
@@ -72,23 +73,31 @@ export class ContextModule {
     }
     return {
       module: ContextModule,
-      imports: [TenancyModule, AccountStructureModule, options.connector, ...options.merge.imports],
+      imports: [
+        TenancyModule,
+        AccountStructureModule,
+        ExtensionModule,
+        options.connector,
+        ...options.merge.imports,
+      ],
       providers: [
         {
           // M10C: the hierarchy and affiliation participants are part of the
-          // context module and always run, after the composition's own.
+          // context module and always run, after the composition's own; M10D:
+          // the extension participant (values, custom-record parents) last.
           provide: COMPANY_MERGE_PARTICIPANTS,
           useFactory: (...participants: CompanyMergeParticipant[]) => participants,
           inject: [
             ...options.merge.participants,
             AccountHierarchyMergeParticipant,
             AffiliationCompanyMergeParticipant,
+            ExtensionMergeParticipant,
           ],
         },
         {
           provide: PERSON_MERGE_PARTICIPANTS,
           useFactory: (...participants: PersonMergeParticipant[]) => participants,
-          inject: [AffiliationPersonMergeParticipant],
+          inject: [AffiliationPersonMergeParticipant, ExtensionMergeParticipant],
         },
         ContextStore,
         ContextReadModel,
