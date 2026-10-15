@@ -241,7 +241,8 @@ ALTER TABLE "tenant_custom_relationships" ADD CONSTRAINT "tenant_custom_relation
 ALTER TABLE "tenant_custom_relationships" ADD CONSTRAINT "tenant_custom_relationships_from_key_fkey" FOREIGN KEY ("tenant_id", "from_kind", "from_key") REFERENCES "tenant_entity_index"("tenant_id", "kind", "entity_key") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
-ALTER TABLE "tenant_custom_relationships" ADD CONSTRAINT "tenant_custom_relationships_to_id_fkey" FOREIGN KEY ("tenant_id", "to_kind", "to_id") REFERENCES "tenant_entity_index"("tenant_id", "kind", "entity_id") ON DELETE RESTRICT ON UPDATE RESTRICT;
+CREATE UNIQUE INDEX "mut_entity_index_kind_entity_id" ON "tenant_entity_index"("kind", "entity_id");
+ALTER TABLE "tenant_custom_relationships" ADD CONSTRAINT "tenant_custom_relationships_to_id_fkey" FOREIGN KEY ("to_kind", "to_id") REFERENCES "tenant_entity_index"("kind", "entity_id") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
 ALTER TABLE "tenant_custom_relationships" ADD CONSTRAINT "tenant_custom_relationships_to_key_fkey" FOREIGN KEY ("tenant_id", "to_kind", "to_key") REFERENCES "tenant_entity_index"("tenant_id", "kind", "entity_key") ON DELETE RESTRICT ON UPDATE RESTRICT;
