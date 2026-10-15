@@ -971,6 +971,7 @@ export type ExtensionNarrowing =
   | { readonly key: string; readonly check: 'min' | 'max'; readonly limit: number }
   | { readonly key: string; readonly check: 'max_items'; readonly limit: number }
   | { readonly key: string; readonly check: 'enum_codes'; readonly codes: readonly string[] }
+  | { readonly key: string; readonly check: 'currency'; readonly currency: string }
   | { readonly key: string; readonly check: 'json_schema'; readonly schema: JsonSchemaSubset }
   | {
       readonly key: string;
@@ -1067,6 +1068,11 @@ export function extensionNarrowings(
     const min = num(ca.min);
     if (min !== undefined && (num(cb.min) === undefined || min > num(cb.min)!)) {
       out.push({ key, check: 'min', limit: min });
+    }
+    // A fixed currency added or changed: stored money in another currency would no longer parse.
+    const currency = str(ca.currency);
+    if (currency !== undefined && str(cb.currency) !== currency) {
+      out.push({ key, check: 'currency', currency });
     }
     const retired = [...activeCodes(b)].filter((c) => !activeCodes(a).has(c)).sort();
     if (retired.length > 0) out.push({ key, check: 'enum_codes', codes: retired });

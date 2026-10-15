@@ -550,6 +550,11 @@ export class RegistryService {
           (await exists(`SELECT 1 ${items} AND i.item_number ${op} $3::numeric`, String(n.limit)))
         );
       }
+      case 'currency':
+        return exists(
+          `SELECT 1 ${present} AND v.value_currency IS DISTINCT FROM $3::text`,
+          n.currency,
+        );
       case 'max_items':
         return exists(`SELECT 1 ${present} AND v.value_item_count > $3::int`, n.limit);
       case 'enum_codes':
