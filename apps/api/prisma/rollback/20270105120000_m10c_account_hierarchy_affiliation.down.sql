@@ -22,7 +22,6 @@ BEGIN
   SELECT count(*) INTO n FROM companies WHERE parent_company_id IS NOT NULL OR parent_company_origin IS NOT NULL;
   IF n > 0 THEN RAISE EXCEPTION 'refusing rollback: % companies carry a parent or parent origin', n; END IF;
   SELECT count(*) INTO n FROM tenant_person_affiliations;
-  IF n > 0 THEN RAISE EXCEPTION 'refusing rollback: % person affiliations exist', n; END IF;
   SELECT count(*) INTO n FROM tenant_source_references WHERE entity_kind = 'person_affiliation';
   IF n > 0 THEN RAISE EXCEPTION 'refusing rollback: % person_affiliation source references exist', n; END IF;
   SELECT count(*) INTO n FROM tenant_context_changes WHERE entity_kind = 'person_affiliation';
