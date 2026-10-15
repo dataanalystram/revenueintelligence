@@ -1,7 +1,7 @@
 # ADR 0031: AccountContext — contexts of an account, memberships, line context and canonical 0.5 (Milestone 10E)
 
-- Status: **Proposed** — implementation in progress (draft PR #93 `m10e-impl` → `integration`; phases 1, 2a and 2b
-  done, phase 3 — integration tests, V-tests and mutation proofs — open; not merged)
+- Status: **Accepted** — implemented in PR #93 (`m10e-impl` → `integration`; phases 1–3 done, V1–V30 and VM1–VM16
+  recorded, independent review PASS WITH FINDINGS); record [M10E](../milestones/M10E-account-context.md)
 - Date: 2026-10-15
 - Plan: [M10E plan](../milestones/M10E-account-context-plan.md)
 - Builds on: ADR 0020 (versioned source mapping and authority), ADR 0026 (security foundation), ADR 0027 (canonical
@@ -29,7 +29,7 @@ governance (gating by canonical version and module, audit, classification, integ
 2. **Schema (plan §3; migration `20270119120000_m10e_account_context`).** `tenant_account_contexts` (natural key =
    company, type, SHA-256 of the canonical JSON of the ordered dimension pairs), `tenant_account_context_persons`,
    `tenant_account_context_products`, `tenant_subscriptions.context_id`. Composite tenant FKs, forced RLS, no DELETE
-   grant on contexts or person memberships, dimensions CHECK (object, ≤ 6 keys, flat scalars, ≤ 4096 bytes, no
+   grant on contexts, person memberships or product memberships, dimensions CHECK (object, ≤ 6 keys, flat scalars, ≤ 4096 bytes, no
    secret-like key), `owner_ref` an opaque id (emails refused, Q12). No backfill.
 3. **Canonical 0.5 and module `account_context` (plan §10, Q17).** 0.1–0.4 hashes reproduced from frozen lists;
    0.5 adds entity / change kinds, generic reference kind, mapping entity, authority fact, extension target and
@@ -95,7 +95,8 @@ release | member add | member end | product add | line-assign`; operator id, cap
 Phase 1 (schema, domain, registry):
 
 - Active natural-key uniqueness is a guard trigger with an advisory lock (`account_context_natural_key_exists`),
-  not a partial unique index (Prisma drift; the M10C pattern). VM7 targets the trigger's check.
+  not a partial unique index (Prisma drift; the M10C pattern). VM7 targets the trigger's check (guarded by V7); a
+  two-session race test in V7 holds the lock.
 - The line ↔ context same-account guard is a deferred constraint trigger on both tables (so a company merge can
   re-point lines and contexts in one transaction), not a BEFORE trigger.
 - Context type entries project `codes = member_roles`, so the generic R-X3 keeps a role from disappearing.
@@ -106,7 +107,7 @@ Phase 1 (schema, domain, registry):
   re-adding a person).
 - Catalogue 0.5 hashes the live `AVAILABLE_REGISTRY_KINDS` and extension targets (freeze to `_0_5` lists when a
   later kind lands). The authority-fact gate checks canonical ≥ 0.5 only, not the module (as `account_hierarchy`).
-- No `migrations-m10e.int.spec.ts` yet (V29, phase 3).
+- `migrations-m10e.int.spec.ts` (phase 3) holds V1–V3, V21, V22, V24, V29 and V30.
 
 Phase 2a (writers, merge participants, read model):
 
@@ -115,7 +116,9 @@ Phase 2a (writers, merge participants, read model):
 - **Q14 without a column:** held attributes = the union of `changedFields` of human change records newer than the
   last release change (changed field `humanOverride`); per attribute.
 - Merge moves are insert + end (identity columns are immutable). Extension values on a merged-away context are not
-  moved (readers follow lineage).
+  moved (readers follow lineage; tech debt #92).
+- The merge participant runs regardless of the gate (below 0.5 or module disabled), as in M10D: a merge never
+  strands contexts on a loser account.
 - Operator refusals use the audit reason `validation_failed` (the message carries the code); no new reason codes.
 - Line assignment lives in `AccountContextWriter` (context must not import products).
 - A retired context accepts no new members, explicit products or lines (Q8).
@@ -142,5 +145,9 @@ Phase 2b (mapping, sync, CLI, integrity, runtime):
 - With the module disabled (the default) every existing flow is unchanged: no mapping, sync, eligibility or
   adoption behaviour changes until a tenant adopts 0.5, enables the module and publishes context types.
 - Contexts are tenant-defined; nothing is seeded or inferred. A tenant can roll back to 0.4 without losing data.
-- Open (phase 3): integration tests of the writers, sync wiring, merge paths and read-model batching; the M10E
-  migration round-trip spec; the V-tests and mutation proofs of plan §18 / §19.
+- Phase 3 is done: integration tests of the writers, sync wiring, merge paths and read-model batching, the M10E
+  migration round-trip spec, V1–V30 and the mutation proofs VM1–VM16 (record
+  [M10E](../milestones/M10E-account-context.md)). Deferred: tech debt #89–#92.
+- Fix `26da394` (phase 3): after a merge collision, re-observing the loser's source record observes the reference
+  against its bound (merged-away) id when lineage resolves it to the written context, so the binding is kept and
+  never re-bound to the survivor (no `reference_identity_conflict`).
