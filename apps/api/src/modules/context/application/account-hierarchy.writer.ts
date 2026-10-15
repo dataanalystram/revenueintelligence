@@ -321,7 +321,7 @@ export class AccountHierarchyWriter {
         after: { parentId: child?.parentId ?? null, origin: child?.origin ?? null },
       };
     }
-    const bound = this.maxDepth + 1;
+    const bound = 65;
     let parent: { recordState: string; path: readonly string[]; truncated: boolean } | undefined;
     if (input.request.kind === 'set' && input.request.parentId !== child.id) {
       const node = await this.store.company(tx, input.request.parentId);
@@ -344,7 +344,7 @@ export class AccountHierarchyWriter {
       ...(parent ? { parent } : {}),
       subtreeHeight: subtree.height,
       subtreeTruncated: subtree.truncated,
-      maxDepth: this.maxDepth,
+      maxDepth: 64,
     });
     const issue = (kind: IdentityConflictKind) =>
       this.store.recordIssue(tx, {
