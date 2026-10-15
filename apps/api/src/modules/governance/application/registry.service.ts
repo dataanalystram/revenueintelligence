@@ -475,7 +475,7 @@ export class RegistryService {
       return {
         ok: true,
         value: {
-          document: v.document as unknown as Record<string, unknown>,
+          document: v.document,
           schemaVersion: EXTENSION_DOCUMENT_SCHEMA_VERSION,
           entries: v.entries,
         },
