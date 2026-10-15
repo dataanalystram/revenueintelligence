@@ -172,7 +172,6 @@ export class AccountHierarchyWriter {
     actx: AuthorizedContext<'canonical.human_entry'>,
     input: OperatorParentInput,
   ): Promise<OperatorParentResult> {
-    assertAuthorized(actx, 'canonical.human_entry');
     const companyId = requireUuid(input.companyId, '--company');
     const parentId = requireUuid(input.parentId, '--parent');
     const reason = requireReason(input.reason);
@@ -187,7 +186,6 @@ export class AccountHierarchyWriter {
     actx: AuthorizedContext<'canonical.human_entry'>,
     input: OperatorParentInput,
   ): Promise<OperatorParentResult> {
-    assertAuthorized(actx, 'canonical.human_entry');
     const companyId = requireUuid(input.companyId, '--company');
     const reason = requireReason(input.reason);
     return this.operatorWrite(actx, 'account.hierarchy.clear', companyId, reason, {
@@ -205,7 +203,6 @@ export class AccountHierarchyWriter {
     actx: AuthorizedContext<'canonical.human_entry'>,
     input: OperatorParentInput,
   ): Promise<OperatorParentResult> {
-    assertAuthorized(actx, 'canonical.human_entry');
     const companyId = requireUuid(input.companyId, '--company');
     const reason = requireReason(input.reason);
     return this.db.transaction(actx.tenant, async (tx) => {
