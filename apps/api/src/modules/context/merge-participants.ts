@@ -42,3 +42,27 @@ export const COMPANY_MERGE_PARTICIPANTS = Symbol('COMPANY_MERGE_PARTICIPANTS');
  * away concurrently (see `tenantAdvisoryLock`).
  */
 export const COMPANY_CANONICAL_LOCK_SCOPE = 'company-canonical';
+
+/**
+ * Person-merge participation (M10C plan §4): mirrors the company port. The
+ * person merge stays one workflow in `ContextIngestionService.merge`;
+ * participants act inside the same transaction after the references moved
+ * and before the loser is marked merged.
+ */
+export interface PersonMerge {
+  /** The canonical person merged away (kept, `merged`). */
+  readonly loserId: string;
+  /** The surviving canonical person. */
+  readonly survivorId: string;
+  /** Provenance of the merge itself, to be recorded with every moved fact. */
+  readonly provenance: CompanyMerge['provenance'];
+}
+
+export interface PersonMergeParticipant {
+  onPersonMerged(tx: TenantTransaction, merge: PersonMerge): Promise<void>;
+}
+
+export const PERSON_MERGE_PARTICIPANTS = Symbol('PERSON_MERGE_PARTICIPANTS');
+
+/** Advisory-lock scope for a canonical person (affiliation writers; taken after company locks). */
+export const PERSON_CANONICAL_LOCK_SCOPE = 'person-canonical';

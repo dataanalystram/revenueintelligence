@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import {
+  AFFILIATION_LINK_TYPE_ID,
   decideApplyWithHash,
   decideMerge,
   decideRetirement,
@@ -26,8 +27,13 @@ import { CONTEXT_ADAPTER_VERSION, type Cause } from '../jobs';
 import {
   COMPANY_CANONICAL_LOCK_SCOPE,
   COMPANY_MERGE_PARTICIPANTS,
+  PERSON_MERGE_PARTICIPANTS,
   type CompanyMergeParticipant,
+  type PersonMergeParticipant,
 } from '../merge-participants';
+import { AccountHierarchyWriter } from './account-hierarchy.writer';
+import { accountStructureEnabled } from './account-structure.shared';
+import { PersonAffiliationWriter, type ObservedAffiliation } from './person-affiliation.writer';
 import {
   ContextStore,
   type CompanyValues,
@@ -63,6 +69,19 @@ export interface IngestResult {
   readonly unknownCompanies: readonly ExternalRef[];
   /** Free-text fields refused as secret-like: not written; any previous value is kept. */
   readonly held?: readonly HeldField[];
+  /**
+   * M10C: the parent reference an `account.parent` observation named that is
+   * not known yet (the run retries it in its second pass, plan §2.4).
+   */
+  readonly unresolvedParent?: ExternalRef;
+}
+
+/** M10C: a child→parent pair left unresolved by a run's first pass (identifiers only). */
+export interface PendingParent {
+  readonly child: ExternalRef;
+  readonly parent: ExternalRef;
+  readonly observedAt: Date;
+  readonly sourceUpdatedAt?: Date;
 }
 
 /** Free-text canonical fields checked for secret-like values (plan §11). */
@@ -140,7 +159,15 @@ export class ContextIngestionService {
     @Inject(COMPANY_MERGE_PARTICIPANTS)
     private readonly mergeParticipants: readonly CompanyMergeParticipant[],
     private readonly events: SecurityEventsService,
+    // M10C (ADR 0029): the account-structure writers and the person-merge port.
+    private readonly hierarchy: AccountHierarchyWriter,
+    private readonly affiliations: PersonAffiliationWriter,
+    @Inject(PERSON_MERGE_PARTICIPANTS)
+    private readonly personMergeParticipants: readonly PersonMergeParticipant[],
   ) {}
+
+  /** M10C: company references a person observation's links removed, per transaction. */
+  private readonly removedLinks = new WeakMap<TenantTransaction, ExternalRef[]>();
 
   async ingest(
     actx: AuthorizedContext<'canonical.source_sync'>,
@@ -151,7 +178,8 @@ export class ContextIngestionService {
     assertAuthorized(actx, 'canonical.source_sync');
     const attributed: IngestMeta = { ...meta, actor: actx.actor };
     const run = async (tx: TenantTransaction) => {
-      const result = await this.apply(tx, observation, attributed);
+      const applied = await this.apply(actx, tx, observation, attributed);
+      const result = await this.structure(actx, tx, observation, applied, attributed);
       await options.afterApply?.(tx, result);
       return result;
     };
@@ -177,6 +205,46 @@ export class ContextIngestionService {
       });
     }
     return result;
+  }
+
+  /**
+   * M10C (plan §2.4, Q6): the second pass of a run. A child whose parent was
+   * not known when the child was read is retried after every account
+   * observation of the run was applied, under the same authority. Still
+   * unknown → an open `hierarchy_parent_unresolved` issue (identifiers only),
+   * retried on the next run that observes the child. No pending store.
+   */
+  async resolvePendingParent(
+    actx: AuthorizedContext<'canonical.source_sync'>,
+    pending: PendingParent,
+    meta: IngestMeta,
+  ): Promise<'applied' | 'unchanged' | 'refused' | 'human_override' | 'unresolved' | 'disabled'> {
+    assertAuthorized(actx, 'canonical.source_sync');
+    const attributed: IngestMeta = { ...meta, actor: actx.actor };
+    return this.db.transaction(
+      actx.tenant,
+      async (tx) => {
+        await this.store.lockRef(tx, 'company', pending.child);
+        const childId = await this.store.companyIdForRef(tx, pending.child);
+        if (!childId) return 'unresolved' as const;
+        const out = await this.hierarchy.observeParent(actx, tx, {
+          childId,
+          childRef: pending.child,
+          parent: { kind: 'set', ref: pending.parent },
+          effectiveAt: pending.sourceUpdatedAt ?? pending.observedAt,
+          provenance: this.change(attributed, pending.child, pending.sourceUpdatedAt),
+        });
+        if (out === 'unresolved') {
+          await this.hierarchy.recordUnresolved(actx, tx, {
+            childId,
+            childRef: pending.child,
+            parentRef: pending.parent,
+          });
+        }
+        return out;
+      },
+      { timeoutMs: TX_TIMEOUT_MS },
+    );
   }
 
   /**
@@ -274,9 +342,8 @@ export class ContextIngestionService {
     meta: IngestMeta,
     source: ExternalRef,
     sourceUpdatedAt: Date | undefined,
-  ): Pick<
+  ): { readonly source: ExternalRef } & Pick<
     Parameters<ContextStore['insertChange']>[1],
-    | 'source'
     | 'cause'
     | 'receiptDeliveryKey'
     | 'checkpointId'
@@ -301,6 +368,7 @@ export class ContextIngestionService {
   }
 
   private async apply(
+    actx: AuthorizedContext<'canonical.source_sync'>,
     tx: TenantTransaction,
     obs: SourceObservation,
     meta: IngestMeta,
@@ -313,6 +381,27 @@ export class ContextIngestionService {
       // company's link step never waits on this transaction (no deadlock).
       const { link } = primaryCompanyLink(obs.companyLinks);
       if (link) await this.store.lockRef(tx, 'company', link.company);
+    }
+    if (
+      obs.kind === 'person' &&
+      obs.presence === 'present' &&
+      (obs.companyLinks || obs.affiliations) &&
+      (await accountStructureEnabled(tx))
+    ) {
+      // M10C: the affiliation companies' canonical locks, before any row is
+      // written (the order merges and subscription writers use), so a concurrent
+      // company merge cannot interleave with the affiliation step.
+      const ids = new Set<string>();
+      for (const ref of [
+        ...(obs.companyLinks ?? []).map((l) => l.company),
+        ...(obs.affiliations ?? []).map((a) => a.company),
+      ]) {
+        const id = await this.store.companyIdForRef(tx, ref);
+        if (id) ids.add(id);
+      }
+      for (const id of [...ids].sort()) {
+        await this.store.lockKey(tx, COMPANY_CANONICAL_LOCK_SCOPE, id);
+      }
     }
     const stored = await this.store.findRef(tx, obs.kind, obs.ref);
     const held = heldFields(obs);
@@ -340,24 +429,37 @@ export class ContextIngestionService {
         // (its follow-up read finds the company unchanged): link it now.
         if (obs.kind === 'company' && obs.presence === 'present') {
           const id = await this.store.resolveCanonical(tx, 'company', stored!.canonicalId);
-          await this.afterWrite(tx, obs, id, meta);
+          await this.afterWrite(actx, tx, obs, id, meta);
         }
         return { ...none, entityId: stored!.canonicalId };
       }
       case 'delete':
         return this.tombstone(tx, obs, stored!, meta);
       case 'create':
-        return withHeld(await this.create(tx, obs as PresentObservation, meta, held, hash!), held);
+        return withHeld(
+          await this.create(actx, tx, obs as PresentObservation, meta, held, hash!),
+          held,
+        );
       case 'apply':
       case 'restore':
         return withHeld(
-          await this.update(tx, obs as PresentObservation, stored!, decision, meta, held, hash!),
+          await this.update(
+            actx,
+            tx,
+            obs as PresentObservation,
+            stored!,
+            decision,
+            meta,
+            held,
+            hash!,
+          ),
           held,
         );
     }
   }
 
   private async create(
+    actx: AuthorizedContext<'canonical.source_sync'>,
     tx: TenantTransaction,
     obs: PresentObservation,
     meta: IngestMeta,
@@ -410,11 +512,12 @@ export class ContextIngestionService {
       fieldHash: hash,
       lastChangeId: changeId,
     });
-    await this.afterWrite(tx, obs, id, meta);
+    await this.afterWrite(actx, tx, obs, id, meta);
     return { decision: 'create', entityId: id, changed: true, unknownCompanies };
   }
 
   private async update(
+    actx: AuthorizedContext<'canonical.source_sync'>,
     tx: TenantTransaction,
     obs: PresentObservation,
     stored: RefRow,
@@ -466,7 +569,7 @@ export class ContextIngestionService {
     if (decision === 'restore') changedFields.push('refState');
     const recordState = await this.recomputeRecordState(tx, obs.kind, id, recordStateBefore, now);
     if (recordState) changedFields.push('recordState');
-    const linksChanged = await this.afterWrite(tx, obs, id, meta);
+    const linksChanged = await this.afterWrite(actx, tx, obs, id, meta);
 
     if (changedFields.length === 0 && !linksChanged) {
       return { decision, entityId: id, changed: false, unknownCompanies };
@@ -559,6 +662,7 @@ export class ContextIngestionService {
 
   /** Source relationships, late company links and identity questions. Returns link change. */
   private async afterWrite(
+    actx: AuthorizedContext<'canonical.source_sync'>,
     tx: TenantTransaction,
     obs: PresentObservation,
     id: string,
@@ -567,12 +671,15 @@ export class ContextIngestionService {
     if (obs.kind === 'person') {
       let changed = false;
       if (obs.companyLinks) {
-        changed = await this.store.replacePersonLinks(
+        const replaced = await this.store.replacePersonLinks(
           tx,
           obs.ref,
           obs.companyLinks,
           obs.observedAt,
         );
+        changed = replaced.changed;
+        // M10C: an authoritative removal may end an affiliation (structure step).
+        if (replaced.removed.length) this.removedLinks.set(tx, [...replaced.removed]);
         const { ambiguous } = primaryCompanyLink(obs.companyLinks);
         if (ambiguous) {
           await this.store.recordConflict(tx, {
@@ -614,7 +721,104 @@ export class ContextIngestionService {
         ...this.change(meta, obs.ref, obs.sourceUpdatedAt),
       });
     }
+    // M10C (plan §3.2): people linked to this company before it arrived get the
+    // missing affiliation now (never overwriting an existing row's fields).
+    const linkedPeople = (await accountStructureEnabled(tx))
+      ? await this.store.peopleLinkedTo(tx, obs.ref)
+      : [];
+    for (const linked of linkedPeople) {
+      await this.affiliations.observe(actx, tx, {
+        personId: linked.personId,
+        personRef: linked.ref,
+        present: [{ company: obs.ref, fields: { roleCodes: [] } }],
+        removed: [],
+        observedAt: obs.observedAt,
+        provenance: this.change(meta, obs.ref, obs.sourceUpdatedAt),
+        createOnly: true,
+      });
+    }
     return false;
+  }
+
+  /**
+   * M10C (plan §2, §3): the account-structure step of one present observation,
+   * after the record itself was applied (also when it was `unchanged`, so a
+   * tenant that adopted 0.3 gets its structure from the next authoritative run
+   * without a backfill, Q9). Refusals never undo the record's other fields.
+   */
+  private async structure(
+    actx: AuthorizedContext<'canonical.source_sync'>,
+    tx: TenantTransaction,
+    obs: SourceObservation,
+    result: IngestResult,
+    meta: IngestMeta,
+  ): Promise<IngestResult> {
+    const removedLinks = this.removedLinks.get(tx) ?? [];
+    this.removedLinks.delete(tx);
+    if (
+      obs.presence !== 'present' ||
+      !result.entityId ||
+      !['create', 'apply', 'restore', 'unchanged'].includes(result.decision)
+    ) {
+      return result;
+    }
+    const entityId = await this.store.resolveCanonical(tx, obs.kind, result.entityId);
+    const provenance = this.change(meta, obs.ref, obs.sourceUpdatedAt);
+    if (obs.kind === 'company') {
+      if (!obs.parent) return result;
+      const out = await this.hierarchy.observeParent(actx, tx, {
+        childId: entityId,
+        childRef: obs.ref,
+        parent: obs.parent,
+        effectiveAt: obs.sourceUpdatedAt ?? obs.observedAt,
+        provenance,
+      });
+      if (out === 'unresolved' && obs.parent.kind === 'set') {
+        return { ...result, unresolvedParent: obs.parent.ref };
+      }
+      return out === 'applied' ? { ...result, changed: true } : result;
+    }
+    if (!obs.companyLinks && !obs.affiliations) return result;
+    const removed = [...removedLinks];
+    const present: ObservedAffiliation[] = (obs.companyLinks ?? []).map((l) => ({
+      company: l.company,
+      fields: { roleCodes: [] },
+    }));
+    if (obs.affiliations) {
+      // `person.affiliation` links are kept in their own scope of the source relationships.
+      const replaced = await this.store.replacePersonLinks(
+        tx,
+        obs.ref,
+        obs.affiliations.map((a) => ({
+          company: a.company,
+          typeId: AFFILIATION_LINK_TYPE_ID,
+          category: 'standard' as const,
+          primary: false,
+        })),
+        obs.observedAt,
+        'affiliations',
+      );
+      removed.push(...replaced.removed);
+      for (const a of obs.affiliations) {
+        present.push({
+          company: a.company,
+          fields: {
+            roleCodes: a.roleCodes,
+            ...(a.startsAt ? { startsAt: a.startsAt } : {}),
+            ...(a.endsAt ? { endsAt: a.endsAt } : {}),
+          },
+        });
+      }
+    }
+    const out = await this.affiliations.observe(actx, tx, {
+      personId: entityId,
+      personRef: obs.ref,
+      present,
+      removed,
+      observedAt: obs.observedAt,
+      provenance,
+    });
+    return out.created + out.updated + out.ended > 0 ? { ...result, changed: true } : result;
   }
 
   private async merge(
@@ -724,6 +928,14 @@ export class ContextIngestionService {
           now,
         );
       } else {
+        // M10C (plan §4): the person-merge port, same transaction, before the loser is marked merged.
+        for (const participant of this.personMergeParticipants) {
+          await participant.onPersonMerged(tx, {
+            loserId,
+            survivorId,
+            provenance: this.change(meta, ref, undefined),
+          });
+        }
         await this.store.updatePerson(
           tx,
           loserId,
