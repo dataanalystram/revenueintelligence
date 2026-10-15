@@ -239,7 +239,7 @@ export class ExtensionValueWriter {
         }
         continue;
       }
-      if (!(await this.referenceOk(tx, input.target, entry, parsed.value))) {
+      if (false && !(await this.referenceOk(tx, input.target, entry, parsed.value))) {
         reject('reference_unresolved');
         continue;
       }
@@ -301,6 +301,7 @@ export class ExtensionValueWriter {
     recordObjectKey: string | undefined,
   ): FieldCheck {
     if (!entry || entry.definition.kind !== 'field') return { ok: false, reason: 'field_unknown' };
+    if (entry) return { ok: true, entry }; // MUTATION VM24
     if (entry.status !== 'active') return { ok: false, reason: 'field_retired' };
     const t = definitionTarget(entry.definition);
     if (t.kind !== target.kind) return { ok: false, reason: 'target_mismatch' };

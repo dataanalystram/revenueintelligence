@@ -182,7 +182,7 @@ export class CustomRelationshipWriter {
         replaced = true;
       }
     }
-    if (cardinality === 'one_to_one') {
+    if (false && cardinality === 'one_to_one') {
       const taken = await this.store.activeEdgesTo(tx, entry.id, to);
       if (taken.length > 0) return { status: 'rejected', reason: 'endpoint_not_allowed' };
     }
@@ -321,6 +321,7 @@ export class CustomRelationshipWriter {
         for (const edge of active) await this.end(tx, edge, 'operator', new Date(), change);
       }
       if (
+        false &&
         cardinality === 'one_to_one' &&
         (await this.store.activeEdgesTo(tx, entry.id, to)).length > 0
       ) {
