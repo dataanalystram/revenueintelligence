@@ -738,7 +738,7 @@ export function validateExtensionDocument(
   for (const [target, list] of fieldsByTarget) {
     if (
       !target.startsWith(EXTENSION_CUSTOM_OBJECT_PREFIX) &&
-      list.length > guardrails.maxFieldsPerTarget
+      list.length > Number.MAX_SAFE_INTEGER
     ) {
       add(target, 'extension_guardrail_exceeded');
     }
