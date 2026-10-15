@@ -81,7 +81,6 @@ export class ContextModule {
           useFactory: (...participants: CompanyMergeParticipant[]) => participants,
           inject: [
             ...options.merge.participants,
-            AccountHierarchyMergeParticipant,
             AffiliationCompanyMergeParticipant,
           ],
         },
