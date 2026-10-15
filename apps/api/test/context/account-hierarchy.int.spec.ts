@@ -825,6 +825,80 @@ describe('M10C account hierarchy', () => {
       expect(await issuesOf(c, t)).toEqual([]);
     });
 
+    it("a parentless survivor an operator cleared keeps its sticky clear: no inheritance, the loser's parent recorded as a disagreement (review m1)", async () => {
+      const t = await c.tenant('hmergeclr', 1001);
+      const ids = await companies(c, t, ['851', '852', '853']);
+      const [top, otherTop, survivor] = [ids['851']!, ids['852']!, ids['853']!];
+      await set(t, { companyId: survivor, parentId: otherTop, reason: REASON });
+      await clear(t, survivor);
+      expect(await parentOf(c, t, survivor)).toMatchObject({
+        parent_company_id: null,
+        parent_company_origin: 'human',
+      });
+      await observeCompany(c, t, '854', { parent: '851' });
+      await merge(t, '853', ['854']);
+      expect(await parentOf(c, t, survivor)).toMatchObject({
+        parent_company_id: null,
+        parent_company_origin: 'human',
+      });
+      expect(
+        (await issuesOf(c, t)).map((i) => [i.kind, i.state, [...i.canonical_ids].sort()]),
+      ).toEqual([['hierarchy_human_override_disagrees', 'open', [survivor, top].sort()]]);
+    });
+
+    it('a source parent write in flight onto the loser and the merge serialise: no live child keeps a merged parent (review M5)', async () => {
+      const t = await c.tenant('hmergerace', 1001);
+      const ids = await companies(c, t, ['861', '862', '863']);
+      const [loser, survivor, child] = [ids['861']!, ids['862']!, ids['863']!];
+      const sactx = await authz(t, 'canonical.source_sync');
+      let releaseT1!: () => void;
+      const gate = new Promise<void>((r) => (releaseT1 = r));
+      let written!: () => void;
+      const parentWritten = new Promise<void>((r) => (written = r));
+      // T1: the ingestion-side parent write C -> loser, held open after the write.
+      const t1 = db().transaction(
+        t,
+        async (tx) => {
+          const out = await writer().observeParent(sactx, tx, {
+            childId: child,
+            childRef: hs('863'),
+            parent: { kind: 'set', ref: hs('861') },
+            effectiveAt: new Date(),
+            provenance: {
+              source: hs('863'),
+              cause: 'webhook',
+              adapter: 'hubspot',
+              adapterVersion: '1',
+              correlationId: randomUUID(),
+            },
+          });
+          written();
+          await gate;
+          return out;
+        },
+        { timeoutMs: 20_000 },
+      );
+      await parentWritten;
+      // T2: merge the loser into the survivor while T1 is uncommitted.
+      const t2 = merge(t, '862', ['861']);
+      // Wait (bounded) until the merge queues on the tenant's hierarchy lock.
+      const end = Date.now() + 5_000;
+      while (Date.now() < end) {
+        const [waiting] = await c.sql<{ n: number }>(
+          `SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`,
+        );
+        if (waiting!.n > 0) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      releaseT1();
+      expect(await t1).toBe('applied');
+      await t2;
+      expect(await parentOf(c, t, loser)).toMatchObject({ record_state: 'merged' });
+      expect(await parent(t, child)).toBe(survivor);
+      const report = await integrity().verify(t);
+      expect(report.findings.map((f) => f.check)).not.toContain('hierarchy_parent_merged');
+    });
+
     it('merge never refused: a cycle unparents the child with an issue; a depth overshoot is recorded, not refused', async () => {
       const t = await c.tenant('hmerge3', 1001);
       // loser ← child ← survivor: merging the loser into the survivor would make child its own ancestor.

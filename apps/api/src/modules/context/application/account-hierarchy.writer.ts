@@ -436,16 +436,20 @@ export class AccountHierarchyWriter {
    * Never refuses the merge. Children of the loser move to the survivor (origin
    * kept, no depth guardrail, cycle rule kept: a child the survivor descends
    * from is unparented with an issue). A survivor under the loser takes the
-   * loser's parent. A survivor without a parent inherits the loser's. The loser
-   * keeps its own parent (lineage).
+   * loser's parent. A survivor without a parent inherits the loser's, unless an
+   * operator cleared it (origin `human`, sticky; review m1). The loser keeps its
+   * own parent (lineage).
    */
   async onCompanyMerged(tx: TenantTransaction, merge: CompanyMerge): Promise<void> {
+    // The per-tenant hierarchy lock first, before reading children (review M5):
+    // a source parent write onto the loser that is in flight commits before
+    // these reads, or waits and then sees the loser merged. Merges are rare.
+    await this.store.lockHierarchy(tx);
     const loser = await this.store.company(tx, merge.loserId);
     const survivor = await this.store.company(tx, merge.survivorId);
     if (!loser || !survivor) return;
     const children = await this.store.children(tx, loser.id);
     if (children.length === 0 && loser.parentId === null && survivor.parentId !== loser.id) return;
-    await this.store.lockHierarchy(tx);
     const provenance: StructureProvenance = { ...merge.provenance };
     const effectiveAt = merge.provenance.sourceUpdatedAt ?? new Date();
     const move = async (
@@ -470,6 +474,21 @@ export class AccountHierarchyWriter {
         loser.parentId !== null && loser.parentId !== survivor.id ? loser.parentId : null;
       const cycles = next !== null && (await this.store.path(tx, next)).path.includes(survivor.id);
       await move(survivor.id, loser.id, cycles ? null : next, survivor.origin);
+    } else if (
+      survivor.parentId === null &&
+      survivor.origin === 'human' &&
+      loser.parentId !== null &&
+      loser.parentId !== survivor.id
+    ) {
+      // An operator's explicit clear is sticky (review m1): no inheritance; the
+      // loser's parent is recorded as a disagreement with the human value.
+      await this.store.recordIssue(tx, {
+        kind: 'hierarchy_human_override_disagrees',
+        entityKind: 'company',
+        identity: hierarchyIssueIdentity(tx.tenantId, survivor.id),
+        canonicalIds: [survivor.id, loser.parentId],
+        externalRefs: [],
+      });
     } else if (
       survivor.parentId === null &&
       loser.parentId !== null &&
