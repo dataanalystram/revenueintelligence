@@ -108,6 +108,12 @@ export class AccountContextReadModel {
     actx: AuthorizedContext<'data.account_context.read'>,
     entry: { readonly operation: string; readonly targetRef?: string },
   ): Promise<AuthorizedContext<'data.account_context.read_confidential'>> {
+    // MUTATION VM1: extra capability check skipped
+    if (entry.operation !== '') {
+      return Promise.resolve(
+        actx as unknown as AuthorizedContext<'data.account_context.read_confidential'>,
+      );
+    }
     return this.authorizer.authorize(
       actx.tenant,
       actx.actor,
