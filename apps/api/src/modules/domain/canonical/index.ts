@@ -13,3 +13,5 @@ export * from './registry';
 export * from './source-reference';
 export * from './value-history';
 export * from './versions';
+export * from './extension-values';
+export * from './extension-use';

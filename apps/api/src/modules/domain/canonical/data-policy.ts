@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { RETENTION_CLASSES, RETENTION_DEFAULTS, type RetentionClass } from '../security/retention';
+import { isExtensionHistoryField } from './extension';
 import { valueHistoryColumn } from './value-history';
 
 /**
@@ -37,11 +38,16 @@ const RetentionOverrides = z
 const AllowEntry = z
   .strictObject({
     entity_kind: z.string().regex(/^[a-z][a-z0-9_]{0,31}$/),
-    field: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/),
+    // M10D (Q23): `ext:<key>` names an extension field (checked against the
+    // current extension registry at publish).
+    field: z.string().regex(/^([a-z][a-z0-9_]{0,63}|ext:[a-z][a-z0-9_]{0,62})$/),
     days: Days,
   })
   .superRefine((e, ctx) => {
-    if (!valueHistoryColumn(e.entity_kind, e.field)) {
+    if (
+      !valueHistoryColumn(e.entity_kind, e.field) &&
+      !isExtensionHistoryField(e.entity_kind, e.field)
+    ) {
       ctx.addIssue({
         code: 'custom',
         message: `${e.entity_kind}.${e.field} is not a value-history field`,

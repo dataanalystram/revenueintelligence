@@ -512,3 +512,143 @@ function mappedAffiliations(
     },
   ];
 }
+
+// ---------------------------------------------------------------------------
+// M10D (plan §5): extension attributes, captures, custom objects, custom relationships
+// ---------------------------------------------------------------------------
+
+/** One stated extension value: the field key and the raw value after the closed transforms. */
+export interface MappedExtensionValue {
+  readonly field: string;
+  /** `null` = explicitly empty at the source; never `undefined` (no statement is not listed). */
+  readonly raw: string | number | boolean | Date | null;
+}
+
+/** One stated custom-relationship end on the `from` record. */
+export interface MappedCustomRelationship {
+  readonly key: string;
+  /** The `to` record's source reference; null = explicitly none (authoritative removal). */
+  readonly to: ExternalRef | null;
+  /** The definition's role code when the role value map matched. */
+  readonly role?: string;
+}
+
+export interface MappedExtensions {
+  readonly values: readonly MappedExtensionValue[];
+  readonly relationships: readonly MappedCustomRelationship[];
+}
+
+/**
+ * The extension statements of one record (plan §5.1, §5.3, §5.4). A field
+ * missing from the record (not read) states nothing; an empty value, or a
+ * value the null transform empties, is an explicit empty; a value the
+ * transforms cannot read is counted and states nothing (absence never clears).
+ */
+export function mapExtensionStatements(
+  obj: ObjectMapping,
+  record: SourceRecord,
+  system: ExternalSystem,
+  quality: QualityCode[],
+  capturedKey: (object: string, field: string) => string,
+): MappedExtensions {
+  const values: MappedExtensionValue[] = [];
+  for (const entry of obj.fields) {
+    if (entry.kind !== 'attribute' && entry.kind !== 'capture') continue;
+    if (!Object.hasOwn(record.values, entry.source)) continue;
+    const field = entry.kind === 'attribute' ? entry.field : capturedKey(obj.source, entry.source);
+    const result = applyTransforms(
+      record.values[entry.source],
+      entry.kind === 'attribute' ? entry.transforms : undefined,
+    );
+    if (!result.ok) {
+      quality.push(result.code === 'invalid_boolean' ? 'invalid_number' : result.code);
+      continue;
+    }
+    if ('unknown' in result) continue;
+    values.push({ field, raw: result.value === undefined ? null : result.value });
+  }
+  const relationships: MappedCustomRelationship[] = [];
+  for (const rel of obj.relationships) {
+    if (!rel.target.startsWith('custom_relationship:') || !rel.object) continue;
+    if (!Object.hasOwn(record.values, rel.field)) continue;
+    const id = text(record.values[rel.field]);
+    if (id !== undefined && id.length > 255) {
+      quality.push('invalid_reference');
+      continue;
+    }
+    let role: string | undefined;
+    if (rel.role) {
+      const raw = text(record.values[rel.role.field]);
+      role = raw !== undefined ? rel.role.valueMap[raw] : undefined;
+    }
+    relationships.push({
+      key: rel.target.slice('custom_relationship:'.length),
+      to: id ? { system, objectType: rel.object, id } : null,
+      ...(role ? { role } : {}),
+    });
+  }
+  return { values, relationships };
+}
+
+export type CustomObjectMappingResult =
+  | { readonly outcome: 'skipped'; readonly code: 'missing_identity' }
+  | {
+      readonly outcome: 'ingest';
+      readonly objectKey: string;
+      readonly ref: ExternalRef;
+      readonly presence: 'present' | 'absent';
+      /** undefined = not mapped / not read; null = explicitly none. */
+      readonly parent?: ExternalRef | null;
+      readonly state?: 'active' | 'inactive' | 'retired';
+      readonly extensions: MappedExtensions;
+      readonly sourceUpdatedAt?: Date;
+      readonly quality: readonly QualityCode[];
+    };
+
+/** Maps one record of a `custom_object:<key>` object mapping (plan §5.2). */
+export function mapCustomObjectRecord(
+  obj: ObjectMapping,
+  record: SourceRecord,
+  system: ExternalSystem,
+  capturedKey: (object: string, field: string) => string,
+): CustomObjectMappingResult {
+  const id = text(record.values[obj.identity.field]) ?? text(record.id);
+  if (!id || id.length > 255) return { outcome: 'skipped', code: 'missing_identity' };
+  const objectKey = obj.entity.slice('custom_object:'.length);
+  const ref: ExternalRef = { system, objectType: obj.source, id };
+  const quality: QualityCode[] = [];
+  if (record.deleted) {
+    return {
+      outcome: 'ingest',
+      objectKey,
+      ref,
+      presence: 'absent',
+      extensions: { values: [], relationships: [] },
+      quality,
+    };
+  }
+  let parent: ExternalRef | null | undefined;
+  const p = obj.customObject?.parent;
+  if (p && Object.hasOwn(record.values, p.field)) {
+    const pid = text(record.values[p.field]);
+    if (pid !== undefined && pid.length > 255) quality.push('invalid_reference');
+    else parent = pid ? { system, objectType: p.object, id: pid } : null;
+  }
+  let state: 'active' | 'inactive' | 'retired' | undefined;
+  const s = obj.customObject?.recordState;
+  if (s) {
+    const raw = text(record.values[s.field]);
+    state = raw !== undefined ? s.valueMap[raw] : undefined;
+  }
+  return {
+    outcome: 'ingest',
+    objectKey,
+    ref,
+    presence: 'present',
+    ...(parent !== undefined ? { parent } : {}),
+    ...(state ? { state } : {}),
+    extensions: mapExtensionStatements(obj, record, system, quality, capturedKey),
+    ...(record.modifiedAt ? { sourceUpdatedAt: record.modifiedAt } : {}),
+    quality,
+  };
+}

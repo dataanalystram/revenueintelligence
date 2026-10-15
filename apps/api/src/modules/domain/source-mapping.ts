@@ -1,4 +1,13 @@
+import { EXTENSION_MIN_VERSION } from './canonical/extension';
 import { jsonbTextBytes } from './canonical/json-size';
+import { isSensitiveName } from './profiling/privacy';
+import {
+  isCustomObjectEntity,
+  isCustomRelationshipTarget,
+  usesExtensionKinds,
+  validateExtensionMapping,
+  type ExtensionMappingContext,
+} from './source-mapping-extension';
 import { compareCanonicalVersion } from './canonical/versions';
 import type { ConnectorKind } from './connector-kinds';
 import { isAuthoritative, type AuthorityDocument, type AuthorityFact } from './source-authority';
@@ -20,6 +29,7 @@ import {
   type ObjectMapping,
 } from './source-mapping-document';
 import {
+  profiledSensitivity,
   validateMappingProfiles,
   type Acknowledgement,
   type ProfileIssue,
@@ -31,6 +41,7 @@ import type { z } from 'zod';
 
 export * from './source-mapping-document';
 export * from './source-mapping-profiles';
+export * from './source-mapping-extension';
 
 /**
  * Versioned source mapping documents (ADR 0020): how one source connection's
@@ -193,6 +204,13 @@ export const MAPPING_ERROR_CODES = [
   'authority_conflict',
   'schema_snapshot_stale',
   'attribute_mappings_not_enabled',
+  // M10D (plan §5): extension entry kinds.
+  'extension_field_unknown',
+  'extension_target_mismatch',
+  'attribute_classification_below_profile',
+  'custom_object_owned_by_other_connection',
+  'capture_field_not_published',
+  'capture_sensitive_refused',
   'holding_filter_unconfirmed',
   'holding_filter_required',
   'holding_filter_not_allowed',
@@ -238,6 +256,12 @@ export interface MappingValidationContext {
    * Required: there is no publish path that skips the covering-profile rules.
    */
   readonly profiling: ProfilingValidationInput;
+  /**
+   * M10D: the 0.4 + module gate, the current published extension registry and
+   * the custom-object owners. Absent = extension entries are refused
+   * `attribute_mappings_not_enabled`.
+   */
+  readonly extension?: ExtensionMappingContext;
 }
 
 export type MappingValidation =
@@ -305,6 +329,14 @@ export function validateMapping(raw: unknown, ctx: MappingValidationContext): Ma
     if (!sourceObject) {
       err('unknown_source_object', `${at}.source`, `object ${obj.source} is not in the snapshot`);
     }
+    if (isCustomObjectEntity(obj.entity)) {
+      // M10D (plan §5.2): the extension rules are checked below.
+      if (sourceObject?.classification === 'internal_principal') {
+        err('invalid_entity', `${at}.entity`, `${obj.source} holds the source's internal users`);
+      }
+      if (sourceObject) validateCustomObject(obj, at);
+      return;
+    }
     if (!entity.success) {
       err('invalid_entity', `${at}.entity`, `${obj.entity} is not a mapping entity`);
       return;
@@ -356,6 +388,23 @@ export function validateMapping(raw: unknown, ctx: MappingValidationContext): Ma
     });
   }
 
+  // M10D (plan §5): extension entry kinds against the published extension registry.
+  for (const issue of validateExtensionMapping(
+    doc,
+    {
+      connectionId: ctx.connectionId,
+      connectionKind: ctx.kind,
+      schema: ctx.schema,
+      extension: ctx.extension,
+      profileSensitivity: (object, field) =>
+        profiledSensitivity(ctx.schema, ctx.profiling.profiles, object, field),
+      isSensitiveName,
+    },
+    (object, field) => findSourceField(ctx.schema, object, field),
+  )) {
+    err(issue.code, issue.path, issue.message);
+  }
+
   // Profile-aware checks (§7, §10.2) on the structurally valid document.
   const profiles = validateMappingProfiles(doc, ctx.schema, ctx.schemaHash, ctx.profiling);
   for (const issue of profiles.errors) errors.push(asMappingIssue(issue));
@@ -370,6 +419,50 @@ export function validateMapping(raw: unknown, ctx: MappingValidationContext): Ma
     coveringProfileIds: profiles.coveringProfileIds,
     acknowledgements: profiles.acknowledgements,
   };
+
+  /** M10D: identity and plain entries of a `custom_object:<key>` object (extension rules: above). */
+  function validateCustomObject(obj: ObjectMapping, at: string): void {
+    const idField = findSourceField(ctx.schema, obj.source, obj.identity.field);
+    if (!idField) {
+      err(
+        'identity_missing',
+        `${at}.identity.field`,
+        `${obj.source}.${obj.identity.field} is not in the snapshot`,
+      );
+    } else if (NAME_LIKE.test(idField.name)) {
+      err('identity_unsuitable', `${at}.identity.field`, 'a name-like field is not an identity');
+    } else if (!identitySuitable(idField) && !obj.identity.confirmation) {
+      err(
+        'identity_unsuitable',
+        `${at}.identity.field`,
+        'the identity field is neither an id nor unique, and is not confirmed',
+      );
+    }
+    obj.fields.forEach((entry, j) => {
+      const path = `${at}.fields.${j}`;
+      if (entry.kind === 'core') {
+        err('invalid_target', `${path}.target`, 'custom objects have no core targets');
+      } else if (
+        entry.kind === 'ignored' &&
+        !findSourceField(ctx.schema, obj.source, entry.source)
+      ) {
+        err(
+          'unknown_source_field',
+          `${path}.source`,
+          `${obj.source}.${entry.source} is not in the snapshot`,
+        );
+      }
+    });
+    obj.relationships.forEach((rel, j) => {
+      if (!isCustomRelationshipTarget(rel.target)) {
+        err(
+          'invalid_target',
+          `${at}.relationships.${j}.target`,
+          'custom objects carry custom relationships only',
+        );
+      }
+    });
+  }
 
   function validateObject(obj: ObjectMapping, entity: MappingEntity, at: string): void {
     // Identity: exactly one, unique or confirmed, never name-like.
@@ -404,6 +497,12 @@ export function validateMapping(raw: unknown, ctx: MappingValidationContext): Ma
     // Relationships.
     obj.relationships.forEach((rel, j) => {
       const path = `${at}.relationships.${j}`;
+      if (isCustomRelationshipTarget(rel.target)) {
+        // M10D: validated against the extension registry (validateExtensionMapping).
+        reviewed.add(rel.field);
+        if (rel.role) reviewed.add(rel.role.field);
+        return;
+      }
       const spec = targetSpec(rel.target);
       if (!spec || spec.kind !== 'relationship' || spec.entity !== entity) {
         err('invalid_target', `${path}.target`, `${rel.target} is not a ${entity} relationship`);
@@ -530,12 +629,9 @@ export function validateMapping(raw: unknown, ctx: MappingValidationContext): Ma
     // Field entries.
     obj.fields.forEach((entry, j) => {
       const path = `${at}.fields.${j}`;
-      if (entry.kind === 'attribute') {
-        err(
-          'attribute_mappings_not_enabled',
-          path,
-          'attribute mappings need the attribute registry',
-        );
+      if (entry.kind === 'attribute' || entry.kind === 'capture') {
+        // M10D: validated against the extension registry (validateExtensionMapping).
+        reviewed.add(entry.source);
         return;
       }
       if (entry.kind === 'ignored') {
@@ -825,7 +921,12 @@ export function mappedFields(obj: ObjectMapping): string[] {
   }
   for (const entry of obj.fields) {
     if (entry.kind === 'core' && 'source' in entry) fields.add(entry.source);
+    // M10D: attribute and capture entries read their source field.
+    if (entry.kind === 'attribute' || entry.kind === 'capture') fields.add(entry.source);
   }
+  for (const rel of obj.relationships) if (rel.role) fields.add(rel.role.field);
+  if (obj.customObject?.parent) fields.add(obj.customObject.parent.field);
+  if (obj.customObject?.recordState) fields.add(obj.customObject.recordState.field);
   return [...fields].sort();
 }
 
@@ -835,9 +936,12 @@ export function mappedFields(obj: ObjectMapping): string[] {
  * undefined (no requirement beyond the M8–M10B baseline).
  */
 export function mappingMinCanonicalVersion(doc: {
-  readonly objects: readonly Pick<ObjectMapping, 'relationships' | 'fields'>[];
+  readonly objects: readonly (Pick<ObjectMapping, 'relationships' | 'fields'> &
+    Partial<Pick<ObjectMapping, 'entity' | 'customObject'>>)[];
 }): string | undefined {
   let min: string | undefined;
+  // M10D (plan §5.5): any extension entry kind needs canonical 0.4.
+  if (usesExtensionKinds(doc)) min = EXTENSION_MIN_VERSION;
   for (const obj of doc.objects) {
     const targets = [
       ...obj.relationships.map((r) => r.target),
