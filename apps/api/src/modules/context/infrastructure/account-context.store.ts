@@ -372,7 +372,7 @@ export class AccountContextStore {
       where: {
         tenantId: tx.tenantId,
         companyId: { in: [...new Set(companyIds)] },
-        ...(scope ? { id: { in: [...new Set(scope)] } } : {}),
+        ...({}),
       },
       orderBy: [{ companyId: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
       select: CONTEXT_SELECT,
