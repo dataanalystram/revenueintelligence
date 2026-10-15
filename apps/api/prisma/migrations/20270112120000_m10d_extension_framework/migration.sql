@@ -193,7 +193,8 @@ ALTER TABLE "tenant_extension_values" ADD CONSTRAINT "tenant_extension_values_te
 ALTER TABLE "tenant_extension_values" ADD CONSTRAINT "tenant_extension_values_tenant_id_field_registry_kind_regi_fkey" FOREIGN KEY ("tenant_id", "field_registry_kind", "registry_version") REFERENCES "tenant_registry_versions"("tenant_id", "kind", "version") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
-ALTER TABLE "tenant_extension_values" ADD CONSTRAINT "tenant_extension_values_ref_id_fkey" FOREIGN KEY ("tenant_id", "value_ref_kind", "value_ref_id") REFERENCES "tenant_entity_index"("tenant_id", "kind", "entity_id") ON DELETE RESTRICT ON UPDATE RESTRICT;
+CREATE UNIQUE INDEX "mut_entity_index_kind_entity_id" ON "tenant_entity_index"("kind", "entity_id");
+ALTER TABLE "tenant_extension_values" ADD CONSTRAINT "tenant_extension_values_ref_id_fkey" FOREIGN KEY ("value_ref_kind", "value_ref_id") REFERENCES "tenant_entity_index"("kind", "entity_id") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
 ALTER TABLE "tenant_extension_values" ADD CONSTRAINT "tenant_extension_values_ref_key_fkey" FOREIGN KEY ("tenant_id", "value_ref_kind", "value_ref_key") REFERENCES "tenant_entity_index"("tenant_id", "kind", "entity_key") ON DELETE RESTRICT ON UPDATE RESTRICT;
