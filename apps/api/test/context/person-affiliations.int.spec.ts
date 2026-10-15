@@ -312,7 +312,7 @@ describe('M10C person–account affiliations', () => {
 
     it('late company: a stated person.affiliation is never replayed from its link, so an ended period never becomes active (review M3)', async () => {
       const t = await c.tenant('afflate', 1001);
-      const past = D('Tue 2026-06-30 1:00 AM IST (UTC+01:00)');
+      const past = D('2026-06-30T00:00:00Z');
       const person = (
         await observePerson(c, t, '9701', {
           affiliations: [
@@ -430,9 +430,7 @@ describe('M10C person–account affiliations', () => {
       const updated = (await affiliationsOf(c, t, person)).at(-1)!;
       expect(updated.role_codes).toEqual(['billing', 'sponsor']);
       // Omitted period flags keep the stored period (review m3).
-      expect(updated.starts_at!.getTime()).toBe(
-        D('Sun 2026-02-01 12:00 AM GMT (UTC+00:00)').getTime(),
-      );
+      expect(updated.starts_at!.getTime()).toBe(D('2026-02-01T00:00:00Z').getTime());
       expect(updated.ends_at).toBeNull();
       // End: operator, terminal; ending again is refused.
       await expect(end(t, added.affiliationId, D('2026-09-30T00:00:00Z'))).resolves.toMatchObject({
