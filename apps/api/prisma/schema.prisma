@@ -70,6 +70,9 @@ model Tenant {
   extensionValueItems  TenantExtensionValueItem[]
   customRecords        TenantCustomRecord[]
   customRelationships  TenantCustomRelationship[]
+  accountContexts      TenantAccountContext[]
+  contextPersons       TenantAccountContextPerson[]
+  contextProducts      TenantAccountContextProduct[]
 
   @@unique([id, slug])
   @@map("tenants")
@@ -277,9 +280,10 @@ model TenantProduct {
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  tenant        Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  subscriptions TenantSubscription[]
-  snapshots     TenantEligibilitySnapshot[]
+  tenant          Tenant                        @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  subscriptions   TenantSubscription[]
+  snapshots       TenantEligibilitySnapshot[]
+  contextProducts TenantAccountContextProduct[]
 
   @@id([tenantId, key])
   @@map("tenant_products")
@@ -330,16 +334,20 @@ model TenantSubscription {
   firstSeenAt      DateTime  @default(now()) @map("first_seen_at") @db.Timestamptz(3)
   lastSeenAt       DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(3)
   lastChangeId     String?   @map("last_change_id") @db.Uuid
+  /// M10E: the line's account context (0..1; same account, guard trigger; NULL = none)
+  contextId        String?   @map("context_id") @db.Uuid
 
-  tenant  Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  company Company       @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
-  product TenantProduct @relation(fields: [tenantId, productKey], references: [tenantId, key], onDelete: Restrict, onUpdate: Restrict)
-  source  ConnectorKind @relation(fields: [sourceSystem], references: [kind], onDelete: Restrict, onUpdate: Restrict)
+  tenant  Tenant                @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  company Company               @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  product TenantProduct         @relation(fields: [tenantId, productKey], references: [tenantId, key], onDelete: Restrict, onUpdate: Restrict)
+  source  ConnectorKind         @relation(fields: [sourceSystem], references: [kind], onDelete: Restrict, onUpdate: Restrict)
+  context TenantAccountContext? @relation(fields: [tenantId, contextId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
 
   @@id([tenantId, id])
   @@unique([tenantId, sourceSystem, sourceObjectType, sourceRecordId])
   @@index([tenantId, companyId])
   @@index([tenantId, productKey])
+  @@index([tenantId, contextId])
   @@map("tenant_subscriptions")
 }
 
@@ -413,6 +421,7 @@ model Company {
   externalRefs       CompanyExternalRef[]
   persons            Person[]
   ownershipGaps      TenantOwnershipGap[]
+  accountContexts    TenantAccountContext[]
 
   @@unique([tenantId, id])
   @@index([tenantId, name])
@@ -467,12 +476,13 @@ model Person {
   createdAt        DateTime @map("created_at") @db.Timestamptz(3)
   updatedAt        DateTime @map("updated_at") @db.Timestamptz(3)
 
-  tenant       Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  company      Company?                  @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
-  mergedInto   Person?                   @relation("PersonMergedInto", fields: [tenantId, mergedIntoId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
-  mergedFrom   Person[]                  @relation("PersonMergedInto")
-  externalRefs PersonExternalRef[]
-  affiliations TenantPersonAffiliation[]
+  tenant         Tenant                       @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  company        Company?                     @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  mergedInto     Person?                      @relation("PersonMergedInto", fields: [tenantId, mergedIntoId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  mergedFrom     Person[]                     @relation("PersonMergedInto")
+  externalRefs   PersonExternalRef[]
+  affiliations   TenantPersonAffiliation[]
+  contextMembers TenantAccountContextPerson[]
 
   @@unique([tenantId, id])
   @@index([tenantId, primaryEmail])
@@ -554,19 +564,21 @@ model TenantContextChange {
   /// M10A2: applied transforms as field:transform_id (names only)
   transforms         String[]
 
-  tenant              Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  canonical           CanonicalModelVersion?      @relation(fields: [canonicalVersion], references: [version], onDelete: Restrict, onUpdate: Restrict)
+  tenant              Tenant                       @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  canonical           CanonicalModelVersion?       @relation(fields: [canonicalVersion], references: [version], onDelete: Restrict, onUpdate: Restrict)
   valueHistory        TenantValueHistory[]
-  sourceReferences    TenantSourceReference[]     @relation("SourceReferenceLastChange")
-  evidenceCitations   TenantEvidenceLink[]        @relation("EvidenceLinkEvidenceChange")
-  evidenceLinkSets    TenantEvidenceLink[]        @relation("EvidenceLinkChange")
+  sourceReferences    TenantSourceReference[]      @relation("SourceReferenceLastChange")
+  evidenceCitations   TenantEvidenceLink[]         @relation("EvidenceLinkEvidenceChange")
+  evidenceLinkSets    TenantEvidenceLink[]         @relation("EvidenceLinkChange")
   personAffiliations  TenantPersonAffiliation[]
   extensionValues     TenantExtensionValue[]
   customRecords       TenantCustomRecord[]
   customRelationships TenantCustomRelationship[]
-  source              ConnectorKind               @relation(fields: [sourceSystem], references: [kind], onDelete: Restrict, onUpdate: Restrict)
-  connection          TenantSourceConnection?     @relation(fields: [tenantId, sourceConnectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
-  mapping             TenantSourceMappingVersion? @relation(fields: [tenantId, sourceConnectionId, mappingVersion], references: [tenantId, connectionId, version], onDelete: Restrict, onUpdate: Restrict)
+  accountContexts     TenantAccountContext[]
+  contextPersons      TenantAccountContextPerson[]
+  source              ConnectorKind                @relation(fields: [sourceSystem], references: [kind], onDelete: Restrict, onUpdate: Restrict)
+  connection          TenantSourceConnection?      @relation(fields: [tenantId, sourceConnectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  mapping             TenantSourceMappingVersion?  @relation(fields: [tenantId, sourceConnectionId, mappingVersion], references: [tenantId, connectionId, version], onDelete: Restrict, onUpdate: Restrict)
 
   @@id([tenantId, id])
   @@index([tenantId, entityKind, entityId, ingestedAt])
@@ -795,6 +807,7 @@ model TenantSourceConnection {
   authoritySubscriptionState TenantSourceAuthorityVersion[] @relation("AuthoritySubscriptionState")
   authoritySubscriptionTerms TenantSourceAuthorityVersion[] @relation("AuthoritySubscriptionTerms")
   authorityAccountHierarchy  TenantSourceAuthorityVersion[] @relation("AuthorityAccountHierarchy")
+  authorityAccountContext    TenantSourceAuthorityVersion[] @relation("AuthorityAccountContext")
   extensionValues            TenantExtensionValue[]
   customRelationships        TenantCustomRelationship[]
 
@@ -866,6 +879,8 @@ model TenantSourceAuthorityVersion {
   subscriptionTermsConnectionId String?  @map("subscription_terms_connection_id") @db.Uuid
   /// M10C: the connection that may write the account hierarchy (NULL = nobody)
   accountHierarchyConnectionId  String?  @map("account_hierarchy_connection_id") @db.Uuid
+  /// M10E: the connection that may write account contexts (NULL = nobody)
+  accountContextConnectionId    String?  @map("account_context_connection_id") @db.Uuid
   contentHash                   String   @map("content_hash")
   /// M9A: operator acceptances of adapter-declared stable_snapshot proofs (ADR 0023)
   proofAcceptances              Json     @default("[]") @map("proof_acceptances")
@@ -879,6 +894,7 @@ model TenantSourceAuthorityVersion {
   subscriptionState TenantSourceConnection?      @relation("AuthoritySubscriptionState", fields: [tenantId, subscriptionStateConnectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
   subscriptionTerms TenantSourceConnection?      @relation("AuthoritySubscriptionTerms", fields: [tenantId, subscriptionTermsConnectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
   accountHierarchy  TenantSourceConnection?      @relation("AuthorityAccountHierarchy", fields: [tenantId, accountHierarchyConnectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  accountContext    TenantSourceConnection?      @relation("AuthorityAccountContext", fields: [tenantId, accountContextConnectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
   mappingVersions   TenantSourceMappingVersion[]
 
   @@id([tenantId, version])
@@ -1236,6 +1252,8 @@ model TenantRegistryEntry {
   extensionValues     TenantExtensionValue[]
   customRecords       TenantCustomRecord[]
   customRelationships TenantCustomRelationship[]
+  /// M10E: account contexts reference their context type by (tenant, kind, id).
+  accountContexts     TenantAccountContext[]
 
   @@id([tenantId, id])
   @@unique([tenantId, kind, key])
@@ -1715,4 +1733,93 @@ model TenantCustomRelationship {
   @@index([tenantId, relDefId, fromKind, fromId, state])
   @@index([tenantId, relDefId, toKind, toId, state])
   @@map("tenant_custom_relationships")
+}
+
+/// M10E (ADR 0031): account contexts — a scoped view of one account (for example
+/// a product in a region) typed by a tenant-published `context_type` registry entry.
+/// Direct composite FK to the account (F2). Natural key (company, type, SHA-256 of
+/// the ordered dimension values) unique among active rows, enforced by the guard
+/// trigger (a partial unique index cannot be expressed in this schema without drift).
+/// Contexts change status or merge, never disappear (no DELETE grant).
+model TenantAccountContext {
+  tenantId                String    @map("tenant_id") @db.Uuid
+  id                      String    @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  companyId               String    @map("company_id") @db.Uuid
+  /// always 'context_type' (CHECK); part of the composite FK proving the entry kind
+  contextTypeRegistryKind String    @default("context_type") @map("context_type_registry_kind")
+  contextTypeId           String    @map("context_type_id") @db.Uuid
+  /// SHA-256 of the canonical JSON of the ordered dimension values (Q4)
+  naturalKeyHash          String    @map("natural_key_hash")
+  /// flat object of <= 6 scalar values, classified per row by the context type
+  dimensions              Json      @default("{}")
+  name                    String
+  /// active | inactive | retired
+  status                  String    @default("active")
+  /// opaque source owner id (Q12; never an email, never a person FK)
+  ownerRef                String?   @map("owner_ref")
+  renewalDate             DateTime? @map("renewal_date") @db.Date
+  /// active | merged (see merged_into_id)
+  recordState             String    @default("active") @map("record_state")
+  mergedIntoId            String?   @map("merged_into_id") @db.Uuid
+  lastChangeId            String?   @map("last_change_id") @db.Uuid
+  createdAt               DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt               DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  tenant        Tenant                        @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  company       Company                       @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  contextType   TenantRegistryEntry           @relation(fields: [tenantId, contextTypeRegistryKind, contextTypeId], references: [tenantId, kind, id], onDelete: Restrict, onUpdate: Restrict)
+  mergedInto    TenantAccountContext?         @relation("AccountContextMergedInto", fields: [tenantId, mergedIntoId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  mergedFrom    TenantAccountContext[]        @relation("AccountContextMergedInto")
+  lastChange    TenantContextChange?          @relation(fields: [tenantId, lastChangeId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  persons       TenantAccountContextPerson[]
+  products      TenantAccountContextProduct[]
+  subscriptions TenantSubscription[]
+
+  @@id([tenantId, id])
+  @@index([tenantId, companyId])
+  @@index([tenantId, contextTypeId])
+  @@index([tenantId, companyId, contextTypeId, naturalKeyHash])
+  @@map("tenant_account_contexts")
+}
+
+/// M10E: persons of an account context with a type-declared role code. Ended,
+/// never deleted (Q10); an affiliation with the context's account is not required (Q9).
+model TenantAccountContextPerson {
+  tenantId     String    @map("tenant_id") @db.Uuid
+  contextId    String    @map("context_id") @db.Uuid
+  personId     String    @map("person_id") @db.Uuid
+  roleCode     String    @map("role_code")
+  /// active | ended
+  status       String    @default("active")
+  startedAt    DateTime  @default(now()) @map("started_at") @db.Timestamptz(3)
+  endedAt      DateTime? @map("ended_at") @db.Timestamptz(3)
+  lastChangeId String?   @map("last_change_id") @db.Uuid
+
+  tenant     Tenant               @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  context    TenantAccountContext @relation(fields: [tenantId, contextId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  person     Person               @relation(fields: [tenantId, personId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  lastChange TenantContextChange? @relation(fields: [tenantId, lastChangeId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, contextId, personId, roleCode])
+  @@index([tenantId, personId])
+  @@map("tenant_account_context_persons")
+}
+
+/// M10E: products of an account context — from product dimensions or explicit
+/// (when the type allows, Q7). Kept for history after a product key retires.
+model TenantAccountContextProduct {
+  tenantId   String   @map("tenant_id") @db.Uuid
+  contextId  String   @map("context_id") @db.Uuid
+  productKey String   @map("product_key")
+  /// dimension | explicit
+  origin     String
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  tenant  Tenant               @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  context TenantAccountContext @relation(fields: [tenantId, contextId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  product TenantProduct        @relation(fields: [tenantId, productKey], references: [tenantId, key], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, contextId, productKey])
+  @@index([tenantId, productKey])
+  @@map("tenant_account_context_products")
 }

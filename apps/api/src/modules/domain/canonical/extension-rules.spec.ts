@@ -133,7 +133,8 @@ describe('extensionNarrowings (R-X5)', () => {
 
 describe('M10D integrity checks (plan §14)', () => {
   it('adds the eight extension checks after the M10C checks', () => {
-    expect(INTEGRITY_CHECKS.slice(-8)).toEqual([
+    // M10E appends five checks after the eight M10D ones.
+    expect(INTEGRITY_CHECKS.slice(-13, -5)).toEqual([
       'extension_value_type_mismatch',
       'extension_value_restricted',
       'extension_value_target_kind',

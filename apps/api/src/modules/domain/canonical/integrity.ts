@@ -36,6 +36,12 @@ export const INTEGRITY_CHECKS = [
   'custom_record_parent_missing',
   'custom_relationship_cardinality',
   'extension_history_parity',
+  // M10E plan §14 (ADR 0031)
+  'account_context_company_mismatch',
+  'account_context_natural_key_drift',
+  'account_context_type_mismatch',
+  'account_context_dangling_merge',
+  'account_context_member_role_unknown',
 ] as const;
 export type IntegrityCheck = (typeof INTEGRITY_CHECKS)[number];
 

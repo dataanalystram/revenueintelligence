@@ -12,6 +12,8 @@ export const ENTITY_INDEX_KINDS = [
   'person_affiliation',
   // M10D (0.4): records of custom objects (module `extension`, Q25).
   'custom_record',
+  // M10E (0.5): account contexts (module `account_context`; polymorphic targets, Q6).
+  'account_context',
 ] as const;
 
 /** The kinds published with canonical 0.1 / 0.2 (frozen: their catalogue hashes never change). */
@@ -23,6 +25,15 @@ export const ENTITY_INDEX_KINDS_0_3 = [
   'product',
   'subscription',
   'person_affiliation',
+] as const;
+/** The kinds published with canonical 0.4 (frozen for its catalogue hash). */
+export const ENTITY_INDEX_KINDS_0_4 = [
+  'company',
+  'person',
+  'product',
+  'subscription',
+  'person_affiliation',
+  'custom_record',
 ] as const;
 export type EntityIndexKind = (typeof ENTITY_INDEX_KINDS)[number];
 
@@ -36,6 +47,7 @@ export const ENTITY_INDEX_SOURCES: Readonly<
   subscription: { table: 'tenant_subscriptions', column: 'id' },
   person_affiliation: { table: 'tenant_person_affiliations', column: 'id' },
   custom_record: { table: 'tenant_custom_records', column: 'id' },
+  account_context: { table: 'tenant_account_contexts', column: 'id' },
 };
 
 /** The three triggers every indexed table carries (schema guard). */

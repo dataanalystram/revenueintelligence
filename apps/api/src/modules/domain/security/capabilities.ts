@@ -42,13 +42,15 @@ export const CAPABILITIES = [
   'data.account_structure.read',
   // M10D (policy v5)
   'data.extension.read',
+  // M10E (policy v6)
+  'data.account_context.read',
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
 /** Bumped whenever a grant changes; recorded on every audit event. */
-export const POLICY_VERSION = 5;
+export const POLICY_VERSION = 6;
 
-/** Policy v5 (M10A2 added seven capabilities, M10B two, M10C one, M10D one; M10C grants canonical.human_entry to operator, Q2): capability → actor kinds granted. `human_user` and `ai` hold nothing. */
+/** Policy v6 (M10A2 added seven capabilities, M10B two, M10C one, M10D one, M10E one; M10C grants canonical.human_entry to operator, Q2): capability → actor kinds granted. `human_user` and `ai` hold nothing. */
 export const POLICY: Readonly<Record<Capability, readonly ActorKind[]>> = {
   'canonical.source_sync': ['source_sync', 'system'],
   'canonical.import': ['operator'],
@@ -72,7 +74,8 @@ export const POLICY: Readonly<Record<Capability, readonly ActorKind[]>> = {
   'security.key.rotate': ['operator'],
   'security.audit.read': ['operator'],
   // M10C (Q2): honoured only by the M10C hierarchy / affiliation operator commands and,
-  // from M10D (Q17), the extension operator commands.
+  // from M10D (Q17), the extension operator commands and, from M10E (Q22), the
+  // account-context operator commands.
   'canonical.human_entry': ['operator'],
   'config.canonical.adopt': ['operator'],
   'config.module.change': ['operator'],
@@ -86,6 +89,8 @@ export const POLICY: Readonly<Record<Capability, readonly ActorKind[]>> = {
   'data.account_structure.read': ['operator'],
   // M10D (Q17, Q29): extension read models / CLI, one audit event per read.
   'data.extension.read': ['operator'],
+  // M10E (Q22, Q25): account-context read models / CLI, one audit event per read.
+  'data.account_context.read': ['operator'],
 };
 
 export type PolicyDecision =

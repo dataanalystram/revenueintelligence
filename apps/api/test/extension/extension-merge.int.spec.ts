@@ -200,6 +200,11 @@ describe('M10D extension merge participant (company and person ports)', () => {
     const t = await extensionTenant(c, 'xmergeg');
     const ids = await companies(c, t, ['5201', '5202']);
     await observe(t, 'company', ids['5201']!, { x_text: 'kept' });
+    // M10E: new tenants adopt 0.5; rollback goes one MINOR at a time (0.5 → 0.4 first).
+    await services(c).adoption.adopt(await authz(t, 'config.canonical.adopt'), {
+      target: '0.4',
+      expectedCurrent: '0.5',
+    });
     await services(c).adoption.adopt(await authz(t, 'config.canonical.adopt'), {
       target: '0.3',
       expectedCurrent: '0.4',

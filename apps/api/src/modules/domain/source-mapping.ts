@@ -1,4 +1,12 @@
 import { EXTENSION_MIN_VERSION } from './canonical/extension';
+import {
+  ACCOUNT_CONTEXT_MAPPING_MIN_VERSION,
+  accountContextFields,
+  isAccountContextEntity,
+  usesAccountContextMapping,
+  validateAccountContextMapping,
+  type AccountContextMappingContext,
+} from './source-mapping-account-context';
 import { jsonbTextBytes } from './canonical/json-size';
 import { isSensitiveName } from './profiling/privacy';
 import {
@@ -42,6 +50,7 @@ import type { z } from 'zod';
 export * from './source-mapping-document';
 export * from './source-mapping-profiles';
 export * from './source-mapping-extension';
+export * from './source-mapping-account-context';
 
 /**
  * Versioned source mapping documents (ADR 0020): how one source connection's
@@ -69,7 +78,7 @@ interface RelationshipTargetSpec {
   readonly entity: MappingEntity;
   readonly kind: 'relationship';
   readonly fact: AuthorityFact;
-  readonly to: 'account' | 'product';
+  readonly to: 'account' | 'product' | 'account_context';
   readonly required: boolean;
   /** M10C: mapping it needs a recorded confirmation (`account.parent`). */
   readonly consequential?: boolean;
@@ -154,6 +163,16 @@ export const MAPPING_TARGETS = {
     required: false,
     minCanonicalVersion: '0.3',
   },
+  // M10E (plan §5.2, canonical 0.5): the line's account context, a source id of
+  // an object mapped as `account_context`, written under the `account_context` authority.
+  'subscription.contextRef': {
+    entity: 'subscription',
+    kind: 'relationship',
+    fact: 'account_context',
+    to: 'account_context',
+    required: false,
+    minCanonicalVersion: '0.5',
+  },
 } as const satisfies Record<string, CoreTargetSpec | RelationshipTargetSpec>;
 
 function core(entity: MappingEntity, valueType: ValueType, fact: AuthorityFact): CoreTargetSpec {
@@ -231,6 +250,12 @@ export const MAPPING_ERROR_CODES = [
   'override_requires_authenticated_operator',
   'override_out_of_scope',
   'override_reason_invalid',
+  // M10E (plan §5): account-context statements.
+  'account_context_mappings_not_enabled',
+  'context_type_unknown',
+  'context_dimension_unknown',
+  'context_dimension_required',
+  'context_role_unknown',
 ] as const;
 export type MappingErrorCode = (typeof MAPPING_ERROR_CODES)[number];
 export type MappingWarningCode =
@@ -262,6 +287,11 @@ export interface MappingValidationContext {
    * `attribute_mappings_not_enabled`.
    */
   readonly extension?: ExtensionMappingContext;
+  /**
+   * M10E: the 0.5 + module gate and the published context types. Absent =
+   * account-context statements are refused `account_context_mappings_not_enabled`.
+   */
+  readonly accountContext?: AccountContextMappingContext;
 }
 
 export type MappingValidation =
@@ -337,6 +367,13 @@ export function validateMapping(raw: unknown, ctx: MappingValidationContext): Ma
       if (sourceObject) validateCustomObject(obj, at);
       return;
     }
+    if (isAccountContextEntity(obj.entity)) {
+      // M10E (plan §5.1): the account-context rules are checked below.
+      if (sourceObject?.classification === 'internal_principal') {
+        err('invalid_entity', `${at}.entity`, `${obj.source} holds the source's internal users`);
+      }
+      return;
+    }
     if (!entity.success) {
       err('invalid_entity', `${at}.entity`, `${obj.entity} is not a mapping entity`);
       return;
@@ -402,6 +439,16 @@ export function validateMapping(raw: unknown, ctx: MappingValidationContext): Ma
     },
     (object, field) => findSourceField(ctx.schema, object, field),
   )) {
+    err(issue.code, issue.path, issue.message);
+  }
+
+  // M10E (plan §5): account-context objects and the line's context reference.
+  for (const issue of validateAccountContextMapping(doc, {
+    connectionId: ctx.connectionId,
+    schema: ctx.schema,
+    authority: ctx.authority,
+    ...(ctx.accountContext ? { accountContext: ctx.accountContext } : {}),
+  })) {
     err(issue.code, issue.path, issue.message);
   }
 
@@ -927,6 +974,8 @@ export function mappedFields(obj: ObjectMapping): string[] {
   for (const rel of obj.relationships) if (rel.role) fields.add(rel.role.field);
   if (obj.customObject?.parent) fields.add(obj.customObject.parent.field);
   if (obj.customObject?.recordState) fields.add(obj.customObject.recordState.field);
+  // M10E: the account-context statements read their source fields.
+  for (const f of accountContextFields(obj)) fields.add(f);
   return [...fields].sort();
 }
 
@@ -937,11 +986,13 @@ export function mappedFields(obj: ObjectMapping): string[] {
  */
 export function mappingMinCanonicalVersion(doc: {
   readonly objects: readonly (Pick<ObjectMapping, 'relationships' | 'fields'> &
-    Partial<Pick<ObjectMapping, 'entity' | 'customObject'>>)[];
+    Partial<Pick<ObjectMapping, 'entity' | 'customObject' | 'accountContext'>>)[];
 }): string | undefined {
   let min: string | undefined;
   // M10D (plan §5.5): any extension entry kind needs canonical 0.4.
   if (usesExtensionKinds(doc)) min = EXTENSION_MIN_VERSION;
+  // M10E (plan §5): account-context statements need canonical 0.5.
+  if (usesAccountContextMapping(doc)) min = ACCOUNT_CONTEXT_MAPPING_MIN_VERSION;
   for (const obj of doc.objects) {
     const targets = [
       ...obj.relationships.map((r) => r.target),

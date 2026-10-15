@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import {
+  ACCOUNT_CONTEXT_MIN_VERSION,
   ACCOUNT_STRUCTURE_MIN_VERSION,
   AUTHORITY_FACTS,
   compareCanonicalVersion,
@@ -136,6 +137,17 @@ export class SourceAuthorityService {
             code: 'canonical_version_too_low',
             path: 'facts.account_hierarchy',
             message: `account_hierarchy needs canonical ${ACCOUNT_STRUCTURE_MIN_VERSION} (adopted ${adopted})`,
+          });
+        }
+      }
+      // M10E (Q16): only a tenant at canonical >= 0.5 can name an account-context authority.
+      if (doc.facts.account_context) {
+        const adopted = await adoptedCanonicalVersion(tx);
+        if (compareCanonicalVersion(adopted, ACCOUNT_CONTEXT_MIN_VERSION) < 0) {
+          issues.push({
+            code: 'canonical_version_too_low',
+            path: 'facts.account_context',
+            message: `account_context needs canonical ${ACCOUNT_CONTEXT_MIN_VERSION} (adopted ${adopted})`,
           });
         }
       }

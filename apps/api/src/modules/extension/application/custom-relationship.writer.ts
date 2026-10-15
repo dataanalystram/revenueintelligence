@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
-import { extensionTargetKind, type ExtensionTargetKind } from '../../domain';
+import {
+  ACCOUNT_CONTEXT_MIN_VERSION,
+  ACCOUNT_CONTEXT_MODULE_KEY,
+  extensionTargetKind,
+  type ExtensionTargetKind,
+} from '../../domain';
 import { GovernanceError, ModuleGate } from '../../governance';
 import {
   assertAuthorized,
@@ -133,6 +138,9 @@ export class CustomRelationshipWriter {
     const check = checkDefinition(def);
     if (!check.ok) return { status: 'rejected', reason: check.reason };
     const entry = check.entry;
+    // M10E (Q19, review M2): an account_context end needs 0.5 + module account_context.
+    const endGate = await this.endsGate(tx, declaredEndKinds(entry));
+    if (endGate !== 'ok') return { status: endGate };
     const from = await this.store.resolveLineage(tx, input.from);
     if (!(await this.endOk(tx, entry, 'from', from))) {
       return { status: 'rejected', reason: 'endpoint_not_allowed' };
@@ -219,6 +227,34 @@ export class CustomRelationshipWriter {
     return role !== undefined && role === declared ? role : (declared ?? null);
   }
 
+  /** M10E (Q19, review M2): the account_context gate over the ends' kinds (no audit). */
+  private async endsGate(
+    tx: TenantTransaction,
+    kinds: readonly (string | undefined)[],
+  ): Promise<'ok' | 'canonical_version_too_low' | 'module_disabled'> {
+    if (!kinds.includes('account_context')) return 'ok';
+    const state = await this.store.targetGate(tx, { kind: 'account_context', id: '' });
+    return state === 'canonical_version_too_low' || state === 'module_disabled' ? state : 'ok';
+  }
+
+  /** Operator form: refused with the canonical codes; module_disabled audited by the module gate. */
+  private async requireEndsGate(
+    tx: TenantTransaction,
+    actx: AuthorizedContext,
+    kinds: readonly (string | undefined)[],
+  ): Promise<void> {
+    const state = await this.endsGate(tx, kinds);
+    if (state === 'canonical_version_too_low') {
+      throw new GovernanceError(
+        'canonical_version_too_low',
+        `Relationships with an account context end need canonical ${ACCOUNT_CONTEXT_MIN_VERSION}`,
+      );
+    }
+    if (state === 'module_disabled') {
+      await this.moduleGate.require(tx, actx, ACCOUNT_CONTEXT_MODULE_KEY);
+    }
+  }
+
   private async resolveEndpoint(
     tx: TenantTransaction,
     end: ObservedEndpoint,
@@ -290,6 +326,7 @@ export class CustomRelationshipWriter {
         );
       }
       const entry = check.entry;
+      await this.requireEndsGate(tx, actx, declaredEndKinds(entry));
       const from = fromIn;
       if (
         !(await this.endOk(tx, entry, 'from', from)) ||
@@ -379,6 +416,7 @@ export class CustomRelationshipWriter {
       await requireExtension(tx, actx, this.store, this.moduleGate);
       const edge = await this.store.relationship(tx, id);
       if (!edge) throw new GovernanceError('validation_failed', 'No such custom relationship edge');
+      await this.requireEndsGate(tx, actx, [edge.fromKind, edge.toKind]);
       const key = (await this.store.registry(tx)).byId.get(edge.relDefId)?.key ?? '';
       const from: ExtensionTarget = {
         kind: edge.fromKind as ExtensionTargetKind,
@@ -415,4 +453,12 @@ function checkDefinition(
     return { ok: false, reason: 'relationship_unknown' };
   if (def.status !== 'active') return { ok: false, reason: 'relationship_retired' };
   return { ok: true, entry: def };
+}
+
+/** The entity-index kinds of the definition's declared `from` / `to`. */
+function declaredEndKinds(entry: ExtensionEntry): (string | undefined)[] {
+  return (['from', 'to'] as const).map((w) => {
+    const raw = entry.definition[w];
+    return typeof raw === 'string' ? extensionTargetKind(raw) : undefined;
+  });
 }

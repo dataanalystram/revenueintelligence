@@ -165,6 +165,57 @@ export const HoldingFilterSchema = z.strictObject({
 });
 export type HoldingFilter = z.infer<typeof HoldingFilterSchema>;
 
+const ContextKey = z.string().regex(/^[a-z][a-z0-9_]{0,62}$/);
+const ContextCode = z.string().regex(/^[a-z0-9_]{1,64}$/);
+const SourceValue = z.string().min(1).max(200);
+
+/**
+ * M10E (plan §5.1, ADR 0031): the statements of an object mapped as entity
+ * `account_context`. Each key is one target of the plan's catalogue:
+ * `account_context.account` (`account`), `.type` (`type`, a constant context
+ * type key per object), `.name`, `.status` (value map), `.ownerRef`,
+ * `.renewalDate`, `.dimension.<key>` (`dimensions`) and
+ * `account_context.person` (`persons`, role constant or value map). Closed
+ * transforms only: value maps, no expressions.
+ */
+export const AccountContextMappingSchema = z.strictObject({
+  type: ContextKey,
+  account: z.strictObject({ field: ApiName, object: ApiName }),
+  name: z.strictObject({ field: ApiName }).optional(),
+  status: z
+    .strictObject({
+      field: ApiName,
+      valueMap: z.record(SourceValue, z.enum(['active', 'inactive', 'retired'])),
+    })
+    .optional(),
+  ownerRef: z.strictObject({ field: ApiName }).optional(),
+  renewalDate: z.strictObject({ field: ApiName }).optional(),
+  dimensions: z
+    .array(
+      z.strictObject({
+        key: ContextKey,
+        field: ApiName,
+        valueMap: z.record(SourceValue, SourceValue).optional(),
+      }),
+    )
+    .max(6)
+    .optional(),
+  persons: z
+    .array(
+      z.strictObject({
+        field: ApiName,
+        object: ApiName,
+        role: z.union([
+          z.strictObject({ constant: ContextCode }),
+          z.strictObject({ field: ApiName, valueMap: z.record(SourceValue, ContextCode) }),
+        ]),
+      }),
+    )
+    .max(5)
+    .optional(),
+});
+export type AccountContextMapping = z.infer<typeof AccountContextMappingSchema>;
+
 export const ObjectMappingSchema = z.strictObject({
   source: ApiName,
   entity: z.string().max(50),
@@ -191,6 +242,8 @@ export const ObjectMappingSchema = z.strictObject({
         .optional(),
     })
     .optional(),
+  /** M10E (entity `account_context` only, plan §5.1): the context statements. */
+  accountContext: AccountContextMappingSchema.optional(),
 });
 export type ObjectMapping = z.infer<typeof ObjectMappingSchema>;
 

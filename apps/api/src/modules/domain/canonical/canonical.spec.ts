@@ -99,18 +99,19 @@ describe('V1: canonical versions', () => {
     );
   });
 
-  it('the catalogue holds exactly one current version, 0.4 (ADR 0030), 0.1–0.3 supported (ADR 0027–0029), and nothing at 1.0 or above', () => {
-    expect(currentCanonicalVersion()).toBe('0.4');
+  it('the catalogue holds exactly one current version, 0.5 (ADR 0031), 0.1–0.4 supported (ADR 0027–0030), and nothing at 1.0 or above', () => {
+    expect(currentCanonicalVersion()).toBe('0.5');
     expect(CANONICAL_VERSIONS).toEqual([
       { version: '0.1', status: 'supported', adr: '0027' },
       { version: '0.2', status: 'supported', adr: '0028' },
       { version: '0.3', status: 'supported', adr: '0029' },
-      { version: '0.4', status: 'current', adr: '0030' },
+      { version: '0.4', status: 'supported', adr: '0030' },
+      { version: '0.5', status: 'current', adr: '0031' },
     ]);
     for (const v of CANONICAL_VERSIONS) expect(parseCanonicalVersion(v.version).major).toBe(0);
   });
 
-  it('M10B Q19 / M10C / M10D: the stored 0.1–0.3 catalogue hashes are reproduced unchanged; 0.4 hashes the new members', () => {
+  it('M10B Q19 / M10C / M10D / M10E: the stored 0.1–0.4 catalogue hashes are reproduced unchanged; 0.5 hashes the new members', () => {
     expect(canonicalCatalogueHash(canonicalCatalogueFor('0.1'))).toBe(
       '2fd4f7e575633de7cac4aea394a71c73adc9b73e5e18b67c0b0ee404572faf5b',
     );
@@ -137,7 +138,31 @@ describe('V1: canonical versions', () => {
       'custom_relationship',
       'capture',
     ]);
-    expect(() => canonicalCatalogueFor('0.5')).toThrow(/no catalogue/);
+    // M10E (ADR 0031, V1 / V2): 0.4 reads frozen _0_4 lists; 0.5 pinned in migration
+    // 20270119120000_m10e_account_context.
+    expect(canonicalCatalogueHash(canonicalCatalogueFor('0.5'))).toBe(
+      'bfc152541c0788a1532d400e1dd0d23c450f228fa7509e5108966dee9e2b46e2',
+    );
+    const c04 = canonicalCatalogueFor('0.4');
+    const c05 = canonicalCatalogueFor('0.5');
+    expect(c04.entityKinds).not.toContain('account_context');
+    expect(c04.changeEntityKinds).not.toContain('account_context');
+    expect(c04.changeEntityKinds).not.toContain('account_context_person');
+    expect(c04.genericReferenceKinds).not.toContain('account_context');
+    expect(c04.extensionTargets).not.toContain('account_context');
+    expect(c04.authorityFacts).not.toContain('account_context');
+    expect(c04.mappingEntities).toBeUndefined();
+    expect(c04.registryKinds).toBeUndefined();
+    expect(c05.entityKinds).toContain('account_context');
+    expect(c05.changeEntityKinds).toEqual(
+      expect.arrayContaining(['account_context', 'account_context_person']),
+    );
+    expect(c05.genericReferenceKinds).toContain('account_context');
+    expect(c05.extensionTargets).toContain('account_context');
+    expect(c05.authorityFacts).toEqual([...(c04.authorityFacts ?? []), 'account_context']);
+    expect(c05.mappingEntities).toEqual(['account', 'person', 'subscription', 'account_context']);
+    expect(c05.registryKinds).toEqual(['data_policy', 'extension', 'context_type']);
+    expect(() => canonicalCatalogueFor('0.6')).toThrow(/no catalogue/);
   });
 });
 
@@ -189,7 +214,7 @@ describe('module rules (M10 §17)', () => {
     configChanged: false,
   };
 
-  it('the code catalogue has the nine keys, all unavailable except extension (M10D: at 0.4), dependencies inside the catalogue', () => {
+  it('the code catalogue has the nine keys, all unavailable except extension (M10D: at 0.4) and account_context (M10E: at 0.5), dependencies inside the catalogue', () => {
     expect(CANONICAL_MODULES.map((m) => m.key)).toEqual([...MODULE_KEYS]);
     expect(CANONICAL_MODULES.find((m) => m.key === 'extension')).toMatchObject({
       available: true,
@@ -197,10 +222,16 @@ describe('module rules (M10 §17)', () => {
       dependsOn: [],
       entityKinds: ['custom_record'],
     });
+    expect(CANONICAL_MODULES.find((m) => m.key === 'account_context')).toMatchObject({
+      available: true,
+      minimumCanonicalVersion: '0.5',
+      dependsOn: [],
+      entityKinds: ['account_context'],
+    });
     for (const m of CANONICAL_MODULES) {
       for (const d of m.dependsOn) expect(MODULE_KEYS).toContain(d);
       expect(m.dependsOn).not.toContain(m.key);
-      if (m.key === 'extension') continue;
+      if (m.key === 'extension' || m.key === 'account_context') continue;
       expect(m.available).toBe(false);
       expect(m.minimumCanonicalVersion).toBeNull();
       for (const d of m.dependsOn) expect(MODULE_KEYS).toContain(d);
@@ -281,7 +312,8 @@ describe('V8: registry rules (R-K, R-X1, R-X3, R-X4)', () => {
       'extension',
     ]);
     // M10D: extension has a document schema (plan §2.1).
-    expect(AVAILABLE_REGISTRY_KINDS).toEqual(['data_policy', 'extension']);
+    // M10E: context_type has a document schema (plan §2.1).
+    expect(AVAILABLE_REGISTRY_KINDS).toEqual(['data_policy', 'extension', 'context_type']);
   });
 
   it('R-X1: a key never disappears', () => {
@@ -441,7 +473,7 @@ describe('value history decision (restricted history, control 12)', () => {
     ...over,
   });
 
-  it('the field catalogue is the six M10A2 fields (Q14, without company.customer_status) plus the M10C fields, none of them a person field', () => {
+  it('the field catalogue is the six M10A2 fields (Q14, without company.customer_status) plus the M10C and M10E fields, none of them a person field', () => {
     expect(valueHistoryPairs().map((p) => `${p.entityKind}.${p.field}`)).toEqual([
       'company.name',
       // M10C: parent_account_id (full) and the affiliation fields (value-free, Q15).
@@ -455,6 +487,10 @@ describe('value history decision (restricted history, control 12)', () => {
       'subscription.ends_at',
       'subscription.product_key',
       'subscription.quantity',
+      // M10E (Q23, M10 §10): the line's context, a context's owner and status.
+      'subscription.context_id',
+      'account_context.owner_ref',
+      'account_context.status',
     ]);
   });
 
@@ -528,7 +564,12 @@ describe('entity index, change records, lifecycle and integrity vocabulary', () 
       'subscription',
       'person_affiliation',
       'custom_record',
+      'account_context',
     ]);
+    expect(ENTITY_INDEX_SOURCES.account_context).toEqual({
+      table: 'tenant_account_contexts',
+      column: 'id',
+    });
     expect(ENTITY_INDEX_SOURCES.custom_record).toEqual({
       table: 'tenant_custom_records',
       column: 'id',

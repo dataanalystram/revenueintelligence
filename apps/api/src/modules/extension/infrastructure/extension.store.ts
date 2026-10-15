@@ -2,6 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '../../../generated/prisma/client';
 import {
+  ACCOUNT_CONTEXT_MIN_VERSION,
+  ACCOUNT_CONTEXT_MODULE_KEY,
   compareCanonicalVersion,
   EXTENSION_MIN_VERSION,
   EXTENSION_MODULE_KEY,
@@ -236,6 +238,8 @@ const ENTITY_TABLE: Readonly<Record<Exclude<ExtensionTargetKind, 'product'>, str
   subscription: 'tenant_subscriptions',
   person_affiliation: 'tenant_person_affiliations',
   custom_record: 'tenant_custom_records',
+  // M10E (Q19): account contexts carry record_state / merged_into_id like custom records.
+  account_context: 'tenant_account_contexts',
 };
 
 @Injectable()
@@ -250,6 +254,25 @@ export class ExtensionStore {
     }
     const setting = await tenantClient(tx).tenantModuleSetting.findUnique({
       where: { tenantId_moduleKey: { tenantId: tx.tenantId, moduleKey: EXTENSION_MODULE_KEY } },
+      select: { enabled: true },
+    });
+    return setting?.enabled ? 'ok' : 'module_disabled';
+  }
+
+  /**
+   * M10E (Q19): an `account_context` target additionally needs adopted ≥ 0.5
+   * and module `account_context` enabled; other targets pass.
+   */
+  async targetGate(tx: TenantTransaction, target: ExtensionTarget): Promise<ExtensionGateState> {
+    if (target.kind !== 'account_context') return 'ok';
+    const adopted = await adoptedCanonicalVersion(tx);
+    if (compareCanonicalVersion(adopted, ACCOUNT_CONTEXT_MIN_VERSION) < 0) {
+      return 'canonical_version_too_low';
+    }
+    const setting = await tenantClient(tx).tenantModuleSetting.findUnique({
+      where: {
+        tenantId_moduleKey: { tenantId: tx.tenantId, moduleKey: ACCOUNT_CONTEXT_MODULE_KEY },
+      },
       select: { enabled: true },
     });
     return setting?.enabled ? 'ok' : 'module_disabled';

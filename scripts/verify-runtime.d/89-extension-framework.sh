@@ -51,10 +51,10 @@ ex_setup() {
   ex_sql "INSERT INTO companies (id, tenant_id, name, created_at, updated_at) VALUES
             ('$EX_C1', '$tid', 'Runtime Extension School', now(), now()),
             ('$EX_C2', '$tid', 'Runtime Extension Trust', now(), now());" >/dev/null || return 1
-  [ "$(ex_sql "SELECT string_agg(version || ':' || reason, ',' ORDER BY seq) FROM tenant_canonical_adoptions WHERE tenant_id = '$tid'")" = "0.4:new_tenant" ] || return 1
+  [ "$(ex_sql "SELECT string_agg(version || ':' || reason, ',' ORDER BY seq) FROM tenant_canonical_adoptions WHERE tenant_id = '$tid'")" = "0.5:new_tenant" ] || return 1
   [ "$(ex_count tenant_module_settings "module_key = 'extension' AND enabled")" = 0 ]
 }
-check "a new tenant is at canonical 0.4 (new_tenant) with module extension disabled" ex_setup
+check "a new tenant is at canonical 0.5 (new_tenant, M10E) with module extension disabled" ex_setup
 
 ex_registry() {
   local code=0 hash
@@ -85,7 +85,7 @@ ex_registry() {
   [ "${#hash}" -eq 64 ] && [ "$(ex_count tenant_registry_versions "kind = 'extension'")" = 0 ] || return 1
   ex_cli canonical registry-publish --tenant "$EX_TENANT" --kind extension --file "$EX_IN/registry.json" \
     --based-on 0 --expected-hash "$hash" --actor "$EX_ACTOR" --execute >"$EX_OUT/registry-pub.json" || return 1
-  [ "$(ex_json "$EX_OUT/registry-pub.json" 'r.published.version + ":" + r.published.entries + ":" + r.published.canonicalVersionMin')" = "1:5:0.4" ] || return 1
+  [ "$(ex_json "$EX_OUT/registry-pub.json" 'r.published.version + ":" + r.published.entries + ":" + r.published.canonicalVersionMin')" = "1:5:0.5" ] || return 1
   ex_ext registry show >"$EX_OUT/registry-show.json" || return 1
   [ "$(ex_json "$EX_OUT/registry-show.json" 'r.registry.entries.map((e) => e.key).sort().join(",")')" = "note,site,site_account,site_code,tier" ] || return 1
   [ "$(ex_count tenant_registry_entries "kind = 'extension' AND sensitivity IS NOT NULL")" = 5 ]
@@ -181,6 +181,8 @@ check "the app role cannot delete values / records / edges, break the typed CHEC
 
 ex_rollback() {
   local code=0
+  # M10E: a new tenant is at 0.5; step back to 0.4 first (nothing of M10E is enabled).
+  ex_cli canonical adopt --tenant "$EX_TENANT" --version 0.4 --expected-current 0.5 --actor "$EX_ACTOR" --execute >"$EX_OUT/adopt-04-from-05.json" || return 1
   ex_cli canonical adopt --tenant "$EX_TENANT" --version 0.3 --expected-current 0.4 >"$EX_OUT/adopt-03-dry.json" || return 1
   [ "$(ex_json "$EX_OUT/adopt-03-dry.json" 'r.modulesStranded.join(",")')" = extension ] || return 1
   ex_cli canonical adopt --tenant "$EX_TENANT" --version 0.3 --expected-current 0.4 --actor "$EX_ACTOR" --execute >"$EX_OUT/adopt-03.json" || return 1

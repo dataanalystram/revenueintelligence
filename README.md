@@ -16,16 +16,17 @@ See [docs/architecture.md](docs/architecture.md) for the design and
 
 ## Status
 
-| Milestone                                             | State                                                                                                                                                                                                       |
-| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| M0 — Repository / infrastructure foundation           | ✅ Approved — [record](docs/milestones/M00-foundation.md)                                                                                                                                                   |
-| M1 — Canonical domain model                           | ✅ Approved — [record](docs/milestones/M01-canonical-domain-model.md)                                                                                                                                       |
-| M2 — Tenants and data isolation                       | ✅ Approved — [record](docs/milestones/M02-tenancy-data-isolation.md)                                                                                                                                       |
-| M3 — HubSpot developer environment / read connector   | ✅ Complete incl. live validation, awaiting review — [record](docs/milestones/M03-hubspot-test-environment.md)                                                                                              |
-| M10A2 — Canonical versioning & governance             | ✅ Merged into `integration` (PR #2) — [record](docs/milestones/M10A2-canonical-versioning-governance.md)                                                                                                   |
-| M10B — Generic SourceReference + EvidenceLink         | ✅ Merged into `integration` (PR #5, `e23dfd4`, canonical `0.2`) — [record](docs/milestones/M10B-source-reference-evidence-link.md)                                                                         |
-| M10C — Account hierarchy + Person–Account affiliation | ✅ Merged into `integration` (PR #32, `ce9b052`, canonical `0.3`) — [record](docs/milestones/M10C-account-hierarchy-affiliation.md)                                                                         |
-| M10D — Extension framework foundation                 | 🔍 Implementation in review (PR #60 → `integration`, canonical `0.4`, module `extension`) — [record](docs/milestones/M10D-extension-framework.md), [plan](docs/milestones/M10D-extension-framework-plan.md) |
+| Milestone                                             | State                                                                                                                                                                                      |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| M0 — Repository / infrastructure foundation           | ✅ Approved — [record](docs/milestones/M00-foundation.md)                                                                                                                                  |
+| M1 — Canonical domain model                           | ✅ Approved — [record](docs/milestones/M01-canonical-domain-model.md)                                                                                                                      |
+| M2 — Tenants and data isolation                       | ✅ Approved — [record](docs/milestones/M02-tenancy-data-isolation.md)                                                                                                                      |
+| M3 — HubSpot developer environment / read connector   | ✅ Complete incl. live validation, awaiting review — [record](docs/milestones/M03-hubspot-test-environment.md)                                                                             |
+| M10A2 — Canonical versioning & governance             | ✅ Merged into `integration` (PR #2) — [record](docs/milestones/M10A2-canonical-versioning-governance.md)                                                                                  |
+| M10B — Generic SourceReference + EvidenceLink         | ✅ Merged into `integration` (PR #5, `e23dfd4`, canonical `0.2`) — [record](docs/milestones/M10B-source-reference-evidence-link.md)                                                        |
+| M10C — Account hierarchy + Person–Account affiliation | ✅ Merged into `integration` (PR #32, `ce9b052`, canonical `0.3`) — [record](docs/milestones/M10C-account-hierarchy-affiliation.md)                                                        |
+| M10D — Extension framework foundation                 | ✅ Merged into `integration` (PR #60, `c6fd540`, canonical `0.4`) — [record](docs/milestones/M10D-extension-framework.md)                                                                  |
+| M10E — AccountContext                                 | ✅ Merged into `integration` (PR #93, canonical `0.5`, module `account_context`) — [record](docs/milestones/M10E-account-context.md), [plan](docs/milestones/M10E-account-context-plan.md) |
 
 ## Stack
 

@@ -128,7 +128,11 @@ const FACT_COLUMNS = {
   subscription_terms: 'subscriptionTermsConnectionId',
   // M10C: optional fact; omitted from the read document while unassigned.
   account_hierarchy: 'accountHierarchyConnectionId',
+  // M10E: optional fact; omitted from the read document while unassigned.
+  account_context: 'accountContextConnectionId',
 } as const;
+/** Facts added after ADR 0020: omitted from the read document while unassigned (hash unchanged). */
+const OPTIONAL_FACT_COLUMNS: readonly string[] = ['account_hierarchy', 'account_context'];
 
 /** One active source run per connection (full and incremental exclude each other). */
 export const sourceRunActiveKey = (connectionId: string) => `source:${connectionId}`;
@@ -432,6 +436,7 @@ export class SourcesRepository {
           subscriptionStateConnectionId: facts.subscription_state,
           subscriptionTermsConnectionId: facts.subscription_terms,
           accountHierarchyConnectionId: facts.account_hierarchy ?? null,
+          accountContextConnectionId: facts.account_context ?? null,
           contentHash: input.contentHash,
           publishedBy: input.publishedBy,
           proofAcceptances: input.proofAcceptances ?? [],
@@ -704,6 +709,7 @@ function toAuthority(row: {
   subscriptionStateConnectionId: string | null;
   subscriptionTermsConnectionId: string | null;
   accountHierarchyConnectionId?: string | null;
+  accountContextConnectionId?: string | null;
   contentHash: string;
   publishedBy: string;
   publishedAt: Date;
@@ -712,7 +718,7 @@ function toAuthority(row: {
   const facts = Object.fromEntries(
     Object.entries(FACT_COLUMNS).flatMap(([fact, column]) => {
       const id = row[column] ?? null;
-      return id === null && fact === 'account_hierarchy' ? [] : [[fact, id]];
+      return id === null && OPTIONAL_FACT_COLUMNS.includes(fact) ? [] : [[fact, id]];
     }),
   );
   return {

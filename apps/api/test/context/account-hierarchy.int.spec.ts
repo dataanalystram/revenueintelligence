@@ -501,6 +501,11 @@ describe('M10C account hierarchy', () => {
 
     it('below canonical 0.3 a stated parent is not written (disabled), and no issue is recorded', async () => {
       const t = await c.tenant('hsrc02', 1001);
+      // M10E: new tenants adopt 0.5; rollback goes one MINOR at a time (0.5 → 0.4 first).
+      await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
+        target: '0.4',
+        expectedCurrent: '0.5',
+      });
       // M10D: new tenants adopt 0.4; rollback goes one MINOR at a time (0.4 → 0.3 first).
       await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
         target: '0.3',
@@ -714,7 +719,7 @@ describe('M10C account hierarchy', () => {
           'hubspot:companies:701',
           'webhook',
           'source_provided',
-          '0.4',
+          '0.5',
         ],
         [
           'relationship_changed',
@@ -722,7 +727,7 @@ describe('M10C account hierarchy', () => {
           'hubspot:companies:701',
           'webhook',
           'source_provided',
-          '0.4',
+          '0.5',
         ],
         [
           'relationship_changed',
@@ -730,7 +735,7 @@ describe('M10C account hierarchy', () => {
           `import:operator_entry:${child}`,
           'human',
           'human',
-          '0.4',
+          '0.5',
         ],
         [
           'relationship_changed',
@@ -738,7 +743,7 @@ describe('M10C account hierarchy', () => {
           `import:operator_entry:${child}`,
           'human',
           'human',
-          '0.4',
+          '0.5',
         ],
         [
           'relationship_changed',
@@ -746,7 +751,7 @@ describe('M10C account hierarchy', () => {
           'hubspot:companies:701',
           'webhook',
           'source_provided',
-          '0.4',
+          '0.5',
         ],
       ]);
       // Every history row points at a parent change record of this account.
@@ -1122,6 +1127,11 @@ describe('M10C account hierarchy', () => {
       const t = await c.tenant('hgate', 1001);
       const ids = await companies(c, t, ['1501', '1502', '1503']);
       await set(t, { companyId: ids['1501']!, parentId: ids['1502']!, reason: REASON });
+      // M10E: new tenants adopt 0.5; rollback goes one MINOR at a time (0.5 → 0.4 first).
+      await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
+        target: '0.4',
+        expectedCurrent: '0.5',
+      });
       // M10D: new tenants adopt 0.4; rollback goes one MINOR at a time (0.4 → 0.3 first).
       await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
         target: '0.3',
@@ -1165,6 +1175,11 @@ describe('M10C account hierarchy', () => {
       await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
         target: '0.4',
         expectedCurrent: '0.3',
+      });
+      // M10E: back to the current version (0.5), where the authority version was published.
+      await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
+        target: '0.5',
+        expectedCurrent: '0.4',
       });
       await expect(
         set(t, { companyId: ids['1503']!, parentId: ids['1502']!, reason: REASON }),

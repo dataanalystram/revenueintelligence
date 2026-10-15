@@ -276,6 +276,45 @@ const SERVICES: readonly ServiceSpec[] = [
     writes: [],
     reads: ['require'],
   },
+  // M10E (ADR 0031): the AccountContext writers, merge participant and read
+  // model. `*Within` / `applyMove` run inside a caller's transaction that
+  // already authorized its actor (operator command, source sync or merge).
+  {
+    file: 'context/application/account-context.writer.ts',
+    className: 'AccountContextWriter',
+    writes: [
+      'observeSource',
+      'observe',
+      'write',
+      'retire',
+      'reactivate',
+      'release',
+      'assignLine',
+      'assignLineFromSource',
+    ],
+    reads: [],
+  },
+  {
+    file: 'context/application/account-context-membership.writer.ts',
+    className: 'AccountContextMembershipWriter',
+    writes: ['add', 'end', 'addProduct'],
+    reads: [],
+    authorizeInside: ['setMemberWithin', 'applyMove'],
+  },
+  {
+    file: 'context/application/account-context-merge.participant.ts',
+    className: 'AccountContextMergeParticipant',
+    writes: [],
+    reads: [],
+    authorizeInside: ['onCompanyMerged', 'onPersonMerged'],
+  },
+  {
+    // One account_context.read audit event per call (Q25).
+    file: 'context/application/account-context.read-model.ts',
+    className: 'AccountContextReadModel',
+    writes: ['listForAccounts', 'get', 'linesForContext'],
+    reads: [],
+  },
   {
     file: 'context/application/context-operations.service.ts',
     className: 'ContextOperationsService',
@@ -373,6 +412,9 @@ describe('S2: privileged service writes take an authorized context (static)', ()
       ExtensionValueWriter: ['set', 'clear', 'release', 'writeHumanWithin'],
       CustomRecordWriter: ['createRecord', 'update', 'retire', 'reactivate'],
       CustomRelationshipWriter: ['add', 'endEdge'],
+      // M10E (plan §15, Q22): human-entry scope widened to the AccountContext commands.
+      AccountContextWriter: ['write', 'retire', 'reactivate', 'release', 'assignLine'],
+      AccountContextMembershipWriter: ['add', 'end', 'addProduct'],
     });
   });
 
@@ -388,6 +430,8 @@ describe('S2: privileged service writes take an authorized context (static)', ()
       .map((f) => f.split(sep).join('/'))
       .sort();
     expect(files).toEqual([
+      'modules/context/application/account-context-membership.writer.ts',
+      'modules/context/application/account-context.writer.ts',
       'modules/context/application/account-hierarchy.writer.ts',
       'modules/context/application/person-affiliation.writer.ts',
       'modules/extension/application/custom-record.writer.ts',

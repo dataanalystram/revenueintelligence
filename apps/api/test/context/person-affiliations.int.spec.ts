@@ -126,8 +126,8 @@ describe('M10C person–account affiliations', () => {
       expect(
         created.map((ch) => [ch.change_type, ch.cause, ch.origin, ch.canonical_version]),
       ).toEqual([
-        ['created', 'webhook', 'source_provided', '0.4'],
-        ['created', 'webhook', 'source_provided', '0.4'],
+        ['created', 'webhook', 'source_provided', '0.5'],
+        ['created', 'webhook', 'source_provided', '0.5'],
       ]);
       expect(created.every((ch) => ch.source_record_id === '9001')).toBe(true);
       const history = await historyOf(c, t, 'person_affiliation');
@@ -1047,6 +1047,11 @@ describe('M10C person–account affiliations', () => {
   describe('V15: the 0.3 gate (affiliations)', () => {
     it('below 0.3 no affiliation is projected (persons.company_id unchanged) and operator entry is refused', async () => {
       const t = await c.tenant('affgate', 1001);
+      // M10E: new tenants adopt 0.5; rollback goes one MINOR at a time (0.5 → 0.4 first).
+      await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
+        target: '0.4',
+        expectedCurrent: '0.5',
+      });
       // M10D: new tenants adopt 0.4; rollback goes one MINOR at a time (0.4 → 0.3 first).
       await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
         target: '0.3',
@@ -1088,6 +1093,11 @@ describe('M10C person–account affiliations', () => {
       await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
         target: '0.4',
         expectedCurrent: '0.3',
+      });
+      // M10E: back to the current version (0.5), where the authority version was published.
+      await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
+        target: '0.5',
+        expectedCurrent: '0.4',
       });
       await observePerson(c, t, '15001', { links: [link('1501', true), link('1502')] });
       expect((await affiliationsOf(c, t, p)).map((r) => r.status)).toEqual(['active', 'active']);

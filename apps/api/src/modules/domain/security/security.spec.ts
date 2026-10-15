@@ -77,9 +77,18 @@ describe('security policy (S1)', () => {
   });
 });
 
-describe('S1: policy v5 (M10D plan §16)', () => {
-  it('is version 5', () => {
-    expect(POLICY_VERSION).toBe(5);
+describe('S1: policy v6 (M10D plan §16, M10E plan §15)', () => {
+  it('is version 6', () => {
+    expect(POLICY_VERSION).toBe(6);
+  });
+
+  it('M10E: data.account_context.read is operator-only', () => {
+    for (const kind of ACTOR_KINDS) {
+      expect(
+        decide(kind, 'data.account_context.read').allowed,
+        `${kind} data.account_context.read`,
+      ).toBe(kind === 'operator');
+    }
   });
 
   it('extension reads and operator entry are operator-only; source writes stay source_sync / system', () => {

@@ -25,6 +25,13 @@ export const VALUE_HISTORY_FIELDS = {
     ends_at: { table: 'tenant_subscriptions', column: 'ends_at' },
     product_key: { table: 'tenant_subscriptions', column: 'product_key' },
     quantity: { table: 'tenant_subscriptions', column: 'quantity' },
+    // M10E (Q23): the line's account context.
+    context_id: { table: 'tenant_subscriptions', column: 'context_id' },
+  },
+  // M10E (M10 §10 "AccountContext owner / status").
+  account_context: {
+    owner_ref: { table: 'tenant_account_contexts', column: 'owner_ref' },
+    status: { table: 'tenant_account_contexts', column: 'status' },
   },
 } as const satisfies Readonly<
   Record<string, Readonly<Record<string, { readonly table: string; readonly column: string }>>>

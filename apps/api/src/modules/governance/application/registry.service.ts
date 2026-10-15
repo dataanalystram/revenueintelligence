@@ -2,6 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { APP_CONFIG, type AppConfig } from '../../../platform/config';
 import {
+  ACCOUNT_CONTEXT_MIN_VERSION,
+  ACCOUNT_CONTEXT_MODULE_KEY,
+  CONTEXT_EXTENSION_REF_VALUE_TYPES,
+  CONTEXT_TYPE_DOCUMENT_SCHEMA_VERSION,
+  CONTEXT_TYPE_REFUSAL_CODES,
+  contextExtensionRefs,
+  contextTypeRuleViolations,
+  validateContextTypeDocument,
+  type ContextTypeDocument,
   AVAILABLE_REGISTRY_KINDS,
   compareCanonicalVersion,
   DEFAULT_EXTENSION_GUARDRAILS,
@@ -129,14 +138,25 @@ export class RegistryService {
           canonicalVersionMin,
         };
       }
-      const gate = k === 'extension' ? await this.extensionGateIssues(tx, canonicalVersionMin) : [];
       const parsed = this.parse(k, document);
+      const gate =
+        k === 'extension'
+          ? [
+              ...(await this.extensionGateIssues(tx, canonicalVersionMin)),
+              // M10E (Q19): an account_context target also needs 0.5 and module account_context.
+              ...(parsed.ok && this.targetsAccountContext(parsed.value.document)
+                ? await this.contextGateIssues(tx, canonicalVersionMin)
+                : []),
+            ]
+          : k === 'context_type'
+            ? await this.contextGateIssues(tx, canonicalVersionMin)
+            : [];
       if (gate.length > 0) {
         return {
           kind: k,
           available: true,
           valid: false,
-          issues: [...gate, ...(parsed.ok ? [] : parsed.issues)],
+          issues: [...new Set(gate), ...(parsed.ok ? [] : parsed.issues)],
           contentHash: null,
           currentVersion: current,
           canonicalVersionMin,
@@ -228,15 +248,23 @@ export class RegistryService {
     if (kind === 'extension') {
       await this.db.transaction(actx.tenant, (tx) => this.requireExtensionGate(tx, actx));
     }
+    // M10E (Q17): a context_type document needs canonical 0.5 and the module enabled.
+    if (kind === 'context_type') {
+      await this.db.transaction(actx.tenant, (tx) => this.requireContextGate(tx, actx));
+    }
     const parsed = this.parse(kind, input.document);
     if (!parsed.ok) {
-      // M10D (plan §16): the control refusals carry their own reason code.
-      const refusal = EXTENSION_REFUSAL_CODES.find((c) =>
-        parsed.issues.some((i) => i.endsWith(`: ${c}`)),
-      );
+      // M10D (plan §16) / M10E (R-C5): the control refusals carry their own reason code.
+      const codes = [...EXTENSION_REFUSAL_CODES, ...CONTEXT_TYPE_REFUSAL_CODES];
+      const refusal = codes.find((c) => parsed.issues.some((i) => i.endsWith(`: ${c}`)));
       throw new GovernanceError(refusal ?? 'validation_failed', `Invalid ${kind} document`, {
         issues: parsed.issues.length,
       });
+    }
+    // M10E (Q19, review M2): a document naming account_context anywhere is gated before
+    // anything else is checked (re-checked under the registry lock below).
+    if (kind === 'extension' && this.targetsAccountContext(parsed.value.document)) {
+      await this.db.transaction(actx.tenant, (tx) => this.requireContextGate(tx, actx));
     }
     const contentHash = registryContentHash(parsed.value.document);
     if (input.expectedContentHash !== contentHash) {
@@ -247,7 +275,13 @@ export class RegistryService {
     }
     return this.db.transaction(actx.tenant, async (tx) => {
       await tenantAdvisoryLock(tx, 'registry', kind);
-      if (kind === 'extension') await this.requireExtensionGate(tx, actx);
+      if (kind === 'extension') {
+        await this.requireExtensionGate(tx, actx);
+        if (this.targetsAccountContext(parsed.value.document)) {
+          await this.requireContextGate(tx, actx);
+        }
+      }
+      if (kind === 'context_type') await this.requireContextGate(tx, actx);
       const db = tenantClient(tx);
       const latest = await db.tenantRegistryVersion.findFirst({
         where: { kind },
@@ -278,6 +312,22 @@ export class RegistryService {
           previous,
           parsed.value.entries as ExtensionEntryDraft[],
           violations,
+        );
+      }
+      if (kind === 'context_type') {
+        violations.push(
+          ...contextTypeRuleViolations(
+            previous.map((e) => ({
+              key: e.key,
+              definition: e.definition as Record<string, unknown>,
+            })),
+            parsed.value.entries,
+          ),
+          ...(await this.contextExtensionRefViolations(
+            tx,
+            actx,
+            parsed.value.document as unknown as ContextTypeDocument,
+          )),
         );
       }
       if (violations.length > 0) {
@@ -338,7 +388,7 @@ export class RegistryService {
             definition: e.definition as TenantJsonInput,
             introducedIn: version,
             lastChangedIn: version,
-            // M10D (control 8): extension definitions project their classification.
+            // M10D (control 8) / M10E: extension definitions and context types project their classification.
             sensitivity: e.sensitivity ?? null,
             categories: e.categories ? [...e.categories] : undefined,
             updatedAt: now,
@@ -601,6 +651,107 @@ export class RegistryService {
     }
   }
 
+  /** M10E (Q17): adopted canonical >= 0.5 and module `account_context` enabled; refusals audited. */
+  private async requireContextGate(
+    tx: TenantTransaction,
+    actx: AuthorizedContext<'config.data_policy.publish' | 'config.registry.publish'>,
+  ): Promise<void> {
+    const adopted = await adoptedCanonicalVersion(tx);
+    if (compareCanonicalVersion(adopted, ACCOUNT_CONTEXT_MIN_VERSION) < 0) {
+      throw new GovernanceError(
+        'canonical_version_too_low',
+        `Account contexts need canonical ${ACCOUNT_CONTEXT_MIN_VERSION} (adopted ${adopted})`,
+      );
+    }
+    if (this.moduleGate) {
+      await this.moduleGate.require(tx, actx, ACCOUNT_CONTEXT_MODULE_KEY);
+      return;
+    }
+    if (!(await this.moduleEnabled(tx, ACCOUNT_CONTEXT_MODULE_KEY))) {
+      throw new GovernanceError(
+        'module_disabled',
+        'Module account_context is disabled for this tenant',
+      );
+    }
+  }
+
+  /** The dry run reports the M10E gate as issues (nothing audited, nothing written). */
+  private async contextGateIssues(tx: TenantTransaction, adopted: string): Promise<string[]> {
+    const issues: string[] = [];
+    if (compareCanonicalVersion(adopted, ACCOUNT_CONTEXT_MIN_VERSION) < 0) {
+      issues.push('canonical_version_too_low');
+    }
+    if (!(await this.moduleEnabled(tx, ACCOUNT_CONTEXT_MODULE_KEY))) issues.push('module_disabled');
+    return issues;
+  }
+
+  private async moduleEnabled(tx: TenantTransaction, moduleKey: string): Promise<boolean> {
+    const setting = await tenantClient(tx).tenantModuleSetting.findUnique({
+      where: { tenantId_moduleKey: { tenantId: tx.tenantId, moduleKey } },
+      select: { enabled: true },
+    });
+    return setting?.enabled === true;
+  }
+
+  /**
+   * M10E (Q19, review M2): an extension document that names `account_context`
+   * anywhere a definition can — a field's target, a reference field's
+   * `reference_to`, or either end of a custom relationship.
+   */
+  private targetsAccountContext(document: Record<string, unknown>): boolean {
+    const CTX = 'account_context';
+    const items = (k: string): Record<string, unknown>[] => {
+      const v = document[k];
+      return Array.isArray(v)
+        ? v.filter((x): x is Record<string, unknown> => x !== null && typeof x === 'object')
+        : [];
+    };
+    const fieldHit = items('fields').some((f) => {
+      if (f.target === CTX) return true;
+      const c = f.constraints;
+      const refs =
+        c !== null && typeof c === 'object' ? (c as { reference_to?: unknown }).reference_to : [];
+      return Array.isArray(refs) && refs.includes(CTX);
+    });
+    return fieldHit || items('relationships').some((r) => r.from === CTX || r.to === CTX);
+  }
+
+  /**
+   * R-C4: an `extension_ref` dimension names an active field of the current
+   * extension registry whose type is string / enum / integer and whose target is
+   * `account_context`; module `extension` must be enabled at publish.
+   */
+  private async contextExtensionRefViolations(
+    tx: TenantTransaction,
+    actx: AuthorizedContext<'config.data_policy.publish' | 'config.registry.publish'>,
+    document: ContextTypeDocument,
+  ): Promise<{ rule: string; key: string }[]> {
+    const refs = contextExtensionRefs(document);
+    if (refs.length === 0) return [];
+    if (this.moduleGate) await this.moduleGate.require(tx, actx, EXTENSION_MODULE_KEY);
+    else if (!(await this.moduleEnabled(tx, EXTENSION_MODULE_KEY))) {
+      throw new GovernanceError('module_disabled', 'Module extension is disabled for this tenant');
+    }
+    const fields = await tenantClient(tx).tenantRegistryEntry.findMany({
+      where: { kind: 'extension', key: { in: [...new Set(refs.map((r) => r.field))] } },
+      select: { key: true, status: true, definition: true },
+    });
+    const byKey = new Map(fields.map((f) => [f.key, f]));
+    const types: readonly string[] = CONTEXT_EXTENSION_REF_VALUE_TYPES;
+    return refs.flatMap((r) => {
+      const f = byKey.get(r.field);
+      const def = (f?.definition ?? {}) as Record<string, unknown>;
+      const ok =
+        f !== undefined &&
+        f.status === 'active' &&
+        def.kind === 'field' &&
+        def.target === 'account_context' &&
+        typeof def.value_type === 'string' &&
+        types.includes(def.value_type);
+      return ok ? [] : [{ rule: 'R-C4', key: `${r.type}.${r.dimension}` }];
+    });
+  }
+
   /** Validates a document of an available kind and derives its projected entries. */
   private parse(
     kind: RegistryKind,
@@ -626,6 +777,18 @@ export class RegistryService {
         value: {
           document: v.document,
           schemaVersion: EXTENSION_DOCUMENT_SCHEMA_VERSION,
+          entries: v.entries,
+        },
+      };
+    }
+    if (kind === 'context_type') {
+      const v = validateContextTypeDocument(raw);
+      if (!v.ok) return { ok: false, issues: v.issues.map((i) => `${i.key}: ${i.code}`) };
+      return {
+        ok: true,
+        value: {
+          document: v.document,
+          schemaVersion: CONTEXT_TYPE_DOCUMENT_SCHEMA_VERSION,
           entries: v.entries,
         },
       };

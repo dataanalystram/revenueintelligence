@@ -46,4 +46,10 @@ describe('canonicalFeatureChanges', () => {
     expect(canonicalFeatureChanges('0.3', '0.4')).toEqual({ enables: v04, disables: [] });
     expect(canonicalFeatureChanges('0.4', '0.3')).toEqual({ enables: [], disables: v04 });
   });
+
+  it('M10E: 0.4 → 0.5 enables the account-context features; 0.5 → 0.4 withdraws them', () => {
+    const v05 = ['account_context', 'context_type_registry', 'context_membership', 'line_context'];
+    expect(canonicalFeatureChanges('0.4', '0.5')).toEqual({ enables: v05, disables: [] });
+    expect(canonicalFeatureChanges('0.5', '0.4')).toEqual({ enables: [], disables: v05 });
+  });
 });

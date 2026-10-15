@@ -334,7 +334,7 @@ read models batch by account. Load evidence: 10k contexts × 100k lines (recorde
 | VM4  | Skip the refusal audit event (V5).                                    |
 | VM5  | Remove the line / context same-account guard trigger (V10).           |
 | VM6  | Cascade retirement to lines (V11).                                    |
-| VM7  | Drop the natural-key unique index (V8).                               |
+| VM7  | Drop the natural-key unique index (V7).                               |
 | VM8  | Omit a dimension from the natural-key hash (V7).                      |
 | VM9  | Disable R-C1 (V6).                                                    |
 | VM10 | Accept an unclassified dimension (V6, V24).                           |

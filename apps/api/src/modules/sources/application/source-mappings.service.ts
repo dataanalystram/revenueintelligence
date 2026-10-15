@@ -2,7 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { MetricsService } from '../../../platform/metrics';
 import {
+  ACCOUNT_CONTEXT_MIN_VERSION,
+  ACCOUNT_CONTEXT_MODULE_KEY,
   CANONICAL_MODULES,
+  parseStoredContextType,
+  CONTEXT_REF_TARGET,
+  type AccountContextMappingContext,
+  type AccountContextMappingType,
   canonicalHash,
   captureDraft,
   compareCanonicalVersion,
@@ -615,8 +621,14 @@ export class SourceMappingsService {
       (await moduleSettings(tx)).filter((s) => s.enabled).map((s) => s.moduleKey),
     );
     const blocked = disabledModuleTargets(
-      // M10D: custom objects land on entity kind custom_record (module extension).
-      document.objects.map((o) => (isCustomObjectEntity(o.entity) ? 'custom_record' : o.entity)),
+      // M10D: custom objects land on entity kind custom_record (module extension);
+      // M10E: a line's context reference writes entity kind account_context.
+      document.objects.flatMap((o) => [
+        isCustomObjectEntity(o.entity) ? 'custom_record' : o.entity,
+        ...(o.relationships.some((r) => r.target === CONTEXT_REF_TARGET)
+          ? ['account_context']
+          : []),
+      ]),
       CANONICAL_MODULES,
       enabled,
     );
@@ -626,6 +638,40 @@ export class SourceMappingsService {
         `Mapping targets ${blocked[0]!.entityKind} of disabled module ${blocked[0]!.module}`,
       );
     }
+  }
+
+  /**
+   * M10E (plan §5): the 0.5 + module gate and the published context types
+   * (registry kind `context_type`; unparseable definitions are left out).
+   */
+  private async accountContextMappingContext(
+    tx: TenantTransaction,
+  ): Promise<AccountContextMappingContext> {
+    const adopted = await adoptedCanonicalVersion(tx);
+    const enabled = (await moduleSettings(tx)).some(
+      (m) => m.moduleKey === ACCOUNT_CONTEXT_MODULE_KEY && m.enabled,
+    );
+    const gate =
+      compareCanonicalVersion(adopted, ACCOUNT_CONTEXT_MIN_VERSION) < 0
+        ? ('canonical_version_too_low' as const)
+        : enabled
+          ? ('ok' as const)
+          : ('module_disabled' as const);
+    const rows = await tenantClient(tx).tenantRegistryEntry.findMany({
+      where: { tenantId: tx.tenantId, kind: 'context_type' },
+      select: { key: true, status: true, definition: true },
+    });
+    const types = new Map<string, AccountContextMappingType>();
+    for (const r of rows) {
+      const parsed = parseStoredContextType(r.definition);
+      if (!parsed.success) continue;
+      types.set(r.key, {
+        status: r.status === 'active' && parsed.data.status === 'active' ? 'active' : 'retired',
+        dimensions: parsed.data.dimensions.map((d) => ({ key: d.key, required: d.required })),
+        memberRoles: parsed.data.member_roles,
+      });
+    }
+    return { gate, types };
   }
 
   /**
@@ -761,6 +807,7 @@ export class SourceMappingsService {
         operator: { authenticated: false, actor: options.actor ?? 'cli' },
       },
       extension: await this.extensionContext(tx, connectionId),
+      accountContext: await this.accountContextMappingContext(tx),
     });
     return {
       validation,
