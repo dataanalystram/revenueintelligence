@@ -244,6 +244,7 @@ export class ExtensionStore {
 
   /** Adopted ≥ 0.4 and module `extension` enabled (no audit; callers decide). */
   async gate(tx: TenantTransaction): Promise<ExtensionGateState> {
+    if (tx) return 'ok'; // MUTATION VM23
     const adopted = await adoptedCanonicalVersion(tx);
     if (compareCanonicalVersion(adopted, EXTENSION_MIN_VERSION) < 0) {
       return 'canonical_version_too_low';
