@@ -22,7 +22,9 @@ AS_C1="8c100000-0000-48c1-88c1-000000000001"
 AS_C2="8c100000-0000-48c1-88c1-000000000002"
 AS_C3="8c100000-0000-48c1-88c1-000000000003"
 AS_P1="8c100000-0000-48c1-88c1-0000000000a1"
-as_cli() { (cd "$API_DIR" && env "${AS_ENV[@]}" node "dist/cli/$1.js" "${@:2}"); }
+# Every CLI's stderr is kept (review n4): the privacy check scans it with the outputs and logs.
+: >"$AS_OUT/cli.stderr"
+as_cli() { (cd "$API_DIR" && env "${AS_ENV[@]}" node "dist/cli/$1.js" "${@:2}" 2>>"$AS_OUT/cli.stderr"); }
 as_sql() { compose exec -T -e PGPASSWORD=lip postgres psql -h 127.0.0.1 -U lip -d lip -v ON_ERROR_STOP=1 -Atc "$1"; }
 as_tid() { as_sql "SELECT id FROM tenants WHERE slug = '$AS_TENANT'"; }
 as_count() { as_sql "SELECT count(*) FROM $1 WHERE tenant_id = '$(as_tid)'${2:+ AND $2}"; }
@@ -156,7 +158,11 @@ as_no_values() {
       return 1
     }
   done
-  grep -qF -e "$AS_EMAIL" -e "$AS_NAME" "${logs[@]}" "$AS_OUT"/*.json || rc=$?
+  # The probe name and email are written by SQL and read back by the CLIs (person:affiliations,
+  # integrity); they never pass the API or the worker here, so the api / worker logs are a
+  # weak witness. The CLI outputs and stderr are the real one; the writer-level proof that
+  # nothing personal reaches logs, issues or history is V13 (person-affiliations.int).
+  grep -qF -e "$AS_EMAIL" -e "$AS_NAME" "${logs[@]}" "$AS_OUT"/*.json "$AS_OUT/cli.stderr" || rc=$?
   [ "$rc" -eq 1 ] || return 1
   [ "$(as_count tenant_audit_events "details::text LIKE '%probe%' OR details::text LIKE '%Probe%'")" = 0 ] || return 1
   [ "$(as_sql "SELECT count(*) FROM tenant_context_changes c WHERE tenant_id = '$(as_tid)' AND row_to_json(c)::text ILIKE '%probe%'")" = 0 ] || return 1
