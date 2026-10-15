@@ -96,7 +96,8 @@ CREATE INDEX "tenant_account_context_products_tenant_id_product_key_idx" ON "ten
 CREATE INDEX "tenant_subscriptions_tenant_id_context_id_idx" ON "tenant_subscriptions"("tenant_id", "context_id");
 
 -- AddForeignKey
-ALTER TABLE "tenant_subscriptions" ADD CONSTRAINT "tenant_subscriptions_tenant_id_context_id_fkey" FOREIGN KEY ("tenant_id", "context_id") REFERENCES "tenant_account_contexts"("tenant_id", "id") ON DELETE RESTRICT ON UPDATE RESTRICT;
+CREATE UNIQUE INDEX "mut_account_contexts_id" ON "tenant_account_contexts"("id");
+ALTER TABLE "tenant_subscriptions" ADD CONSTRAINT "tenant_subscriptions_tenant_id_context_id_fkey" FOREIGN KEY ("context_id") REFERENCES "tenant_account_contexts"("id") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
 ALTER TABLE "tenant_source_authority_versions" ADD CONSTRAINT "tenant_source_authority_versions_tenant_id_account_context_fkey" FOREIGN KEY ("tenant_id", "account_context_connection_id") REFERENCES "tenant_source_connections"("tenant_id", "id") ON DELETE RESTRICT ON UPDATE RESTRICT;
