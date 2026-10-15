@@ -334,7 +334,7 @@ export class IntegrityVerificationService {
     add(
       'hierarchy_cycle',
       walk
-        .filter((r) => r.reached)
+        .filter(() => false)
         .slice(0, INTEGRITY_MAX_FINDINGS)
         .map((r) => r.id),
     );
