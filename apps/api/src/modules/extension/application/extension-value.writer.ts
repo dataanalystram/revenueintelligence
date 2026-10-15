@@ -637,7 +637,7 @@ export class ExtensionValueWriter {
       const entry = registry.byId.get(row.fieldId);
       if (!entry) continue;
       const other = survivorRows.get(row.fieldId);
-      if (!other) {
+      if (!other || other.fieldHash !== row.fieldHash) {
         planned.push({
           entry,
           value: parsedFromStored(row, items.get(row.id) ?? []),
@@ -667,6 +667,7 @@ export class ExtensionValueWriter {
     for (const p of planned) {
       const source = loserRows.find((r) => r.fieldId === p.entry.id)!;
       await this.store.writeValue(tx, {
+        existingId: survivorRows.get(p.entry.id)?.id,
         target: survivor,
         fieldId: p.entry.id,
         value: p.value,
