@@ -49,6 +49,8 @@ export const QUALITY_CODES = [
   'record_rejected',
   // M10C: affiliation role values outside the mapping's explicit value map (dropped, never stored).
   'unmapped_role_value',
+  // M10C review m2: a relationship value that cannot be a reference (over 255 characters); it states nothing.
+  'invalid_reference',
 ] as const;
 export type QualityCode = (typeof QUALITY_CODES)[number];
 
@@ -403,7 +405,9 @@ export function mapContextRecord(
         jobTitle: values.jobTitle,
       }),
       // The company link is a person_profile fact; without authority it is not read.
-      ...(env.profileAuthority && companyRel
+      // A field missing from the record (not read) states nothing (M10C review M2):
+      // only an explicitly empty value states "no company" and ends affiliations.
+      ...(env.profileAuthority && companyRel && Object.hasOwn(record.values, companyRel.field)
         ? {
             companyLinks: companyId
               ? [
@@ -470,7 +474,12 @@ function mappedAffiliations(
 ): readonly SourceAffiliation[] | undefined {
   if (!Object.hasOwn(record.values, rel.field)) return undefined;
   const id = text(record.values[rel.field]);
-  if (!id || id.length > 255) return [];
+  if (!id) return [];
+  // A malformed (over-long) value states nothing, as for `account.parent`: never "no affiliation" (m2).
+  if (id.length > 255) {
+    quality.push('invalid_reference');
+    return undefined;
+  }
   const a = rel.affiliation;
   let roleCodes: string[] = [];
   if (a?.roleField && a.roleValueMap) {
