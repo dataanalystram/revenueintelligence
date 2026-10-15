@@ -169,14 +169,14 @@ export class AccountHierarchyWriter {
 
   @AuditFailures('account.hierarchy.set', 'account_hierarchy')
   async set(
-    actx: AuthorizedContext<'canonical.human_entry'>,
+    actx: AuthorizedContext<'canonical.source_sync'>,
     input: OperatorParentInput,
   ): Promise<OperatorParentResult> {
-    assertAuthorized(actx, 'canonical.human_entry');
+    assertAuthorized(actx, 'canonical.source_sync');
     const companyId = requireUuid(input.companyId, '--company');
     const parentId = requireUuid(input.parentId, '--parent');
     const reason = requireReason(input.reason);
-    return this.operatorWrite(actx, 'account.hierarchy.set', companyId, reason, {
+    return this.operatorWrite(actx as never, 'account.hierarchy.set', companyId, reason, {
       kind: 'set',
       parentId,
     });
