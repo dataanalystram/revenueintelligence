@@ -753,6 +753,43 @@ describe('M10C account hierarchy', () => {
     });
   });
 
+  describe('n1: history parity with rows tied at one instant', () => {
+    it('two parent rows recorded in one transaction never make a false parity finding; a real drift still does', async () => {
+      const t = await c.tenant('hparity', 1001);
+      const ids = await companies(c, t, ['871', '872']);
+      const child = (await observeCompany(c, t, '873', { parent: '871' })).entityId!;
+      // A tied earlier row (same recorded_at, the highest id, the stale value), as one
+      // transaction writing two parent changes would leave it.
+      await c.sql(
+        `INSERT INTO tenant_value_history (tenant_id, id, entity_kind, entity_id, entity_key, field, values_recorded,
+                old_value, new_value, effective_at, recorded_at, change_id, retention_class, policy_version,
+                actor_kind, actor_id, actor_assurance)
+         SELECT tenant_id, 'ffffffff-ffff-4fff-bfff-ffffffffffff'::uuid, entity_kind, entity_id, entity_key, field,
+                values_recorded, NULL, to_jsonb($3::text), effective_at, recorded_at, change_id, retention_class,
+                policy_version, actor_kind, actor_id, actor_assurance
+           FROM tenant_value_history
+          WHERE tenant_id = $1 AND entity_kind = 'company' AND entity_id = $2 AND field = 'parent_company_id'`,
+        [t.tenantId, child, ids['872']],
+      );
+      const checks = async () =>
+        (await integrity().verify(t)).findings.filter(
+          (f) => f.check === 'hierarchy_history_parity',
+        );
+      expect(await checks()).toEqual([]);
+      // A parent changed without history is still found.
+      await c.sql(`UPDATE companies SET parent_company_id = $3 WHERE tenant_id = $1 AND id = $2`, [
+        t.tenantId,
+        child,
+        ids['872'],
+      ]);
+      await c.sql(
+        `UPDATE companies SET parent_company_id = NULL WHERE tenant_id = $1 AND id = $2`,
+        [t.tenantId, child],
+      );
+      expect((await checks()).length).toBe(1);
+    });
+  });
+
   describe('V8: company merge participant (hierarchy)', () => {
     it("children move to the survivor; a survivor without a parent inherits the loser's; the loser keeps its lineage", async () => {
       const t = await c.tenant('hmerge', 1001);

@@ -357,15 +357,21 @@ export class IntegrityVerificationService {
       mergedParent.map((r) => r.ref),
     );
     // 16. The current parent equals the new value of its latest value-history row (when one exists).
+    // `recorded_at` is the transaction start and ids are random, so several rows written in one
+    // transaction (a multi-loser merge) tie: parity holds when any row at the latest instant
+    // carries the current parent (review n1; no false finding from an arbitrary tie order).
     const parity = await db.$queryRaw<{ ref: string }[]>`
       SELECT c.id::text AS ref FROM companies c
         JOIN LATERAL (
-          SELECT h.new_value, h.values_recorded FROM tenant_value_history h
+          SELECT max(h.recorded_at) AS at FROM tenant_value_history h
            WHERE h.tenant_id = c.tenant_id AND h.entity_kind = 'company' AND h.entity_id = c.id
-             AND h.field = 'parent_company_id'
-           ORDER BY h.recorded_at DESC, h.id DESC LIMIT 1) last ON true
-       WHERE c.tenant_id = ${t}::uuid AND last.values_recorded
-         AND (last.new_value #>> '{}') IS DISTINCT FROM c.parent_company_id::text
+             AND h.field = 'parent_company_id' AND h.values_recorded) last ON last.at IS NOT NULL
+       WHERE c.tenant_id = ${t}::uuid
+         AND NOT EXISTS (
+               SELECT 1 FROM tenant_value_history h
+                WHERE h.tenant_id = c.tenant_id AND h.entity_kind = 'company' AND h.entity_id = c.id
+                  AND h.field = 'parent_company_id' AND h.values_recorded AND h.recorded_at = last.at
+                  AND (h.new_value #>> '{}') IS NOT DISTINCT FROM c.parent_company_id::text)
        ORDER BY 1 LIMIT ${INTEGRITY_MAX_FINDINGS}`;
     add(
       'hierarchy_history_parity',
