@@ -36,6 +36,10 @@ const run = promisify(execFile);
 /** M10E migration (account context, canonical 0.5, ADR 0031). */
 const M10E = '20270119120000_m10e_account_context';
 const M10E_DOWN = resolve(`prisma/rollback/${M10E}.down.sql`);
+/** M10E hardening #90 sits on top of M10E: its (data-free) down-script runs first. */
+const H90_DOWN = resolve(
+  'prisma/rollback/20270126130000_m10e_h90_confidential_read_grants.down.sql',
+);
 /** Stored catalogue hashes: 0.1–0.4 from their own migrations, 0.5 as pinned in the M10E migration. */
 const STORED_HASHES = {
   '0.1': '2fd4f7e575633de7cac4aea394a71c73adc9b73e5e18b67c0b0ee404572faf5b',
@@ -873,6 +877,8 @@ ${OFF}`;
       const url = await m10dDatabase('m10e_down_db');
       await migrate(url);
       const latest = await schemaSnapshot(url);
+      // #90 sits on top of M10E: its (data-free) rollback runs first.
+      await withAdmin(url, (db) => db.query(readFileSync(H90_DOWN, 'utf8')));
       const down = readFileSync(M10E_DOWN, 'utf8');
       const audit = (capability: string, action: string) =>
         `INSERT INTO tenant_audit_events (tenant_id, id, seq, occurred_at, actor_kind, actor_id, actor_assurance,

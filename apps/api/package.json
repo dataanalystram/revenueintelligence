@@ -90,6 +90,8 @@
     "security:audit-verify": "node dist/cli/security.js audit-verify",
     "security:audit-purge": "node dist/cli/security.js audit-purge",
     "security:integrity-verify": "node dist/cli/security.js integrity-verify",
+    "security:grant": "node dist/cli/security.js grant",
+    "security:revoke": "node dist/cli/security.js revoke",
     "mappings:draft": "node dist/cli/sources.js mappings-draft",
     "test:live": "vitest run --config vitest.live.config.mts"
   },

@@ -108,12 +108,20 @@ const M10C_DOWN = resolve(`prisma/rollback/${M10C_MIGRATIONS[0]}.down.sql`);
 const M10D_MIGRATIONS = ['20270112120000_m10d_extension_framework'];
 const M10D_DOWN = resolve(`prisma/rollback/${M10D_MIGRATIONS[0]}.down.sql`);
 
-/** M10E migration (AccountContext, canonical 0.5). */
-const M10E_MIGRATIONS = ['20270119120000_m10e_account_context'];
+/**
+ * M10E migrations (AccountContext, canonical 0.5; then hardening #90, confidential-read
+ * capability grants, policy v7).
+ */
+const M10E_MIGRATIONS = [
+  '20270119120000_m10e_account_context',
+  '20270126130000_m10e_h90_confidential_read_grants',
+];
 const M10E_DOWN = resolve(`prisma/rollback/${M10E_MIGRATIONS[0]}.down.sql`);
+const H90_DOWN = resolve(`prisma/rollback/${M10E_MIGRATIONS[1]}.down.sql`);
 
-/** Rolls M10E back; every M10D and older down-script runs after this. */
+/** Rolls #90, then M10E back; every M10D and older down-script runs after this. */
 async function rollbackM10E(url: string): Promise<void> {
+  await withAdmin(url, (db) => db.query(readFileSync(H90_DOWN, 'utf8')));
   await withAdmin(url, (db) => db.query(readFileSync(M10E_DOWN, 'utf8')));
 }
 

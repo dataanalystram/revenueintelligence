@@ -9,6 +9,7 @@ import {
   type SecurityActor,
 } from '../../src/modules/domain';
 import {
+  CapabilityGrants,
   WriteAuthorizer,
   type AuthorizedContext,
   type PlatformAuthorization,
@@ -60,4 +61,25 @@ export function platformAuthz<C extends PlatformCapability>(
   actor: SecurityActor = TEST_OPERATOR,
 ): PlatformAuthorization<C> {
   return authorizer().authorizePlatform(actor, capability);
+}
+
+/** M10E hardening #90: the operator that grants explicit capabilities in tests (never the grantee). */
+export const TEST_GRANTOR = operatorActor('test-grantor');
+
+/**
+ * Grants `data.account_context.read_confidential` to `grantee` in `ctx`'s tenant
+ * through the real CapabilityGrants service (authorized by TEST_GRANTOR with
+ * `security.capability.grant`; one audit event). The policy is not bypassed.
+ */
+export async function grantConfidentialRead(
+  ctx: TenantContext,
+  grantee: SecurityActor = TEST_OPERATOR,
+): Promise<void> {
+  if (!app) throw new Error('registerSecurityApp(app) was not called by the harness');
+  await app
+    .get(CapabilityGrants)
+    .grant(await authz(ctx, 'security.capability.grant', TEST_GRANTOR), {
+      grantee: grantee.id,
+      capability: 'data.account_context.read_confidential',
+    });
 }

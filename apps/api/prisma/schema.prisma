@@ -73,6 +73,7 @@ model Tenant {
   accountContexts      TenantAccountContext[]
   contextPersons       TenantAccountContextPerson[]
   contextProducts      TenantAccountContextProduct[]
+  capabilityGrants     TenantCapabilityGrant[]
 
   @@unique([id, slug])
   @@map("tenants")
@@ -1822,4 +1823,31 @@ model TenantAccountContextProduct {
   @@id([tenantId, contextId, productKey])
   @@index([tenantId, productKey])
   @@map("tenant_account_context_products")
+}
+
+/// M10E hardening #90 (ADR 0031 addendum): an explicit, tenant-scoped grant of a
+/// capability no actor kind holds by policy (only
+/// data.account_context.read_confidential) to one operator id. Revoked by clearing
+/// `active`, re-granted by setting it again; never deleted. No self-grant.
+model TenantCapabilityGrant {
+  tenantId           String    @map("tenant_id") @db.Uuid
+  /// operator
+  actorKind          String    @map("actor_kind")
+  actorId            String    @map("actor_id")
+  capability         String
+  active             Boolean
+  version            Int
+  grantedAt          DateTime  @map("granted_at") @db.Timestamptz(3)
+  grantedByKind      String    @map("granted_by_kind")
+  grantedById        String    @map("granted_by_id")
+  grantedByAssurance String    @map("granted_by_assurance")
+  revokedAt          DateTime? @map("revoked_at") @db.Timestamptz(3)
+  revokedByKind      String?   @map("revoked_by_kind")
+  revokedById        String?   @map("revoked_by_id")
+  revokedByAssurance String?   @map("revoked_by_assurance")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, actorKind, actorId, capability])
+  @@map("tenant_capability_grants")
 }
