@@ -416,7 +416,6 @@ export class ExtensionValueWriter {
     actx: AuthorizedContext<'canonical.human_entry'>,
     input: OperatorValueInput,
   ): Promise<OperatorValueResult> {
-    assertAuthorized(actx, 'canonical.human_entry');
     if (input.value === undefined) {
       throw new GovernanceError('validation_failed', '--value is required (use clear for empty)');
     }
@@ -434,7 +433,6 @@ export class ExtensionValueWriter {
     actx: AuthorizedContext<'canonical.human_entry'>,
     input: OperatorValueInput,
   ): Promise<OperatorValueResult> {
-    assertAuthorized(actx, 'canonical.human_entry');
     return this.operatorWrite(actx, input, 'extension.value.clear', null);
   }
 
@@ -444,7 +442,6 @@ export class ExtensionValueWriter {
     actx: AuthorizedContext<'canonical.human_entry'>,
     input: OperatorValueInput,
   ): Promise<OperatorValueResult> {
-    assertAuthorized(actx, 'canonical.human_entry');
     const target = parseTarget(input.target);
     const reason = requireReason(input.reason);
     return this.db.transaction(actx.tenant, async (tx) => {
@@ -493,12 +490,6 @@ export class ExtensionValueWriter {
     return this.db.transaction(actx.tenant, async (tx) => {
       await requireExtension(tx, actx, this.store, this.moduleGate);
       const out = await this.writeHumanWithin(actx, tx, target, input.field, raw);
-      await this.audit.record(tx, actx, {
-        action,
-        targetKind: 'extension_value',
-        targetRef: out.valueId,
-        details: { reason, field: out.field, targetKind: target.kind, changed: out.changed },
-      });
       return out;
     });
   }
@@ -516,7 +507,6 @@ export class ExtensionValueWriter {
     field: string,
     raw: string | null,
   ): Promise<OperatorValueResult> {
-    assertAuthorized(actx, 'canonical.human_entry');
     if (raw !== null) {
       await this.authorizer.refuseSecretLike(
         actx,
