@@ -529,7 +529,7 @@ describe('context records: person company link and affiliation (M10C review M2, 
       { target: 'person.affiliation', field: 'affiliation_account_id', object: 'Accounts' },
     ],
     fields: [],
-  } as unknown as ObjectMapping;
+  };
   const env = { kind: 'sugar' as const, profileAuthority: true, observedAt: OBSERVED };
   const person = (values: Record<string, string>) =>
     mapContextRecord(people, toSourceRecord('Contacts', { id: 'FIX-CON-001', ...values }), env);
