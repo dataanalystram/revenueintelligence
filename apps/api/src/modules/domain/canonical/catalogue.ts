@@ -139,11 +139,11 @@ export function canonicalCatalogueFor(version: string): CanonicalCatalogue {
 function catalogue0_4(base: CanonicalCatalogue): CanonicalCatalogue {
   return {
     ...catalogue0_3(base),
-    entityKinds: ENTITY_INDEX_KINDS_0_4,
-    changeEntityKinds: CHANGE_ENTITY_KINDS_0_4,
-    genericReferenceKinds: GENERIC_REFERENCE_KINDS_0_4,
+    entityKinds: ENTITY_INDEX_KINDS,
+    changeEntityKinds: CHANGE_ENTITY_KINDS,
+    genericReferenceKinds: GENERIC_REFERENCE_KINDS,
     extensionValueTypes: EXTENSION_VALUE_TYPES,
-    extensionTargets: EXTENSION_TARGET_KINDS_0_4,
+    extensionTargets: EXTENSION_TARGET_KINDS,
     extensionAllowedUses: EXTENSION_ALLOWED_USES,
     mappingEntryKinds: EXTENSION_MAPPING_ENTRY_KINDS,
   };
