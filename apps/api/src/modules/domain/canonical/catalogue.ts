@@ -71,6 +71,8 @@ export function canonicalCatalogueFor(version: string): CanonicalCatalogue {
       return {
         ...base,
         changeEntityKinds: CHANGE_ENTITY_KINDS_0_2,
+        authorityFacts: AUTHORITY_FACTS_0_3,
+        mappingTargets: MAPPING_TARGETS_0_3,
         genericReferenceKinds: GENERIC_REFERENCE_KINDS_0_2,
         evidenceTypes: EVIDENCE_TYPES,
         evidenceRoles: EVIDENCE_ROLES,
