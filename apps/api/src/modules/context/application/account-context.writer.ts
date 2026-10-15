@@ -295,12 +295,19 @@ export class AccountContextWriter {
     input: AccountContextObservation,
     contextId: string,
   ): Promise<void> {
+    // A reference bound to a context merged into `contextId` stays bound to the merged-away
+    // context (lineage followed on read): re-observing it names the bound id, never re-points it.
+    const bound = await this.store.contextRefBound(tx, input.ref);
+    const entityId =
+      bound && bound !== contextId && (await this.store.contextForRef(tx, input.ref)) === contextId
+        ? bound
+        : contextId;
     await this.references.observe(actx, tx, {
       system: input.ref.system,
       objectType: input.ref.objectType,
       externalId: input.ref.id,
       entityKind: 'account_context',
-      entityId: contextId,
+      entityId,
       presence: input.presence,
       observedAt: input.observedAt,
       ...(input.provenance.sourceUpdatedAt

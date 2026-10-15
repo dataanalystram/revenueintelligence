@@ -386,6 +386,27 @@ export class AccountContextStore {
     tx: TenantTransaction,
     ref: { system: string; objectType: string; id: string },
   ): Promise<string | undefined> {
+    const bound = await this.contextRefBound(tx, ref);
+    if (!bound) return undefined;
+    let id = bound;
+    for (let hops = 0; hops < 20; hops += 1) {
+      const c = await this.context(tx, id);
+      if (!c || c.recordState !== 'merged' || !c.mergedIntoId) return id;
+      id = c.mergedIntoId;
+    }
+    return id;
+  }
+
+  /**
+   * The context a source reference is bound to, **not** following merge
+   * lineage (a reference stays bound to a merged-away context; readers follow
+   * `merged_into_id`). Re-observing the reference must name this id: the
+   * reference service never re-points a reference silently (E5 §1).
+   */
+  async contextRefBound(
+    tx: TenantTransaction,
+    ref: { system: string; objectType: string; id: string },
+  ): Promise<string | undefined> {
     const row = await tenantClient(tx).tenantSourceReference.findUnique({
       where: {
         tenantId_system_objectType_externalId: {
@@ -398,13 +419,7 @@ export class AccountContextStore {
       select: { entityKind: true, entityId: true },
     });
     if (!row || row.entityKind !== 'account_context' || !row.entityId) return undefined;
-    let id = row.entityId;
-    for (let hops = 0; hops < 20; hops += 1) {
-      const c = await this.context(tx, id);
-      if (!c || c.recordState !== 'merged' || !c.mergedIntoId) return id;
-      id = c.mergedIntoId;
-    }
-    return id;
+    return row.entityId;
   }
 
   async insertContext(

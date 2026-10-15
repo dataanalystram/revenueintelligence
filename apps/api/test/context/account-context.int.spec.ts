@@ -150,7 +150,9 @@ describe('M10E AccountContext (writers, lines, merges, reads)', () => {
       );
       expect(await contextProductsOf(c, t)).toHaveLength(3);
       // One `created` change record each; a source reference of kind account_context each.
-      const created = await acChangesOf(c, t, emea.contextId!);
+      const created = (await acChangesOf(c, t, emea.contextId!)).filter(
+        (ch) => ch.change_type === 'created',
+      );
       expect(created).toHaveLength(1);
       expect(created[0]).toMatchObject({
         entity_kind: 'account_context',
@@ -193,6 +195,7 @@ describe('M10E AccountContext (writers, lines, merges, reads)', () => {
         name: 'Desk one',
       });
       expect(first.status).toBe('created');
+      const changesAfterCreate = (await acChangesOf(c, t, first.contextId!)).length;
       // Same observation again: unchanged, no new change record.
       expect(
         await observeContext(c, t, {
@@ -202,7 +205,7 @@ describe('M10E AccountContext (writers, lines, merges, reads)', () => {
           name: 'Desk one',
         }),
       ).toEqual({ status: 'unchanged', contextId: first.contextId });
-      expect(await acChangesOf(c, t, first.contextId!)).toHaveLength(1);
+      expect(await acChangesOf(c, t, first.contextId!)).toHaveLength(changesAfterCreate);
       // A changed attribute updates the same row.
       expect(
         await observeContext(c, t, {
