@@ -543,8 +543,8 @@ export function parseExtensionValue(
       // A JSON `null` states "no value": an explicit empty (jsonb null is never stored).
       if (v === null) return { ok: true, value: { state: 'empty', type } };
       if (!isPlainJson(v)) return reject('json_invalid');
-      const maxBytes = Math.min(guardrails.maxJsonBytes, EXTENSION_JSON_MAX_BYTES_CEILING);
-      const maxDepth = Math.min(guardrails.maxJsonDepth, EXTENSION_JSON_MAX_DEPTH_CEILING);
+      const maxBytes = EXTENSION_JSON_MAX_BYTES_CEILING;
+      const maxDepth = EXTENSION_JSON_MAX_DEPTH_CEILING;
       if (jsonDepth(v) > maxDepth) return reject('json_too_deep');
       if (jsonbTextBytes(v) > maxBytes) return reject('json_too_large');
       if (c?.json_schema && !matchesJsonSchema(c.json_schema, v)) {
