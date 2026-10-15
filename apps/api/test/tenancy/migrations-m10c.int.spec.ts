@@ -195,7 +195,7 @@ describe('M10C migration and schema guard', () => {
       });
     });
 
-    it('the kind, status, origin, end-reason, conflict and audit CHECKs equal the code catalogues', async () => {
+    it('the kind, status, origin, end-reason, conflict and audit CHECKs equal the code catalogues; the self-parent CHECK is in place', async () => {
       expect(await checkValues('tenant_entity_index_kind_valid')).toEqual(
         [...ENTITY_INDEX_KINDS].sort(),
       );
@@ -221,6 +221,15 @@ describe('M10C migration and schema guard', () => {
       expect(await checkValues('companies_parent_origin_valid')).toEqual(
         [...PARENT_COMPANY_ORIGINS].sort(),
       );
+      // The self-parent CHECK (second guard for VM5, next to the V2 behaviour test).
+      expect(
+        await q<{ def: string }>(
+          cleanUrl,
+          `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+            WHERE conname = 'companies_parent_not_self' AND contype = 'c'
+              AND conrelid = 'companies'::regclass`,
+        ),
+      ).toEqual([{ def: 'CHECK (((parent_company_id IS NULL) OR (parent_company_id <> id)))' }]);
       expect(await checkValues('tenant_audit_events_capability_valid')).toEqual(
         [...CAPABILITIES].sort(),
       );
