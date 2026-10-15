@@ -79,7 +79,16 @@ release | member add | member end | product add | line-assign`; operator id, cap
    `account_context_member_role_unknown`.
 9. **Merges (plan §7).** Company merge re-points the loser's contexts; a natural-key collision merges the loser
    context into the survivor's (members, products and lines move; `account_context_merge_collision` issue). Person
-   merge moves memberships (a duplicate role is ended on the loser).
+   merge moves memberships (a duplicate role is ended on the loser). After a collision the loser's source record
+   stays bound to the merged-away context (E5 §1) and resolves to the survivor, but it keeps its reference only: it
+   does not write the survivor's name, status, owner, renewal date or dimension products (review m1). The
+   survivor's own record drives those, so two source records never alternate their values on one context. Every
+   context-addressed writer (operator write / retire / reactivate / release, line assignment, person and product
+   membership) locks the context's account, re-reads the context and repeats until the account is stable under
+   the lock (`AccountContextStore.lockContextAccount` / `lockStable`, at most 3 moves, then refused), so a merge
+   that moves a context between the read and the lock cannot leave the write holding the old account only
+   (review M1). A merged context's refusal names the survivor id (review n2). The natural-key guard's raised
+   `account_context_natural_key_exists` is a `validation_failed` refusal, never a 500 (review n3).
 
 ## Deviations from the plan (recorded during implementation)
 

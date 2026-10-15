@@ -153,15 +153,12 @@ export class AccountContextMembershipWriter {
       readonly at?: Date;
     },
   ): Promise<MemberOutcome> {
-    const first = await this.store.context(tx, input.contextId);
-    if (!first) return 'context_unknown';
-    await this.store.lockEntities(tx, [
-      { kind: 'company', id: first.companyId },
+    // Review M1: the account is locked and re-verified under the lock until stable.
+    const ctx = await this.store.lockContextAccount(tx, input.contextId, [
       { kind: 'person', id: input.personId },
     ]);
-    const ctx = await this.store.context(tx, input.contextId);
     if (!ctx) return 'context_unknown';
-    if (ctx.recordState === 'merged') return 'context_merged';
+    if (ctx === 'unstable' || ctx.recordState === 'merged') return 'context_merged';
     const person = await this.store.person(tx, input.personId);
     if (!person) return 'person_unknown';
     const existing = await this.store.member(tx, ctx.id, input.personId, input.role);
@@ -272,11 +269,10 @@ export class AccountContextMembershipWriter {
     }
     return this.db.transaction(actx.tenant, async (tx) => {
       await requireAccountContext(tx, actx, this.store, this.moduleGate);
-      const first = await this.store.context(tx, contextId);
-      if (!first) throw new GovernanceError('validation_failed', 'The context does not exist');
-      await this.store.lockEntities(tx, [{ kind: 'company', id: first.companyId }]);
-      const ctx = (await this.store.context(tx, contextId))!;
-      if (ctx.recordState === 'merged' || ctx.status === 'retired') {
+      // Review M1: the account is locked and re-verified under the lock until stable.
+      const ctx = await this.store.lockContextAccount(tx, contextId);
+      if (!ctx) throw new GovernanceError('validation_failed', 'The context does not exist');
+      if (ctx === 'unstable' || ctx.recordState === 'merged' || ctx.status === 'retired') {
         throw new GovernanceError('validation_failed', 'The context is merged or retired');
       }
       const type = (await this.store.contextTypes(tx)).byId.get(ctx.contextTypeId);

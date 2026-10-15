@@ -1,7 +1,11 @@
+import type { Client } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { COMPANY_CANONICAL_LOCK_SCOPE } from '../../src/modules/context/merge-participants';
 import { ExtensionValueWriter } from '../../src/modules/extension';
 import { TenantDatabase, type TenantContext } from '../../src/modules/tenancy';
+import { advisoryLockKey } from '../../src/modules/tenancy/infrastructure/tenant-database';
 import {
+  appSession,
   asApp,
   auditOf,
   companies,
@@ -883,10 +887,102 @@ describe('M10E AccountContext (writers, lines, merges, reads)', () => {
           name: 'rel-s-emea',
         }),
       ).toMatchObject({ contextId: survivorDup });
-      // A merged context is not assignable and its members cannot be written.
+      // Review m1: the loser's record keeps its reference only; it no longer
+      // drives the survivor's attributes (no flapping between two records).
+      expect(
+        await observeContext(c, t, {
+          companyId: survivor,
+          record: 'rel-l-emea',
+          dimensions: { product: 'core', region: 'emea' },
+          name: 'Loser record name',
+          status: 'inactive',
+        }),
+      ).toEqual({ status: 'unchanged', contextId: survivorDup });
+      expect(await contextOf(c, t, survivorDup)).toMatchObject({
+        name: 'rel-s-emea',
+        status: 'active',
+      });
+      // The survivor's own record still drives it.
+      expect(
+        await observeContext(c, t, {
+          companyId: survivor,
+          record: 'rel-s-emea',
+          dimensions: { product: 'core', region: 'emea' },
+          name: 'Survivor renamed',
+        }),
+      ).toMatchObject({ status: 'updated', contextId: survivorDup });
+      // A merged context is not assignable and its members cannot be written;
+      // the refusal names the survivor id (review n2).
       await expect(
         s().writer.write(await human(t), { context: loserDup, name: 'x', reason: AC_REASON }),
-      ).rejects.toMatchObject({ code: 'validation_failed' });
+      ).rejects.toMatchObject({
+        code: 'validation_failed',
+        message: expect.stringContaining(survivorDup),
+      });
+    });
+
+    it('review M1 two concurrent sessions: an operator write whose context moves account under it locks the new account too; the human hold survives a later source observe', async () => {
+      const t = await contextTenant(c, 'acmergerace');
+      const ids = await companies(c, t, ['7911', '7912']);
+      const [from, to] = [ids['7911']!, ids['7912']!];
+      const dims = { product: 'core', region: 'emea' };
+      const ctx = (
+        await observeContext(c, t, {
+          companyId: from,
+          record: 'rel-race',
+          dimensions: dims,
+          name: 'Source name',
+        })
+      ).contextId!;
+      const lock = (db: Client, id: string) =>
+        db.query(`SELECT pg_advisory_xact_lock($1::bigint)`, [
+          advisoryLockKey(t.tenantId, COMPANY_CANONICAL_LOCK_SCOPE, id).toString(),
+        ]);
+      // Session A holds the old account's lock and moves the context (what a
+      // collision-free company merge does); session B holds the new account's lock.
+      const a = await appSession(c, t);
+      const b = await appSession(c, t);
+      let writeDone = false;
+      let pending: Promise<unknown> | undefined;
+      try {
+        await lock(a, from);
+        const actx = await human(t);
+        pending = s()
+          .writer.write(actx, { context: ctx, name: 'Human name', reason: AC_REASON })
+          .finally(() => {
+            writeDone = true;
+          });
+        await new Promise((r) => setTimeout(r, 400));
+        expect(writeDone).toBe(false); // waiting on the old account's lock
+        await a.query(`UPDATE tenant_account_contexts SET company_id = $2 WHERE id = $1`, [
+          ctx,
+          to,
+        ]);
+        await lock(b, to);
+        await a.query('COMMIT');
+        await new Promise((r) => setTimeout(r, 600));
+        // The re-read names the new account: the writer now waits on its lock too.
+        expect(writeDone).toBe(false);
+        await b.query('COMMIT');
+        await expect(pending).resolves.toMatchObject({ contextId: ctx, changed: true });
+      } finally {
+        for (const x of [a, b]) {
+          await x.query('ROLLBACK').catch(() => undefined);
+          await x.end();
+        }
+        await Promise.allSettled([pending]);
+      }
+      expect(await contextOf(c, t, ctx)).toMatchObject({ company_id: to, name: 'Human name' });
+      // A later source observe on the new account keeps the human-held name (Q14).
+      expect(
+        await observeContext(c, t, {
+          companyId: to,
+          record: 'rel-race',
+          dimensions: dims,
+          name: 'Source again',
+        }),
+      ).toMatchObject({ contextId: ctx, humanOverride: 1 });
+      expect((await contextOf(c, t, ctx)).name).toBe('Human name');
     });
 
     it('person merge: memberships move to the survivor; a duplicate role is ended on the loser', async () => {

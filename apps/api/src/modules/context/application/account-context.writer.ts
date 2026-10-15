@@ -231,6 +231,14 @@ export class AccountContextWriter {
     } else {
       ctx = await this.store.contextByNaturalKey(tx, input.companyId, type.id, dims.naturalKeyHash);
     }
+    // Review m1 (ADR 0031 §5): a reference still bound to a context merged away
+    // in a collision keeps its reference only. It does not drive the survivor's
+    // attributes or products (the survivor's own record does), so two source
+    // records never alternate their values on one context.
+    if (byRef && ctx && (await this.store.contextRefBound(tx, input.ref)) !== byRef) {
+      await this.observeReference(actx, tx, input, byRef);
+      return { status: 'unchanged', contextId: byRef };
+    }
 
     if (!ctx) {
       if (type.status !== 'active') return reject('type_retired');
@@ -352,16 +360,27 @@ export class AccountContextWriter {
       readonly effectiveAt: Date;
     },
   ): Promise<string> {
-    const id = await this.store.insertContext(tx, {
-      companyId,
-      contextTypeId: type.id,
-      naturalKeyHash: dims.naturalKeyHash,
-      dimensions: dims.dimensions,
-      name: input.name,
-      status: input.status,
-      ownerRef: input.ownerRef,
-      renewalDate: input.renewalDate,
-    });
+    const id = await this.store
+      .insertContext(tx, {
+        companyId,
+        contextTypeId: type.id,
+        naturalKeyHash: dims.naturalKeyHash,
+        dimensions: dims.dimensions,
+        name: input.name,
+        status: input.status,
+        ownerRef: input.ownerRef,
+        renewalDate: input.renewalDate,
+      })
+      .catch((error: unknown) => {
+        // Review n3: the natural-key guard raises (it is not an index, so not
+        // P2002); it is a refusal code, never a 500.
+        if (isNaturalKeyExists(error)) {
+          throw new GovernanceError('validation_failed', 'account_context_natural_key_exists', {
+            code: 'account_context_natural_key_exists',
+          });
+        }
+        throw error;
+      });
     const fields: ContextAttribute[] = ['name', 'status'];
     if (input.ownerRef !== null) fields.push('ownerRef');
     if (input.renewalDate !== null) fields.push('renewalDate');
@@ -668,14 +687,21 @@ export class AccountContextWriter {
     });
   }
 
-  /** Reads a context, locks its account, re-reads it and refuses a merged one (review M1). */
+  /**
+   * The context with its account locked and re-verified under the lock until
+   * stable (review M1); refuses a merged one, naming the survivor id (n2).
+   */
   private async lockedContext(tx: TenantTransaction, id: string): Promise<AccountContextRow> {
-    const first = await this.store.context(tx, id);
-    if (!first) throw new GovernanceError('validation_failed', 'The context does not exist');
-    await this.store.lockEntities(tx, [{ kind: 'company', id: first.companyId }]);
-    const ctx = await this.store.context(tx, id);
-    if (!ctx || ctx.recordState === 'merged') {
-      throw new GovernanceError('validation_failed', 'The context was merged; use the survivor');
+    const ctx = await this.store.lockContextAccount(tx, id);
+    if (!ctx) throw new GovernanceError('validation_failed', 'The context does not exist');
+    if (ctx === 'unstable') {
+      throw new GovernanceError('validation_failed', 'The context account kept moving; retry');
+    }
+    if (ctx.recordState === 'merged') {
+      throw new GovernanceError(
+        'validation_failed',
+        `The context was merged; use the survivor ${ctx.mergedIntoId ?? ''}`.trim(),
+      );
     }
     return ctx;
   }
@@ -753,19 +779,23 @@ export class AccountContextWriter {
     tx: TenantTransaction,
     input: LineAssignment,
   ): Promise<LineAssignOutcome> {
-    const line0 = await this.store.line(tx, input.lineId);
-    if (!line0) return 'line_unknown';
-    const ctx0 = input.contextId ? await this.store.context(tx, input.contextId) : undefined;
-    if (input.contextId && !ctx0) return 'context_unknown';
-    await this.store.lockEntities(tx, [
-      { kind: 'company', id: line0.companyId },
-      ...(ctx0 ? [{ kind: 'company' as const, id: ctx0.companyId }] : []),
-    ]);
-    const line = await this.store.line(tx, input.lineId);
-    if (!line) return 'line_unknown';
+    // Review M1: the line's and the context's accounts are locked and stable
+    // under the lock (a merge may move either between the read and the lock).
+    const both = await this.store.lockStable(
+      tx,
+      async () => {
+        const line = await this.store.line(tx, input.lineId);
+        if (!line) return undefined;
+        const ctx = input.contextId ? await this.store.context(tx, input.contextId) : undefined;
+        return { line, ctx };
+      },
+      ({ line, ctx }) => [line.companyId, ...(ctx ? [ctx.companyId] : [])],
+    );
+    if (!both) return 'line_unknown';
+    if (both === 'unstable') return 'not_assignable';
+    const { line, ctx } = both;
     if (line.contextId === input.contextId) return 'unchanged';
     if (input.contextId) {
-      const ctx = await this.store.context(tx, input.contextId);
       if (!ctx) return 'context_unknown';
       if (
         ctx.recordState === 'merged' ||
@@ -813,4 +843,17 @@ function attributeRefusal(input: {
     return 'renewal_date_invalid';
   }
   return undefined;
+}
+
+/** The natural-key guard's raised exception, at any depth of the driver error chain (n3). */
+export function isNaturalKeyExists(error: unknown, depth = 0): boolean {
+  if (!error || typeof error !== 'object' || depth > 5) return false;
+  const e = error as { message?: unknown; cause?: unknown; meta?: unknown };
+  if (typeof e.message === 'string' && e.message.includes('account_context_natural_key_exists')) {
+    return true;
+  }
+  const meta = e.meta && typeof e.meta === 'object' ? (e.meta as Record<string, unknown>) : {};
+  return (
+    isNaturalKeyExists(e.cause, depth + 1) || isNaturalKeyExists(meta.driverAdapterError, depth + 1)
+  );
 }

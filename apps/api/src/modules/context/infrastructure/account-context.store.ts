@@ -250,6 +250,51 @@ export class AccountContextStore {
     }
   }
 
+  /**
+   * Review M1: reads, locks the accounts the read names, re-reads, and
+   * repeats until every account the re-read names is already locked (a company
+   * merge can move a context or a line between the read and the lock). Locks
+   * taken along the way are held to the end of the transaction. `undefined`
+   * when the read finds nothing; `'unstable'` after `maxTries` moves (the
+   * caller refuses). `also` is locked with the first account (same sorted call).
+   */
+  async lockStable<T>(
+    tx: TenantTransaction,
+    read: () => Promise<T | undefined>,
+    accountsOf: (row: T) => readonly string[],
+    also: readonly { readonly kind: 'company' | 'person'; readonly id: string }[] = [],
+    maxTries = 3,
+  ): Promise<T | undefined | 'unstable'> {
+    const locked = new Set<string>();
+    let row = await read();
+    for (let attempt = 0; row !== undefined; attempt += 1) {
+      const missing = accountsOf(row).filter((id) => !locked.has(id));
+      if (missing.length === 0) return row;
+      if (attempt >= maxTries) return 'unstable';
+      await this.lockEntities(tx, [
+        ...missing.map((id) => ({ kind: 'company' as const, id })),
+        ...(attempt === 0 ? also : []),
+      ]);
+      for (const id of missing) locked.add(id);
+      row = await read();
+    }
+    return undefined;
+  }
+
+  /** Review M1: a context whose account is locked and stable under that lock. */
+  async lockContextAccount(
+    tx: TenantTransaction,
+    id: string,
+    also: readonly { readonly kind: 'company' | 'person'; readonly id: string }[] = [],
+  ): Promise<AccountContextRow | undefined | 'unstable'> {
+    return this.lockStable(
+      tx,
+      () => this.context(tx, id),
+      (c) => [c.companyId],
+      also,
+    );
+  }
+
   // --- Entities -----------------------------------------------------------------
 
   /**
