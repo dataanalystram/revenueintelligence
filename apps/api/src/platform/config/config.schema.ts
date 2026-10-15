@@ -76,6 +76,13 @@ export const envSchema = z
     /** Overlap before the watermark, for search-index lag (ADR 0015). */
     CONTEXT_RECONCILE_LOOKBACK_MS: z.coerce.number().int().min(0).max(86_400_000).default(600_000),
 
+    /**
+     * M10C (plan §2.3, Q3): the account-hierarchy depth guardrail (edges from the
+     * root), enforced by the writer. Out of range refuses start-up. Not canonical
+     * semantics: raising it is configuration, never a canonical version change.
+     */
+    CANONICAL_HIERARCHY_MAX_DEPTH: z.coerce.number().int().min(1).max(50).default(10),
+
     SENTRY_DSN: z.url().optional(),
     SENTRY_ENVIRONMENT: z.string().min(1).optional(),
   })
@@ -122,6 +129,8 @@ export interface AppConfig {
     readonly reconcileIntervalMs: number;
     readonly reconcileLookbackMs: number;
   };
+  /** M10C: canonical guardrails (platform configuration, not canonical semantics). */
+  readonly canonical: { readonly hierarchyMaxDepth: number };
   readonly telemetry: {
     readonly otelEnabled: boolean;
     readonly serviceName: string;

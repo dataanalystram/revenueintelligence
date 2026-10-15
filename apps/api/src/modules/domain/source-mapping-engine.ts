@@ -1,7 +1,14 @@
 import type { ConnectorKind } from './connector-kinds';
 import { classifyHoldingValue, type HoldingValueClass } from './holding-domain';
 import type { ExternalRef, ExternalSystem } from './external-ref';
-import { companyFields, personFields, type SourceObservation } from './source-observation';
+import { mapRoleValues } from './canonical/account-structure';
+import {
+  companyFields,
+  personFields,
+  type SourceAffiliation,
+  type SourceObservation,
+  type SourceParent,
+} from './source-observation';
 import type { SourceRecord } from './source-connector';
 import type { HoldingFilter, ObjectMapping, ProductReferences } from './source-mapping';
 import { applyTransforms, type RawValue } from './source-transforms';
@@ -40,6 +47,8 @@ export const QUALITY_CODES = [
   'unstable_read',
   'schema_drift',
   'record_rejected',
+  // M10C: affiliation role values outside the mapping's explicit value map (dropped, never stored).
+  'unmapped_role_value',
 ] as const;
 export type QualityCode = (typeof QUALITY_CODES)[number];
 
@@ -310,6 +319,8 @@ export interface ContextMappingEnv {
   readonly kind: ExternalSystem;
   /** Profile authority for the entity (account_profile / person_profile). */
   readonly profileAuthority: boolean;
+  /** M10C: `account_hierarchy` authority (accounts only); without it the parent is not read. */
+  readonly hierarchyAuthority?: boolean;
   readonly observedAt: Date;
 }
 
@@ -359,6 +370,7 @@ export function mapContextRecord(
     ...(record.modifiedAt ? { sourceUpdatedAt: record.modifiedAt } : {}),
   };
   if (kind === 'company') {
+    const parent = env.hierarchyAuthority ? mappedParent(obj, record, env.kind) : undefined;
     return {
       outcome: 'ingest',
       observation: {
@@ -366,10 +378,16 @@ export function mapContextRecord(
         kind: 'company',
         presence: 'present',
         fields: companyFields({ name: values.name, domain: values.domain }),
+        ...(parent ? { parent } : {}),
       },
       quality,
     };
   }
+  const affiliationRel = obj.relationships.find((r) => r.target === 'person.affiliation');
+  const affiliations =
+    env.profileAuthority && affiliationRel
+      ? mappedAffiliations(affiliationRel, record, env.kind, quality)
+      : undefined;
   const companyRel = obj.relationships.find((r) => r.target === 'person.primaryCompany');
   const companyId = companyRel ? text(record.values[companyRel.field]) : undefined;
   return {
@@ -399,7 +417,89 @@ export function mapContextRecord(
               : [],
           }
         : {}),
+      ...(affiliations ? { affiliations } : {}),
     },
     quality,
   };
+}
+
+/**
+ * M10C (plan §2.4): the `account.parent` value of an account record. A field
+ * missing from the record (not read) states nothing; an explicitly empty value
+ * clears the parent; otherwise the parent's source reference.
+ */
+function mappedParent(
+  obj: ObjectMapping,
+  record: SourceRecord,
+  system: ExternalSystem,
+): SourceParent | undefined {
+  const rel = obj.relationships.find((r) => r.target === 'account.parent');
+  if (!rel || !Object.hasOwn(record.values, rel.field)) return undefined;
+  const id = text(record.values[rel.field]);
+  if (!id) return { kind: 'clear' };
+  if (id.length > 255) return undefined;
+  return { kind: 'set', ref: { system, objectType: rel.object!, id } };
+}
+
+const AFFILIATION_DATE_RULES = [
+  { parse: { type: 'datetime', format: 'iso_datetime', timeZone: 'UTC' } },
+  { parse: { type: 'date', format: 'iso_date', timeZone: 'UTC', inclusiveEnd: false } },
+] as const;
+
+function affiliationDate(raw: RawValue, quality: QualityCode[]): Date | undefined {
+  if (text(raw) === undefined) return undefined;
+  for (const rule of AFFILIATION_DATE_RULES) {
+    const r = applyTransforms(raw, rule);
+    if (r.ok && 'value' in r && r.value instanceof Date) return r.value;
+  }
+  quality.push('invalid_date');
+  return undefined;
+}
+
+/**
+ * M10C (plan §3.2): the `person.affiliation` of a person record — one account
+ * reference with optional role codes (explicit value map only, Q11; multi-value
+ * fields split on `;`) and a stated period. An empty account value states the
+ * person has no such affiliation (`[]`); nothing is inferred from email.
+ */
+function mappedAffiliations(
+  rel: ObjectMapping['relationships'][number],
+  record: SourceRecord,
+  system: ExternalSystem,
+  quality: QualityCode[],
+): readonly SourceAffiliation[] | undefined {
+  if (!Object.hasOwn(record.values, rel.field)) return undefined;
+  const id = text(record.values[rel.field]);
+  if (!id || id.length > 255) return [];
+  const a = rel.affiliation;
+  let roleCodes: string[] = [];
+  if (a?.roleField && a.roleValueMap) {
+    const raw = text(record.values[a.roleField]);
+    const values = raw
+      ? raw
+          .split(';')
+          .map((v) => v.trim())
+          .filter((v) => v !== '')
+      : [];
+    const mapped = mapRoleValues(values, a.roleValueMap);
+    roleCodes = mapped.codes;
+    for (let i = 0; i < mapped.dropped; i += 1) quality.push('unmapped_role_value');
+  }
+  let startsAt = a?.startsAtField
+    ? affiliationDate(record.values[a.startsAtField], quality)
+    : undefined;
+  let endsAt = a?.endsAtField ? affiliationDate(record.values[a.endsAtField], quality) : undefined;
+  if (startsAt && endsAt && endsAt < startsAt) {
+    quality.push('invalid_period');
+    startsAt = undefined;
+    endsAt = undefined;
+  }
+  return [
+    {
+      company: { system, objectType: rel.object!, id },
+      roleCodes,
+      ...(startsAt ? { startsAt } : {}),
+      ...(endsAt ? { endsAt } : {}),
+    },
+  ];
 }
