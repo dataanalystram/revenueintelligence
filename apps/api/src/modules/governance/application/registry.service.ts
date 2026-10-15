@@ -1,7 +1,19 @@
 import { randomUUID } from 'node:crypto';
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
+import { APP_CONFIG, type AppConfig } from '../../../platform/config';
 import {
   AVAILABLE_REGISTRY_KINDS,
+  compareCanonicalVersion,
+  DEFAULT_EXTENSION_GUARDRAILS,
+  EXTENSION_DOCUMENT_SCHEMA_VERSION,
+  EXTENSION_MIN_VERSION,
+  EXTENSION_MODULE_KEY,
+  EXTENSION_REFUSAL_CODES,
+  extensionRuleViolations,
+  keysTighteningToRestricted,
+  validateExtensionDocument,
+  type ExtensionEntryDraft,
+  type ExtensionGuardrails,
   DATA_POLICY_ENTRY_KEY,
   DATA_POLICY_SCHEMA_VERSION,
   DataPolicyDocumentSchema,
@@ -31,6 +43,7 @@ import {
 } from '../../tenancy';
 import { valueHistoryColumn } from '../../domain';
 import { GovernanceError } from '../errors';
+import { ModuleGate } from './module-settings.service';
 
 export interface RegistryPublishInput {
   /** The version the document was edited from (0 for the first). */
@@ -79,7 +92,17 @@ export class RegistryService {
     private readonly db: TenantDatabase,
     readonly audit: AuditTrail,
     private readonly authorizer: WriteAuthorizer,
+    @Optional() private readonly moduleGate?: ModuleGate,
+    @Optional() @Inject(APP_CONFIG) private readonly config?: AppConfig,
   ) {}
+
+  /** M10D (plan §2.7): the extension guardrails from configuration, else the E4 defaults. */
+  get extensionGuardrails(): ExtensionGuardrails {
+    return (
+      (this.config as Partial<AppConfig> | undefined)?.canonical?.extension ??
+      DEFAULT_EXTENSION_GUARDRAILS
+    );
+  }
 
   /** Read-only: validation result and the content hash to confirm with `--expected-hash`. */
   async dryRun(ctx: TenantContext, kind: string, document: unknown): Promise<RegistryDryRun> {
@@ -98,7 +121,19 @@ export class RegistryService {
           canonicalVersionMin,
         };
       }
+      const gate = k === 'extension' ? await this.extensionGateIssues(tx, canonicalVersionMin) : [];
       const parsed = this.parse(k, document);
+      if (gate.length > 0) {
+        return {
+          kind: k,
+          available: true,
+          valid: false,
+          issues: [...gate, ...(parsed.ok ? [] : parsed.issues)],
+          contentHash: null,
+          currentVersion: current,
+          canonicalVersionMin,
+        };
+      }
       return {
         kind: k,
         available: true,
@@ -181,9 +216,17 @@ export class RegistryService {
     }
     // A1 for configuration: secret-like values are refused (audited denied) before anything.
     await this.authorizer.refuseSecretLike(actx, entry, { document: input.document });
+    // M10D (Q18): an extension document needs canonical 0.4 and the module enabled.
+    if (kind === 'extension') {
+      await this.db.transaction(actx.tenant, (tx) => this.requireExtensionGate(tx, actx));
+    }
     const parsed = this.parse(kind, input.document);
     if (!parsed.ok) {
-      throw new GovernanceError('validation_failed', `Invalid ${kind} document`, {
+      // M10D (plan §16): the control refusals carry their own reason code.
+      const refusal = EXTENSION_REFUSAL_CODES.find((c) =>
+        parsed.issues.some((i) => i.endsWith(`: ${c}`)),
+      );
+      throw new GovernanceError(refusal ?? 'validation_failed', `Invalid ${kind} document`, {
         issues: parsed.issues.length,
       });
     }
@@ -196,6 +239,7 @@ export class RegistryService {
     }
     return this.db.transaction(actx.tenant, async (tx) => {
       await tenantAdvisoryLock(tx, 'registry', kind);
+      if (kind === 'extension') await this.requireExtensionGate(tx, actx);
       const db = tenantClient(tx);
       const latest = await db.tenantRegistryVersion.findFirst({
         where: { kind },
@@ -213,10 +257,18 @@ export class RegistryService {
         throw new GovernanceError('no_change', `Registry ${kind} already holds this document`);
       }
       const previous = await db.tenantRegistryEntry.findMany({ where: { kind } });
-      const violations = registryRuleViolations(
+      const violations: { rule: string; key: string }[] = registryRuleViolations(
         previous.map((e) => ({ key: e.key, definition: e.definition as Record<string, unknown> })),
         parsed.value.entries,
       );
+      if (kind === 'extension') {
+        await this.checkExtensionRules(
+          tx,
+          previous,
+          parsed.value.entries as ExtensionEntryDraft[],
+          violations,
+        );
+      }
       if (violations.length > 0) {
         throw new GovernanceError(
           'registry_rule_violation',
@@ -275,12 +327,18 @@ export class RegistryService {
             definition: e.definition as TenantJsonInput,
             introducedIn: version,
             lastChangedIn: version,
+            // M10D (control 8): extension definitions project their classification.
+            sensitivity: e.sensitivity ?? null,
+            categories: e.categories ? [...e.categories] : undefined,
             updatedAt: now,
           },
           update: {
             status: e.status ?? before?.status ?? 'active',
             definition: e.definition as TenantJsonInput,
             lastChangedIn: version,
+            ...(e.sensitivity !== undefined
+              ? { sensitivity: e.sensitivity, categories: [...(e.categories ?? [])] }
+              : {}),
             updatedAt: now,
           },
         });
@@ -312,13 +370,116 @@ export class RegistryService {
     return latest?.version ?? 0;
   }
 
+  /** M10D (Q18): adopted canonical >= 0.4 and module `extension` enabled; refusals audited. */
+  private async requireExtensionGate(
+    tx: TenantTransaction,
+    actx: AuthorizedContext<'config.data_policy.publish' | 'config.registry.publish'>,
+  ): Promise<void> {
+    const adopted = await adoptedCanonicalVersion(tx);
+    if (compareCanonicalVersion(adopted, EXTENSION_MIN_VERSION) < 0) {
+      throw new GovernanceError(
+        'canonical_version_too_low',
+        `Extension definitions need canonical ${EXTENSION_MIN_VERSION} (adopted ${adopted})`,
+      );
+    }
+    if (this.moduleGate) {
+      await this.moduleGate.require(tx, actx, EXTENSION_MODULE_KEY);
+      return;
+    }
+    // Without the gate service (unit wiring), the setting is still checked.
+    if (!(await this.extensionModuleEnabled(tx))) {
+      throw new GovernanceError('module_disabled', 'Module extension is disabled for this tenant');
+    }
+  }
+
+  private async extensionModuleEnabled(tx: TenantTransaction): Promise<boolean> {
+    const setting = await tenantClient(tx).tenantModuleSetting.findUnique({
+      where: { tenantId_moduleKey: { tenantId: tx.tenantId, moduleKey: EXTENSION_MODULE_KEY } },
+      select: { enabled: true },
+    });
+    return setting?.enabled === true;
+  }
+
+  /** The dry run reports the gate as issues (nothing audited, nothing written). */
+  private async extensionGateIssues(tx: TenantTransaction, adopted: string): Promise<string[]> {
+    const issues: string[] = [];
+    if (compareCanonicalVersion(adopted, EXTENSION_MIN_VERSION) < 0) {
+      issues.push('canonical_version_too_low');
+    }
+    if (!(await this.extensionModuleEnabled(tx))) issues.push('module_disabled');
+    return issues;
+  }
+
+  /**
+   * M10D (plan §2.5): X2, X4 on relationship ends and R-X6 against the stored
+   * projection; a key tightened to `restricted` is refused while stored data of
+   * that definition exists (Q10), probed with bounded EXISTS queries.
+   */
+  private async checkExtensionRules(
+    tx: TenantTransaction,
+    previous: readonly {
+      id: string;
+      key: string;
+      definition: unknown;
+      sensitivity: string | null;
+      categories: string[];
+    }[],
+    next: readonly ExtensionEntryDraft[],
+    violations: { rule: string; key: string }[],
+  ): Promise<void> {
+    const stored = previous.map((p) => ({
+      key: p.key,
+      definition: p.definition as Record<string, unknown>,
+      sensitivity: p.sensitivity,
+      categories: p.sensitivity === null ? null : p.categories,
+    }));
+    violations.push(...extensionRuleViolations(stored, next));
+    const tightened = keysTighteningToRestricted(stored, next);
+    if (tightened.length === 0) return;
+    const ids = previous.filter((p) => tightened.includes(p.key));
+    const db = tenantClient(tx);
+    for (const p of ids) {
+      const rows = await db.$queryRawUnsafe<{ present: boolean }[]>(
+        `SELECT (EXISTS (SELECT 1 FROM tenant_extension_values
+                          WHERE tenant_id = $1::uuid AND field_id = $2::uuid AND value_state = 'present')
+              OR EXISTS (SELECT 1 FROM tenant_custom_records WHERE tenant_id = $1::uuid AND object_id = $2::uuid)
+              OR EXISTS (SELECT 1 FROM tenant_custom_relationships WHERE tenant_id = $1::uuid AND rel_def_id = $2::uuid)
+               ) AS present`,
+        tx.tenantId,
+        p.id,
+      );
+      if (rows[0]?.present) violations.push({ rule: 'R-X6', key: p.key });
+    }
+  }
+
   /** Validates a document of an available kind and derives its projected entries. */
   private parse(
     kind: RegistryKind,
     raw: unknown,
   ): { ok: true; value: ParsedDocument } | { ok: false; issues: string[] } {
-    if (jsonbTextBytes(raw ?? null) > REGISTRY_DOCUMENT_MAX_BYTES) {
-      return { ok: false, issues: ['document_too_large'] };
+    const maxBytes =
+      kind === 'extension'
+        ? this.extensionGuardrails.registryMaxBytes
+        : REGISTRY_DOCUMENT_MAX_BYTES;
+    if (jsonbTextBytes(raw ?? null) > maxBytes) {
+      return {
+        ok: false,
+        issues: [
+          kind === 'extension' ? '(document): extension_guardrail_exceeded' : 'document_too_large',
+        ],
+      };
+    }
+    if (kind === 'extension') {
+      const v = validateExtensionDocument(raw, this.extensionGuardrails);
+      if (!v.ok) return { ok: false, issues: v.issues.map((i) => `${i.key}: ${i.code}`) };
+      return {
+        ok: true,
+        value: {
+          document: v.document as unknown as Record<string, unknown>,
+          schemaVersion: EXTENSION_DOCUMENT_SCHEMA_VERSION,
+          entries: v.entries,
+        },
+      };
     }
     if (kind !== 'data_policy') return { ok: false, issues: ['registry_kind_not_available'] };
     const parsed = DataPolicyDocumentSchema.safeParse(raw);

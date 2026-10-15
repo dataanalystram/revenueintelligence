@@ -16,8 +16,8 @@ export const REGISTRY_KINDS = [
 ] as const;
 export type RegistryKind = (typeof REGISTRY_KINDS)[number];
 
-/** Kinds with a registered document schema. */
-export const AVAILABLE_REGISTRY_KINDS: readonly RegistryKind[] = ['data_policy'];
+/** Kinds with a registered document schema (M10D: `extension`, plan §2). */
+export const AVAILABLE_REGISTRY_KINDS: readonly RegistryKind[] = ['data_policy', 'extension'];
 
 export const REGISTRY_ENTRY_STATUSES = ['active', 'retired', 'promoted'] as const;
 export type RegistryEntryStatus = (typeof REGISTRY_ENTRY_STATUSES)[number];
@@ -25,6 +25,11 @@ export type RegistryEntryStatus = (typeof REGISTRY_ENTRY_STATUSES)[number];
 /** R-K: registry keys. */
 export const REGISTRY_KEY_PATTERN = /^[a-z][a-z0-9_]{0,62}$/;
 
+/**
+ * Document cap of every kind except `extension` (M10A2). The `extension` kind is
+ * capped by the `EXTENSION_REGISTRY_MAX_BYTES` guardrail (M10D Q3, default 2 MiB);
+ * the database ceiling of that kind is `EXTENSION_REGISTRY_MAX_BYTES_CEILING`.
+ */
 export const REGISTRY_DOCUMENT_MAX_BYTES = 256 * 1024;
 
 /** One projected entry of a registry version. */
@@ -32,6 +37,9 @@ export interface RegistryEntryDraft {
   readonly key: string;
   readonly definition: Readonly<Record<string, unknown>>;
   readonly status?: RegistryEntryStatus;
+  /** M10D: per-definition classification, projected into the entry's columns (control 8). */
+  readonly sensitivity?: string;
+  readonly categories?: readonly string[];
 }
 
 export type RegistryRule = 'R-K' | 'R-X1' | 'R-X3' | 'R-X4';
