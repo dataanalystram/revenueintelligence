@@ -77,7 +77,7 @@ and a hard rule that extension data never feeds ownership, identity or (in M10D)
    `extension_value_conflict` (never silently overwritten). Loser rows are kept. Custom records whose parent is the
    loser are re-pointed; reference values and relationships are not rewritten (readers follow `merged_into_id`).
 9. **Read models and CLI (Q29).** `ExtensionReadModel.valuesFor` batch-loads values, items and reference lineage in
-   bounded queries (no N+1); `CustomRecordReadModel` with keyset pagination. Capability `data.extension.read`
+   bounded queries (no N+1); `ExtensionReadModel.records` / `.record` with keyset pagination. Capability `data.extension.read`
    (`operator`), one `extension.read` audit event per call. CLI (JSON; identifiers / codes / dates; confidential
    values only with the audited `--include-confidential`; exit 2 on refusal): `extension registry show`,
    `extension values show`, `extension value set|clear|release`, `extension records list|show`,
