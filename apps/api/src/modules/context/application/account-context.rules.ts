@@ -77,9 +77,6 @@ export function validateDimensions(
       if (d.required) return { ok: false, code: 'dimension_required', key: d.key };
       continue;
     }
-    if (typeof value === 'string' && findSecretLike(value)) {
-      return { ok: false, code: 'secret_like_value', key: d.key };
-    }
     switch (d.type) {
       case 'product_key': {
         if (typeof value !== 'string') return { ok: false, code: 'dimension_invalid', key: d.key };
