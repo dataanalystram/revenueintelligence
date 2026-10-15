@@ -423,6 +423,55 @@ export class AccountStructureStore {
     });
   }
 
+  /**
+   * Whether an operator ending of this (person, company) pair still stands:
+   * an `end_reason = 'operator'` row not yet released (review M6). A source
+   * observation never re-creates such a pair until an operator releases it.
+   */
+  async operatorEndingStands(
+    tx: TenantTransaction,
+    personId: string,
+    companyId: string,
+  ): Promise<boolean> {
+    const n = await tenantClient(tx).tenantPersonAffiliation.count({
+      where: {
+        tenantId: tx.tenantId,
+        personId,
+        companyId,
+        status: 'ended',
+        endReason: 'operator',
+        releasedAt: null,
+      },
+    });
+    return n > 0;
+  }
+
+  /** Releases every standing operator ending of the pair (set once); returns the released row ids. */
+  async releaseOperatorEndings(
+    tx: TenantTransaction,
+    personId: string,
+    companyId: string,
+    at: Date,
+  ): Promise<string[]> {
+    const db = tenantClient(tx);
+    const where = {
+      tenantId: tx.tenantId,
+      personId,
+      companyId,
+      status: 'ended',
+      endReason: 'operator',
+      releasedAt: null,
+    };
+    const rows = await db.tenantPersonAffiliation.findMany({
+      where,
+      select: { id: true },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+    if (rows.length === 0) return [];
+    await db.tenantPersonAffiliation.updateMany({ where, data: { releasedAt: at } });
+    return rows.map((r) => r.id);
+  }
+
   /** active → ended / merged (terminal). Returns whether the row was active. */
   async endAffiliation(
     tx: TenantTransaction,

@@ -66,7 +66,7 @@ period that later milestones (M10G champion movement, M10H contact roles) build 
    (0–10 identifiers `^[a-z0-9_]{1,64}$`, only from the mapping's explicit value map; unmapped values dropped and
    counted), business period `starts_at` / `ends_at`, `ended_at`, closed `end_reason` (`source_end_date`,
    `source_removed`, `operator`, `person_merged`, `company_merged`), `merged_into_id`, `origin`, `field_hash`,
-   `last_change_id`. One row per period; at most one `active` row per (person, company); endpoints and origin are
+   `last_change_id`, `released_at` (set once, only on an `operator` ending; review M6). One row per period; at most one `active` row per (person, company); endpoints and origin are
    immutable; `ended` / `merged` rows are terminal (a renewal is a new row). `lip_app` has `SELECT, INSERT, UPDATE`
    and **no `DELETE`**. Entity-index kind `person_affiliation` (the endpoints stay direct FKs, F2). The primary
    account stays on `persons.company_id`, unchanged; `isPrimary` is derived, never stored. No migration backfill:
@@ -77,7 +77,14 @@ period that later milestones (M10G champion movement, M10H contact roles) build 
    (`source_end_date`). Nothing is created or ended from an email domain, an unread association, a tombstoned
    person or company, or a disappeared reference; source observations never touch `origin = 'human'` rows. An
    unresolved company → open `affiliation_endpoint_unresolved`, created when the company arrives (late-company
-   path). Operator `add` / `end` write origin `human`.
+   path; plain company links only, review M3). Operator `add` / `end` write origin `human`.
+   **An operator ending is sticky (review M6, orchestrator decision under Ram's standing instruction, mirroring
+   §7):** once an operator ends a pair's row (a `human` row, a source row, or the source row an operator `add`
+   replaced), a source observation that still states the link does not re-create the pair (counted in
+   `humanRows`, nothing written) until an operator `release` (`person:affiliation release --person --company`,
+   audited `person.affiliation.release`) sets `released_at` on the standing operator endings; the next
+   authoritative statement then creates a `source_provided` row. Stickiness is per (person, company): a merge moves
+   active rows only, so a standing operator ending on a loser pair does not follow the merge.
 10. **Merge participants (Q13, Q14).** `AccountHierarchyMergeParticipant` (company merge, always wired by
     `ContextModule`): the loser's children move to the survivor (origin kept, cycle rule kept, no depth guardrail;
     depth overshoot → `hierarchy_depth_exceeded` issue and integrity finding); a survivor under the loser takes the
@@ -97,7 +104,7 @@ period that later milestones (M10G champion movement, M10H contact roles) build 
     `account_structure.read` audit event per call): ancestors, root, depth, descendants bounded by the guardrail + 1
     (deeper trees truncated and flagged), affiliations of a person or an account with derived `isPrimary`. Read-only
     `security_invoker` views `account_hierarchy_paths` and `person_affiliation_index` (`SELECT` only). CLI
-    `account:hierarchy show|set|clear|release`, `person:affiliations`, `person:affiliation add|end` (JSON output,
+    `account:hierarchy show|set|clear|release`, `person:affiliations`, `person:affiliation add|end|release` (JSON output,
     identifiers, codes and dates only).
 13. **Canonical `0.3` (Q18–Q20).** `current` (this ADR); `0.1`, `0.2` `supported`. The catalogue adds the
     optional hash members `authorityFacts`, `mappingTargets`, `hierarchy` and `affiliationEndReasons`, and
@@ -109,7 +116,7 @@ period that later milestones (M10G champion movement, M10H contact roles) build 
     and affiliations readable and refuses new writes; nothing is unparented.
 14. **Security integration.** Policy v4: `canonical.human_entry` granted to `operator` and honoured only by the
     M10C operator methods (S2 asserts it); new `data.account_structure.read` (`operator`). Audit actions
-    `account.hierarchy.set|clear|release`, `person.affiliation.add|end`, `account_structure.read`; target kinds
+    `account.hierarchy.set|clear|release`, `person.affiliation.add|end|release`, `account_structure.read`; target kinds
     `account_hierarchy`, `person_affiliation`. Interim data-quality issues on `tenant_identity_conflicts` (Q7):
     `hierarchy_cycle_refused`, `hierarchy_depth_exceeded`, `hierarchy_parent_merged`,
     `hierarchy_parent_unresolved`, `hierarchy_human_override_disagrees`, `affiliation_endpoint_unresolved`. Manifests

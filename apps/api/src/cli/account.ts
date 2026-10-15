@@ -38,6 +38,10 @@ import { authorizeOperator, OperatorIdRequiredError } from './operator';
  *   pnpm --filter @lip/api person:affiliation add    --tenant <slug> --person <id> --company <id> [--roles a,b]
  *                                                    [--starts-at <iso>] [--ends-at <iso>] --reason <code> --actor <id>
  *   pnpm --filter @lip/api person:affiliation end    --tenant <slug> --affiliation <id> [--ends-at <iso>] --reason <code> --actor <id>
+ *   pnpm --filter @lip/api person:affiliation release --tenant <slug> --person <id> --company <id> --reason <code> --actor <id>
+ *
+ * An operator `end` (also of a source row an operator `add` replaced) is sticky:
+ * the source does not re-create the pair until `release` hands it back.
  *
  * Exit codes: 2 refused or invalid, 1 unexpected failure.
  */
@@ -105,6 +109,7 @@ async function main(): Promise<void> {
     'affiliations list',
     'affiliation add',
     'affiliation end',
+    'affiliation release',
   ];
   if (!known.includes(command)) throw new Error(`Usage:\n  ${USAGE}`);
   if (!values.tenant) throw new Error('--tenant <slug> is required');
@@ -186,6 +191,21 @@ async function main(): Promise<void> {
               roleCodes: values.roles ? values.roles.split(',').map((r) => r.trim()) : [],
               ...(startsAt ? { startsAt } : {}),
               ...(endsAt ? { endsAt } : {}),
+              reason: values.reason ?? '',
+            }),
+          };
+        }
+        case 'affiliation release': {
+          const actx = await authorizeOperator(app, ctx, 'canonical.human_entry', {
+            actorFlag: values.actor,
+            action: 'person.affiliation.release',
+            targetKind: 'person_affiliation',
+            correlationId,
+          });
+          return {
+            affiliation: await app.get(PersonAffiliationWriter).release(actx, {
+              personId: values.person ?? '',
+              companyId: values.company ?? '',
               reason: values.reason ?? '',
             }),
           };

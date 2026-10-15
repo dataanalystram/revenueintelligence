@@ -77,6 +77,7 @@ export const AUDIT_ACTIONS = [
   'account.hierarchy.release',
   'person.affiliation.add',
   'person.affiliation.end',
+  'person.affiliation.release',
   'account_structure.read',
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];

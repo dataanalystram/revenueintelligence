@@ -316,7 +316,7 @@ describe('S2: privileged service writes take an authorized context (static)', ()
     }
     expect(Object.fromEntries(accepted)).toEqual({
       AccountHierarchyWriter: ['set', 'clear', 'release'],
-      PersonAffiliationWriter: ['add', 'end'],
+      PersonAffiliationWriter: ['add', 'end', 'release'],
     });
   });
 

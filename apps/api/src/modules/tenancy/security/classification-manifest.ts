@@ -3331,6 +3331,7 @@ export const CLASSIFICATION_MANIFEST: Readonly<
     origin: op('code', CL),
     field_hash: op('hash', CL),
     last_change_id: op('reference', CL),
+    released_at: op('timestamp', CL),
     created_at: op('timestamp', CL),
     updated_at: op('timestamp', CL),
   },

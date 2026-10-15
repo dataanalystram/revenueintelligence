@@ -38,6 +38,7 @@ export {
   type AffiliationWritten,
   type OperatorAffiliationAdd,
   type OperatorAffiliationEnd,
+  type OperatorAffiliationRelease,
 } from './application/person-affiliation.writer';
 export {
   AccountStructureReadModel,

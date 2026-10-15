@@ -377,6 +377,18 @@ describe('M10C person–account affiliations', () => {
       await expect(end(t, added.affiliationId)).rejects.toMatchObject({
         code: 'validation_failed',
       });
+      // Human overrides win (review M6): the source keeps stating the link, with roles;
+      // the operator's ending stands, nothing is re-created.
+      await observePerson(c, t, '9401', {
+        links: [link('941', true)],
+        affiliations: [{ company: hs('941'), roleCodes: ['user'] }],
+      });
+      expect(
+        (await affiliationsOf(c, t, person)).map((r) => [r.origin, r.status, r.end_reason]),
+      ).toEqual([
+        ['source_provided', 'ended', 'operator'],
+        ['human', 'ended', 'operator'],
+      ]);
       expect(
         (await auditOf(c, t))
           .filter((e) => e.action.startsWith('person.affiliation.'))
@@ -388,6 +400,81 @@ describe('M10C person–account affiliations', () => {
         ['person.affiliation.end', 'allowed', null],
         ['person.affiliation.end', 'failed', 'validation_failed'],
       ]);
+    });
+
+    it('an operator end of a source row is sticky against sync, also on the late-company path, until release hands the pair back (review M6)', async () => {
+      const t = await c.tenant('affsticky', 1001);
+      const ids = await companies(c, t, ['961']);
+      const person = (await observePerson(c, t, '9601', { links: [link('961', true)] })).entityId!;
+      const [source] = await affiliationsOf(c, t, person);
+      expect(source).toMatchObject({ origin: 'source_provided', status: 'active' });
+      await end(t, source!.id);
+      // Re-observed (person and company): no new row while the operator ending stands.
+      await observePerson(c, t, '9601', { links: [link('961', true)] });
+      await observePerson(c, t, '9601', {
+        links: [link('961', true)],
+        affiliations: [{ company: hs('961'), roleCodes: ['user'] }],
+      });
+      await observeCompany(c, t, '961');
+      expect((await affiliationsOf(c, t, person)).map((r) => [r.status, r.end_reason])).toEqual([
+        ['ended', 'operator'],
+      ]);
+      // Release: audited once; the pair is handed back; the next statement creates a source row.
+      const released = await writer().release(await authz(t, 'canonical.human_entry'), {
+        personId: person,
+        companyId: ids['961']!,
+        reason: REASON,
+      });
+      expect(released).toMatchObject({
+        personId: person,
+        companyId: ids['961'],
+        released: [source!.id],
+      });
+      const [releasedRow] = await c.sql<{ released_at: Date | null }>(
+        `SELECT released_at FROM tenant_person_affiliations WHERE tenant_id = $1 AND id = $2`,
+        [t.tenantId, source!.id],
+      );
+      expect(releasedRow!.released_at).toBeInstanceOf(Date);
+      await observePerson(c, t, '9601', { links: [link('961', true)] });
+      expect(
+        (await affiliationsOf(c, t, person)).map((r) => [r.origin, r.status, r.end_reason]),
+      ).toEqual([
+        ['source_provided', 'ended', 'operator'],
+        ['source_provided', 'active', null],
+      ]);
+      // Nothing left to release: refused and audited as failed.
+      await expect(
+        writer().release(await authz(t, 'canonical.human_entry'), {
+          personId: person,
+          companyId: ids['961']!,
+          reason: REASON,
+        }),
+      ).rejects.toMatchObject({ code: 'validation_failed' });
+      expect(
+        (await auditOf(c, t))
+          .filter((e) => e.action === 'person.affiliation.release')
+          .map((e) => [e.outcome, e.reason_code]),
+      ).toEqual([
+        ['allowed', null],
+        ['failed', 'validation_failed'],
+      ]);
+      // Raw SQL: a release is recorded once, and only on an operator ending.
+      await asApp(c, t, async (db) => {
+        await expect(
+          db.query(
+            `UPDATE tenant_person_affiliations SET released_at = now() + interval '1 day' WHERE id = $1`,
+            [source!.id],
+          ),
+        ).rejects.toMatchObject({ message: 'affiliation_terminal' });
+      });
+      const active = (await affiliationsOf(c, t, person)).at(-1)!;
+      await asApp(c, t, async (db) => {
+        await expect(
+          db.query(`UPDATE tenant_person_affiliations SET released_at = now() WHERE id = $1`, [
+            active.id,
+          ]),
+        ).rejects.toMatchObject({ constraint: 'tenant_person_affiliations_released' });
+      });
     });
 
     it('operator entry refuses an invalid period, invalid role codes, a merged endpoint, free-text reasons and other actors', async () => {

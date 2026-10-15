@@ -113,12 +113,15 @@ as_operator_affiliation() {
   as_cli account affiliations --tenant "$AS_TENANT" --company "$AS_C2" --active --actor "$AS_ACTOR" >"$AS_OUT/aff-list-c2.json" || return 1
   [ "$(as_json "$AS_OUT/aff-list-c2.json" 'r.affiliations.length')" = 0 ] || return 1
   [ "$(as_count tenant_person_affiliations "status = 'ended' AND end_reason = 'operator'")" = 1 ] || return 1
-  [ "$(as_count tenant_audit_events "action LIKE 'person.affiliation.%' AND outcome = 'allowed'")" = 3 ] || return 1
+  # The operator ending is sticky until released (review M6); release hands the pair back.
+  as_affiliation release --person "$AS_P1" --company "$AS_C2" --reason runtime_check >"$AS_OUT/aff-release.json" || return 1
+  [ "$(as_count tenant_person_affiliations "end_reason = 'operator' AND released_at IS NOT NULL")" = 1 ] || return 1
+  [ "$(as_count tenant_audit_events "action LIKE 'person.affiliation.%' AND outcome = 'allowed'")" = 4 ] || return 1
   # Affiliation history is value-free (personal fields).
   [ "$(as_count tenant_value_history "entity_kind = 'person_affiliation' AND values_recorded")" = 0 ] &&
     [ "$(as_count tenant_value_history "entity_kind = 'person_affiliation'")" -gt 0 ]
 }
-check "affiliation add / list (derived primary) / end: one audit event each, value-free history" as_operator_affiliation
+check "affiliation add / list (derived primary) / end / release: one audit event each, value-free history" as_operator_affiliation
 
 as_integrity() {
   local checks c

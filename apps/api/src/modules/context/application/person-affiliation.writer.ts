@@ -64,7 +64,11 @@ export interface AffiliationObservationOutcome {
   readonly updated: number;
   readonly ended: number;
   readonly unresolved: number;
-  /** Disagreements with an operator-entered row (never changed by a source). */
+  /**
+   * Source statements an operator decision overrode, left unapplied: an active
+   * `human` row (whether the source agrees or not; never changed by a source),
+   * or an operator ending not yet released (review M6, n5).
+   */
   readonly humanRows: number;
 }
 
@@ -74,6 +78,13 @@ export interface OperatorAffiliationAdd {
   readonly roleCodes?: readonly string[];
   readonly startsAt?: Date;
   readonly endsAt?: Date;
+  readonly reason: string;
+}
+
+/** Hands an operator-ended (person, company) pair back to the source (review M6). */
+export interface OperatorAffiliationRelease {
+  readonly personId: string;
+  readonly companyId: string;
   readonly reason: string;
 }
 
@@ -212,6 +223,14 @@ export class PersonAffiliationWriter {
     const active = await this.store.activeAffiliation(tx, input.personId, companyId);
     const decision = decideAffiliationObservation(active, observed, input.observedAt);
     if (input.createOnly && decision.outcome !== 'create') return 'unchanged';
+    // Human overrides win (CLAUDE.md, review M6): an operator ending stands until an
+    // operator releases the pair; the source does not re-create it meanwhile.
+    if (
+      decision.outcome === 'create' &&
+      (await this.store.operatorEndingStands(tx, input.personId, companyId))
+    ) {
+      return 'humanRows';
+    }
     switch (decision.outcome) {
       case 'unchanged':
         return 'unchanged';
@@ -375,6 +394,48 @@ export class PersonAffiliationWriter {
         status: 'ended',
         changed: true,
       };
+    });
+  }
+
+  /**
+   * Hands an operator-ended (person, company) pair back to the source (review
+   * M6): the standing operator endings are marked released, so the next
+   * authoritative statement of the link may create a `source_provided` row
+   * again. Nothing else changes; refused when no operator ending stands.
+   */
+  @AuditFailures('person.affiliation.release', 'person_affiliation')
+  async release(
+    actx: AuthorizedContext<'canonical.human_entry'>,
+    input: OperatorAffiliationRelease,
+  ): Promise<{
+    readonly personId: string;
+    readonly companyId: string;
+    readonly released: readonly string[];
+  }> {
+    assertAuthorized(actx, 'canonical.human_entry');
+    const personId = requireUuid(input.personId, '--person');
+    const companyId = requireUuid(input.companyId, '--company');
+    const reason = requireReason(input.reason);
+    return this.db.transaction(actx.tenant, async (tx) => {
+      await requireAccountStructure(tx);
+      await this.store.lockEntities(tx, [
+        { kind: 'company', id: companyId },
+        { kind: 'person', id: personId },
+      ]);
+      const released = await this.store.releaseOperatorEndings(tx, personId, companyId, new Date());
+      if (released.length === 0) {
+        throw new GovernanceError(
+          'validation_failed',
+          'No operator ending stands for this person and company',
+        );
+      }
+      await this.audit.record(tx, actx, {
+        action: 'person.affiliation.release',
+        targetKind: 'person_affiliation',
+        targetRef: released.at(-1)!,
+        details: { reason, released: released.length },
+      });
+      return { personId, companyId, released };
     });
   }
 

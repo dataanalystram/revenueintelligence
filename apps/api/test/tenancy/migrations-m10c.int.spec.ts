@@ -243,6 +243,7 @@ describe('M10C migration and schema guard', () => {
         'account.hierarchy.release',
         'person.affiliation.add',
         'person.affiliation.end',
+        'person.affiliation.release',
         'account_structure.read',
       ]) {
         expect(AUDIT_ACTIONS).toContain(action);

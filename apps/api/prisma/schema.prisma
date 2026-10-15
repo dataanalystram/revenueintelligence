@@ -1490,6 +1490,8 @@ model TenantPersonAffiliation {
   /// SHA-256 of the last applied fields (idempotency; no values)
   fieldHash    String?   @map("field_hash")
   lastChangeId String?   @map("last_change_id") @db.Uuid
+  /// when an operator handed an operator-ended pair back to the source (NULL = the operator's ending stands)
+  releasedAt   DateTime? @map("released_at") @db.Timestamptz(3)
   createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt    DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
 

@@ -40,7 +40,8 @@ BEGIN
   SELECT count(*) INTO n FROM tenant_audit_events
    WHERE capability IN ('data.account_structure.read')
       OR action IN ('account.hierarchy.set', 'account.hierarchy.clear', 'account.hierarchy.release',
-                    'person.affiliation.add', 'person.affiliation.end', 'account_structure.read');
+                    'person.affiliation.add', 'person.affiliation.end', 'person.affiliation.release',
+                    'account_structure.read');
   IF n > 0 THEN RAISE EXCEPTION 'refusing rollback: % audit events use M10C capabilities or actions', n; END IF;
 END
 $$;

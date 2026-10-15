@@ -45,6 +45,7 @@ CREATE TABLE "tenant_person_affiliations" (
     "origin" TEXT NOT NULL,
     "field_hash" TEXT,
     "last_change_id" UUID,
+    "released_at" TIMESTAMPTZ(3),
     "created_at" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -189,7 +190,9 @@ ALTER TABLE "tenant_person_affiliations"
   ADD CONSTRAINT "tenant_person_affiliations_merged_target" CHECK (("status" = 'merged') = ("merged_into_id" IS NOT NULL)),
   ADD CONSTRAINT "tenant_person_affiliations_merged_reason" CHECK ("status" <> 'merged' OR "end_reason" IN ('person_merged', 'company_merged')),
   ADD CONSTRAINT "tenant_person_affiliations_not_merged_into_self" CHECK ("merged_into_id" IS NULL OR "merged_into_id" <> "id"),
-  ADD CONSTRAINT "tenant_person_affiliations_field_hash_format" CHECK ("field_hash" IS NULL OR "field_hash" ~ '^[0-9a-f]{64}$');
+  ADD CONSTRAINT "tenant_person_affiliations_field_hash_format" CHECK ("field_hash" IS NULL OR "field_hash" ~ '^[0-9a-f]{64}$'),
+  -- An operator ending is sticky until an operator releases the pair back to the source (review M6).
+  ADD CONSTRAINT "tenant_person_affiliations_released" CHECK ("released_at" IS NULL OR ("status" = 'ended' AND "end_reason" = 'operator'));
 
 -- Endpoints and origin never change (Q13: a merge ends the loser row and
 -- inserts or reuses a survivor row); ended / merged rows are terminal; at most
@@ -212,6 +215,11 @@ BEGIN
        OR NEW.end_reason IS DISTINCT FROM OLD.end_reason OR NEW.merged_into_id IS DISTINCT FROM OLD.merged_into_id) THEN
       RAISE EXCEPTION 'affiliation_terminal' USING ERRCODE = 'check_violation',
         DETAIL = format('affiliation %s is %s', OLD.id, OLD.status);
+    END IF;
+    -- A release is recorded once (review M6).
+    IF OLD.released_at IS NOT NULL AND NEW.released_at IS DISTINCT FROM OLD.released_at THEN
+      RAISE EXCEPTION 'affiliation_terminal' USING ERRCODE = 'check_violation',
+        DETAIL = format('affiliation %s is already released', OLD.id);
     END IF;
     NEW.updated_at := CURRENT_TIMESTAMP;
   END IF;
@@ -321,7 +329,7 @@ ALTER TABLE "tenant_audit_events"
   DROP CONSTRAINT "tenant_audit_events_action_valid";
 ALTER TABLE "tenant_audit_events"
   ADD CONSTRAINT "tenant_audit_events_capability_valid" CHECK ("capability" IN ('canonical.source_sync', 'canonical.import', 'processing.receipt', 'processing.dead_letter.resolve', 'config.tenant.provision', 'config.tenant.status', 'config.integration', 'config.oauth.install', 'config.oauth.grant', 'config.policy', 'config.product_model.publish', 'config.source.connection', 'config.source.schema', 'config.mapping.publish', 'config.authority.publish', 'data.sync.run', 'data.profile.run', 'data.eligibility.record', 'data.purge', 'security.key.rotate', 'security.audit.read', 'canonical.human_entry', 'config.canonical.adopt', 'config.module.change', 'config.registry.publish', 'config.data_policy.publish', 'config.mapping.draft', 'config.mapping.retire', 'security.integrity.run', 'canonical.evidence.link', 'data.provenance.read', 'data.account_structure.read')),
-  ADD CONSTRAINT "tenant_audit_events_action_valid" CHECK ("action" IN ('tenant.provision', 'tenant.status', 'integration.configure', 'credential_ref.save', 'credential_ref.delete', 'flow.set', 'lead_source_mapping.save', 'lead_source_mapping.delete', 'policy.save', 'qualification.update', 'oauth.install_state.issue', 'oauth.grant.store', 'oauth.grant.delete', 'oauth.grant.refresh', 'webhook.receipts.store', 'product_model.publish', 'subscription_import.run', 'subscription_import.cancel', 'source_connection.configure', 'source_connection.status', 'source_connection.test', 'source_schema.capture', 'mapping.publish', 'authority.publish', 'sync.start', 'sync.execute', 'sync.finish', 'sync.abandon', 'profile.start', 'profile.execute', 'profile.finish', 'profile.abandon', 'profile.purge', 'eligibility.record', 'dead_letter.replay', 'dead_letter.discard', 'context.backfill.start', 'context.reconcile.start', 'context.resync', 'context.receipts.process', 'security.rekey', 'security.audit.purge', 'security.audit.verify', 'security.audit.read', 'operation.denied', 'canonical.adopt', 'module.enable', 'module.disable', 'module.configure', 'registry.publish', 'data_policy.publish', 'mapping.draft.save', 'mapping.draft.validate', 'mapping.draft.discard', 'mapping.retire', 'integrity.verify', 'provenance.read', 'evidence.link', 'source_reference.observe', 'account.hierarchy.set', 'account.hierarchy.clear', 'account.hierarchy.release', 'person.affiliation.add', 'person.affiliation.end', 'account_structure.read'));
+  ADD CONSTRAINT "tenant_audit_events_action_valid" CHECK ("action" IN ('tenant.provision', 'tenant.status', 'integration.configure', 'credential_ref.save', 'credential_ref.delete', 'flow.set', 'lead_source_mapping.save', 'lead_source_mapping.delete', 'policy.save', 'qualification.update', 'oauth.install_state.issue', 'oauth.grant.store', 'oauth.grant.delete', 'oauth.grant.refresh', 'webhook.receipts.store', 'product_model.publish', 'subscription_import.run', 'subscription_import.cancel', 'source_connection.configure', 'source_connection.status', 'source_connection.test', 'source_schema.capture', 'mapping.publish', 'authority.publish', 'sync.start', 'sync.execute', 'sync.finish', 'sync.abandon', 'profile.start', 'profile.execute', 'profile.finish', 'profile.abandon', 'profile.purge', 'eligibility.record', 'dead_letter.replay', 'dead_letter.discard', 'context.backfill.start', 'context.reconcile.start', 'context.resync', 'context.receipts.process', 'security.rekey', 'security.audit.purge', 'security.audit.verify', 'security.audit.read', 'operation.denied', 'canonical.adopt', 'module.enable', 'module.disable', 'module.configure', 'registry.publish', 'data_policy.publish', 'mapping.draft.save', 'mapping.draft.validate', 'mapping.draft.discard', 'mapping.retire', 'integrity.verify', 'provenance.read', 'evidence.link', 'source_reference.observe', 'account.hierarchy.set', 'account.hierarchy.clear', 'account.hierarchy.release', 'person.affiliation.add', 'person.affiliation.end', 'person.affiliation.release', 'account_structure.read'));
 
 -- ---------------------------------------------------------------------------
 -- 8. Tenant isolation and privileges (plan §10, §13)
