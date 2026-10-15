@@ -66,6 +66,10 @@ model Tenant {
   sourceReferences     TenantSourceReference[]
   evidenceLinks        TenantEvidenceLink[]
   personAffiliations   TenantPersonAffiliation[]
+  extensionValues      TenantExtensionValue[]
+  extensionValueItems  TenantExtensionValueItem[]
+  customRecords        TenantCustomRecord[]
+  customRelationships  TenantCustomRelationship[]
 
   @@unique([id, slug])
   @@map("tenants")
@@ -550,16 +554,19 @@ model TenantContextChange {
   /// M10A2: applied transforms as field:transform_id (names only)
   transforms         String[]
 
-  tenant             Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  canonical          CanonicalModelVersion?      @relation(fields: [canonicalVersion], references: [version], onDelete: Restrict, onUpdate: Restrict)
-  valueHistory       TenantValueHistory[]
-  sourceReferences   TenantSourceReference[]     @relation("SourceReferenceLastChange")
-  evidenceCitations  TenantEvidenceLink[]        @relation("EvidenceLinkEvidenceChange")
-  evidenceLinkSets   TenantEvidenceLink[]        @relation("EvidenceLinkChange")
-  personAffiliations TenantPersonAffiliation[]
-  source             ConnectorKind               @relation(fields: [sourceSystem], references: [kind], onDelete: Restrict, onUpdate: Restrict)
-  connection         TenantSourceConnection?     @relation(fields: [tenantId, sourceConnectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
-  mapping            TenantSourceMappingVersion? @relation(fields: [tenantId, sourceConnectionId, mappingVersion], references: [tenantId, connectionId, version], onDelete: Restrict, onUpdate: Restrict)
+  tenant              Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  canonical           CanonicalModelVersion?      @relation(fields: [canonicalVersion], references: [version], onDelete: Restrict, onUpdate: Restrict)
+  valueHistory        TenantValueHistory[]
+  sourceReferences    TenantSourceReference[]     @relation("SourceReferenceLastChange")
+  evidenceCitations   TenantEvidenceLink[]        @relation("EvidenceLinkEvidenceChange")
+  evidenceLinkSets    TenantEvidenceLink[]        @relation("EvidenceLinkChange")
+  personAffiliations  TenantPersonAffiliation[]
+  extensionValues     TenantExtensionValue[]
+  customRecords       TenantCustomRecord[]
+  customRelationships TenantCustomRelationship[]
+  source              ConnectorKind               @relation(fields: [sourceSystem], references: [kind], onDelete: Restrict, onUpdate: Restrict)
+  connection          TenantSourceConnection?     @relation(fields: [tenantId, sourceConnectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  mapping             TenantSourceMappingVersion? @relation(fields: [tenantId, sourceConnectionId, mappingVersion], references: [tenantId, connectionId, version], onDelete: Restrict, onUpdate: Restrict)
 
   @@id([tenantId, id])
   @@index([tenantId, entityKind, entityId, ingestedAt])
@@ -788,6 +795,8 @@ model TenantSourceConnection {
   authoritySubscriptionState TenantSourceAuthorityVersion[] @relation("AuthoritySubscriptionState")
   authoritySubscriptionTerms TenantSourceAuthorityVersion[] @relation("AuthoritySubscriptionTerms")
   authorityAccountHierarchy  TenantSourceAuthorityVersion[] @relation("AuthorityAccountHierarchy")
+  extensionValues            TenantExtensionValue[]
+  customRelationships        TenantCustomRelationship[]
 
   @@id([tenantId, id])
   @@unique([tenantId, kind])
@@ -1195,10 +1204,11 @@ model TenantRegistryVersion {
   correlationId         String   @map("correlation_id") @db.Uuid
   auditEventId          String   @map("audit_event_id") @db.Uuid
 
-  tenant            Tenant                @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  canonicalVersion  CanonicalModelVersion @relation(fields: [canonicalVersionMin], references: [version], onDelete: Restrict, onUpdate: Restrict)
-  introducedEntries TenantRegistryEntry[] @relation("RegistryEntryIntroduced")
-  changedEntries    TenantRegistryEntry[] @relation("RegistryEntryLastChanged")
+  tenant            Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  canonicalVersion  CanonicalModelVersion  @relation(fields: [canonicalVersionMin], references: [version], onDelete: Restrict, onUpdate: Restrict)
+  introducedEntries TenantRegistryEntry[]  @relation("RegistryEntryIntroduced")
+  changedEntries    TenantRegistryEntry[]  @relation("RegistryEntryLastChanged")
+  extensionValues   TenantExtensionValue[]
 
   @@id([tenantId, kind, version])
   @@map("tenant_registry_versions")
@@ -1222,8 +1232,14 @@ model TenantRegistryEntry {
   introduced  TenantRegistryVersion @relation("RegistryEntryIntroduced", fields: [tenantId, kind, introducedIn], references: [tenantId, kind, version], onDelete: Restrict, onUpdate: Restrict)
   lastChanged TenantRegistryVersion @relation("RegistryEntryLastChanged", fields: [tenantId, kind, lastChangedIn], references: [tenantId, kind, version], onDelete: Restrict, onUpdate: Restrict)
 
+  /// M10D: the typed extension stores reference definitions by (tenant, kind, id).
+  extensionValues     TenantExtensionValue[]
+  customRecords       TenantCustomRecord[]
+  customRelationships TenantCustomRelationship[]
+
   @@id([tenantId, id])
   @@unique([tenantId, kind, key])
+  @@unique([tenantId, kind, id])
   @@map("tenant_registry_entries")
 }
 
@@ -1232,21 +1248,31 @@ model TenantRegistryEntry {
 model TenantEntityIndex {
   tenantId  String   @map("tenant_id") @db.Uuid
   id        String   @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  /// company | person | product | subscription
+  /// company | person | product | subscription | person_affiliation (M10C) | custom_record (M10D)
   kind      String
   entityId  String?  @map("entity_id") @db.Uuid
   entityKey String?  @map("entity_key")
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  tenant               Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  historyById          TenantValueHistory[]    @relation("ValueHistoryEntityId")
-  historyByKey         TenantValueHistory[]    @relation("ValueHistoryEntityKey")
-  sourceRefsById       TenantSourceReference[] @relation("SourceReferenceEntityId")
-  sourceRefsByKey      TenantSourceReference[] @relation("SourceReferenceEntityKey")
-  evidenceSubjectById  TenantEvidenceLink[]    @relation("EvidenceSubjectId")
-  evidenceSubjectByKey TenantEvidenceLink[]    @relation("EvidenceSubjectKey")
-  evidenceCitedById    TenantEvidenceLink[]    @relation("EvidenceEntityId")
-  evidenceCitedByKey   TenantEvidenceLink[]    @relation("EvidenceEntityKey")
+  tenant               Tenant                     @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  historyById          TenantValueHistory[]       @relation("ValueHistoryEntityId")
+  historyByKey         TenantValueHistory[]       @relation("ValueHistoryEntityKey")
+  sourceRefsById       TenantSourceReference[]    @relation("SourceReferenceEntityId")
+  sourceRefsByKey      TenantSourceReference[]    @relation("SourceReferenceEntityKey")
+  evidenceSubjectById  TenantEvidenceLink[]       @relation("EvidenceSubjectId")
+  evidenceSubjectByKey TenantEvidenceLink[]       @relation("EvidenceSubjectKey")
+  evidenceCitedById    TenantEvidenceLink[]       @relation("EvidenceEntityId")
+  evidenceCitedByKey   TenantEvidenceLink[]       @relation("EvidenceEntityKey")
+  extTargetById        TenantExtensionValue[]     @relation("ExtensionValueTargetId")
+  extTargetByKey       TenantExtensionValue[]     @relation("ExtensionValueTargetKey")
+  extRefById           TenantExtensionValue[]     @relation("ExtensionValueRefId")
+  extRefByKey          TenantExtensionValue[]     @relation("ExtensionValueRefKey")
+  customParentById     TenantCustomRecord[]       @relation("CustomRecordParentId")
+  customParentByKey    TenantCustomRecord[]       @relation("CustomRecordParentKey")
+  customFromById       TenantCustomRelationship[] @relation("CustomRelationshipFromId")
+  customFromByKey      TenantCustomRelationship[] @relation("CustomRelationshipFromKey")
+  customToById         TenantCustomRelationship[] @relation("CustomRelationshipToId")
+  customToByKey        TenantCustomRelationship[] @relation("CustomRelationshipToKey")
 
   @@id([tenantId, id])
   @@unique([tenantId, kind, entityId])
@@ -1506,4 +1532,187 @@ model TenantPersonAffiliation {
   @@index([tenantId, personId, status])
   @@index([tenantId, companyId, status])
   @@map("tenant_person_affiliations")
+}
+
+/// M10D (ADR 0030): typed extension values (option A). One row per (target, field);
+/// no row = unknown, value_state 'empty' = explicitly empty. Exactly the value
+/// column(s) of value_type are set (CHECK tenant_extension_values_typed).
+/// Targets and reference values are anchored in the entity index; the field is a
+/// registry entry of kind 'extension'. Tenant-owned, forced RLS; the app role may
+/// SELECT/INSERT/UPDATE, never DELETE. Sensitivity is read from the registry entry.
+model TenantExtensionValue {
+  tenantId           String    @map("tenant_id") @db.Uuid
+  id                 String    @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  /// company | person | subscription | product | person_affiliation | custom_record
+  targetKind         String    @map("target_kind")
+  targetId           String?   @map("target_id") @db.Uuid
+  /// products only (D3)
+  targetKey          String?   @map("target_key")
+  /// always 'extension' (CHECK); part of the composite FK proving the entry kind
+  fieldRegistryKind  String    @default("extension") @map("field_registry_kind")
+  fieldId            String    @map("field_id") @db.Uuid
+  /// copied from the definition at write; immutable
+  valueType          String    @map("value_type")
+  /// present | empty
+  valueState         String    @map("value_state")
+  valueText          String?   @map("value_text")
+  valueNumber        Decimal?  @map("value_number") @db.Decimal
+  valueBool          Boolean?  @map("value_bool")
+  valueDate          DateTime? @map("value_date") @db.Date
+  valueTs            DateTime? @map("value_ts") @db.Timestamptz(3)
+  valueMoneyMinor    BigInt?   @map("value_money_minor")
+  valueCurrency      String?   @map("value_currency") @db.Char(3)
+  valueEnum          String?   @map("value_enum")
+  /// multi_enum / array: number of item rows
+  valueItemCount     Int?      @map("value_item_count") @db.SmallInt
+  valueJson          Json?     @map("value_json")
+  valueRefKind       String?   @map("value_ref_kind")
+  valueRefId         String?   @map("value_ref_id") @db.Uuid
+  valueRefKey        String?   @map("value_ref_key")
+  /// source_provided | human | migration
+  origin             String
+  sourceConnectionId String?   @map("source_connection_id") @db.Uuid
+  sourceObjectType   String?   @map("source_object_type")
+  sourceRecordId     String?   @map("source_record_id")
+  observedAt         DateTime? @map("observed_at") @db.Timestamptz(3)
+  sourceUpdatedAt    DateTime? @map("source_updated_at") @db.Timestamptz(3)
+  /// SHA-256 of the last applied value (idempotency; no values)
+  fieldHash          String?   @map("field_hash")
+  /// the extension registry version the value was validated against
+  registryVersion    Int       @map("registry_version")
+  /// when an operator handed a human value back to the source (Q16)
+  releasedAt         DateTime? @map("released_at") @db.Timestamptz(3)
+  lastChangeId       String?   @map("last_change_id") @db.Uuid
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  tenant      Tenant                     @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  targetById  TenantEntityIndex?         @relation("ExtensionValueTargetId", fields: [tenantId, targetKind, targetId], references: [tenantId, kind, entityId], onDelete: Restrict, onUpdate: Restrict, map: "tenant_extension_values_target_id_fkey")
+  targetByKey TenantEntityIndex?         @relation("ExtensionValueTargetKey", fields: [tenantId, targetKind, targetKey], references: [tenantId, kind, entityKey], onDelete: Restrict, onUpdate: Restrict, map: "tenant_extension_values_target_key_fkey")
+  field       TenantRegistryEntry        @relation(fields: [tenantId, fieldRegistryKind, fieldId], references: [tenantId, kind, id], onDelete: Restrict, onUpdate: Restrict)
+  registry    TenantRegistryVersion      @relation(fields: [tenantId, fieldRegistryKind, registryVersion], references: [tenantId, kind, version], onDelete: Restrict, onUpdate: Restrict)
+  refById     TenantEntityIndex?         @relation("ExtensionValueRefId", fields: [tenantId, valueRefKind, valueRefId], references: [tenantId, kind, entityId], onDelete: Restrict, onUpdate: Restrict, map: "tenant_extension_values_ref_id_fkey")
+  refByKey    TenantEntityIndex?         @relation("ExtensionValueRefKey", fields: [tenantId, valueRefKind, valueRefKey], references: [tenantId, kind, entityKey], onDelete: Restrict, onUpdate: Restrict, map: "tenant_extension_values_ref_key_fkey")
+  connection  TenantSourceConnection?    @relation(fields: [tenantId, sourceConnectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  lastChange  TenantContextChange?       @relation(fields: [tenantId, lastChangeId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  items       TenantExtensionValueItem[]
+
+  @@id([tenantId, id])
+  @@unique([tenantId, targetKind, targetId, fieldId])
+  @@unique([tenantId, targetKind, targetKey, fieldId])
+  @@index([tenantId, targetKind, targetId])
+  @@index([tenantId, fieldId, valueNumber])
+  @@index([tenantId, fieldId, valueBool])
+  @@index([tenantId, fieldId, valueDate])
+  @@index([tenantId, fieldId, valueTs])
+  @@index([tenantId, fieldId, valueCurrency, valueMoneyMinor])
+  @@index([tenantId, fieldId, valueEnum])
+  @@index([tenantId, fieldId, valueRefKind, valueRefId])
+  @@map("tenant_extension_values")
+}
+
+/// M10D: items of a multi_enum / array value, replaced on change (Q26: the only
+/// M10D table the app role may DELETE from). Exactly one item column by type.
+model TenantExtensionValueItem {
+  tenantId   String    @map("tenant_id") @db.Uuid
+  valueId    String    @map("value_id") @db.Uuid
+  ordinal    Int       @db.SmallInt
+  /// string | number | integer | date | enum
+  itemType   String    @map("item_type")
+  itemText   String?   @map("item_text")
+  itemNumber Decimal?  @map("item_number") @db.Decimal
+  itemDate   DateTime? @map("item_date") @db.Date
+  itemEnum   String?   @map("item_enum")
+
+  tenant Tenant               @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  value  TenantExtensionValue @relation(fields: [tenantId, valueId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, valueId, ordinal])
+  @@index([tenantId, itemEnum])
+  @@map("tenant_extension_value_items")
+}
+
+/// M10D: records of tenant-defined custom objects (entity-index kind custom_record).
+/// Platform UUID identity; optional natural-key hash unique per object; optional
+/// parent anchored in the entity index. Records change state, never disappear.
+model TenantCustomRecord {
+  tenantId           String   @map("tenant_id") @db.Uuid
+  id                 String   @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  /// always 'extension' (CHECK)
+  objectRegistryKind String   @default("extension") @map("object_registry_kind")
+  objectId           String   @map("object_id") @db.Uuid
+  /// company | person | subscription | product (NULL = no parent)
+  parentKind         String?  @map("parent_kind")
+  parentId           String?  @map("parent_id") @db.Uuid
+  parentKey          String?  @map("parent_key")
+  naturalKeyHash     String?  @map("natural_key_hash")
+  /// active | inactive | retired | merged
+  recordState        String   @default("active") @map("record_state")
+  mergedIntoId       String?  @map("merged_into_id") @db.Uuid
+  /// source_provided | human | migration
+  origin             String
+  fieldHash          String?  @map("field_hash")
+  lastChangeId       String?  @map("last_change_id") @db.Uuid
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  tenant      Tenant               @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  object      TenantRegistryEntry  @relation(fields: [tenantId, objectRegistryKind, objectId], references: [tenantId, kind, id], onDelete: Restrict, onUpdate: Restrict)
+  parentById  TenantEntityIndex?   @relation("CustomRecordParentId", fields: [tenantId, parentKind, parentId], references: [tenantId, kind, entityId], onDelete: Restrict, onUpdate: Restrict, map: "tenant_custom_records_parent_id_fkey")
+  parentByKey TenantEntityIndex?   @relation("CustomRecordParentKey", fields: [tenantId, parentKind, parentKey], references: [tenantId, kind, entityKey], onDelete: Restrict, onUpdate: Restrict, map: "tenant_custom_records_parent_key_fkey")
+  mergedInto  TenantCustomRecord?  @relation("CustomRecordMergedInto", fields: [tenantId, mergedIntoId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  mergedFrom  TenantCustomRecord[] @relation("CustomRecordMergedInto")
+  lastChange  TenantContextChange? @relation(fields: [tenantId, lastChangeId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, id])
+  @@unique([tenantId, objectId, naturalKeyHash])
+  @@index([tenantId, objectId, recordState])
+  @@index([tenantId, parentKind, parentId])
+  @@map("tenant_custom_records")
+}
+
+/// M10D: edges of tenant-defined custom relationships; both ends in the entity
+/// index, at least one a custom record. Cardinality and one active edge per
+/// (definition, from, to) are enforced by the writer and a guard trigger (Q27).
+/// Edges end, never disappear. Not indexed in the entity index (Q25).
+model TenantCustomRelationship {
+  tenantId           String    @map("tenant_id") @db.Uuid
+  id                 String    @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  /// always 'extension' (CHECK)
+  relRegistryKind    String    @default("extension") @map("rel_registry_kind")
+  relDefId           String    @map("rel_def_id") @db.Uuid
+  fromKind           String    @map("from_kind")
+  fromId             String?   @map("from_id") @db.Uuid
+  fromKey            String?   @map("from_key")
+  toKind             String    @map("to_kind")
+  toId               String?   @map("to_id") @db.Uuid
+  toKey              String?   @map("to_key")
+  roleCode           String?   @map("role_code")
+  /// active | ended
+  state              String    @default("active")
+  endedAt            DateTime? @map("ended_at") @db.Timestamptz(3)
+  /// source_removed | operator | endpoint_merged
+  endReason          String?   @map("end_reason")
+  /// source_provided | human | migration
+  origin             String
+  sourceConnectionId String?   @map("source_connection_id") @db.Uuid
+  sourceObjectType   String?   @map("source_object_type")
+  sourceRecordId     String?   @map("source_record_id")
+  lastChangeId       String?   @map("last_change_id") @db.Uuid
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  tenant     Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  definition TenantRegistryEntry     @relation(fields: [tenantId, relRegistryKind, relDefId], references: [tenantId, kind, id], onDelete: Restrict, onUpdate: Restrict)
+  fromById   TenantEntityIndex?      @relation("CustomRelationshipFromId", fields: [tenantId, fromKind, fromId], references: [tenantId, kind, entityId], onDelete: Restrict, onUpdate: Restrict, map: "tenant_custom_relationships_from_id_fkey")
+  fromByKey  TenantEntityIndex?      @relation("CustomRelationshipFromKey", fields: [tenantId, fromKind, fromKey], references: [tenantId, kind, entityKey], onDelete: Restrict, onUpdate: Restrict, map: "tenant_custom_relationships_from_key_fkey")
+  toById     TenantEntityIndex?      @relation("CustomRelationshipToId", fields: [tenantId, toKind, toId], references: [tenantId, kind, entityId], onDelete: Restrict, onUpdate: Restrict, map: "tenant_custom_relationships_to_id_fkey")
+  toByKey    TenantEntityIndex?      @relation("CustomRelationshipToKey", fields: [tenantId, toKind, toKey], references: [tenantId, kind, entityKey], onDelete: Restrict, onUpdate: Restrict, map: "tenant_custom_relationships_to_key_fkey")
+  connection TenantSourceConnection? @relation(fields: [tenantId, sourceConnectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  lastChange TenantContextChange?    @relation(fields: [tenantId, lastChangeId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, id])
+  @@index([tenantId, relDefId, fromKind, fromId, state])
+  @@index([tenantId, relDefId, toKind, toId, state])
+  @@map("tenant_custom_relationships")
 }
