@@ -689,7 +689,7 @@ export function validateExtensionDocument(
       }
     }
     if (!d.sensitivity || !d.categories || d.categories.length === 0) {
-      add(d.key, 'classification_required');
+      /* MUTATION VM9: classification_required dropped */
     } else {
       if (new Set(d.categories).size !== d.categories.length) add(d.key, 'duplicate_category');
       for (const c of d.categories) {
