@@ -8,6 +8,15 @@ import {
   type AccountContextMappingContext,
 } from './source-mapping-account-context';
 import { jsonbTextBytes } from './canonical/json-size';
+import {
+  COMMERCIAL_MAPPING_MIN_VERSION,
+  commercialFields,
+  isCommercialEntity,
+  isCommercialLineTarget,
+  usesCommercialMapping,
+  validateCommercialMapping,
+  type CommercialMappingContext,
+} from './source-mapping-commercial';
 import { isSensitiveName } from './profiling/privacy';
 import {
   isCustomObjectEntity,
@@ -51,6 +60,7 @@ export * from './source-mapping-document';
 export * from './source-mapping-profiles';
 export * from './source-mapping-extension';
 export * from './source-mapping-account-context';
+export * from './source-mapping-commercial';
 
 /**
  * Versioned source mapping documents (ADR 0020): how one source connection's
@@ -78,7 +88,8 @@ interface RelationshipTargetSpec {
   readonly entity: MappingEntity;
   readonly kind: 'relationship';
   readonly fact: AuthorityFact;
-  readonly to: 'account' | 'product' | 'account_context';
+  readonly to:
+    'account' | 'product' | 'account_context' | 'contract' | 'price_offer' | 'subscription';
   readonly required: boolean;
   /** M10C: mapping it needs a recorded confirmation (`account.parent`). */
   readonly consequential?: boolean;
@@ -173,6 +184,34 @@ export const MAPPING_TARGETS = {
     required: false,
     minCanonicalVersion: '0.5',
   },
+  // M10F (plan §6.2, canonical 0.6): the line's agreement header (Core, Q2; a
+  // confirmed agreement_header statement, Q4), its price offer and its
+  // predecessor line. All three follow `subscription_lines` (Q24); the
+  // referenced objects are checked by validateCommercialMapping.
+  'subscription.agreement': {
+    entity: 'subscription',
+    kind: 'relationship',
+    fact: 'subscription_lines',
+    to: 'contract',
+    required: false,
+    minCanonicalVersion: '0.6',
+  },
+  'subscription.priceOfferRef': {
+    entity: 'subscription',
+    kind: 'relationship',
+    fact: 'subscription_lines',
+    to: 'price_offer',
+    required: false,
+    minCanonicalVersion: '0.6',
+  },
+  'subscription.supersedesRef': {
+    entity: 'subscription',
+    kind: 'relationship',
+    fact: 'subscription_lines',
+    to: 'subscription',
+    required: false,
+    minCanonicalVersion: '0.6',
+  },
 } as const satisfies Record<string, CoreTargetSpec | RelationshipTargetSpec>;
 
 function core(entity: MappingEntity, valueType: ValueType, fact: AuthorityFact): CoreTargetSpec {
@@ -256,6 +295,9 @@ export const MAPPING_ERROR_CODES = [
   'context_dimension_unknown',
   'context_dimension_required',
   'context_role_unknown',
+  // M10F (plan §6): commercial statements.
+  'commercial_mappings_not_enabled',
+  'agreement_ref_deal_grouping',
 ] as const;
 export type MappingErrorCode = (typeof MAPPING_ERROR_CODES)[number];
 export type MappingWarningCode =
@@ -292,6 +334,11 @@ export interface MappingValidationContext {
    * account-context statements are refused `account_context_mappings_not_enabled`.
    */
   readonly accountContext?: AccountContextMappingContext;
+  /**
+   * M10F: the 0.6 + module gate. Absent = commercial statements are refused
+   * `commercial_mappings_not_enabled`.
+   */
+  readonly commercial?: CommercialMappingContext;
 }
 
 export type MappingValidation =
@@ -367,8 +414,8 @@ export function validateMapping(raw: unknown, ctx: MappingValidationContext): Ma
       if (sourceObject) validateCustomObject(obj, at);
       return;
     }
-    if (isAccountContextEntity(obj.entity)) {
-      // M10E (plan §5.1): the account-context rules are checked below.
+    if (isAccountContextEntity(obj.entity) || isCommercialEntity(obj.entity)) {
+      // M10E (plan §5.1) / M10F (plan §6.1): the account-context and commercial rules are checked below.
       if (sourceObject?.classification === 'internal_principal') {
         err('invalid_entity', `${at}.entity`, `${obj.source} holds the source's internal users`);
       }
@@ -448,6 +495,16 @@ export function validateMapping(raw: unknown, ctx: MappingValidationContext): Ma
     schema: ctx.schema,
     authority: ctx.authority,
     ...(ctx.accountContext ? { accountContext: ctx.accountContext } : {}),
+  })) {
+    err(issue.code, issue.path, issue.message);
+  }
+
+  // M10F (plan §6): commercial objects and the line commercial references.
+  for (const issue of validateCommercialMapping(doc, {
+    connectionId: ctx.connectionId,
+    schema: ctx.schema,
+    authority: ctx.authority,
+    ...(ctx.commercial ? { commercial: ctx.commercial } : {}),
   })) {
     err(issue.code, issue.path, issue.message);
   }
@@ -580,7 +637,11 @@ export function validateMapping(raw: unknown, ctx: MappingValidationContext): Ma
           err('missing_relationship_target', `${path}.object`, 'the referenced object is required');
         } else {
           const targetObject = doc.objects.find((o) => o.source === rel.object);
-          if (!targetObject || targetObject.entity !== spec.to) {
+          // M10F: the commercial line targets' objects are checked by validateCommercialMapping.
+          if (
+            !isCommercialLineTarget(rel.target) &&
+            (!targetObject || targetObject.entity !== spec.to)
+          ) {
             err(
               'missing_relationship_target',
               `${path}.object`,
@@ -597,7 +658,7 @@ export function validateMapping(raw: unknown, ctx: MappingValidationContext): Ma
         }
         if (rel.productReference) err('invalid_target', path, 'not a product relationship');
       }
-      if (spec.consequential && !rel.confirmation) {
+      if (spec.consequential && (!rel.confirmation || 'semantics' in rel.confirmation)) {
         err('unconfirmed_consequential_entry', path, `${rel.target} needs a recorded confirmation`);
       }
       if (rel.affiliation) {
@@ -976,6 +1037,8 @@ export function mappedFields(obj: ObjectMapping): string[] {
   if (obj.customObject?.recordState) fields.add(obj.customObject.recordState.field);
   // M10E: the account-context statements read their source fields.
   for (const f of accountContextFields(obj)) fields.add(f);
+  // M10F: the commercial blocks read their source fields.
+  for (const f of commercialFields(obj)) fields.add(f);
   return [...fields].sort();
 }
 
@@ -986,13 +1049,20 @@ export function mappedFields(obj: ObjectMapping): string[] {
  */
 export function mappingMinCanonicalVersion(doc: {
   readonly objects: readonly (Pick<ObjectMapping, 'relationships' | 'fields'> &
-    Partial<Pick<ObjectMapping, 'entity' | 'customObject' | 'accountContext'>>)[];
+    Partial<
+      Pick<
+        ObjectMapping,
+        'entity' | 'customObject' | 'accountContext' | 'priceOffer' | 'contract' | 'entitlement'
+      >
+    >)[];
 }): string | undefined {
   let min: string | undefined;
   // M10D (plan §5.5): any extension entry kind needs canonical 0.4.
   if (usesExtensionKinds(doc)) min = EXTENSION_MIN_VERSION;
   // M10E (plan §5): account-context statements need canonical 0.5.
   if (usesAccountContextMapping(doc)) min = ACCOUNT_CONTEXT_MAPPING_MIN_VERSION;
+  // M10F (plan §6): commercial statements need canonical 0.6.
+  if (usesCommercialMapping(doc)) min = COMMERCIAL_MAPPING_MIN_VERSION;
   for (const obj of doc.objects) {
     const targets = [
       ...obj.relationships.map((r) => r.target),

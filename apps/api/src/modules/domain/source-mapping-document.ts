@@ -33,6 +33,21 @@ export const ConfirmationSchema = z
   .readonly();
 export type Confirmation = z.infer<typeof ConfirmationSchema>;
 
+/**
+ * M10F (plan §6.2, Q4): the recorded human confirmation that a line's
+ * `subscription.agreement` field names the agreement header record (never a
+ * deal / opportunity grouping). The confirmation is the control; the token
+ * list refused at publish is only a guardrail.
+ */
+export const AgreementConfirmationSchema = z
+  .strictObject({
+    semantics: z.literal('agreement_header'),
+    confirmedBy: z.string().trim().min(1).max(100),
+    note: z.string().trim().min(1).max(500).optional(),
+  })
+  .readonly();
+export type AgreementConfirmation = z.infer<typeof AgreementConfirmationSchema>;
+
 export const MappingEntitySchema = z.enum(['account', 'person', 'subscription']);
 export type MappingEntity = z.infer<typeof MappingEntitySchema>;
 
@@ -114,8 +129,11 @@ export const RelationshipEntrySchema = z.strictObject({
       confirmation: ConfirmationSchema.optional(),
     })
     .optional(),
-  /** M10C: a recorded confirmation of a consequential relationship (`account.parent`). */
-  confirmation: ConfirmationSchema.optional(),
+  /**
+   * M10C: a recorded confirmation of a consequential relationship (`account.parent`).
+   * M10F: `subscription.agreement` carries an agreement-header confirmation instead.
+   */
+  confirmation: z.union([ConfirmationSchema, AgreementConfirmationSchema]).optional(),
   /**
    * M10C (`person.affiliation` only): further fields of the same record that
    * describe the affiliation. Role values become codes only through the explicit
@@ -216,6 +234,68 @@ export const AccountContextMappingSchema = z.strictObject({
 });
 export type AccountContextMapping = z.infer<typeof AccountContextMappingSchema>;
 
+// ---------------------------------------------------------------------------
+// M10F (plan §6.1, ADR 0032): commercial entity blocks
+// ---------------------------------------------------------------------------
+
+const FieldStatement = z.strictObject({ field: ApiName });
+/** A date / instant statement: the closed parse transforms (a declared zone, or Unix seconds). */
+const DateStatement = z.strictObject({ field: ApiName, transforms: TransformsSchema.optional() });
+/**
+ * A closed value map into a canonical code. The values are checked against the
+ * frozen commercial vocabularies at publish (`invalid_enum_map`), not here, so a
+ * wrong code is reported as a validation code rather than a schema error.
+ */
+const CodeMapStatement = z.strictObject({
+  field: ApiName,
+  valueMap: z.record(SourceValue, z.string().min(1).max(64)),
+});
+
+/** `price_offer` objects (plan §6.1): the product through the product reference set. */
+export const PriceOfferMappingSchema = z.strictObject({
+  product: FieldStatement,
+  currency: FieldStatement,
+  billingPeriod: FieldStatement.optional(),
+  billingPeriodUnit: CodeMapStatement.optional(),
+  pricingModel: CodeMapStatement.optional(),
+  listAmountMinor: FieldStatement.optional(),
+  status: CodeMapStatement.optional(),
+});
+export type PriceOfferMapping = z.infer<typeof PriceOfferMappingSchema>;
+
+/** A contract link (`renews` / `amends` / `parent`): a source id of a contract object of the same connection. */
+const ContractLinkStatement = z.strictObject({ field: ApiName, object: ApiName.optional() });
+
+/** `contract` objects (plan §6.1); an unmapped status reads `unknown`. */
+export const ContractMappingSchema = z.strictObject({
+  account: z.strictObject({ field: ApiName, object: ApiName }),
+  context: z.strictObject({ field: ApiName, object: ApiName }).optional(),
+  startsAt: DateStatement.optional(),
+  endsAt: DateStatement.optional(),
+  renewalDate: DateStatement.optional(),
+  autoRenew: z
+    .strictObject({ field: ApiName, valueMap: z.record(SourceValue, z.boolean()).optional() })
+    .optional(),
+  status: CodeMapStatement.optional(),
+  totalValueMinor: FieldStatement.optional(),
+  totalValueCurrency: FieldStatement.optional(),
+  renewsRef: ContractLinkStatement.optional(),
+  amendsRef: ContractLinkStatement.optional(),
+  parentRef: ContractLinkStatement.optional(),
+});
+export type ContractMapping = z.infer<typeof ContractMappingSchema>;
+
+/** `entitlement` objects (plan §6.1, E3 fields only); an unmapped status reads `unknown`. */
+export const EntitlementMappingSchema = z.strictObject({
+  account: z.strictObject({ field: ApiName, object: ApiName }),
+  product: FieldStatement,
+  quantity: FieldStatement.optional(),
+  status: CodeMapStatement.optional(),
+  startsAt: DateStatement.optional(),
+  endsAt: DateStatement.optional(),
+});
+export type EntitlementMapping = z.infer<typeof EntitlementMappingSchema>;
+
 export const ObjectMappingSchema = z.strictObject({
   source: ApiName,
   entity: z.string().max(50),
@@ -244,6 +324,10 @@ export const ObjectMappingSchema = z.strictObject({
     .optional(),
   /** M10E (entity `account_context` only, plan §5.1): the context statements. */
   accountContext: AccountContextMappingSchema.optional(),
+  /** M10F (entity `price_offer` / `contract` / `entitlement` only, plan §6.1). */
+  priceOffer: PriceOfferMappingSchema.optional(),
+  contract: ContractMappingSchema.optional(),
+  entitlement: EntitlementMappingSchema.optional(),
 });
 export type ObjectMapping = z.infer<typeof ObjectMappingSchema>;
 
