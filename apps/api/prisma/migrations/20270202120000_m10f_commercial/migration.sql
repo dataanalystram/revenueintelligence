@@ -311,7 +311,7 @@ BEGIN
     RAISE EXCEPTION 'contract_graph_isolation_unsupported' USING ERRCODE = 'feature_not_supported',
       DETAIL = 'linking contracts needs READ COMMITTED or SERIALIZABLE';
   END IF;
-  PERFORM pg_advisory_xact_lock(app_tenant_advisory_key(NEW.tenant_id, 'contract-graph', 'tenant'));
+  -- MUTATION VM6: contract-graph advisory lock removed
   visited := frontier;
   WHILE cardinality(frontier) > 0 LOOP
     IF NEW.id = ANY(frontier) THEN
