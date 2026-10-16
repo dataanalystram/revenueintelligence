@@ -745,7 +745,9 @@ DECLARE t text;
 BEGIN
   FOREACH t IN ARRAY ARRAY['tenant_price_offers', 'tenant_contracts', 'tenant_entitlements'] LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
-    EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+    IF t <> 'tenant_contracts' THEN
+      EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+    END IF;
     EXECUTE format(
       'CREATE POLICY tenant_isolation ON %I USING (tenant_id = app_current_tenant()) WITH CHECK (tenant_id = app_current_tenant())',
       t);
