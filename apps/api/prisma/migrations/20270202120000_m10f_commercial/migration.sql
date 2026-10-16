@@ -154,7 +154,9 @@ CREATE INDEX "tenant_entitlements_tenant_id_product_key_idx" ON "tenant_entitlem
 ALTER TABLE "tenant_subscriptions" ADD CONSTRAINT "tenant_subscriptions_agreement_ref_system_fkey" FOREIGN KEY ("agreement_ref_system") REFERENCES "connector_kinds"("kind") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
-ALTER TABLE "tenant_subscriptions" ADD CONSTRAINT "tenant_subscriptions_tenant_id_contract_id_fkey" FOREIGN KEY ("tenant_id", "contract_id") REFERENCES "tenant_contracts"("tenant_id", "id") ON DELETE RESTRICT ON UPDATE RESTRICT;
+-- MUTATION VM3
+CREATE UNIQUE INDEX "mut_vm3_tenant_contracts_id_key" ON "tenant_contracts"("id");
+ALTER TABLE "tenant_subscriptions" ADD CONSTRAINT "tenant_subscriptions_tenant_id_contract_id_fkey" FOREIGN KEY ("contract_id") REFERENCES "tenant_contracts"("id") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
 ALTER TABLE "tenant_subscriptions" ADD CONSTRAINT "tenant_subscriptions_tenant_id_price_offer_id_fkey" FOREIGN KEY ("tenant_id", "price_offer_id") REFERENCES "tenant_price_offers"("tenant_id", "id") ON DELETE RESTRICT ON UPDATE RESTRICT;
