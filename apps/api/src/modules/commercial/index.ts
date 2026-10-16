@@ -44,4 +44,11 @@ export {
   CommercialMergeParticipant,
   type CommercialEntityMerge,
 } from './application/commercial-merge.participant';
+export {
+  CommercialSourceSync,
+  type ContractSourceOutcome,
+  type ContractSourceRecord,
+  type EntitlementSourceRecord,
+  type WaitingLineResolution,
+} from './application/commercial-source.sync';
 export type { SourceRef } from './infrastructure/commercial.store';

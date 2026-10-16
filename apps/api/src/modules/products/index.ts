@@ -39,6 +39,7 @@ export {
   SubscriptionIngestionService,
   type SubscriptionIngestMeta,
   type SubscriptionIngestOutcome,
+  type LineAfterWrite,
 } from './application/subscription-ingestion.service';
 export { SubscriptionMergeParticipant } from './application/subscription-merge.participant';
 export {

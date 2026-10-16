@@ -76,6 +76,21 @@ export const SubscriptionObservationSchema = z.discriminatedUnion('presence', [
     startsAt: InstantSchema.optional(),
     endsAt: InstantSchema.optional(),
     quantity: PositiveQuantity.optional(),
+    /**
+     * M10F (plan §5.4, V4): the line's `agreement_ref` when the mapping states
+     * `subscription.agreement` (null = mapped, not stated by the record). It is
+     * hashed into the line `field_hash` only when present, so a mapping without
+     * the target keeps identical hashes; the commercial line-reference step
+     * stores it (Core at canonical ≥ 0.6, Q2).
+     */
+    agreementRef: z
+      .strictObject({
+        system: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/),
+        objectType: z.string().regex(/^[A-Za-z0-9_]{1,100}$/),
+        externalId: z.string().regex(/^[A-Za-z0-9_.:-]{1,255}$/),
+      })
+      .nullable()
+      .optional(),
     sourceUpdatedAt: InstantSchema.optional(),
     observedAt: InstantSchema,
   }),

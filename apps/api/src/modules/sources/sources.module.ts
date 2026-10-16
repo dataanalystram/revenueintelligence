@@ -1,5 +1,6 @@
 import { Module, type DynamicModule } from '@nestjs/common';
 import type { SourceAdapterFactory } from '../domain';
+import { CommercialModule } from '../commercial';
 import { AccountContextModule } from '../context';
 import { ExtensionModule } from '../extension';
 import { ProductsModule } from '../products';
@@ -58,6 +59,8 @@ export class SourcesModule {
         ProductsModule,
         ExtensionModule,
         AccountContextModule,
+        // M10F: CommercialSourceSync (the sources module imports commercial, never the reverse).
+        CommercialModule,
         options.context,
       ],
       providers: [

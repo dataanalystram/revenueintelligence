@@ -8,6 +8,12 @@ import {
   type PendingParent,
 } from '../../context';
 import {
+  CommercialSourceSync,
+  type CommercialProvenance,
+  type LineReferenceOutcome,
+  type SourceRef,
+} from '../../commercial';
+import {
   acceptsStableSnapshot,
   assertNoRawFinding,
   buildProfileDocument,
@@ -35,6 +41,14 @@ import {
   mapAccountContextRecord,
   mapLineContextRef,
   mapContextRecord,
+  COMMERCIAL_ENTITY_FACT,
+  hasLineCommercialRefs,
+  isCommercialEntity,
+  mapContractRecord,
+  mapEntitlementRecord,
+  mapLineCommercialRefs,
+  mapPriceOfferRecord,
+  type CommercialMappingEntity,
   MappingDocumentSchema,
   mappedFields,
   mapSubscriptionRecord,
@@ -241,6 +255,8 @@ export class SourceSyncService {
     private readonly extensions: SourceExtensionSync,
     // M10E: account_context objects and subscription.contextRef.
     private readonly accountContextSync: AccountContextSourceSync,
+    // M10F: price offers, contracts, entitlements and the line commercial references.
+    private readonly commercialSync: CommercialSourceSync,
     @Optional() @Inject(QueueService) private readonly queues?: QueueService,
     @Optional() @Inject(MetricsService) private readonly metrics?: MetricsService,
   ) {}
@@ -561,6 +577,8 @@ export class SourceSyncService {
     await this.resolvePendingParents(rc, state);
     // M10E: account contexts after accounts and people (their account and persons exist).
     await this.accountContexts(rc, state, selection);
+    // M10F (plan §6.3): price offers → contracts (+ the waiting-line pass) before lines.
+    await this.commercialHeaders(rc, state, selection);
     const lineObjects = rc.mapping.objects.filter((o) => o.entity === 'subscription');
     if (lineObjects.length > 0) {
       // 2. Product catalogue first: a configuration gap fails before any line.
@@ -583,6 +601,8 @@ export class SourceSyncService {
         state.populations.set(obj.source, population);
       }
     }
+    // M10F: entitlements after lines (plan §6.3).
+    await this.commercialRecords(rc, state, selection, 'entitlement');
     // M10D: custom objects after accounts, people and lines (their parents and ends exist).
     await this.customObjects(rc, state, selection);
     // 4a. M9A: pre-tombstone B guards over the whole run, then unattributable rejections.
@@ -749,6 +769,8 @@ export class SourceSyncService {
     await this.resolvePendingParents(rc, state);
     // M10E: account contexts after accounts and people.
     await this.accountContexts(rc, state, selection);
+    // M10F: price offers → contracts (+ the waiting-line pass) before lines.
+    await this.commercialHeaders(rc, state, selection);
     const lineObjects = rc.mapping.objects.filter((o) => o.entity === 'subscription');
     let productStatus: ((id: string) => SourceProductStatus) | undefined;
     if (lineObjects.length > 0) {
@@ -792,6 +814,8 @@ export class SourceSyncService {
         );
       }
     }
+    // M10F: entitlements after lines.
+    await this.commercialRecords(rc, state, selection, 'entitlement');
     // M10D: custom objects after accounts, people and lines.
     await this.customObjects(rc, state, selection);
     // Incremental runs never tombstone and never replace gaps: they only add.
@@ -1076,11 +1100,37 @@ export class SourceSyncService {
           throw new SyncRefusedError(result.code, 'A line references an unmodelled product');
         case 'ingest': {
           result.quality.forEach((q) => state.count(q));
-          const out = await this.subscriptions.ingest(
-            rc.actx,
-            result.observation,
-            this.lineMeta(rc),
-          );
+          // M10F (plan §5.4): the line's commercial references, in the line transaction.
+          const commercial =
+            result.observation.presence === 'present' && hasLineCommercialRefs(obj)
+              ? mapLineCommercialRefs(obj, record, rc.kind)
+              : undefined;
+          const observation =
+            commercial?.agreementMapped && result.observation.presence === 'present'
+              ? { ...result.observation, agreementRef: commercial.agreementRef ?? null }
+              : result.observation;
+          const out = commercial
+            ? await this.subscriptions.ingest<LineReferenceOutcome>(
+                rc.actx,
+                observation,
+                this.lineMeta(rc),
+                (tx, line) =>
+                  this.commercialSync.lineReferences(rc.actx, tx, {
+                    lineId: line.subscriptionId,
+                    ...(commercial.agreementRef ? { agreementRef: commercial.agreementRef } : {}),
+                    ...(commercial.priceOfferRef
+                      ? { priceOfferRef: commercial.priceOfferRef }
+                      : {}),
+                    ...(commercial.supersedesRef
+                      ? { supersedesRef: commercial.supersedesRef }
+                      : {}),
+                    provenance: this.contextProvenance(rc, obj.source, lineId),
+                    observedAt: rc.observedAt,
+                  }),
+              )
+            : await this.subscriptions.ingest(rc.actx, observation, this.lineMeta(rc));
+          const after = (out as { readonly after?: LineReferenceOutcome }).after;
+          if (after) this.countLineReferences(state, after);
           if (out.outcome === 'rejected') {
             if (out.reason === 'invalid_observation') {
               state.failed += 1;
@@ -1797,6 +1847,168 @@ export class SourceSyncService {
       provenance: this.contextProvenance(rc, obj.source, lineIdOf(obj, record) ?? lineId),
     });
     state.count(`context_assignment_${outcome}`);
+  }
+
+  /**
+   * M10F (plan §6.1, §6.3): price offers then contracts, each only under its
+   * authority fact (M10E D13: decided by the run), then the second
+   * `agreement_ref → contract` pass for lines that were waiting for a contract
+   * written in this run.
+   */
+  private async commercialHeaders(
+    rc: RunContext,
+    state: RunState,
+    selection: ReadSelection,
+  ): Promise<void> {
+    await this.commercialRecords(rc, state, selection, 'price_offer');
+    const contracts = await this.commercialRecords(rc, state, selection, 'contract');
+    if (contracts.length === 0) return;
+    const resolved = await this.commercialSync.resolveWaitingLines(rc.actx, {
+      contracts,
+      provenance: (line) => this.contextProvenance(rc, line.objectType, line.id),
+      observedAt: rc.observedAt,
+    });
+    for (const r of resolved) {
+      state.count(`contract_resolution_${r.outcome}`);
+      if (r.outcome === 'assigned') state.changed += 1;
+    }
+  }
+
+  /** Reads and writes the records of the objects mapped as one commercial entity; returns the refs written. */
+  private async commercialRecords(
+    rc: RunContext,
+    state: RunState,
+    selection: ReadSelection,
+    entity: CommercialMappingEntity,
+  ): Promise<SourceRef[]> {
+    const objects = rc.mapping.objects.filter(
+      (o) => isCommercialEntity(o.entity) && o.entity === entity,
+    );
+    const written: SourceRef[] = [];
+    if (objects.length === 0) return written;
+    if (!isAuthoritative(rc.authority, COMMERCIAL_ENTITY_FACT[entity], rc.connection.id)) {
+      state.count(`${entity}_not_authoritative`);
+      return written;
+    }
+    const productKeyOf = entity === 'contract' ? () => undefined : await this.productKeys(rc);
+    for (const obj of objects) {
+      await this.readAll(rc, obj.source, mappedFields(obj), selection, async (records) => {
+        this.observe(rc, state, obj, records);
+        for (const record of records) {
+          if (record.rejection) {
+            state.count('record_rejected');
+            continue;
+          }
+          const ref = await this.commercialRecord(rc, state, obj, record, entity, productKeyOf);
+          if (ref) written.push(ref);
+        }
+      });
+    }
+    return written;
+  }
+
+  private async commercialRecord(
+    rc: RunContext,
+    state: RunState,
+    obj: ObjectMapping,
+    record: SourceRecord,
+    entity: CommercialMappingEntity,
+    productKeyOf: (id: string) => string | undefined,
+  ): Promise<SourceRef | undefined> {
+    const provenance = (id: string, at?: Date): CommercialProvenance =>
+      this.contextProvenance(rc, obj.source, id, at);
+    const tally = (out: { status: string; reason?: string; humanOverride?: number }) => {
+      state.count(`${entity}_${out.status}`);
+      if (out.reason) state.count(`${entity}_rejected_${out.reason}`);
+      if (out.humanOverride) state.count(`${entity}_human_override_active`, out.humanOverride);
+      if (out.status === 'created' || out.status === 'updated') state.changed += 1;
+    };
+    if (entity === 'price_offer') {
+      const m = mapPriceOfferRecord(obj, record, rc.kind, productKeyOf);
+      if (m.outcome === 'skipped') return void state.count(m.code);
+      m.quality.forEach((q) => state.count(q));
+      const { outcome: _o, quality: _q, sourceUpdatedAt, ...fields } = m;
+      const out = await this.commercialSync.observePriceOffer(rc.actx, {
+        ...fields,
+        observedAt: rc.observedAt,
+        provenance: provenance(m.ref.id, sourceUpdatedAt),
+      });
+      tally(out);
+      return undefined;
+    }
+    if (entity === 'contract') {
+      const m = mapContractRecord(obj, record, rc.kind);
+      if (m.outcome === 'skipped') return void state.count(m.code);
+      m.quality.forEach((q) => state.count(q));
+      const { outcome: _o, quality: _q, sourceUpdatedAt, ...fields } = m;
+      const out = await this.commercialSync.observeContract(rc.actx, {
+        ...fields,
+        observedAt: rc.observedAt,
+        provenance: provenance(m.ref.id, sourceUpdatedAt),
+      });
+      tally(out);
+      if (out.linksRefused) state.count('contract_link_refused', out.linksRefused);
+      if (out.linksUnresolved) state.count('contract_link_unresolved', out.linksUnresolved);
+      if (out.contextSkipped) {
+        state.count('context_assignment_skipped');
+        state.count(`contract_context_skipped_${out.contextSkipped}`);
+      }
+      if (out.contextUnresolved) state.count('contract_context_unresolved');
+      if (out.duplicates) state.count('contract_duplicate_source', out.duplicates);
+      return out.contractId && m.presence === 'present' ? m.ref : undefined;
+    }
+    const m = mapEntitlementRecord(obj, record, rc.kind, productKeyOf);
+    if (m.outcome === 'skipped') return void state.count(m.code);
+    m.quality.forEach((q) => state.count(q));
+    const { outcome: _o, quality: _q, sourceUpdatedAt, ...fields } = m;
+    const out = await this.commercialSync.observeEntitlement(rc.actx, {
+      ...fields,
+      observedAt: rc.observedAt,
+      provenance: provenance(m.ref.id, sourceUpdatedAt),
+    });
+    tally(out);
+    return undefined;
+  }
+
+  /** Source product id → canonical product key, through the product model's external references. */
+  private async productKeys(rc: RunContext): Promise<(id: string) => string | undefined> {
+    const refs = rc.mapping.productReferences;
+    if (!refs) return () => undefined;
+    const model = await this.catalogue.modelAt(rc.ctx, rc.observedAt);
+    const keys = new Map<string, string>();
+    for (const p of model?.document.products ?? []) {
+      for (const r of p.externalRefs) {
+        if (r.system === rc.kind && r.objectType === refs.object) keys.set(r.id, p.key);
+      }
+    }
+    return (id) => keys.get(id);
+  }
+
+  /** M10F (plan §5.4): the line-reference step's outcome as value-free counters. */
+  private countLineReferences(
+    state: RunState,
+    out: {
+      readonly status: string;
+      readonly agreement: string;
+      readonly contract: string;
+      readonly priceOffer: string;
+      readonly supersedes: string;
+    },
+  ): void {
+    if (out.status !== 'applied') {
+      state.count(`commercial_reference_${out.status}`);
+      return;
+    }
+    if (out.agreement !== 'not_mapped') state.count(`agreement_ref_${out.agreement}`);
+    const parts = [
+      ['line_contract', out.contract],
+      ['line_price_offer', out.priceOffer],
+      ['line_supersedes', out.supersedes],
+    ] as const;
+    if (parts.some(([, o]) => o === 'skipped')) state.count('commercial_reference_skipped');
+    for (const [name, o] of parts) {
+      if (o !== 'not_mapped' && o !== 'skipped') state.count(`${name}_${o}`);
+    }
   }
 
   private contextMeta(rc: RunContext): IngestMeta {

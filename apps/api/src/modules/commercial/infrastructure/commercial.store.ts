@@ -343,6 +343,113 @@ export class CommercialStore {
     return row.entityId;
   }
 
+  /**
+   * M10F phase 2b: the canonical company of an account source reference
+   * (`company_external_refs`), following merges (M10E `canonicalForRef` pattern).
+   */
+  async companyForRef(tx: TenantTransaction, ref: SourceRef): Promise<string | undefined> {
+    const db = tenantClient(tx);
+    let id = (
+      await db.companyExternalRef.findFirst({
+        where: {
+          tenantId: tx.tenantId,
+          system: ref.system,
+          objectType: ref.objectType,
+          externalId: ref.id,
+        },
+        select: { companyId: true },
+      })
+    )?.companyId;
+    for (let hops = 0; id && hops < 20; hops += 1) {
+      const row = await db.company.findFirst({
+        where: { tenantId: tx.tenantId, id },
+        select: { recordState: true, mergedIntoId: true },
+      });
+      if (!row || row.recordState !== 'merged' || !row.mergedIntoId) return id;
+      id = row.mergedIntoId;
+    }
+    return id;
+  }
+
+  /** The account context a generic `account_context` source reference names, following merges. */
+  async contextForRef(tx: TenantTransaction, ref: SourceRef): Promise<string | undefined> {
+    const db = tenantClient(tx);
+    const row = await db.tenantSourceReference.findUnique({
+      where: {
+        tenantId_system_objectType_externalId: {
+          tenantId: tx.tenantId,
+          system: ref.system,
+          objectType: ref.objectType,
+          externalId: ref.id,
+        },
+      },
+      select: { entityKind: true, entityId: true },
+    });
+    let id = row?.entityKind === 'account_context' ? (row.entityId ?? undefined) : undefined;
+    for (let hops = 0; id && hops < 20; hops += 1) {
+      const ctx = await this.contextCompany(tx, id);
+      if (!ctx || ctx.recordState !== 'merged' || !ctx.mergedIntoId) return id;
+      id = ctx.mergedIntoId;
+    }
+    return id;
+  }
+
+  /**
+   * Lines waiting for the contract an `agreement_ref` names (plan §6.3; index
+   * `tenant_subscriptions_agreement_ref_idx`): active lines of the triple with
+   * no contract yet, ascending id.
+   */
+  async linesAwaitingContract(
+    tx: TenantTransaction,
+    ref: SourceRef,
+  ): Promise<
+    { id: string; sourceSystem: string; sourceObjectType: string; sourceRecordId: string }[]
+  > {
+    return tenantClient(tx).tenantSubscription.findMany({
+      where: {
+        tenantId: tx.tenantId,
+        agreementRefSystem: ref.system,
+        agreementRefObjectType: ref.objectType,
+        agreementRefExternalId: ref.id,
+        contractId: null,
+        recordState: 'active',
+      },
+      orderBy: { id: 'asc' },
+      take: 5000,
+      select: { id: true, sourceSystem: true, sourceObjectType: true, sourceRecordId: true },
+    });
+  }
+
+  /**
+   * Q14: other contracts of the same account over the same term, known through a
+   * source reference of a different system (`contract_duplicate_source`).
+   */
+  async duplicateSourceContracts(
+    tx: TenantTransaction,
+    contract: { id: string; companyId: string; startsAt: string; endsAt: string },
+    system: string,
+  ): Promise<string[]> {
+    const rows = await tenantClient(tx).$queryRawUnsafe<{ id: string }[]>(
+      `SELECT c.id::text AS id FROM tenant_contracts c
+        WHERE c.tenant_id = $1::uuid AND c.company_id = $2::uuid AND c.id <> $3::uuid
+          AND c.starts_at = $4::timestamptz AND c.ends_at = $5::timestamptz
+          AND EXISTS (SELECT 1 FROM tenant_source_references r
+                       WHERE r.tenant_id = c.tenant_id AND r.entity_kind = 'contract'
+                         AND r.entity_id = c.id AND r.system <> $6)
+          AND NOT EXISTS (SELECT 1 FROM tenant_source_references r
+                           WHERE r.tenant_id = c.tenant_id AND r.entity_kind = 'contract'
+                             AND r.entity_id = c.id AND r.system = $6)
+        ORDER BY c.id`,
+      tx.tenantId,
+      contract.companyId,
+      contract.id,
+      contract.startsAt,
+      contract.endsAt,
+      system,
+    );
+    return rows.map((r) => r.id);
+  }
+
   // --- Price offers --------------------------------------------------------------
 
   async offer(tx: TenantTransaction, id: string): Promise<PriceOfferRow | undefined> {

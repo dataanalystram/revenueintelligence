@@ -343,6 +343,19 @@ const SERVICES: readonly ServiceSpec[] = [
     writes: ['applyFromSource', 'assignContract', 'assignPriceOffer', 'setSupersedes', 'release'],
     reads: [],
   },
+  // M10F phase 2b: the source-sync entry (references resolved, then the single writers).
+  {
+    file: 'commercial/application/commercial-source.sync.ts',
+    className: 'CommercialSourceSync',
+    writes: [
+      'observePriceOffer',
+      'observeContract',
+      'observeEntitlement',
+      'lineReferences',
+      'resolveWaitingLines',
+    ],
+    reads: [],
+  },
   {
     file: 'commercial/application/commercial-merge.participant.ts',
     className: 'CommercialMergeParticipant',
