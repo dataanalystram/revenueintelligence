@@ -508,8 +508,7 @@ export class ExtensionStore {
   async customObjectOwner(tx: TenantTransaction, objectKey: string): Promise<string | null> {
     const rows = await tenantClient(tx).$queryRaw<{ connection_id: string | null }[]>`
       SELECT connection_id::text AS connection_id FROM tenant_custom_object_owners
-       WHERE tenant_id = ${tx.tenantId}::uuid AND object_key = ${objectKey}
-         FOR SHARE`;
+       WHERE tenant_id = ${tx.tenantId}::uuid AND object_key = ${objectKey}`; // MUTATION VM5: FOR SHARE removed
     return rows[0]?.connection_id ?? null;
   }
 
