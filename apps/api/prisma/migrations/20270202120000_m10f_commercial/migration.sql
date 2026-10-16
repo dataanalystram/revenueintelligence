@@ -190,7 +190,9 @@ ALTER TABLE "tenant_contracts" ADD CONSTRAINT "tenant_contracts_tenant_id_compan
 ALTER TABLE "tenant_contracts" ADD CONSTRAINT "tenant_contracts_tenant_id_context_id_fkey" FOREIGN KEY ("tenant_id", "context_id") REFERENCES "tenant_account_contexts"("tenant_id", "id") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
-ALTER TABLE "tenant_contracts" ADD CONSTRAINT "tenant_contracts_tenant_id_renews_contract_id_fkey" FOREIGN KEY ("tenant_id", "renews_contract_id") REFERENCES "tenant_contracts"("tenant_id", "id") ON DELETE RESTRICT ON UPDATE RESTRICT;
+-- MUTATION VM2
+CREATE UNIQUE INDEX "mut_vm2_tenant_contracts_id_key" ON "tenant_contracts"("id");
+ALTER TABLE "tenant_contracts" ADD CONSTRAINT "tenant_contracts_tenant_id_renews_contract_id_fkey" FOREIGN KEY ("renews_contract_id") REFERENCES "tenant_contracts"("id") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- AddForeignKey
 ALTER TABLE "tenant_contracts" ADD CONSTRAINT "tenant_contracts_tenant_id_amends_contract_id_fkey" FOREIGN KEY ("tenant_id", "amends_contract_id") REFERENCES "tenant_contracts"("tenant_id", "id") ON DELETE RESTRICT ON UPDATE RESTRICT;
