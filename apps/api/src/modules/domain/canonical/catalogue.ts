@@ -182,10 +182,10 @@ export function canonicalCatalogueFor(version: string): CanonicalCatalogue {
 function catalogue0_5(base: CanonicalCatalogue): CanonicalCatalogue {
   return {
     ...catalogue0_4(base),
-    entityKinds: ENTITY_INDEX_KINDS_0_5,
-    changeEntityKinds: CHANGE_ENTITY_KINDS_0_5,
-    genericReferenceKinds: GENERIC_REFERENCE_KINDS_0_5,
-    extensionTargets: EXTENSION_TARGET_KINDS_0_5,
+    entityKinds: ENTITY_INDEX_KINDS,
+    changeEntityKinds: CHANGE_ENTITY_KINDS,
+    genericReferenceKinds: GENERIC_REFERENCE_KINDS,
+    extensionTargets: EXTENSION_TARGET_KINDS,
     authorityFacts: AUTHORITY_FACTS_0_5,
     mappingEntities: MAPPING_ENTITIES_0_5,
     registryKinds: REGISTRY_KINDS_0_5,
