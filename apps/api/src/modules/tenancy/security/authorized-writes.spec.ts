@@ -510,7 +510,7 @@ describe('S2: privileged service writes take an authorized context (static)', ()
     ]);
   });
 
-  it('M10E hardening #90: data.account_context.read_confidential is named only by the policy, the AccountContext read model and the extension read model for account_context targets (no other path widens a read)', () => {
+  it('M10E hardening #90 / M10F §16: the read_confidential capabilities are named only by the policy, the grant service, the AccountContext and Commercial read models, the extension read model for account_context / commercial targets and their CLIs (no other path widens a read)', () => {
     const SRC = resolve(MODULES, '..');
     const files = (readdirSync(SRC, { recursive: true }) as string[])
       .filter((f) => f.endsWith('.ts') && !f.endsWith('.spec.ts') && !f.startsWith('generated'))
@@ -519,8 +519,10 @@ describe('S2: privileged service writes take an authorized context (static)', ()
       .sort();
     expect(files).toEqual([
       'cli/account-context.ts',
+      'cli/commercial.ts',
       'cli/extension.ts',
       'cli/security.ts',
+      'modules/commercial/application/commercial.read-model.ts',
       'modules/context/application/account-context.read-model.ts',
       'modules/domain/security/capabilities.ts',
       'modules/extension/application/extension.read-model.ts',
