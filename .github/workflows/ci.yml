@@ -1,22 +1,14 @@
-name: CI
-
+# THROWAWAY mutation-proof workflow (VM13); never merged. Runs only the guarding tests.
+name: Mutation proof
 on:
-  push:
-    branches: [main]
   pull_request:
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
 permissions:
   contents: read
-
 jobs:
-  verify:
-    name: Lint, typecheck, boundaries, unit tests
+  guard:
+    name: VM13 guards
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -25,67 +17,11 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm format:check
-      - run: pnpm lint
-      - run: pnpm typecheck
-      - run: pnpm depcheck:boundaries
-      - run: pnpm test:unit
-
-  integration:
-    name: Integration tests (Testcontainers)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm test:integration
-
-  runtime:
-    name: Runtime verification (real API, worker, PostgreSQL, Redis)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-          cache: pnpm
-      - run: pnpm verify:runtime
-      # The log artifact below is not always reachable; print the essentials
-      # (runtime checks assert that these logs hold no values or secrets).
-      - name: Show runtime warnings, errors and log tails
-        if: failure()
-        run: |
-          for f in /tmp/lip-verify.*/*.log; do
-            echo "== $f"
-            grep -E '"level":(40|50|60)' "$f" | tail -n 20 || true
-            tail -n 5 "$f" | grep -vE '"level":(40|50|60)' || true
-          done
-      # verify-runtime.sh keeps its logs in /tmp/lip-verify.* when a check fails.
-      - if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: runtime-verification-logs
-          path: /tmp/lip-verify.*
-          retention-days: 7
-          if-no-files-found: ignore
-
-  docker:
-    name: Docker images build and start
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      # No pnpm cache: this job installs nothing on the host (the images do),
-      # so a cache miss would leave no store to save and fail the post step.
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-      - run: pnpm verify:docker
+      - name: "guard 1  (unit) source-mapping-commercial.spec.ts"
+        if: always()
+        working-directory: apps/api
+        run: "pnpm exec vitest run --config vitest.config.mts src/modules/domain/source-mapping-commercial.spec.ts"
+      - name: "guard 2  (int) commercial-sync.int.spec.ts"
+        if: always()
+        working-directory: apps/api
+        run: "pnpm exec prisma generate >/dev/null && pnpm exec vitest run --config vitest.integration.config.mts test/sources/commercial-sync.int.spec.ts -t \"V5 / V13 / V14 / V15 / V16 / Q14: the commercial objects and line references\""

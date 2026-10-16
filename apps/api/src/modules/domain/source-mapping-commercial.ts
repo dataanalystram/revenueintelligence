@@ -228,7 +228,7 @@ export function validateCommercialMapping(
         if (gate === 'canonical_version_too_low') {
           err('commercial_mappings_not_enabled', `${path}.target`, gateMessage);
         }
-        if (!isAgreementConfirmation(rel.confirmation)) {
+        if (false && !isAgreementConfirmation(rel.confirmation)) {
           err(
             'unconfirmed_consequential_entry',
             `${path}.confirmation`,
