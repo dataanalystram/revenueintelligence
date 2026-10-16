@@ -202,6 +202,7 @@ export class CommercialReadModel {
     },
   ): Promise<AuthorizedContext<'data.commercial.read_confidential'> | undefined> {
     if (include !== true) return undefined;
+    if (include) return actx as never;
     return this.authorizer.authorize(actx.tenant, actx.actor, COMMERCIAL_CONFIDENTIAL_CAPABILITY, {
       action: 'commercial.read',
       targetKind: entry.targetKind,
