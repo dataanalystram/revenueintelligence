@@ -295,6 +295,7 @@ DECLARE
   visited uuid[];
   nxt uuid[];
   steps integer := 0;
+  k integer;
 BEGIN
   IF TG_OP = 'UPDATE' AND NEW.renews_contract_id IS NOT DISTINCT FROM OLD.renews_contract_id
      AND NEW.amends_contract_id IS NOT DISTINCT FROM OLD.amends_contract_id
@@ -312,7 +313,13 @@ BEGIN
       DETAIL = 'linking contracts needs READ COMMITTED or SERIALIZABLE';
   END IF;
   PERFORM pg_advisory_xact_lock(app_tenant_advisory_key(NEW.tenant_id, 'contract-graph', 'tenant'));
+  -- MUTATION VM7: cycles checked per link kind instead of the union
+  FOR k IN 1..3 LOOP
+  frontier := ARRAY(SELECT x FROM unnest(ARRAY[(ARRAY[NEW.renews_contract_id, NEW.amends_contract_id,
+                                                      NEW.parent_contract_id])[k]]) AS x
+                     WHERE x IS NOT NULL AND x <> NEW.id);
   visited := frontier;
+  steps := 0;
   WHILE cardinality(frontier) > 0 LOOP
     IF NEW.id = ANY(frontier) THEN
       RAISE EXCEPTION 'contract_link_cycle' USING ERRCODE = 'check_violation',
@@ -323,13 +330,14 @@ BEGIN
       RAISE EXCEPTION 'contract_link_ceiling' USING ERRCODE = 'check_violation',
         DETAIL = format('the links of contract %s go deeper than 64 levels', NEW.id);
     END IF;
-    nxt := ARRAY(SELECT DISTINCT n FROM public.tenant_contracts c
-                  CROSS JOIN LATERAL unnest(ARRAY[c.renews_contract_id, c.amends_contract_id,
-                                                  c.parent_contract_id]) AS n
+    nxt := ARRAY(SELECT DISTINCT z.n FROM public.tenant_contracts c
+                  CROSS JOIN LATERAL (SELECT (ARRAY[c.renews_contract_id, c.amends_contract_id,
+                                                  c.parent_contract_id])[k] AS n) z
                   WHERE c.tenant_id = NEW.tenant_id AND c.id = ANY(frontier)
-                    AND n IS NOT NULL AND NOT (n = ANY(visited)));
+                    AND z.n IS NOT NULL AND NOT (z.n = ANY(visited)));
     visited := visited || nxt;
     frontier := nxt;
+  END LOOP;
   END LOOP;
   RETURN NEW;
 END
