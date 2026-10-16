@@ -174,8 +174,25 @@ describe('M10D hardening #83: single-owner custom objects under concurrent publi
         WHERE NOT granted AND pg_blocking_pids(pid) && $1::int[] ORDER BY pid`,
       [pids],
     );
+  /**
+   * How many backends wait, directly or transitively, behind `pids` (e.g. the
+   * race loser waits on the winner's uncommitted owner row while the winner
+   * waits on the barrier).
+   */
   const waiting = async (pids: readonly number[]) =>
-    new Set((await waitersOf(pids)).map((w) => w.pid)).size;
+    Number(
+      (
+        await c.sql<{ n: string }>(
+          `WITH RECURSIVE w (pid) AS (
+             SELECT unnest($1::int[])
+             UNION
+             SELECT l.pid FROM pg_locks l JOIN w ON w.pid = ANY (pg_blocking_pids(l.pid))
+              WHERE NOT l.granted)
+           SELECT count(*)::text AS n FROM w WHERE pid <> ALL ($1::int[])`,
+          [pids],
+        )
+      )[0]!.n,
+    );
   const backendPid = async (session: { query: (q: string) => Promise<{ rows: unknown[] }> }) =>
     ((await session.query('SELECT pg_backend_pid() AS pid')).rows[0] as { pid: number }).pid;
 
@@ -439,7 +456,7 @@ describe('M10D hardening #83: single-owner custom objects under concurrent publi
       const order: string[] = [];
       const barrier = await appSession(c, f.ctx);
       const barrierPid = await backendPid(barrier);
-      let pending: Promise<Settled>[] = [];
+      const pending: Promise<Settled>[] = [];
       try {
         // Pause the writer at its record insert, AFTER its owner check (owner row held FOR SHARE).
         await barrier.query('LOCK TABLE tenant_custom_records IN SHARE MODE');
@@ -448,7 +465,7 @@ describe('M10D hardening #83: single-owner custom objects under concurrent publi
         expect(order).toEqual([]);
         // The release must wait for the owner's in-flight write.
         const r = settle('retire', retire(), order);
-        pending = [w, r];
+        pending.push(w, r);
         const behindWriter = await waitFor([writer!.pid], () => order.length > 0, 'retire waits');
         expect(order, 'the retire committed while the owner write was in flight').toEqual([]);
         expect(behindWriter).toHaveLength(1);
@@ -487,7 +504,7 @@ describe('M10D hardening #83: single-owner custom objects under concurrent publi
       const order: string[] = [];
       const barrier = await appSession(c, f.ctx);
       const barrierPid = await backendPid(barrier);
-      let pending: Promise<Settled>[] = [];
+      const pending: Promise<Settled>[] = [];
       try {
         // Pause the retire AFTER its release UPDATE, at the audit chain it takes next.
         await barrier.query(`SELECT pg_advisory_xact_lock($1::bigint)`, [
@@ -505,7 +522,7 @@ describe('M10D hardening #83: single-owner custom objects under concurrent publi
         ).toEqual([{ connection_id: f.sugar.connectionId }]);
         // The owner's write now waits on the uncommitted release.
         const w = settle('write', sugarWrite(), order);
-        pending = [r, w];
+        pending.push(r, w);
         let writer: Awaited<ReturnType<typeof waitersOf>>[number] | undefined;
         await c.until(
           async () => {
