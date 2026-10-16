@@ -85,7 +85,19 @@ export class SubscriptionQueries {
       ...(r.startsAt ? { startsAt: r.startsAt } : {}),
       ...(r.endsAt ? { endsAt: r.endsAt } : {}),
       ...(r.quantity !== null ? { quantity: r.quantity } : {}),
-    }));
+    })).concat(
+      (
+        await tenantClient(tx).tenantEntitlement.findMany({
+          where: { tenantId: tx.tenantId, companyId, status: 'active' },
+          orderBy: { id: 'asc' },
+        })
+      ).map((e) => ({
+        id: e.id,
+        productKey: e.productKey as SubscriptionFact['productKey'],
+        state: 'active' as SubscriptionState,
+        ...(e.quantity !== null ? { quantity: e.quantity } : {}),
+      })),
+    );
   }
 
   /** Every line of one company, including tombstones (read model / UI). */
