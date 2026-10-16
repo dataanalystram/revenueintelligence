@@ -5,7 +5,7 @@ import {
   type CommercialEntityKind,
   type SecurityActor,
 } from '../../domain';
-import { GovernanceError, type ModuleGate } from '../../governance';
+import { GovernanceError, ModuleDisabledError, type ModuleGate } from '../../governance';
 import type { AuthorizedContext, ChangeWrite, TenantTransaction } from '../../tenancy';
 import type { CommercialStore, SourceRef } from '../infrastructure/commercial.store';
 import type { AttributeDecision, Plain } from './commercial.rules';
@@ -85,7 +85,9 @@ export async function requireCommercial(
       `Commercial data needs canonical ${COMMERCIAL_MIN_VERSION}`,
     );
   }
-  if (state === 'module_disabled') await gate.require(tx, actx, COMMERCIAL_MODULE_KEY);
+  // MUTATION VM9: refusal audit skipped
+  void gate;
+  if (state === 'module_disabled') throw new ModuleDisabledError(COMMERCIAL_MODULE_KEY);
 }
 
 /** Q13: a contract's `context_id` additionally needs module `account_context` (audited denial). */
