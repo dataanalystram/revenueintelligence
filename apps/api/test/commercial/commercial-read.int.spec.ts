@@ -852,9 +852,17 @@ describe('M10F commercial read model, confidential gate, integrity and races', (
     const t = await tenant('cmm1race');
     const ids = await companies(c, t, ['4811', '4812', '4813']);
     const [survivor, loser, third] = [ids['4811']!, ids['4812']!, ids['4813']!];
-    // K1 on the loser is the barrier the merge stops at (the commercial merge participant locks it
-    // after the subscription participant has re-pointed P, i.e. while the merge holds P's row lock).
-    const k1 = (await observeContract(t, loser, 'm1k1')).contractId!;
+    // An entitlement of the loser is the barrier the merge stops at (the commercial merge participant
+    // locks it after the subscription participant has re-pointed P, i.e. while the merge holds P's row).
+    const barrierRow = (
+      await entitlements().write(await human(t), {
+        account: loser,
+        product: 'core',
+        quantity: 1,
+        status: 'active',
+        reason: REASON,
+      })
+    ).entitlementId;
     const p = await insertLine(c, t, loser);
     const l = await insertLine(c, t, third);
     const barrier = new Client({ connectionString: c.adminUrl });
@@ -867,8 +875,8 @@ describe('M10F commercial read model, confidential gate, integrity and races', (
       );
       await barrier.query('BEGIN');
       await barrier.query(
-        `SELECT id FROM tenant_contracts WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
-        [t.tenantId, k1],
+        `SELECT id FROM tenant_entitlements WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
+        [t.tenantId, barrierRow],
       );
       // Session A: the merge, which re-points P (row lock) and then waits on the barrier.
       const actxMerge = await sync(t);
