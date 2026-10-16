@@ -623,6 +623,11 @@ describe('M10A2 canonical versioning and governance', () => {
         publish(doc({ sensitivity: 'restricted', categories: ['commercial', 'financial'] }), 1),
       ).resolves.toMatchObject({ version: 2 });
       // Below 0.4 (rollback, Q19) a publish is refused even with the module enabled.
+      // M10F: new tenants adopt 0.6; step back to 0.5 first.
+      await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
+        target: '0.5',
+        expectedCurrent: '0.6',
+      });
       // M10E: new tenants adopt 0.5; rollback goes one MINOR at a time (0.5 → 0.4 first).
       await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
         target: '0.4',

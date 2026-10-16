@@ -163,7 +163,7 @@ describe('M10E AccountContext (writers, lines, merges, reads)', () => {
         change_type: 'created',
         source_system: 'hubspot',
         source_object_type: 'relationships',
-        canonical_version: '0.5',
+        canonical_version: '0.6',
       });
       const refs = await c.sql<{ entity_id: string; external_id: string }>(
         `SELECT entity_id::text, external_id FROM tenant_source_references

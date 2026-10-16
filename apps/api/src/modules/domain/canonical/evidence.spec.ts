@@ -78,6 +78,10 @@ describe('validateEvidenceSet', () => {
     expect(EVIDENCE_KIND_MODULES).toEqual({
       custom_record: 'extension',
       account_context: 'account_context',
+      // M10F: the commercial kinds belong to the commercial module.
+      price_offer: 'commercial',
+      contract: 'commercial',
+      entitlement: 'commercial',
     });
   });
 

@@ -37,6 +37,8 @@ const run = promisify(execFile);
 const M10E = '20270119120000_m10e_account_context';
 const M10E_DOWN = resolve(`prisma/rollback/${M10E}.down.sql`);
 /** M10E hardening #90 sits on top of M10E: its (data-free) down-script runs first. */
+/** M10F (commercial, canonical 0.6) sits on top of #90: its (data-free) down-script runs first of all. */
+const M10F_DOWN = resolve('prisma/rollback/20270202120000_m10f_commercial.down.sql');
 const H90_DOWN = resolve(
   'prisma/rollback/20270126130000_m10e_h90_confidential_read_grants.down.sql',
 );
@@ -142,7 +144,13 @@ describe('M10E migration and schema guard', () => {
         { version: '0.2', status: 'supported', adr: '0028', catalogue_hash: STORED_HASHES['0.2'] },
         { version: '0.3', status: 'supported', adr: '0029', catalogue_hash: STORED_HASHES['0.3'] },
         { version: '0.4', status: 'supported', adr: '0030', catalogue_hash: STORED_HASHES['0.4'] },
-        { version: '0.5', status: 'current', adr: '0031', catalogue_hash: STORED_HASHES['0.5'] },
+        { version: '0.5', status: 'supported', adr: '0031', catalogue_hash: STORED_HASHES['0.5'] },
+        {
+          version: '0.6',
+          status: 'current',
+          adr: '0032',
+          catalogue_hash: canonicalCatalogueHash(canonicalCatalogueFor('0.6')),
+        },
       ]);
       expect(canonicalCatalogueHash(canonicalCatalogueFor('0.5'))).toBe(STORED_HASHES['0.5']);
       expect(CANONICAL_VERSIONS.map((v) => [v.version, v.status])).toEqual([
@@ -150,7 +158,8 @@ describe('M10E migration and schema guard', () => {
         ['0.2', 'supported'],
         ['0.3', 'supported'],
         ['0.4', 'supported'],
-        ['0.5', 'current'],
+        ['0.5', 'supported'],
+        ['0.6', 'current'],
       ]);
       const c04 = canonicalCatalogueFor('0.4') as unknown as Record<string, readonly string[]>;
       const c05 = canonicalCatalogueFor('0.5') as unknown as Record<string, readonly string[]>;
@@ -227,6 +236,8 @@ describe('M10E migration and schema guard', () => {
       );
       expect(rows.filter((r) => r.available)).toEqual([
         { module_key: 'account_context', available: true, minimum_canonical_version: '0.5' },
+        // M10F: commercial available at 0.6.
+        { module_key: 'commercial', available: true, minimum_canonical_version: '0.6' },
         { module_key: 'extension', available: true, minimum_canonical_version: '0.4' },
       ]);
       expect(CANONICAL_MODULES.find((m) => m.key === 'account_context')!.entityKinds).toEqual([
@@ -275,6 +286,8 @@ describe('M10E migration and schema guard', () => {
         'tenant_account_context_persons_tenant_immutable',
         'tenant_account_context_products_guard',
         'tenant_account_context_products_tenant_immutable',
+        // M10F: a context's contract must belong to the same account (plan §5).
+        'tenant_account_contexts_contract_guard',
         'tenant_account_contexts_entity_index_add',
         'tenant_account_contexts_entity_index_remove',
         'tenant_account_contexts_guard',
@@ -868,7 +881,8 @@ ${OFF}`;
         { version: '0.2', status: 'supported' },
         { version: '0.3', status: 'supported' },
         { version: '0.4', status: 'supported' },
-        { version: '0.5', status: 'current' },
+        { version: '0.5', status: 'supported' },
+        { version: '0.6', status: 'current' },
       ]);
       await expect(migrate(url)).resolves.toMatch(/No pending migrations/);
       expect(await state(url)).toEqual([EXPECTED_STATE]);
@@ -880,6 +894,7 @@ ${OFF}`;
       await migrate(url);
       const latest = await schemaSnapshot(url);
       // #90 then #83 sit on top of M10E: their (data-free) rollbacks run first, #90 first.
+      await withAdmin(url, (db) => db.query(readFileSync(M10F_DOWN, 'utf8')));
       await withAdmin(url, (db) => db.query(readFileSync(H90_DOWN, 'utf8')));
       await withAdmin(url, (db) => db.query(readFileSync(H83_DOWN, 'utf8')));
       const down = readFileSync(M10E_DOWN, 'utf8');

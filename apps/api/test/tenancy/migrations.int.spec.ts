@@ -120,8 +120,13 @@ const H83_DOWN = resolve(`prisma/rollback/${H83_MIGRATIONS[0]}.down.sql`);
 const H90_MIGRATIONS = ['20270126130000_m10e_h90_confidential_read_grants'];
 const H90_DOWN = resolve(`prisma/rollback/${H90_MIGRATIONS[0]}.down.sql`);
 
-/** Rolls #90, then #83, then M10E back; every M10D and older down-script runs after this. */
+/** M10F migration (commercial, canonical 0.6): the latest, on top of #90. */
+const M10F_MIGRATIONS = ['20270202120000_m10f_commercial'];
+const M10F_DOWN = resolve(`prisma/rollback/${M10F_MIGRATIONS[0]}.down.sql`);
+
+/** Rolls M10F, #90, then #83, then M10E back; every M10D and older down-script runs after this. */
 async function rollbackM10E(url: string): Promise<void> {
+  await withAdmin(url, (db) => db.query(readFileSync(M10F_DOWN, 'utf8')));
   await withAdmin(url, (db) => db.query(readFileSync(H90_DOWN, 'utf8')));
   await withAdmin(url, (db) => db.query(readFileSync(H83_DOWN, 'utf8')));
   await withAdmin(url, (db) => db.query(readFileSync(M10E_DOWN, 'utf8')));
@@ -166,6 +171,7 @@ const POST_M7_DOWNS = [
   ...M10E_MIGRATIONS,
   ...H83_MIGRATIONS,
   ...H90_MIGRATIONS,
+  ...M10F_MIGRATIONS,
 ]
   .reverse()
   .map((name) => resolve(`prisma/rollback/${name}.down.sql`));
@@ -225,6 +231,7 @@ describe('database migrations and schema guard', () => {
         ...M10E_MIGRATIONS,
         ...H83_MIGRATIONS,
         ...H90_MIGRATIONS,
+        ...M10F_MIGRATIONS,
       ]);
       expect(rows.every((r) => r.finished_at !== null)).toBe(true);
     });
@@ -516,6 +523,7 @@ describe('database migrations and schema guard', () => {
       );
       expect(rows.filter((r) => r.available).map((r) => r.module_key)).toEqual([
         'account_context',
+        'commercial',
         'extension',
       ]);
     });
@@ -2592,7 +2600,8 @@ INSERT INTO tenant_subscriptions (tenant_id, id, company_id, product_key, state,
         { version: '0.2', status: 'supported' },
         { version: '0.3', status: 'supported' },
         { version: '0.4', status: 'supported' },
-        { version: '0.5', status: 'current' },
+        { version: '0.5', status: 'supported' },
+        { version: '0.6', status: 'current' },
       ]);
       await expect(migrate(url)).resolves.toMatch(/No pending migrations/);
       expect(await backfilled(url)).toEqual(BACKFILL);

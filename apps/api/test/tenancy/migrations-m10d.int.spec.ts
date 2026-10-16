@@ -109,9 +109,16 @@ describe('M10D migration and schema guard', () => {
         // M10E (ADR 0031) sits on top.
         {
           version: '0.5',
-          status: 'current',
+          status: 'supported',
           adr: '0031',
           catalogue_hash: canonicalCatalogueHash(canonicalCatalogueFor('0.5')),
+        },
+        // M10F (ADR 0032) sits on top.
+        {
+          version: '0.6',
+          status: 'current',
+          adr: '0032',
+          catalogue_hash: canonicalCatalogueHash(canonicalCatalogueFor('0.6')),
         },
       ]);
       for (const v of ['0.1', '0.2', '0.3', '0.4'] as const) {
@@ -122,7 +129,8 @@ describe('M10D migration and schema guard', () => {
         ['0.2', 'supported'],
         ['0.3', 'supported'],
         ['0.4', 'supported'],
-        ['0.5', 'current'],
+        ['0.5', 'supported'],
+        ['0.6', 'current'],
       ]);
       // 0.4 adds the extension members; 0.3 does not carry them (frozen lists).
       const c03 = canonicalCatalogueFor('0.3') as unknown as Record<string, unknown>;
@@ -171,6 +179,8 @@ describe('M10D migration and schema guard', () => {
       expect(rows.filter((r) => r.available)).toEqual([
         // M10E: account_context available at 0.5.
         { module_key: 'account_context', available: true, minimum_canonical_version: '0.5' },
+        // M10F: commercial available at 0.6.
+        { module_key: 'commercial', available: true, minimum_canonical_version: '0.6' },
         { module_key: 'extension', available: true, minimum_canonical_version: '0.4' },
       ]);
       expect(CANONICAL_MODULES.find((m) => m.key === 'extension')!.entityKinds).toEqual([

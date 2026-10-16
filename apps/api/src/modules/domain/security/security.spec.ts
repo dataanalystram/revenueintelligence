@@ -80,9 +80,9 @@ describe('security policy (S1)', () => {
   });
 });
 
-describe('S1: policy v7 (M10D plan §16, M10E plan §15, M10E hardening #90)', () => {
-  it('is version 7', () => {
-    expect(POLICY_VERSION).toBe(7);
+describe('S1: policy v8 (M10D plan §16, M10E plan §15, M10E hardening #90, M10F)', () => {
+  it('is version 8', () => {
+    expect(POLICY_VERSION).toBe(8);
   });
 
   it('#90: data.account_context.read_confidential is granted to no actor kind by policy (explicit tenant grant only)', () => {
@@ -103,12 +103,15 @@ describe('S1: policy v7 (M10D plan §16, M10E plan §15, M10E hardening #90)', (
   });
 
   it('#90: the grantable list is closed to the one confidential read (no generic grant, e.g. of all restricted data); only operators are grantees', () => {
-    expect(GRANTABLE_CAPABILITIES).toEqual(['data.account_context.read_confidential']);
+    // M10F: the commercial confidential read is the second grantable capability.
+    const grantable = [
+      'data.account_context.read_confidential',
+      'data.commercial.read_confidential',
+    ];
+    expect(GRANTABLE_CAPABILITIES).toEqual(grantable);
     expect(GRANTABLE_ACTOR_KINDS).toEqual(['operator']);
     for (const capability of CAPABILITIES) {
-      expect(isGrantableCapability(capability), capability).toBe(
-        capability === 'data.account_context.read_confidential',
-      );
+      expect(isGrantableCapability(capability), capability).toBe(grantable.includes(capability));
     }
     for (const other of ['restricted', 'data.*', '*', 'data.extension.read_confidential', '']) {
       expect(isGrantableCapability(other), other).toBe(false);
@@ -134,6 +137,8 @@ describe('S1: policy v7 (M10D plan §16, M10E plan §15, M10E hardening #90)', (
       'data.extension.read',
       'data.account_context.read',
       'data.account_context.read_confidential',
+      'data.commercial.read',
+      'data.commercial.read_confidential',
     ]);
     for (const c of CAPABILITIES) expect(c, c).toMatch(/^[a-z]+\.[a-z_]+(\.[a-z_]+)?$/);
   });

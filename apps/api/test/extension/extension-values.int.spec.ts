@@ -184,7 +184,7 @@ describe('M10D extension values (ExtensionValueWriter)', () => {
         source_system: 'hubspot',
         source_record_id: 'co-1001',
         origin: 'source_provided',
-        canonical_version: '0.5',
+        canonical_version: '0.6',
       });
       expect(changes[0]!.changed_fields).toEqual(
         [
@@ -484,6 +484,11 @@ describe('M10D extension values (ExtensionValueWriter)', () => {
         written: 1,
       });
       // Rollback to 0.3 with the module enabled (Q19): data kept, writes refused.
+      // M10F: new tenants adopt 0.6; step back to 0.5 first.
+      await s.adoption.adopt(await authz(t, 'config.canonical.adopt'), {
+        target: '0.5',
+        expectedCurrent: '0.6',
+      });
       // M10E: new tenants adopt 0.5; rollback goes one MINOR at a time (0.5 → 0.4 first).
       await s.adoption.adopt(await authz(t, 'config.canonical.adopt'), {
         target: '0.4',

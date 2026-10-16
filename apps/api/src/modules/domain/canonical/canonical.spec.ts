@@ -99,14 +99,15 @@ describe('V1: canonical versions', () => {
     );
   });
 
-  it('the catalogue holds exactly one current version, 0.5 (ADR 0031), 0.1–0.4 supported (ADR 0027–0030), and nothing at 1.0 or above', () => {
-    expect(currentCanonicalVersion()).toBe('0.5');
+  it('the catalogue holds exactly one current version, 0.6 (ADR 0032), 0.1–0.5 supported (ADR 0027–0031), and nothing at 1.0 or above', () => {
+    expect(currentCanonicalVersion()).toBe('0.6');
     expect(CANONICAL_VERSIONS).toEqual([
       { version: '0.1', status: 'supported', adr: '0027' },
       { version: '0.2', status: 'supported', adr: '0028' },
       { version: '0.3', status: 'supported', adr: '0029' },
       { version: '0.4', status: 'supported', adr: '0030' },
-      { version: '0.5', status: 'current', adr: '0031' },
+      { version: '0.5', status: 'supported', adr: '0031' },
+      { version: '0.6', status: 'current', adr: '0032' },
     ]);
     for (const v of CANONICAL_VERSIONS) expect(parseCanonicalVersion(v.version).major).toBe(0);
   });
@@ -162,7 +163,16 @@ describe('V1: canonical versions', () => {
     expect(c05.authorityFacts).toEqual([...(c04.authorityFacts ?? []), 'account_context']);
     expect(c05.mappingEntities).toEqual(['account', 'person', 'subscription', 'account_context']);
     expect(c05.registryKinds).toEqual(['data_policy', 'extension', 'context_type']);
-    expect(() => canonicalCatalogueFor('0.6')).toThrow(/no catalogue/);
+    // M10F (ADR 0032): 0.6 pinned in migration 20270202120000_m10f_commercial; 0.5 unchanged.
+    expect(canonicalCatalogueHash(canonicalCatalogueFor('0.6'))).toBe(
+      'c266c16c0e42c3dff1a4f0318b9fab3d4fd7b309dc7f406a8b59babe4ad169f8',
+    );
+    const c06 = canonicalCatalogueFor('0.6');
+    for (const k of ['price_offer', 'contract', 'entitlement']) {
+      expect(c05.entityKinds).not.toContain(k);
+      expect(c06.entityKinds).toContain(k);
+    }
+    expect(() => canonicalCatalogueFor('0.7')).toThrow(/no catalogue/);
   });
 });
 
@@ -228,10 +238,17 @@ describe('module rules (M10 §17)', () => {
       dependsOn: [],
       entityKinds: ['account_context'],
     });
+    // M10F (ADR 0032): commercial is available at 0.6.
+    expect(CANONICAL_MODULES.find((m) => m.key === 'commercial')).toMatchObject({
+      available: true,
+      minimumCanonicalVersion: '0.6',
+      dependsOn: [],
+      entityKinds: ['price_offer', 'contract', 'entitlement'],
+    });
     for (const m of CANONICAL_MODULES) {
       for (const d of m.dependsOn) expect(MODULE_KEYS).toContain(d);
       expect(m.dependsOn).not.toContain(m.key);
-      if (m.key === 'extension' || m.key === 'account_context') continue;
+      if (m.key === 'extension' || m.key === 'account_context' || m.key === 'commercial') continue;
       expect(m.available).toBe(false);
       expect(m.minimumCanonicalVersion).toBeNull();
       for (const d of m.dependsOn) expect(MODULE_KEYS).toContain(d);
@@ -489,8 +506,20 @@ describe('value history decision (restricted history, control 12)', () => {
       'subscription.quantity',
       // M10E (Q23, M10 §10): the line's context, a context's owner and status.
       'subscription.context_id',
+      // M10F: a line's contract and offer, and the commercial lifecycle fields.
+      'subscription.contract_id',
+      'subscription.price_offer_id',
       'account_context.owner_ref',
       'account_context.status',
+      'contract.status',
+      'contract.starts_at',
+      'contract.ends_at',
+      'contract.renewal_date',
+      'price_offer.status',
+      'price_offer.list_amount_minor',
+      'entitlement.status',
+      'entitlement.starts_at',
+      'entitlement.ends_at',
     ]);
   });
 
@@ -565,6 +594,9 @@ describe('entity index, change records, lifecycle and integrity vocabulary', () 
       'person_affiliation',
       'custom_record',
       'account_context',
+      'price_offer',
+      'contract',
+      'entitlement',
     ]);
     expect(ENTITY_INDEX_SOURCES.account_context).toEqual({
       table: 'tenant_account_contexts',

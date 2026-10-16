@@ -9,6 +9,8 @@ import { createDatabase, migrationsBefore, schemaSnapshot } from '../support/mig
 /** M10D hardening #83 (tech debt #83, ADR 0030 addendum): single-owner custom objects. */
 const H83 = '20270126120000_m10d_custom_object_owner';
 const H83_DOWN = resolve(`prisma/rollback/${H83}.down.sql`);
+/** M10F (commercial, canonical 0.6) sits on top of #90: its (data-free) down-script runs first of all. */
+const M10F_DOWN = resolve('prisma/rollback/20270202120000_m10f_commercial.down.sql');
 const H90_DOWN = resolve(
   'prisma/rollback/20270126130000_m10e_h90_confidential_read_grants.down.sql',
 );
@@ -321,6 +323,7 @@ describe('M10D hardening #83: custom object owner migration and schema guard', (
       await migrate(url);
       const latest = await schemaSnapshot(url);
       // M10E hardening #90 (20270126130000) sits on top of #83: its (data-free) rollback runs first.
+      await withAdmin(url, (db) => db.query(readFileSync(M10F_DOWN, 'utf8')));
       await withAdmin(url, (db) => db.query(readFileSync(H90_DOWN, 'utf8')));
       const down = readFileSync(H83_DOWN, 'utf8');
       const drift: [string, string, RegExp][] = [
