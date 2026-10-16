@@ -44,13 +44,22 @@ export const CAPABILITIES = [
   'data.extension.read',
   // M10E (policy v6)
   'data.account_context.read',
+  // M10E hardening #90 (policy v7)
+  'data.account_context.read_confidential',
+  'security.capability.grant',
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
 /** Bumped whenever a grant changes; recorded on every audit event. */
-export const POLICY_VERSION = 6;
+export const POLICY_VERSION = 7;
 
-/** Policy v6 (M10A2 added seven capabilities, M10B two, M10C one, M10D one, M10E one; M10C grants canonical.human_entry to operator, Q2): capability → actor kinds granted. `human_user` and `ai` hold nothing. */
+/**
+ * Policy v7 (M10A2 added seven capabilities, M10B two, M10C one, M10D one, M10E one,
+ * M10E hardening #90 two; M10C grants canonical.human_entry to operator, Q2):
+ * capability → actor kinds granted. `human_user` and `ai` hold nothing. A capability
+ * granted to no kind here is held only through an explicit, tenant-scoped grant
+ * (GRANTABLE_CAPABILITIES).
+ */
 export const POLICY: Readonly<Record<Capability, readonly ActorKind[]>> = {
   'canonical.source_sync': ['source_sync', 'system'],
   'canonical.import': ['operator'],
@@ -91,7 +100,31 @@ export const POLICY: Readonly<Record<Capability, readonly ActorKind[]>> = {
   'data.extension.read': ['operator'],
   // M10E (Q22, Q25): account-context read models / CLI, one audit event per read.
   'data.account_context.read': ['operator'],
+  // M10E hardening #90 (ADR 0031 addendum): no actor kind holds it by policy. An operator
+  // holds it in one tenant only through an explicit grant (tenant_capability_grants),
+  // made by another operator with security.capability.grant. It widens an
+  // account-context read (data.account_context.read still required) to the
+  // confidential values; restricted values are never stored.
+  'data.account_context.read_confidential': [],
+  // Grants and revokes the GRANTABLE_CAPABILITIES (one audit event each; no self-grant).
+  'security.capability.grant': ['operator'],
 };
+
+/**
+ * M10E hardening #90: the closed list of capabilities that are held only through an
+ * explicit, tenant-scoped grant to one operator id (never by actor kind). Granting
+ * anything else is refused (`capability_not_grantable`); the database CHECK on
+ * tenant_capability_grants.capability mirrors this list. No generic grant exists
+ * (e.g. for all restricted data).
+ */
+export const GRANTABLE_CAPABILITIES = ['data.account_context.read_confidential'] as const;
+export type GrantableCapability = (typeof GRANTABLE_CAPABILITIES)[number];
+/** Only operators receive explicit grants (their id is asserted until M15). */
+export const GRANTABLE_ACTOR_KINDS = ['operator'] as const satisfies readonly ActorKind[];
+
+export function isGrantableCapability(capability: string): capability is GrantableCapability {
+  return (GRANTABLE_CAPABILITIES as readonly string[]).includes(capability);
+}
 
 export type PolicyDecision =
   | { readonly allowed: true }

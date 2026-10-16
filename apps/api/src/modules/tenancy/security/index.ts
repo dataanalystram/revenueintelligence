@@ -12,6 +12,11 @@ export {
 export { SecurityEventsService } from './security-events.service';
 export { WriteAuthorizer } from './write-authorizer.service';
 export {
+  CapabilityGrantRefusedError,
+  CapabilityGrants,
+  type CapabilityGrantResult,
+} from './capability-grants.service';
+export {
   AuditPurgeDisabledError,
   AuditPurgeRefusedError,
   SecurityOperationsService,

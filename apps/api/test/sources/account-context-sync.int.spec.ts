@@ -22,7 +22,7 @@ import {
   withSnapshot,
   type SourcesFixture,
 } from '../support/sources';
-import { authz } from '../support/security';
+import { authz, grantConfidentialRead } from '../support/security';
 
 const M10E_CHECKS = [
   'account_context_company_mismatch',
@@ -706,7 +706,9 @@ describe('M10E account contexts through a source run (Sugar adapter, fake Sugar)
         scope: [ctx5.id],
       });
       expect(none.contexts).toEqual([]);
-      // Asked explicitly (and audited as such), the renewal date is shown.
+      // Asked explicitly (and audited as such), the renewal date is shown — hardening #90:
+      // only to an operator holding the explicit data.account_context.read_confidential grant.
+      await grantConfidentialRead(f.ctx);
       const shown = await read.get(await authz(f.ctx, 'data.account_context.read'), {
         contextId: ctx1.id,
         includeConfidential: true,

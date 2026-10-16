@@ -3,12 +3,20 @@ import { randomUUID } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { Module, type INestApplicationContext } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import { InvalidActorError } from '../modules/domain';
 import { GovernanceModule, IntegrityVerificationService } from '../modules/governance';
-import { SecurityOperationsService, TenancyModule, TenantContextService } from '../modules/tenancy';
+import {
+  AuthorizationDeniedError,
+  CapabilityGrants,
+  SecurityOperationsService,
+  TenancyError,
+  TenancyModule,
+  TenantContextService,
+} from '../modules/tenancy';
 import { loadConfig } from '../platform/config';
 import { PlatformModule } from '../platform/platform.module';
 import { fail } from './hubspot-context';
-import { authorizeOperator } from './operator';
+import { authorizeOperator, OperatorIdRequiredError } from './operator';
 
 /**
  * Security operations (M10A1 plan §5.1, §10, §13). Tenant-scoped; output is
@@ -20,6 +28,14 @@ import { authorizeOperator } from './operator';
  *   pnpm --filter @lip/api security:audit-verify --tenant <slug> --actor <id>   (exit 3 if the chain is broken)
  *   pnpm --filter @lip/api security:audit-purge  --tenant <slug> [--actor <id> --execute]
  *   pnpm --filter @lip/api security:integrity-verify --tenant <slug> [--actor <id> --execute]   (exit 3 on findings)
+ *   pnpm --filter @lip/api security:grant  --tenant <slug> --grantee <operator-id> --capability <c> --actor <id>
+ *   pnpm --filter @lip/api security:revoke --tenant <slug> --grantee <operator-id> --capability <c> --actor <id>
+ *
+ * Grant / revoke (M10E hardening #90, ADR 0031 addendum): an explicit, tenant-scoped
+ * grant to one operator id of a capability no actor kind holds by policy — only
+ * `data.account_context.read_confidential`. Needs `security.capability.grant`; one
+ * audit event each; a self-grant, any other capability and a no-op are refused
+ * (exit 2, audited). Operator ids are asserted until authenticated identity (M15).
  *
  * `--actor` (or LIP_OPERATOR_ID) is required for every `--execute` and for the
  * audit read (owner decision Q1); it is recorded as asserted, not authenticated.
@@ -61,6 +77,8 @@ async function main(): Promise<void> {
       tenant: { type: 'string' },
       actor: { type: 'string' },
       execute: { type: 'boolean', default: false },
+      grantee: { type: 'string' },
+      capability: { type: 'string' },
     },
   });
   if (!values.tenant) throw new Error('--tenant <slug> is required');
@@ -131,9 +149,48 @@ async function main(): Promise<void> {
         if (report.outcome !== 'passed') exitCode = 3;
         return { dryRun: !values.execute, ...report };
       }
+      case 'grant':
+      case 'revoke': {
+        const action = command === 'grant' ? 'capability.grant' : 'capability.revoke';
+        const input = { grantee: values.grantee ?? '', capability: values.capability ?? '' };
+        try {
+          const actx = await authorizeOperator(app, ctx, 'security.capability.grant', {
+            actorFlag: values.actor,
+            action,
+            targetKind: 'capability_grant',
+            correlationId,
+          });
+          const grants = app.get(CapabilityGrants);
+          return {
+            ok: true,
+            grant:
+              command === 'grant'
+                ? await grants.grant(actx, input)
+                : await grants.revoke(actx, input),
+          };
+        } catch (error) {
+          if (
+            error instanceof TenancyError ||
+            error instanceof AuthorizationDeniedError ||
+            error instanceof OperatorIdRequiredError ||
+            error instanceof InvalidActorError
+          ) {
+            exitCode = 2;
+            return {
+              ok: false,
+              code:
+                error instanceof InvalidActorError
+                  ? 'validation_failed'
+                  : ((error as { code?: string }).code ?? 'operator_id_required'),
+              message: error.message,
+            };
+          }
+          throw error;
+        }
+      }
       default:
         throw new Error(
-          'Usage: security <key-usage|rekey|audit-verify|audit-purge|integrity-verify> --tenant <slug> [--actor <id>] [--execute]',
+          'Usage: security <key-usage|rekey|audit-verify|audit-purge|integrity-verify|grant|revoke> --tenant <slug> [--actor <id>] [--execute] [--grantee <id> --capability <c>]',
         );
     }
   });

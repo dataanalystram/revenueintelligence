@@ -5,6 +5,7 @@ import {
   AuditFailures,
   AuditTrail,
   TenantDatabase,
+  WriteAuthorizer,
   type AuthorizedContext,
   type TenantTransaction,
 } from '../../tenancy';
@@ -20,6 +21,10 @@ export const ACCOUNT_CONTEXT_READ_BOUND = 1000;
 /** Accounts per `listForAccounts` call. */
 export const ACCOUNT_CONTEXT_READ_ACCOUNTS = 500;
 const WITHHELD_SENSITIVITIES: ReadonlySet<string> = new Set(['confidential', 'restricted']);
+/** Attribute keys listed on a confidential read's audit event (keys only, never values). */
+const RELEASED_KEYS_MAX = 50;
+/** M10E hardening #90: the capability an `includeConfidential` read needs on top of the read. */
+export const ACCOUNT_CONTEXT_CONFIDENTIAL_CAPABILITY = 'data.account_context.read_confidential';
 
 export interface AccountContextView {
   readonly id: string;
@@ -43,7 +48,8 @@ export interface AccountContextView {
   readonly products: readonly { readonly productKey: string; readonly origin: string }[];
   /**
    * M10E 2b: attributes withheld from this read (`renewalDate`, `dimension.<key>` of a
-   * confidential / restricted dimension) unless `includeConfidential` (audited).
+   * confidential / restricted dimension) unless `includeConfidential`, which needs
+   * `data.account_context.read_confidential` as well (hardening #90; audited).
    */
   readonly withheld: readonly string[];
 }
@@ -74,6 +80,15 @@ export interface ContextLineList {
  * (capability `data.account_context.read`, operator only; identifiers and
  * counts, Q25). Output is identifiers, codes, dates and the classified
  * dimension values — never logged.
+ *
+ * Hardening #90 (ADR 0031 addendum): confidential values (the renewal date and
+ * confidential dimensions; restricted values are never stored) are withheld by
+ * default. `includeConfidential: true` is authorized here, for the same actor and
+ * tenant as the read, against `data.account_context.read_confidential` (held only
+ * through an explicit tenant grant): without it the read is refused
+ * (AuthorizationDeniedError, one `denied` audit event with that capability) — never
+ * silently redacted; with it the read's audit event carries that capability,
+ * `includeConfidential: true` and the released attribute keys (never values).
  */
 @Injectable()
 export class AccountContextReadModel {
@@ -81,7 +96,31 @@ export class AccountContextReadModel {
     private readonly db: TenantDatabase,
     private readonly store: AccountContextStore,
     readonly audit: AuditTrail,
+    private readonly authorizer: WriteAuthorizer,
   ) {}
+
+  /**
+   * Hardening #90: the confidential widening of a read, for the read's own actor and
+   * tenant (a caller cannot name another). Refused (denied audit event, thrown) unless
+   * the actor holds data.account_context.read_confidential in this tenant.
+   */
+  private confidential(
+    actx: AuthorizedContext<'data.account_context.read'>,
+    entry: { readonly operation: string; readonly targetRef?: string },
+  ): Promise<AuthorizedContext<'data.account_context.read_confidential'>> {
+    return this.authorizer.authorize(
+      actx.tenant,
+      actx.actor,
+      ACCOUNT_CONTEXT_CONFIDENTIAL_CAPABILITY,
+      {
+        action: 'account_context.read',
+        targetKind: 'account_context',
+        ...(entry.targetRef ? { targetRef: entry.targetRef } : {}),
+        details: { operation: entry.operation, includeConfidential: true },
+        correlationId: actx.correlationId,
+      },
+    );
+  }
 
   @AuditFailures('account_context.read', 'account_context')
   async listForAccounts(
@@ -101,6 +140,11 @@ export class AccountContextReadModel {
       );
     }
     const scope = query.scope?.map((id) => requireUuid(id, '--scope'));
+    const targetRef = companyIds.length === 1 ? companyIds[0]! : 'accounts';
+    const confidential =
+      query.includeConfidential === true
+        ? await this.confidential(actx, { operation: 'list', targetRef })
+        : undefined;
     return this.db.transaction(actx.tenant, async (tx) => {
       const rows = await this.store.contextsForCompanies(
         tx,
@@ -109,22 +153,24 @@ export class AccountContextReadModel {
         ACCOUNT_CONTEXT_READ_BOUND + 1,
       );
       const truncated = rows.length > ACCOUNT_CONTEXT_READ_BOUND;
-      const contexts = await this.views(
+      const assembled = await this.views(
         tx,
         rows.slice(0, ACCOUNT_CONTEXT_READ_BOUND),
-        query.includeConfidential === true,
+        confidential !== undefined,
       );
-      await this.audit.record(tx, actx, {
+      const contexts = assembled.map((a) => a.view);
+      await this.audit.record(tx, confidential ?? actx, {
         action: 'account_context.read',
         targetKind: 'account_context',
-        targetRef: companyIds.length === 1 ? companyIds[0]! : 'accounts',
+        targetRef,
         details: {
           operation: 'list',
           accounts: companyIds.length,
           scoped: scope !== undefined,
           contexts: contexts.length,
           truncated,
-          includeConfidential: query.includeConfidential === true,
+          includeConfidential: confidential !== undefined,
+          ...released(assembled, confidential !== undefined),
         },
       });
       return { contexts, truncated };
@@ -138,22 +184,28 @@ export class AccountContextReadModel {
   ): Promise<AccountContextView> {
     assertAuthorized(actx, 'data.account_context.read');
     const id = requireUuid(query.contextId, '--context');
+    const confidential =
+      query.includeConfidential === true
+        ? await this.confidential(actx, { operation: 'show', targetRef: id })
+        : undefined;
     return this.db.transaction(actx.tenant, async (tx) => {
       const row = await this.store.context(tx, id);
       if (!row) throw new GovernanceError('validation_failed', 'The context does not exist');
-      const [view] = await this.views(tx, [row], query.includeConfidential === true);
-      await this.audit.record(tx, actx, {
+      const assembled = await this.views(tx, [row], confidential !== undefined);
+      const view = assembled[0]!.view;
+      await this.audit.record(tx, confidential ?? actx, {
         action: 'account_context.read',
         targetKind: 'account_context',
         targetRef: id,
         details: {
           operation: 'show',
-          persons: view!.persons.length,
-          products: view!.products.length,
-          includeConfidential: query.includeConfidential === true,
+          persons: view.persons.length,
+          products: view.products.length,
+          includeConfidential: confidential !== undefined,
+          ...released(assembled, confidential !== undefined),
         },
       });
-      return view!;
+      return view;
     });
   }
 
@@ -186,12 +238,15 @@ export class AccountContextReadModel {
     });
   }
 
-  /** Batch assembly: one query each for types, members and products. */
+  /**
+   * Batch assembly: one query each for types, members and products. `confidentialKeys`
+   * are the attributes withheld unless `includeConfidential` (keys only).
+   */
   private async views(
     tx: TenantTransaction,
     rows: readonly AccountContextRow[],
-    includeConfidential = false,
-  ): Promise<AccountContextView[]> {
+    includeConfidential: boolean,
+  ): Promise<{ view: AccountContextView; confidentialKeys: string[] }[]> {
     if (rows.length === 0) return [];
     const ids = rows.map((r) => r.id);
     const types = await this.store.contextTypes(tx);
@@ -201,21 +256,28 @@ export class AccountContextReadModel {
     const productsBy = groupBy(products, (p) => p.contextId);
     return rows.map((r) => {
       const type = types.byId.get(r.contextTypeId);
+      const confidentialKeys: string[] = [];
       const withheld: string[] = [];
       const dimensions: Record<string, DimensionValue> = {};
       for (const [key, value] of Object.entries(r.dimensions)) {
         const sensitivity =
           type?.definition.dimensions.find((d) => d.key === key)?.sensitivity ?? 'internal';
-        if (!includeConfidential && WITHHELD_SENSITIVITIES.has(sensitivity)) {
+        // Restricted values are never stored (R-C5); should one exist it is never released.
+        if (
+          sensitivity === 'restricted' ||
+          (!includeConfidential && WITHHELD_SENSITIVITIES.has(sensitivity))
+        ) {
           withheld.push(`dimension.${key}`);
         } else {
           dimensions[key] = value;
         }
+        if (sensitivity === 'confidential') confidentialKeys.push(`dimension.${key}`);
       }
       // renewal_date is confidential / financial (plan §6).
+      if (r.renewalDate !== null) confidentialKeys.push('renewalDate');
       const showRenewal = includeConfidential || r.renewalDate === null;
       if (!showRenewal) withheld.push('renewalDate');
-      return {
+      const view: AccountContextView = {
         id: r.id,
         companyId: r.companyId,
         type: types.byId.get(r.contextTypeId)?.key ?? '',
@@ -240,8 +302,25 @@ export class AccountContextReadModel {
         })),
         withheld,
       };
+      return { view, confidentialKeys };
     });
   }
+}
+
+/**
+ * Hardening #90: the attribute keys a confidential read released (distinct, sorted,
+ * at most RELEASED_KEYS_MAX; keys only, never values). Nothing on an ordinary read.
+ */
+function released(
+  assembled: readonly { readonly confidentialKeys: readonly string[] }[],
+  includeConfidential: boolean,
+): { releasedKeys?: string[]; releasedKeysTruncated?: boolean } {
+  if (!includeConfidential) return {};
+  const keys = [...new Set(assembled.flatMap((a) => a.confidentialKeys))].sort();
+  return {
+    releasedKeys: keys.slice(0, RELEASED_KEYS_MAX),
+    releasedKeysTruncated: keys.length > RELEASED_KEYS_MAX,
+  };
 }
 
 function groupBy<T>(items: readonly T[], key: (t: T) => string): Map<string, T[]> {

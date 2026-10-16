@@ -15,6 +15,7 @@ import { SecurityEventsService } from './security/security-events.service';
 import { SecurityOperationsService } from './security/security-operations.service';
 import { PrivilegeManifestCheck } from './infrastructure/privilege-check';
 import { WriteAuthorizer } from './security/write-authorizer.service';
+import { CapabilityGrants } from './security/capability-grants.service';
 
 @Module({
   providers: [
@@ -32,6 +33,7 @@ import { WriteAuthorizer } from './security/write-authorizer.service';
     AuditTrail,
     SecurityEventsService,
     WriteAuthorizer,
+    CapabilityGrants,
     SecurityOperationsService,
     PrivilegeManifestCheck,
   ],
@@ -47,6 +49,7 @@ import { WriteAuthorizer } from './security/write-authorizer.service';
     AuditTrail,
     SecurityEventsService,
     WriteAuthorizer,
+    CapabilityGrants,
     SecurityOperationsService,
     PrivilegeManifestCheck,
   ],

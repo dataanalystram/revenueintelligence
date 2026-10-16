@@ -3570,6 +3570,23 @@ export const CLASSIFICATION_MANIFEST: Readonly<
     origin: op('code', CL),
     created_at: op('timestamp', CL),
   },
+  // M10E hardening #90: explicit, tenant-scoped capability grants (identifiers and codes only).
+  tenant_capability_grants: {
+    tenant_id: op('identifier', CV),
+    actor_kind: op('code', CV),
+    actor_id: operatorId(CV),
+    capability: op('code', CV),
+    active: op('boolean', CV),
+    version: op('number', CV),
+    granted_at: op('timestamp', CV),
+    granted_by_kind: op('code', CV),
+    granted_by_id: operatorId(CV),
+    granted_by_assurance: op('code', CV),
+    revoked_at: op('timestamp', CV),
+    revoked_by_kind: op('code', CV),
+    revoked_by_id: operatorId(CV),
+    revoked_by_assurance: op('code', CV),
+  },
 };
 
 /** One table's link to data subjects (plan §14): which columns, which entity, which intended action. */

@@ -8,8 +8,13 @@
 # as newly available; enabling the module and publishing a context type with
 # the dry-run hash; operator write by natural key (create, then the same key
 # updates), member add, retire / reactivate / release (one audit event each);
-# reads withhold the renewal date and confidential dimensions unless
-# --include-confidential; a line assignment to an unknown line is refused;
+# reads withhold the renewal date and confidential dimensions by default;
+# --include-confidential (hardening #90) is refused (exit 2, a denied audit
+# event naming data.account_context.read_confidential) until another operator
+# grants that capability (`security grant`; a self-grant is refused), then
+# releases them (allowed audit event naming the capability and the released
+# keys only) until the grantor revokes it (one capability.revoke audit event;
+# refused again); a line assignment to an unknown line is refused;
 # integrity runs the five M10E checks with zero findings; the app role cannot
 # delete a context or change its natural key; a rollback to 0.4 lists the
 # module stranded, keeps reads and refuses writes (exit 2, audited) until 0.5
@@ -22,6 +27,8 @@ AC_IN="$WORK/account-context-input"
 mkdir -p "$AC_OUT" "$AC_IN"
 AC_ENV=(DATABASE_URL="$APP_DB_URL" MIGRATION_DATABASE_URL="$OWNER_DB_URL")
 AC_ACTOR="runtime-context"
+# Hardening #90: the operator that grants the confidential read (never the reader itself).
+AC_GRANTOR="runtime-grantor"
 # A confidential dimension value that must never be printed or logged (checked at the end).
 AC_PROBE="Probeconfidentialsegment"
 AC_C1="8e100000-0000-48e1-88e1-000000000001"
@@ -172,7 +179,7 @@ ac_write() {
 check "operator write by natural key creates then updates one context; member add (one audit event each)" ac_write
 
 ac_read() {
-  local id
+  local id code=0
   id="$(ac_sql "SELECT id FROM tenant_account_contexts WHERE tenant_id = '$(ac_tid)'")"
   ac_ctx show --context "$id" --lines >"$AC_OUT/show.json" || {
     ac_dump "$AC_OUT/show.json"
@@ -181,11 +188,52 @@ ac_read() {
   # Confidential values withheld: the renewal date and the confidential dimension.
   ac_expect "$AC_OUT/show.json" 'r.context.withheld.slice().sort().join(",")' "dimension.segment,renewalDate" || return 1
   ac_expect "$AC_OUT/show.json" 'r.context.dimensions.region + ":" + r.context.renewalDate + ":" + r.context.persons.length + ":" + r.lines.lines.length' "emea:null:1:0" || return 1
+  # Hardening #90: --include-confidential without data.account_context.read_confidential is
+  # refused (exit 2), not redacted, and recorded as denied with that capability.
+  ac_ctx show --context "$id" --include-confidential >"$AC_OUT/show-confidential-refused.json" || code=$?
+  ac_refused "$AC_OUT/show-confidential-refused.json" authorization_denied "$code" || return 1
+  [ "$(ac_count tenant_audit_events "action = 'account_context.read' AND outcome = 'denied' AND capability = 'data.account_context.read_confidential' AND reason_code = 'capability_not_granted'")" = 1 ] || return 1
+  # A self-grant is refused (exit 2); another operator grants it (one audit event).
+  code=0
+  ac_cli security grant --tenant "$AC_TENANT" --grantee "$AC_ACTOR" --capability data.account_context.read_confidential \
+    --actor "$AC_ACTOR" >"$AC_OUT/grant-self.json" || code=$?
+  ac_refused "$AC_OUT/grant-self.json" self_grant_refused "$code" || return 1
+  ac_cli security grant --tenant "$AC_TENANT" --grantee "$AC_ACTOR" --capability data.account_context.read_confidential \
+    --actor "$AC_GRANTOR" >"$AC_OUT/grant.json" || {
+    ac_dump "$AC_OUT/grant.json"
+    return 1
+  }
+  ac_expect "$AC_OUT/grant.json" 'r.ok + ":" + r.grant.active + ":" + r.grant.version' "true:true:1" || return 1
+  [ "$(ac_count tenant_capability_grants "active AND actor_id = '$AC_ACTOR' AND granted_by_id = '$AC_GRANTOR'")" = 1 ] || return 1
+  [ "$(ac_count tenant_audit_events "action = 'capability.grant' AND outcome = 'allowed' AND capability = 'security.capability.grant'")" = 1 ] || return 1
   ac_ctx show --context "$id" --include-confidential >"$AC_OUT/show-confidential.json" || {
     ac_dump "$AC_OUT/show-confidential.json"
     return 1
   }
   ac_expect "$AC_OUT/show-confidential.json" 'r.context.renewalDate + ":" + r.context.withheld.length' "2027-03-01:0" || return 1
+  # The allowed read names the capability, includeConfidential and the released keys (never values).
+  [ "$(ac_sql "SELECT (details ->> 'includeConfidential') || ':' || (details -> 'releasedKeys')::text FROM tenant_audit_events
+          WHERE tenant_id = '$(ac_tid)' AND action = 'account_context.read' AND outcome = 'allowed'
+            AND capability = 'data.account_context.read_confidential'")" = 'true:["dimension.segment", "renewalDate"]' ] || {
+    echo "    confidential read audit event missing or wrong" >&2
+    return 1
+  }
+  # Re-review m3: the grantor revokes it (one allowed capability.revoke audit event, row kept
+  # inactive at version 2); the flag is refused again (exit 2).
+  ac_cli security revoke --tenant "$AC_TENANT" --grantee "$AC_ACTOR" --capability data.account_context.read_confidential \
+    --actor "$AC_GRANTOR" >"$AC_OUT/revoke.json" || {
+    ac_dump "$AC_OUT/revoke.json"
+    return 1
+  }
+  ac_expect "$AC_OUT/revoke.json" 'r.ok + ":" + r.grant.active + ":" + r.grant.version' "true:false:2" || return 1
+  [ "$(ac_count tenant_capability_grants "NOT active AND version = 2 AND actor_id = '$AC_ACTOR' AND revoked_by_id = '$AC_GRANTOR'")" = 1 ] || return 1
+  [ "$(ac_count tenant_audit_events "action = 'capability.revoke' AND outcome = 'allowed' AND capability = 'security.capability.grant' AND target_ref = 'data.account_context.read_confidential:$AC_ACTOR'")" = 1 ] || {
+    echo "    capability.revoke audit event missing or wrong" >&2
+    return 1
+  }
+  code=0
+  ac_ctx show --context "$id" --include-confidential >"$AC_OUT/show-confidential-revoked.json" || code=$?
+  ac_refused "$AC_OUT/show-confidential-revoked.json" authorization_denied "$code" || return 1
   ac_ctx list --account "$AC_C1" --account "$AC_C2" >"$AC_OUT/list.json" || {
     ac_dump "$AC_OUT/list.json"
     return 1
@@ -193,7 +241,7 @@ ac_read() {
   ac_expect "$AC_OUT/list.json" 'r.contexts.length + ":" + r.truncated' "1:false" || return 1
   [ "$(ac_count tenant_audit_events "action = 'account_context.read' AND outcome = 'allowed'")" = 4 ]
 }
-check "reads withhold the renewal date and confidential dimensions unless --include-confidential; list batches accounts (audited per call)" ac_read
+check "reads withhold the renewal date and confidential dimensions; --include-confidential is refused (exit 2, denied audit) until another operator grants data.account_context.read_confidential (self-grant refused), then released (audited, keys only); revoke audited and refused again; list batches accounts" ac_read
 
 ac_lifecycle() {
   local id code=0

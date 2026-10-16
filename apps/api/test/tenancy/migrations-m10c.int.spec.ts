@@ -36,6 +36,10 @@ const M10C_DOWN = resolve(`prisma/rollback/${M10C}.down.sql`);
 const M10D_DOWN = resolve('prisma/rollback/20270112120000_m10d_extension_framework.down.sql');
 /** M10E sits on top of M10D: its (data-free) down-script runs before M10D's. */
 const M10E_DOWN = resolve('prisma/rollback/20270119120000_m10e_account_context.down.sql');
+/** M10E hardening #90 sits on top of M10E: its (data-free) down-script runs first of all. */
+const H90_DOWN = resolve(
+  'prisma/rollback/20270126130000_m10e_h90_confidential_read_grants.down.sql',
+);
 /** M10D hardening #83 sits on top of M10E: its down-script runs first. */
 const H83_DOWN = resolve('prisma/rollback/20270126120000_m10d_custom_object_owner.down.sql');
 /** Stored catalogue hashes of the earlier versions (their own migrations); never recomputed into new values. */
@@ -410,7 +414,8 @@ INSERT INTO tenant_source_authority_versions (tenant_id, version, base_version, 
       const url = await m10bDatabase('m10c_down_db');
       await migrate(url);
       const latest = await schemaSnapshot(url);
-      // #83, M10E and M10D sit on top of M10C: their (data-free) rollbacks run first.
+      // #90, #83, M10E and M10D sit on top of M10C: their (data-free) rollbacks run first (#90 first).
+      await withAdmin(url, (db) => db.query(readFileSync(H90_DOWN, 'utf8')));
       await withAdmin(url, (db) => db.query(readFileSync(H83_DOWN, 'utf8')));
       await withAdmin(url, (db) => db.query(readFileSync(M10E_DOWN, 'utf8')));
       await withAdmin(url, (db) => db.query(readFileSync(M10D_DOWN, 'utf8')));

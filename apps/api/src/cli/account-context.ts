@@ -30,9 +30,14 @@ import { authorizeOperator, OperatorIdRequiredError } from './operator';
  * `canonical.human_entry` and a reason code, plus adopted canonical ≥ 0.5 and
  * module `account_context` enabled (reads work whatever the gate, Q18/Q20).
  * Each call writes one audit event. Output is JSON with identifiers, codes
- * and dates; confidential values (the renewal date, confidential /
- * restricted dimensions) are withheld unless `--include-confidential`
- * (recorded on the read's audit event). No HTTP endpoint (M15).
+ * and dates; confidential values (the renewal date, confidential
+ * dimensions; restricted values are never stored) are withheld unless
+ * `--include-confidential`, which also needs
+ * `data.account_context.read_confidential` — held only through an explicit
+ * tenant grant (`security grant`, hardening #90). Without it the read is
+ * refused (exit 2, `authorization_denied`, a `denied` audit event naming that
+ * capability), never silently redacted; with it the read's audit event names
+ * that capability and the released keys. No HTTP endpoint (M15).
  *
  *   pnpm --filter @lip/api account-context list   --tenant <slug> --account <id> [--account …]
  *                                                 [--include-confidential] --actor <id>

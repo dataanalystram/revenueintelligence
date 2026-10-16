@@ -315,6 +315,14 @@ const SERVICES: readonly ServiceSpec[] = [
     writes: ['listForAccounts', 'get', 'linesForContext'],
     reads: [],
   },
+  // M10E hardening #90: explicit capability grants (one audit event each); `holds` is
+  // the WriteAuthorizer's read of the grant (tenant context, no AuthorizedContext).
+  {
+    file: 'tenancy/security/capability-grants.service.ts',
+    className: 'CapabilityGrants',
+    writes: ['grant', 'revoke'],
+    reads: ['holds'],
+  },
   {
     file: 'context/application/context-operations.service.ts',
     className: 'ContextOperationsService',
@@ -437,6 +445,24 @@ describe('S2: privileged service writes take an authorized context (static)', ()
       'modules/extension/application/custom-record.writer.ts',
       'modules/extension/application/custom-relationship.writer.ts',
       'modules/extension/application/extension-value.writer.ts',
+    ]);
+  });
+
+  it('M10E hardening #90: data.account_context.read_confidential is named only by the policy, the AccountContext read model and the extension read model for account_context targets (no other path widens a read)', () => {
+    const SRC = resolve(MODULES, '..');
+    const files = (readdirSync(SRC, { recursive: true }) as string[])
+      .filter((f) => f.endsWith('.ts') && !f.endsWith('.spec.ts') && !f.startsWith('generated'))
+      .filter((f) => readFileSync(resolve(SRC, f), 'utf8').includes('read_confidential'))
+      .map((f) => f.split(sep).join('/'))
+      .sort();
+    expect(files).toEqual([
+      'cli/account-context.ts',
+      'cli/extension.ts',
+      'cli/security.ts',
+      'modules/context/application/account-context.read-model.ts',
+      'modules/domain/security/capabilities.ts',
+      'modules/extension/application/extension.read-model.ts',
+      'modules/tenancy/security/capability-grants.service.ts',
     ]);
   });
 

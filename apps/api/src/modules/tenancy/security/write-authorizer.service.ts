@@ -4,6 +4,7 @@ import { MetricsService } from '../../../platform/metrics';
 import {
   decide,
   findSecretLikeInJson,
+  isGrantableCapability,
   SecretLikeValueError,
   type AuditReasonCode,
   type Capability,
@@ -19,6 +20,7 @@ import {
   type PlatformAuthorization,
   type PlatformCapability,
 } from './authorized-context';
+import { CapabilityGrants } from './capability-grants.service';
 import { SecurityEventsService } from './security-events.service';
 
 /** Identical denials within this window are written once; the rest are counted (§6). */
@@ -39,8 +41,14 @@ export class WriteAuthorizer {
     private readonly audit: AuditTrail,
     private readonly events: SecurityEventsService,
     private readonly metrics: MetricsService,
+    private readonly grants: CapabilityGrants,
   ) {}
 
+  /**
+   * M10E hardening #90: a capability of GRANTABLE_CAPABILITIES (granted to no actor
+   * kind by policy) is allowed only when this actor holds an active explicit grant
+   * of it in this tenant. Every other denial stands as the policy decided.
+   */
   async authorize<C extends Capability>(
     tenant: TenantContext,
     actor: SecurityActor,
@@ -50,7 +58,13 @@ export class WriteAuthorizer {
     const correlationId = attempt.correlationId ?? randomUUID();
     const decision = decide(actor.kind, capability);
     if (!decision.allowed) {
-      await this.deny(tenant, actor, capability, decision.reason, { ...attempt, correlationId });
+      const explicitlyGranted =
+        decision.reason === 'capability_not_granted' &&
+        isGrantableCapability(capability) &&
+        (await this.grants.holds(tenant, actor, capability));
+      if (!explicitlyGranted) {
+        await this.deny(tenant, actor, capability, decision.reason, { ...attempt, correlationId });
+      }
     }
     return issueAuthorizedContext({ tenant, actor, capability, correlationId });
   }

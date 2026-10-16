@@ -97,6 +97,9 @@ export const AUDIT_ACTIONS = [
   'account_context.line.assign',
   'account_context.release',
   'account_context.read',
+  // M10E hardening #90
+  'capability.grant',
+  'capability.revoke',
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -150,6 +153,9 @@ export const AUDIT_REASON_CODES = [
   'extension_guardrail_exceeded',
   // M10E (R-C5, Q11)
   'restricted_dimension_refused',
+  // M10E hardening #90
+  'capability_not_grantable',
+  'self_grant_refused',
 ] as const;
 export type AuditReasonCode = (typeof AUDIT_REASON_CODES)[number];
 
@@ -196,6 +202,8 @@ export const AUDIT_TARGET_KINDS = [
   'custom_relationship',
   // M10E
   'account_context',
+  // M10E hardening #90
+  'capability_grant',
 ] as const;
 export type AuditTargetKind = (typeof AUDIT_TARGET_KINDS)[number];
 

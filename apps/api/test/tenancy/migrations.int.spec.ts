@@ -116,8 +116,13 @@ const M10E_DOWN = resolve(`prisma/rollback/${M10E_MIGRATIONS[0]}.down.sql`);
 const H83_MIGRATIONS = ['20270126120000_m10d_custom_object_owner'];
 const H83_DOWN = resolve(`prisma/rollback/${H83_MIGRATIONS[0]}.down.sql`);
 
-/** Rolls #83, then M10E back; every M10D and older down-script runs after this. */
+/** M10E hardening #90 (confidential-read capability grants, policy v7): the latest, on top of #83. */
+const H90_MIGRATIONS = ['20270126130000_m10e_h90_confidential_read_grants'];
+const H90_DOWN = resolve(`prisma/rollback/${H90_MIGRATIONS[0]}.down.sql`);
+
+/** Rolls #90, then #83, then M10E back; every M10D and older down-script runs after this. */
 async function rollbackM10E(url: string): Promise<void> {
+  await withAdmin(url, (db) => db.query(readFileSync(H90_DOWN, 'utf8')));
   await withAdmin(url, (db) => db.query(readFileSync(H83_DOWN, 'utf8')));
   await withAdmin(url, (db) => db.query(readFileSync(M10E_DOWN, 'utf8')));
 }
@@ -160,6 +165,7 @@ const POST_M7_DOWNS = [
   ...M10D_MIGRATIONS,
   ...M10E_MIGRATIONS,
   ...H83_MIGRATIONS,
+  ...H90_MIGRATIONS,
 ]
   .reverse()
   .map((name) => resolve(`prisma/rollback/${name}.down.sql`));
@@ -218,6 +224,7 @@ describe('database migrations and schema guard', () => {
         ...M10D_MIGRATIONS,
         ...M10E_MIGRATIONS,
         ...H83_MIGRATIONS,
+        ...H90_MIGRATIONS,
       ]);
       expect(rows.every((r) => r.finished_at !== null)).toBe(true);
     });
@@ -660,10 +667,11 @@ describe('database migrations and schema guard', () => {
     });
 
     it('every polymorphic column set (<p>_kind + <p>_id) references the entity index by id and by key', async () => {
-      // Actor columns name a security actor, not an entity. tenant_context_changes
+      // Actor columns name a security actor, not an entity (M10E hardening #90: the
+      // grantor / revoker of a capability grant, too). tenant_context_changes
       // predates the index (M6): its entity columns are a historical log that
       // outlives physical deletes, recorded in ADR 0027 as the one exception.
-      const NOT_ENTITY_REFERENCES = ['actor', 'updated_by'];
+      const NOT_ENTITY_REFERENCES = ['actor', 'updated_by', 'granted_by', 'revoked_by'];
       const LEGACY = ['tenant_context_changes.entity'];
       // A view carries no foreign keys; the stores it unions are checked as tables (M10B).
       const VIEWS = ['source_reference_index.entity'];
