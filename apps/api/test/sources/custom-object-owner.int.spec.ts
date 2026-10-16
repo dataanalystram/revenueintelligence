@@ -6,7 +6,14 @@ import { CHAIN_LOCK_SCOPE } from '../../src/modules/tenancy/security/audit-trail
 import { appSession } from '../support/account-structure';
 import { CHARGEBEE_CREDENTIAL, chargebeeSecretEnv } from '../support/chargebee';
 import { startContextHarness, type ContextHarness } from '../support/context';
-import { defaultDocument, enableExtension, publishExtension } from '../support/extension';
+import {
+  defaultDocument,
+  enableExtension,
+  publishExtension,
+  recordsOf,
+  services,
+  sourceProvenance,
+} from '../support/extension';
 import { FAKE_CHARGEBEE_API_KEY, FakeChargebee } from '../support/fake-chargebee';
 import { FakeSugar } from '../support/fake-sugar';
 import {
@@ -154,12 +161,22 @@ describe('M10D hardening #83: single-owner custom objects under concurrent publi
       )
     ).map((r) => r.connection_id);
 
-  /** Lock waits of the tenant's sessions (the barrier's waiters). */
-  const waiting = async () =>
-    Number(
-      (await c.sql<{ n: string }>(`SELECT count(*)::text AS n FROM pg_locks WHERE NOT granted`))[0]!
-        .n,
+  /**
+   * The backends waiting on a lock held by one of `pids` (this test's own
+   * sessions: the barrier, or a session already waiting behind it), each with
+   * the lock type it waits on and the backends blocking it (review #110 n1:
+   * scoped to the test's sessions, not every ungranted lock in the cluster).
+   */
+  const waitersOf = (pids: readonly number[]) =>
+    c.sql<{ pid: number; locktype: string; blocked_by: number[] }>(
+      `SELECT DISTINCT pid, locktype, pg_blocking_pids(pid) AS blocked_by FROM pg_locks
+        WHERE NOT granted AND pg_blocking_pids(pid) && $1::int[] ORDER BY pid`,
+      [pids],
     );
+  const waiting = async (pids: readonly number[]) =>
+    new Set((await waitersOf(pids)).map((w) => w.pid)).size;
+  const backendPid = async (session: { query: (q: string) => Promise<{ rows: unknown[] }> }) =>
+    ((await session.query('SELECT pg_backend_pid() AS pid')).rows[0] as { pid: number }).pid;
 
   /**
    * Runs the publications concurrently behind the audit-chain barrier: both
@@ -167,13 +184,18 @@ describe('M10D hardening #83: single-owner custom objects under concurrent publi
    */
   async function race(t: TenantContext, publications: (() => Promise<unknown>)[]) {
     const barrier = await appSession(c, t);
+    const barrierPid = await backendPid(barrier);
     const pending: Promise<unknown>[] = [];
     try {
       await barrier.query(`SELECT pg_advisory_xact_lock($1::bigint)`, [
         advisoryLockKey(t.tenantId, CHAIN_LOCK_SCOPE, 'head').toString(),
       ]);
       for (const p of publications) pending.push(p());
-      await c.until(async () => (await waiting()) >= publications.length, 30_000, 'both wait');
+      await c.until(
+        async () => (await waiting([barrierPid])) >= publications.length,
+        30_000,
+        'both wait',
+      );
       await barrier.query('COMMIT');
     } finally {
       await barrier.query('ROLLBACK').catch(() => undefined);
@@ -329,11 +351,12 @@ describe('M10D hardening #83: single-owner custom objects under concurrent publi
     // Barrier at the owner table itself: both publications validate, then wait
     // at their first owner-row write, and are released together.
     const barrier = await appSession(c, f.ctx);
+    const barrierPid = await backendPid(barrier);
     const pending: Promise<unknown>[] = [];
     try {
       await barrier.query('LOCK TABLE tenant_custom_object_owners IN SHARE MODE');
       for (const p of publications) pending.push(p());
-      await c.until(async () => (await waiting()) >= 2, 30_000, 'both wait');
+      await c.until(async () => (await waiting([barrierPid])) >= 2, 30_000, 'both wait');
       await barrier.query('COMMIT');
     } finally {
       await barrier.query('ROLLBACK').catch(() => undefined);
@@ -350,5 +373,174 @@ describe('M10D hardening #83: single-owner custom objects under concurrent publi
       ['asset', winner.connectionId],
       ['gadget', winner.connectionId],
     ]);
+  });
+
+  /**
+   * Stale-writer guarantee (review #110 m1; ADR 0030 addendum §5): a source
+   * write of the owning connection reads the owner row FOR SHARE, so a release
+   * (retire) waits for it, and a write arriving behind an uncommitted release
+   * re-reads the released row. Either way no write of the old owner commits
+   * after another connection's claim. Each case pauses one transaction at a
+   * barrier held by a third app-role session and proves who waits on whom
+   * through pg_locks; the outcome order is recorded as the promises settle.
+   */
+  describe('stale writer: a source write of the owner races retire + another connection’s claim', () => {
+    type Settled = { name: string; ok: boolean; value?: unknown; error?: unknown };
+    const settle = (name: string, p: Promise<unknown>, order: string[]): Promise<Settled> =>
+      p.then(
+        (value) => (order.push(name), { name, ok: true, value }),
+        (error: unknown) => (order.push(name), { name, ok: false, error }),
+      );
+    /** A source write of `asset` as `connectionId` through the real CustomRecordWriter (own transaction). */
+    const write = async (t: TenantContext, connectionId: string, id: string) => {
+      const actx = await authz(t, 'canonical.source_sync');
+      return () =>
+        services(c).records.observeSource(actx, {
+          objectKey: 'asset',
+          ref: { system: 'sugar', objectType: 'Opportunities', id },
+          presence: 'present',
+          values: [],
+          observedAt: new Date(),
+          provenance: sourceProvenance(id, {
+            source: { system: 'sugar', objectType: 'Opportunities', id },
+            adapter: 'sugar',
+            connectionId,
+          }),
+        });
+    };
+    const retireV1 = async (t: TenantContext, connectionId: string) => {
+      const actx = await authz(t, 'config.mapping.retire');
+      return () => sourcesServices(c).mappings.retire(actx, connectionId, 1, 'operator_retired');
+    };
+    /** Polls until `done()` or some backend waits on one of `pids`; returns those waiters. */
+    const waitFor = async (pids: readonly number[], done: () => boolean, label: string) => {
+      let rows: Awaited<ReturnType<typeof waitersOf>> = [];
+      await c.until(
+        async () => {
+          if (done()) return true;
+          rows = await waitersOf(pids);
+          return rows.length > 0;
+        },
+        30_000,
+        label,
+      );
+      return done() ? [] : rows;
+    };
+    const rowWait = (locktype: string) => ['tuple', 'transactionid'].includes(locktype);
+
+    it('writer first: the retire waits for the in-flight owner write (FOR SHARE); the write commits before the release, the other connection claims after both', async () => {
+      const f = await twoConnections('h83sw1');
+      await (
+        await prepare(f.sugar, customOnly([['Opportunities', 'asset']]))
+      )();
+      const sugarWrite = await write(f.ctx, f.sugar.connectionId, 'SW1-1');
+      const retire = await retireV1(f.ctx, f.sugar.connectionId);
+      const order: string[] = [];
+      const barrier = await appSession(c, f.ctx);
+      const barrierPid = await backendPid(barrier);
+      let pending: Promise<Settled>[] = [];
+      try {
+        // Pause the writer at its record insert, AFTER its owner check (owner row held FOR SHARE).
+        await barrier.query('LOCK TABLE tenant_custom_records IN SHARE MODE');
+        const w = settle('write', sugarWrite(), order);
+        const [writer] = await waitFor([barrierPid], () => order.length > 0, 'writer paused');
+        expect(order).toEqual([]);
+        // The release must wait for the owner's in-flight write.
+        const r = settle('retire', retire(), order);
+        pending = [w, r];
+        const behindWriter = await waitFor([writer!.pid], () => order.length > 0, 'retire waits');
+        expect(order, 'the retire committed while the owner write was in flight').toEqual([]);
+        expect(behindWriter).toHaveLength(1);
+        expect(behindWriter[0]!.blocked_by).toEqual([writer!.pid]);
+        expect(rowWait(behindWriter[0]!.locktype), behindWriter[0]!.locktype).toBe(true);
+        await barrier.query('COMMIT');
+      } finally {
+        await barrier.query('ROLLBACK').catch(() => undefined);
+        await barrier.end();
+      }
+      const [w, r] = await Promise.all(pending);
+      expect(w).toMatchObject({ ok: true, value: { status: 'created' } });
+      expect(r).toMatchObject({ ok: true });
+      expect(order).toEqual(['write', 'retire']);
+      // Only now can the other connection claim; the old owner's next write is refused.
+      await (
+        await prepare(f.chargebee, customOnly([['Customers', 'asset']]))
+      )();
+      expect((await ownersOf(f.ctx)).map((o) => [o.object_key, o.connection_id])).toEqual([
+        ['asset', f.chargebee.connectionId],
+      ]);
+      expect(await (await write(f.ctx, f.sugar.connectionId, 'SW1-2'))()).toEqual({
+        status: 'rejected',
+        reason: 'object_not_owned',
+      });
+      expect(await recordsOf(c, f.ctx)).toHaveLength(1);
+    });
+
+    it('release first: a write arriving behind the uncommitted release waits (FOR SHARE), re-reads the released row and is refused object_not_owned; the other connection then claims', async () => {
+      const f = await twoConnections('h83sw2');
+      await (
+        await prepare(f.sugar, customOnly([['Opportunities', 'asset']]))
+      )();
+      const sugarWrite = await write(f.ctx, f.sugar.connectionId, 'SW2-1');
+      const retire = await retireV1(f.ctx, f.sugar.connectionId);
+      const order: string[] = [];
+      const barrier = await appSession(c, f.ctx);
+      const barrierPid = await backendPid(barrier);
+      let pending: Promise<Settled>[] = [];
+      try {
+        // Pause the retire AFTER its release UPDATE, at the audit chain it takes next.
+        await barrier.query(`SELECT pg_advisory_xact_lock($1::bigint)`, [
+          advisoryLockKey(f.ctx.tenantId, CHAIN_LOCK_SCOPE, 'head').toString(),
+        ]);
+        const r = settle('retire', retire(), order);
+        const [retirer] = await waitFor([barrierPid], () => order.length > 0, 'retire paused');
+        expect(order).toEqual([]);
+        expect(
+          await c.sql(
+            `SELECT connection_id::text FROM tenant_custom_object_owners WHERE tenant_id = $1`,
+            [f.ctx.tenantId],
+          ),
+          'the release is not committed yet',
+        ).toEqual([{ connection_id: f.sugar.connectionId }]);
+        // The owner's write now waits on the uncommitted release.
+        const w = settle('write', sugarWrite(), order);
+        pending = [r, w];
+        let writer: Awaited<ReturnType<typeof waitersOf>>[number] | undefined;
+        await c.until(
+          async () => {
+            if (order.length > 0) return true;
+            writer = (await waitersOf([barrierPid, retirer!.pid])).find(
+              (x) => x.pid !== retirer!.pid,
+            );
+            return writer !== undefined;
+          },
+          30_000,
+          'writer waits',
+        );
+        expect(order, 'the write finished while the release was uncommitted').toEqual([]);
+        expect(writer!.blocked_by, 'the writer waits on the releasing transaction').toEqual([
+          retirer!.pid,
+        ]);
+        expect(rowWait(writer!.locktype), writer!.locktype).toBe(true);
+        await barrier.query('COMMIT');
+      } finally {
+        await barrier.query('ROLLBACK').catch(() => undefined);
+        await barrier.end();
+      }
+      const [r, w] = await Promise.all(pending);
+      expect(r).toMatchObject({ ok: true });
+      expect(w).toMatchObject({
+        ok: true,
+        value: { status: 'rejected', reason: 'object_not_owned' },
+      });
+      expect(order).toEqual(['retire', 'write']);
+      await (
+        await prepare(f.chargebee, customOnly([['Customers', 'asset']]))
+      )();
+      expect((await ownersOf(f.ctx)).map((o) => [o.object_key, o.connection_id])).toEqual([
+        ['asset', f.chargebee.connectionId],
+      ]);
+      expect(await recordsOf(c, f.ctx)).toEqual([]);
+    });
   });
 });
