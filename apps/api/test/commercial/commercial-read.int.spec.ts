@@ -746,12 +746,16 @@ describe('M10F commercial read model, confidential gate, integrity and races', (
     ).toHaveLength(0);
   });
 
-  it('V19 race: a company merge racing contract writes on the merged account (two sessions) neither deadlocks nor leaves a contract on the merged company', async () => {
+  it('V19 race: a company merge racing contract writes and line-reference writes (operator assignment, source agreement + lineage) on the merged account neither deadlocks nor leaves a contract or line on the merged company', async () => {
     for (let round = 0; round < 3; round += 1) {
       const t = await tenant(`cmmrace${round}`);
       const ids = await companies(c, t, [`47${round}1`, `47${round}2`]);
       const [survivor, loser] = [ids[`47${round}1`]!, ids[`47${round}2`]!];
       const k1 = (await observeContract(t, loser, `r${round}a`)).contractId!;
+      // Lines of the merged account (V19 line-write leg): l1 on k1 through its agreement, l2 unassigned.
+      const l1 = await insertLine(c, t, loser);
+      expect((await agreement(t, l1, `r${round}a`)).contract).toBe('assigned');
+      const l2 = await insertLine(c, t, loser, 'analytics');
       const results = await Promise.allSettled([
         c.ingestion.ingestMerge(
           await sync(t),
@@ -769,6 +773,26 @@ describe('M10F commercial read model, confidential gate, integrity and races', (
           status: 'expired',
           reason: REASON,
         }),
+        // Operator line write: l2 assigned to k1 (same account before and after the merge).
+        step().assignContract(await human(t), { line: l2, target: k1, reason: REASON }),
+        // Source line write: l1 moves to the renewal header written concurrently and states l2 as its
+        // predecessor (unresolved / assigned are both fine; a deadlock is not).
+        (async () => {
+          const actx = await sync(t);
+          return db().transaction(t, (tx) =>
+            step().applyFromSource(actx, tx, {
+              lineId: l1,
+              agreementRef: {
+                system: 'chargebee',
+                objectType: 'Subscriptions',
+                externalId: `r${round}b`,
+              },
+              supersedesRef: { system: 'hubspot', objectType: 'line_items', id: `line-${l2}` },
+              provenance: prov(`line-${l1}`),
+              observedAt: new Date(),
+            }),
+          );
+        })(),
       ]);
       for (const r of results) {
         if (r.status === 'rejected') expect(String(r.reason)).not.toMatch(/deadlock|40P01/);
@@ -784,9 +808,26 @@ describe('M10F commercial read model, confidential gate, integrity and races', (
         [t.tenantId],
       );
       for (const row of rows) expect(row.company_id).toBe(survivor);
+      // Both lines follow the merge; any contract they hold is a contract of the survivor.
+      const lines = await c.sql<{
+        company_id: string;
+        contract_company: string | null;
+        contract_id: string | null;
+      }>(
+        `SELECT s.company_id::text, k.company_id::text AS contract_company, s.contract_id::text
+           FROM tenant_subscriptions s LEFT JOIN tenant_contracts k ON k.id = s.contract_id
+          WHERE s.tenant_id = $1 AND s.id IN ($2, $3)`,
+        [t.tenantId, l1, l2],
+      );
+      expect(lines).toHaveLength(2);
+      for (const line of lines) {
+        expect(line.company_id).toBe(survivor);
+        if (line.contract_id !== null) expect(line.contract_company).toBe(survivor);
+      }
       const report = await c.app.get(IntegrityVerificationService).verify(t);
       expect(report.checks.commercial_contract_link_cross_account).toBe(0);
       expect(report.checks.commercial_line_contract_company_mismatch).toBe(0);
+      expect(report.checks.commercial_line_lineage_cycle).toBe(0);
     }
   });
 });
