@@ -1,5 +1,6 @@
 import { Global, Module, type DynamicModule, type Type } from '@nestjs/common';
 import { RECEIPTS_STORED_LISTENER } from '../crm';
+import { CommercialMergeParticipant, CommercialModule } from '../commercial';
 import { ExtensionMergeParticipant, ExtensionModule } from '../extension';
 import { TenancyModule } from '../tenancy';
 import { BulkSyncService } from './application/bulk-sync.service';
@@ -79,6 +80,7 @@ export class ContextModule {
         TenancyModule,
         AccountStructureModule,
         AccountContextModule,
+        CommercialModule,
         ExtensionModule,
         options.connector,
         ...options.merge.imports,
@@ -96,6 +98,9 @@ export class ContextModule {
             AffiliationCompanyMergeParticipant,
             // M10E (plan §7, Q15): contexts re-pointed / collisions merged.
             AccountContextMergeParticipant,
+            // M10F (plan §8): contracts and entitlements re-pointed, after the
+            // contexts (a contract follows a context merged in a collision).
+            CommercialMergeParticipant,
             ExtensionMergeParticipant,
           ],
         },

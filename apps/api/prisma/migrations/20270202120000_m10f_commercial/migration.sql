@@ -19,8 +19,9 @@
 --      contract <-> context same account (M10E D2 pattern). The deferred line /
 --      context guards re-read the referenced row FOR SHARE, so a concurrent
 --      change of the other end waits for this transaction (or is seen) instead of
---      slipping past; the contract-link guard serialises on the contract-graph
---      advisory lock instead (no row lock, no crossing deadlock).
+--      slipping past; the contract-link and line-lineage account guards serialise
+--      on the contract-graph / line-lineage advisory locks instead (no row lock,
+--      no crossing deadlock).
 --   3. Kind CHECKs widened: entity index, generic references, change records
 --      (entity kinds only; change types unchanged, Q25), value history (plan §9),
 --      identity conflicts (interim data-quality kinds and entity kinds),
@@ -595,7 +596,9 @@ CREATE TRIGGER "tenant_subscriptions_lineage_guard" BEFORE INSERT OR UPDATE OF "
 
 -- Line lineage: a line and its predecessor (and every line superseding it)
 -- belong to the same account; deferred so a company merge re-points lines in
--- any order inside one transaction.
+-- any order inside one transaction. Serialised on ('line-lineage', tenant)
+-- like the contract-link account guard (phase 2a: a FOR SHARE re-read of the
+-- predecessor deadlocked against a crossing predecessor write).
 CREATE FUNCTION "app_line_lineage_account_guard"() RETURNS trigger
 LANGUAGE plpgsql SECURITY INVOKER
 SET search_path = pg_catalog, public, pg_temp
@@ -610,9 +613,21 @@ BEGIN
   IF NOT FOUND THEN
     RETURN NULL;
   END IF;
+  IF me.supersedes_line_id IS NULL
+     AND NOT (TG_OP = 'UPDATE' AND OLD.company_id IS DISTINCT FROM NEW.company_id) THEN
+    RETURN NULL;
+  END IF;
+  -- Serialised on the line-lineage advisory lock (no row lock on the other
+  -- end): a crossing pair of predecessor writes cannot deadlock here (the
+  -- lineage BEFORE trigger waits on this lock while holding its own row).
+  IF current_setting('transaction_isolation') = 'repeatable read' THEN
+    RAISE EXCEPTION 'line_lineage_isolation_unsupported' USING ERRCODE = 'feature_not_supported',
+      DETAIL = 'setting a line predecessor needs READ COMMITTED or SERIALIZABLE';
+  END IF;
+  PERFORM pg_advisory_xact_lock(app_tenant_advisory_key(NEW.tenant_id, 'line-lineage', 'tenant'));
   IF me.supersedes_line_id IS NOT NULL THEN
     SELECT p.company_id INTO pred_company FROM public.tenant_subscriptions p
-     WHERE p.tenant_id = NEW.tenant_id AND p.id = me.supersedes_line_id FOR SHARE;
+     WHERE p.tenant_id = NEW.tenant_id AND p.id = me.supersedes_line_id;
     IF pred_company IS DISTINCT FROM me.company_id THEN
       RAISE EXCEPTION 'line_lineage_cross_account' USING ERRCODE = 'check_violation',
         DETAIL = format('line %s supersedes line %s of another account', NEW.id, me.supersedes_line_id);
