@@ -186,7 +186,19 @@ describe('M10E hardening #90: confidential AccountContext reads', () => {
       details: { capability: CONFIDENTIAL, grantee: 'conf-reader', version: 1 },
     });
 
+    const revokesBefore = (await auditOf(c, tA, 'capability.revoke')).length;
     await revoke(tA, 'conf-reader');
+    // The revoke itself is audited: exactly one allowed event (identifiers and codes only).
+    const revokeEvents = (await auditOf(c, tA, 'capability.revoke')).slice(revokesBefore);
+    expect(revokeEvents).toHaveLength(1);
+    expect(revokeEvents[0]).toMatchObject({
+      outcome: 'allowed',
+      capability: 'security.capability.grant',
+      target_kind: 'capability_grant',
+      target_ref: `${CONFIDENTIAL}:conf-reader`,
+      details: { capability: CONFIDENTIAL, grantee: 'conf-reader', version: 2 },
+    });
+    valueFree(revokeEvents);
     await expect(
       read().get(await reader(tA, 'conf-reader'), { contextId: ctxA, includeConfidential: true }),
     ).rejects.toMatchObject({ code: 'authorization_denied', capability: CONFIDENTIAL });
