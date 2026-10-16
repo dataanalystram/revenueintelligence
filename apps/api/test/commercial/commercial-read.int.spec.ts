@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { Client } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   CommercialLineReferenceStep,
@@ -829,5 +830,100 @@ describe('M10F commercial read model, confidential gate, integrity and races', (
       expect(report.checks.commercial_line_contract_company_mismatch).toBe(0);
       expect(report.checks.commercial_line_lineage_cycle).toBe(0);
     }
+  });
+  /**
+   * How many backends wait, directly or transitively, behind `pids` (this
+   * test's own sessions only).
+   */
+  const waitingBehind = async (pids: readonly number[]) =>
+    (
+      await c.sql<{ pid: number }>(
+        `WITH RECURSIVE w (pid) AS (
+           SELECT unnest($1::int[])
+           UNION
+           SELECT l.pid FROM pg_locks l JOIN w ON w.pid = ANY (pg_blocking_pids(l.pid))
+            WHERE NOT l.granted)
+         SELECT pid FROM w WHERE pid <> ALL ($1::int[]) ORDER BY pid`,
+        [pids],
+      )
+    ).map((r) => r.pid);
+
+  it('M10F review M1: a company merge (C1 → C2) re-pointing line P races a source line sync of line L on account C3 stating P as its predecessor — no cross-account deadlock (40P01); the sync waits for the merge and refuses lineage_cross_account', async () => {
+    const t = await tenant('cmm1race');
+    const ids = await companies(c, t, ['4811', '4812', '4813']);
+    const [survivor, loser, third] = [ids['4811']!, ids['4812']!, ids['4813']!];
+    // K1 on the loser is the barrier the merge stops at (the commercial merge participant locks it
+    // after the subscription participant has re-pointed P, i.e. while the merge holds P's row lock).
+    const k1 = (await observeContract(t, loser, 'm1k1')).contractId!;
+    const p = await insertLine(c, t, loser);
+    const l = await insertLine(c, t, third);
+    const barrier = new Client({ connectionString: c.adminUrl });
+    await barrier.connect();
+    let merge: Promise<unknown> | undefined;
+    let lineSync: Promise<{ supersedes: string }> | undefined;
+    try {
+      const barrierPid = Number(
+        (await barrier.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid,
+      );
+      await barrier.query('BEGIN');
+      await barrier.query(
+        `SELECT id FROM tenant_contracts WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
+        [t.tenantId, k1],
+      );
+      // Session A: the merge, which re-points P (row lock) and then waits on the barrier.
+      const actxMerge = await sync(t);
+      merge = c.ingestion.ingestMerge(
+        actxMerge,
+        { kind: 'company', survivor: hs('4811'), merged: [hs('4812')], observedAt: new Date() },
+        ingestMeta(),
+      );
+      await c.until(
+        async () => (await waitingBehind([barrierPid])).length >= 1,
+        30_000,
+        'merge waits on the barrier',
+      );
+      const [mergePid] = await waitingBehind([barrierPid]);
+      // Session B: the line sync of L (account C3) stating P as its predecessor.
+      const actxSync = await sync(t);
+      lineSync = db().transaction(t, (tx) =>
+        step().applyFromSource(actxSync, tx, {
+          lineId: l,
+          supersedesRef: { system: 'hubspot', objectType: 'line_items', id: `line-${p}` },
+          provenance: prov(`line-${l}`),
+          observedAt: new Date(),
+        }),
+      );
+      await c.until(
+        async () => (await waitingBehind([mergePid!])).length >= 1,
+        30_000,
+        'line sync waits on the merge',
+      );
+      await barrier.query('COMMIT');
+    } finally {
+      await barrier.query('ROLLBACK').catch(() => undefined);
+      await barrier.end();
+    }
+    const [m, s] = await Promise.allSettled([merge!, lineSync!]);
+    for (const r of [m, s]) {
+      if (r.status === 'rejected') expect(String(r.reason)).not.toMatch(/deadlock|40P01/);
+    }
+    expect(m.status).toBe('fulfilled');
+    expect(s.status).toBe('fulfilled');
+    // The sync ran after the merge committed: P is now on C2, L on C3 → refused, L keeps no predecessor.
+    expect((s as PromiseFulfilledResult<{ supersedes: string }>).value.supersedes).toBe(
+      'lineage_cross_account',
+    );
+    const rows = await c.sql<{ id: string; company_id: string; supersedes_line_id: string | null }>(
+      `SELECT id::text, company_id::text, supersedes_line_id::text FROM tenant_subscriptions
+        WHERE tenant_id = $1 AND id IN ($2, $3)`,
+      [t.tenantId, p, l],
+    );
+    expect(rows.find((r) => r.id === p)).toMatchObject({ company_id: survivor });
+    expect(rows.find((r) => r.id === l)).toMatchObject({
+      company_id: third,
+      supersedes_line_id: null,
+    });
+    const report = await c.app.get(IntegrityVerificationService).verify(t);
+    expect(report.checks.commercial_line_lineage_cycle).toBe(0);
   });
 });
