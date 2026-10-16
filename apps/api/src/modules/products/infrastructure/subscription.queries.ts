@@ -75,6 +75,7 @@ export class SubscriptionQueries {
         companyId,
         recordState: 'active',
         ...(sourceSystem ? { sourceSystem } : {}),
+        priceOfferId: null,
       },
       orderBy: { id: 'asc' },
     });
