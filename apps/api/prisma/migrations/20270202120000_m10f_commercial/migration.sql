@@ -500,10 +500,7 @@ BEGIN
 END
 $$;
 REVOKE ALL ON FUNCTION "app_line_contract_guard"() FROM PUBLIC;
-CREATE CONSTRAINT TRIGGER "tenant_subscriptions_contract_guard" AFTER INSERT OR UPDATE OF "contract_id", "company_id" ON "tenant_subscriptions"
-  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION app_line_contract_guard();
-CREATE CONSTRAINT TRIGGER "tenant_contracts_line_guard" AFTER UPDATE OF "company_id" ON "tenant_contracts"
-  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION app_line_contract_guard();
+-- MUTATION VM4: line <-> contract same-account guard triggers removed
 
 -- Line <-> price offer: same product (Q10), from both tables at commit.
 CREATE FUNCTION "app_line_price_offer_guard"() RETURNS trigger
