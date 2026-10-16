@@ -13,6 +13,7 @@ import {
   captureDraft,
   compareCanonicalVersion,
   disabledModuleTargets,
+  EXTENSION_CUSTOM_OBJECT_PREFIX,
   EXTENSION_MIN_VERSION,
   EXTENSION_MODULE_KEY,
   findSourceField,
@@ -230,6 +231,16 @@ export class SourceMappingsService {
         },
         publishedBy: actor,
       });
+      // Tech debt #83 (Q14, ADR 0030 addendum): the owner rows of the custom
+      // objects this version sources, claimed in this transaction BEFORE the
+      // audit event (sorted keys; the primary key refuses a second owner, also
+      // one whose publication is still in flight), the others released.
+      const owners = await this.claimCustomObjectOwners(
+        tx,
+        connectionId,
+        stored.version,
+        validation.document,
+      );
       const auditEventId = await this.audit.recordReturningId(tx, actx, {
         action: 'mapping.publish',
         targetKind: 'mapping',
@@ -241,6 +252,8 @@ export class SourceMappingsService {
           authorityVersion: stored.authorityVersion,
           acknowledgements: validation.acknowledgements.length,
           ...(previouslyPublished ? { supersedes: previouslyPublished.version } : {}),
+          ...(owners.claimed.length > 0 ? { customObjectsClaimed: owners.claimed } : {}),
+          ...(owners.released.length > 0 ? { customObjectsReleased: owners.released } : {}),
         },
       });
       // M10A2 lifecycle: the previous version is superseded, the new one published,
@@ -298,11 +311,20 @@ export class SourceMappingsService {
       if (state.state === 'retired') {
         throw new SourcesError('no_change', `Version ${version} is already retired`);
       }
+      // Tech debt #83 (Q14): retiring the published version leaves the connection
+      // with no published mapping, so it no longer owns any custom object.
+      const released =
+        state.state === 'published' ? await this.repo.releaseCustomObjects(tx, connectionId) : [];
       const auditEventId = await this.audit.recordReturningId(tx, actx, {
         action: 'mapping.retire',
         targetKind: 'mapping',
         targetRef: `${connectionId}/v${version}`,
-        details: { version, from: state.state, reason },
+        details: {
+          version,
+          from: state.state,
+          reason,
+          ...(released.length > 0 ? { customObjectsReleased: released } : {}),
+        },
       });
       await this.repo.appendLifecycle(tx, {
         connectionId,
@@ -713,22 +735,55 @@ export class SourceMappingsService {
         ];
       }),
     );
-    const objectOwners = new Map<string, string>();
-    const connections = await db.tenantSourceConnection.findMany({
-      where: { tenantId: tx.tenantId, id: { not: connectionId } },
-      select: { id: true },
-    });
-    for (const c of connections) {
-      const published = await this.repo.publishedMapping(tx, c.id);
-      const doc = published ? MappingDocumentSchema.safeParse(published.document) : undefined;
-      if (!doc?.success) continue;
-      for (const o of doc.data.objects) {
-        if (isCustomObjectEntity(o.entity)) {
-          objectOwners.set(o.entity.slice('custom_object:'.length), c.id);
-        }
-      }
-    }
+    // Tech debt #83: the owner rows are the record of Q14 ownership (claimed
+    // and released with the published mappings, backfilled by the migration).
+    const objectOwners = await this.repo.otherCustomObjectOwners(tx, connectionId);
     return { gate, definitions, objectOwners };
+  }
+
+  /**
+   * Tech debt #83 (Q14): claims the owner rows of the custom objects `document`
+   * sources for this connection at `version` and releases the rest. A second
+   * owner — committed, or a concurrent publication still in flight — is a
+   * unique violation on the owner table's primary key, refused with the
+   * validation code `custom_object_owned_by_other_connection` (the whole
+   * publication rolls back).
+   */
+  private async claimCustomObjectOwners(
+    tx: TenantTransaction,
+    connectionId: string,
+    version: number,
+    document: MappingDocument,
+  ): Promise<{ readonly claimed: string[]; readonly released: string[] }> {
+    const keys = document.objects
+      .filter((o) => isCustomObjectEntity(o.entity))
+      .map((o) => o.entity.slice(EXTENSION_CUSTOM_OBJECT_PREFIX.length));
+    const result = await this.repo.claimCustomObjects(tx, connectionId, version, keys);
+    if ('conflict' in result) {
+      const entity = `${EXTENSION_CUSTOM_OBJECT_PREFIX}${result.conflict}`;
+      const index = document.objects.findIndex((o) => o.entity === entity);
+      throw new MappingInvalidError([
+        {
+          code: 'custom_object_owned_by_other_connection',
+          path: `objects.${index}.entity`,
+          message: `${entity} is written by another connection's published mapping (Q14)`,
+        },
+      ]);
+    }
+    if ('invalid' in result) {
+      // Review #110 n2: a claim the owner table's foreign keys refuse is an
+      // invalid mapping, not a database error.
+      const entity = `${EXTENSION_CUSTOM_OBJECT_PREFIX}${result.invalid}`;
+      const index = document.objects.findIndex((o) => o.entity === entity);
+      throw new MappingInvalidError([
+        {
+          code: 'invalid_entity',
+          path: `objects.${index}.entity`,
+          message: `${entity} is not a published custom object of this tenant`,
+        },
+      ]);
+    }
+    return { claimed: result.claimed, released: result.released };
   }
 
   /** D5 safeguards: an override attempt is always logged and counted (refused in M9A). */

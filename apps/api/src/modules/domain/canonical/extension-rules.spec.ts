@@ -133,8 +133,8 @@ describe('extensionNarrowings (R-X5)', () => {
 
 describe('M10D integrity checks (plan §14)', () => {
   it('adds the eight extension checks after the M10C checks', () => {
-    // M10E appends five checks after the eight M10D ones.
-    expect(INTEGRITY_CHECKS.slice(-13, -5)).toEqual([
+    // M10E appends five checks after the eight M10D ones, then M10D hardening #83 one.
+    expect(INTEGRITY_CHECKS.slice(-14, -6)).toEqual([
       'extension_value_type_mismatch',
       'extension_value_restricted',
       'extension_value_target_kind',
@@ -145,6 +145,10 @@ describe('M10D integrity checks (plan §14)', () => {
       'extension_history_parity',
     ]);
     expect(new Set(INTEGRITY_CHECKS).size).toBe(INTEGRITY_CHECKS.length);
+  });
+
+  it('tech debt #83 appends the custom object owner drift check last', () => {
+    expect(INTEGRITY_CHECKS.at(-1)).toBe('custom_object_owner_drift');
   });
 });
 

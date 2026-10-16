@@ -3241,6 +3241,17 @@ export const CLASSIFICATION_MANIFEST: Readonly<
     ...updatedByColumns(CV),
     updated_at: op('timestamp', CV),
   },
+  // M10D hardening #83 (Q14): the single owner connection of each custom object.
+  tenant_custom_object_owners: {
+    tenant_id: op('identifier', CV),
+    object_key: op('code', CV),
+    registry_kind: op('code', CV),
+    connection_id: op('reference', CV),
+    mapping_version: op('number', CV),
+    claimed_at: op('timestamp', CV),
+    released_at: op('timestamp', CV),
+    updated_at: op('timestamp', CV),
+  },
   tenant_source_mapping_lifecycle: {
     tenant_id: op('identifier', CV),
     connection_id: op('reference', CV),

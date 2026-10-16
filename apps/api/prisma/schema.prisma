@@ -73,6 +73,7 @@ model Tenant {
   accountContexts      TenantAccountContext[]
   contextPersons       TenantAccountContextPerson[]
   contextProducts      TenantAccountContextProduct[]
+  customObjectOwners   TenantCustomObjectOwner[]
 
   @@unique([id, slug])
   @@map("tenants")
@@ -810,6 +811,7 @@ model TenantSourceConnection {
   authorityAccountContext    TenantSourceAuthorityVersion[] @relation("AuthorityAccountContext")
   extensionValues            TenantExtensionValue[]
   customRelationships        TenantCustomRelationship[]
+  customObjectOwners         TenantCustomObjectOwner[]
 
   @@id([tenantId, id])
   @@unique([tenantId, kind])
@@ -855,13 +857,15 @@ model TenantSourceMappingVersion {
   /// M10A2: the canonical version validated against (NULL before M10A2 = 0.1)
   canonicalVersionMin String?  @map("canonical_version_min")
 
-  canonicalMin    CanonicalModelVersion?         @relation(fields: [canonicalVersionMin], references: [version], onDelete: Restrict, onUpdate: Restrict)
-  lifecycle       TenantSourceMappingLifecycle[]
-  connection      TenantSourceConnection         @relation(fields: [tenantId, connectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
-  snapshot        TenantSourceSchemaSnapshot     @relation(fields: [tenantId, connectionId, schemaSnapshotHash], references: [tenantId, connectionId, hash], onDelete: Restrict, onUpdate: Restrict)
-  authority       TenantSourceAuthorityVersion   @relation(fields: [tenantId, authorityVersion], references: [tenantId, version], onDelete: Restrict, onUpdate: Restrict)
-  contextChanges  TenantContextChange[]
-  syncCheckpoints TenantSyncCheckpoint[]
+  canonicalMin       CanonicalModelVersion?         @relation(fields: [canonicalVersionMin], references: [version], onDelete: Restrict, onUpdate: Restrict)
+  lifecycle          TenantSourceMappingLifecycle[]
+  connection         TenantSourceConnection         @relation(fields: [tenantId, connectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  snapshot           TenantSourceSchemaSnapshot     @relation(fields: [tenantId, connectionId, schemaSnapshotHash], references: [tenantId, connectionId, hash], onDelete: Restrict, onUpdate: Restrict)
+  authority          TenantSourceAuthorityVersion   @relation(fields: [tenantId, authorityVersion], references: [tenantId, version], onDelete: Restrict, onUpdate: Restrict)
+  contextChanges     TenantContextChange[]
+  syncCheckpoints    TenantSyncCheckpoint[]
+  /// M10D hardening #83: the custom objects this version holds as owner (Q14).
+  customObjectOwners TenantCustomObjectOwner[]
 
   @@id([tenantId, connectionId, version])
   @@map("tenant_source_mapping_versions")
@@ -1254,6 +1258,8 @@ model TenantRegistryEntry {
   customRelationships TenantCustomRelationship[]
   /// M10E: account contexts reference their context type by (tenant, kind, id).
   accountContexts     TenantAccountContext[]
+  /// M10D hardening #83: the owner row of a custom object references it by (tenant, kind, key).
+  customObjectOwners  TenantCustomObjectOwner[]
 
   @@id([tenantId, id])
   @@unique([tenantId, kind, key])
@@ -1822,4 +1828,32 @@ model TenantAccountContextProduct {
   @@id([tenantId, contextId, productKey])
   @@index([tenantId, productKey])
   @@map("tenant_account_context_products")
+}
+
+/// M10D hardening #83 (ADR 0030 addendum, Q14): the single owner connection of
+/// each custom object, one row per (tenant, object key) — the primary key makes
+/// a second concurrent owner a unique violation. Claimed and released in the
+/// mapping publish / retire transaction; released = connection NULL (no DELETE).
+model TenantCustomObjectOwner {
+  tenantId       String    @map("tenant_id") @db.Uuid
+  /// the custom object's registry key (kind extension)
+  objectKey      String    @map("object_key")
+  /// always 'extension' (CHECK); part of the composite FK proving the registry entry
+  registryKind   String    @default("extension") @map("registry_kind")
+  /// the owning connection; NULL = released (no owner)
+  connectionId   String?   @map("connection_id") @db.Uuid
+  /// the owner's published mapping version holding the claim (NULL when released)
+  mappingVersion Int?      @map("mapping_version")
+  claimedAt      DateTime? @map("claimed_at") @db.Timestamptz(3)
+  releasedAt     DateTime? @map("released_at") @db.Timestamptz(3)
+  updatedAt      DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  tenant     Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  object     TenantRegistryEntry         @relation(fields: [tenantId, registryKind, objectKey], references: [tenantId, kind, key], onDelete: Restrict, onUpdate: Restrict)
+  connection TenantSourceConnection?     @relation(fields: [tenantId, connectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  mapping    TenantSourceMappingVersion? @relation(fields: [tenantId, connectionId, mappingVersion], references: [tenantId, connectionId, version], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([tenantId, objectKey])
+  @@index([tenantId, connectionId, mappingVersion])
+  @@map("tenant_custom_object_owners")
 }

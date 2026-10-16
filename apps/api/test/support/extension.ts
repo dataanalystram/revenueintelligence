@@ -239,6 +239,30 @@ export async function importConnectionId(c: ContextHarness, t: TenantContext): P
   return row.id;
 }
 
+/**
+ * Tech debt #83 TEST fixture: plants `connectionId` as the owner of the custom
+ * objects `objectKeys` (as the schema owner, foreign keys off: the writer-level
+ * suites observe through `CustomRecordWriter` directly, without a published
+ * mapping, so no mapping version exists to hold the claim). Publication is the
+ * only production path that claims an owner (test/sources/custom-object-owner).
+ */
+export async function plantCustomObjectOwners(
+  c: ContextHarness,
+  t: TenantContext,
+  connectionId: string,
+  objectKeys: readonly string[],
+): Promise<void> {
+  await c.sql(
+    `SET session_replication_role = replica;
+     INSERT INTO tenant_custom_object_owners
+       (tenant_id, object_key, connection_id, mapping_version, claimed_at, updated_at)
+     SELECT '${t.tenantId}'::uuid, k, '${connectionId}'::uuid, 1, now(), now()
+       FROM unnest(ARRAY[${objectKeys.map((k) => `'${k.replace(/[^a-z0-9_]/g, '')}'`).join(', ')}]::text[]) k
+     ON CONFLICT (tenant_id, object_key) DO NOTHING;
+     SET session_replication_role = origin;`,
+  );
+}
+
 /** Source provenance of a TEST observation (identifiers only). */
 export function sourceProvenance(
   recordId: string,

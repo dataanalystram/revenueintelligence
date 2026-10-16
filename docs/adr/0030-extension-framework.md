@@ -117,7 +117,8 @@ and a hard rule that extension data never feeds ownership, identity or (in M10D)
 - **Capture drafts** are always `internal` / `operational` with uses `[display]` (narrower than the plan's
   display / analytics).
 - **Q14 owner check reads the other published mappings without cross-connection locking**: two connections
-  publishing mappings for the same custom object at the same moment can both pass (tech debt #83).
+  publishing mappings for the same custom object at the same moment can both pass (tech debt #83). **Resolved by
+  the M10D hardening #83 addendum below** (structural owner table, writer owner check).
 - **`insertContextChange` moved to the tenancy module** (`tenancy/governance/context-change.ts`) so the extension
   module can write change records without importing `context` infrastructure (boundary rule).
 - **Capture draft lives on the sources CLI** (`sources extension-capture-draft`, script `extension:capture-draft`),
@@ -144,3 +145,95 @@ and a hard rule that extension data never feeds ownership, identity or (in M10D)
   `0.3` (data kept, writes refused).
 - Deferred: full writer-path load test (#82); partitioning (Q30); per-tenant guardrail overrides; promotion (Q28);
   HTTP endpoints / UI (M15); the canonical data-quality store (M10L) for per-record rejections.
+
+## Addendum: tech debt #83 — Q14 single owner, enforced by the database (M10D hardening)
+
+**Problem.** Q14 says a custom object is source-fed by one connection. M10D checked it only at mapping publish, by
+reading the _other_ connections' published mappings under the publishing connection's own lock
+(`source-mapping|<connectionId>`), so two connections publishing the same custom object concurrently could both
+pass and both commit; `CustomRecordWriter` did no owner check, so both would then write (review m1).
+
+**Decision.**
+
+1. **Structural constraint.** Migration `20270126120000_m10d_custom_object_owner` adds
+   `tenant_custom_object_owners`: one row per `(tenant_id, object_key)` — the **primary key** — with
+   `connection_id` (the owner), `mapping_version` (the owner's published version holding the claim), `claimed_at`,
+   `released_at`. Composite same-tenant FKs (RESTRICT) to the registry entry (`registry_kind = 'extension'`), to
+   the connection and to `(tenant, connection, version)` of `tenant_source_mapping_versions`; a state-shape CHECK
+   (held = owner + version + claimed, not released; released = no owner, no version, `released_at`); a guard
+   trigger (identity immutable; an owner change passes through released — no direct handover); forced RLS, the
+   tenant policy, tenant-id immutability; `SELECT / INSERT / UPDATE` for the app role, **no DELETE**. The guard
+   trigger prevents an _accidental_ direct handover by a bug; it is not a security boundary: code running as the app
+   role may release and re-claim in one transaction by design. The invariant it protects (at most one owner at any
+   instant) rests on the primary key.
+2. **Claimed in the publish transaction.** `SourceMappingsService.publish` claims the owner rows of every
+   `custom_object:<key>` the new version sources **after inserting the version and before the audit event**, then
+   releases the connection's other rows. A claim keeps the row (already ours, moving `mapping_version`), takes a
+   released row, or inserts one; the insert hits the primary key when another connection holds the object **or is
+   claiming it in a transaction still in flight** (PostgreSQL waits for that transaction, then raises the unique
+   violation). The violation is mapped to the existing validation code `custom_object_owned_by_other_connection`
+   (`mapping_invalid`), and the whole publication rolls back.
+3. **Release.** Retiring the connection's _published_ version releases all its rows (retiring a superseded version
+   releases nothing); a new version that no longer maps an object releases that object. Release sets
+   `connection_id = NULL` (history stays; who claimed / released what is in the `mapping.publish` /
+   `mapping.retire` audit details `customObjectsClaimed` / `customObjectsReleased`). A connection cannot be deleted
+   while it has mapping versions (existing RESTRICT FKs), so connection removal needs no separate release path; a
+   disabled connection keeps its ownership until its mapping is retired (`connection_disabled`), exactly as before.
+4. **Validation reads the owner table.** The Q14 check in `validate` / `publish` (`extensionContext.objectOwners`)
+   now reads the held owner rows instead of re-parsing every other connection's published mapping.
+5. **Defence in depth at write time.** `CustomRecordWriter.observe` reads the object's owner row `FOR SHARE` right
+   after the per-object lock and rejects (`rejected` / `object_not_owned`, counted on the run as
+   `custom_record_rejected_object_not_owned`) a source write whose `provenance.connectionId` is not the owner —
+   including a released object or a write with no connection. `FOR SHARE` makes a concurrent release / re-claim
+   wait for the write to commit, so the owner cannot change between the check and the write; a write arriving
+   behind an uncommitted release waits for it and re-reads the released row (refused). No write of the old owner
+   commits after another connection's claim.
+6. **Backfill and refusal.** The migration inserts one held row per custom object of each connection's currently
+   published mapping (lifecycle state `published`; `claimed_at` = that version's `published_at`), and **refuses
+   with a clear error** (changing nothing) when two connections' published mappings already source one object, or
+   when a published mapping names a custom object the registry lacks. The down-script refuses while held rows and
+   published mappings disagree, else drops the table and the guard function (ownership is derived from the
+   published mappings again).
+
+**Lock order (M10D rules plus #83).** Every transaction takes its locks in this order and never goes back:
+
+| Path                          | Order                                                                                                                                                 |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Mapping publish               | `source-mapping\|<connection>` advisory → owner rows, **claims in ascending `object_key` order**, then releases of its own other rows → `audit-chain` |
+| Mapping retire                | `source-mapping\|<connection>` advisory → its own owner rows (release) → `audit-chain`                                                                |
+| `CustomRecordWriter` (source) | `custom-object\|<objectId>` advisory → that object's owner row `FOR SHARE` → the record's single `extension-target` lock → `audit-chain`              |
+| Value / relationship writers  | single `extension-target` (and `custom-relationship` from) lock → `audit-chain` (unchanged)                                                           |
+| Merge participant             | `extension-target` locks of the loser / survivor **sorted pair** (`lockMergeTargets`) → `audit-chain` (unchanged)                                     |
+
+No path holds `audit-chain` while waiting for an owner row, and publishers claim owner rows in one global order
+(their own releases come after every claim and are rows no other publisher claims while they are held), so two
+publishers claiming several objects in opposite document order cannot deadlock (integration test "no deadlock"
+in `test/sources/custom-object-owner.int.spec.ts`). A writer holding an owner row `FOR SHARE` never waits for a
+publisher, so a release that waits for in-flight writes always completes.
+
+**Why not "ended_at + partial unique on active rows".** A partial unique index is not expressible in the Prisma
+schema without schema-guard drift (the same reason as the missing `value_text` prefix index above). One row per
+`(tenant, object_key)` with the primary key is the stronger structural form and needs no DELETE: release sets the
+owner to NULL, and the claim history is in the audit trail.
+
+**Evidence.** The race test (two connections, real `SourceMappingsService`, two independent transactions released
+together from an audit-chain barrier) failed on the unfixed code (both publications committed) and passes with the
+fix (CI run `38821831803` on `4614146` failed exactly that test; `a620ff9` is green). Four mutation proofs were all
+killed: owner rows skipped (VM1), primary key dropped (VM2), claim sort removed (VM3 — the opposite-order publishers
+deadlock, PostgreSQL aborts one with `P2034` instead of the Q14 refusal) and the writer owner check removed (VM4) —
+recorded in the M10D record (review section, "Tech debt #83 hardening") and in tech debt #83.
+
+**Re-review follow-up (PR #110 review m1, m2, n1–n3).**
+
+- **Stale writer under concurrency.** Two barrier tests in `test/sources/custom-object-owner.int.spec.ts`
+  ("stale writer"), two independent app-role sessions plus a barrier session, both orders: (a) the owner's source
+  write paused after its owner check — the retire waits on the writer's row lock (proven in `pg_locks`), the write
+  commits first, the other connection claims afterwards; (b) the retire paused after its release — the owner's write
+  waits on the releasing transaction and is refused `object_not_owned`. Mutation VM5 (`FOR SHARE` removed) is killed.
+- **Integrity check 32 `custom_object_owner_drift`.** The database only requires a held row's `mapping_version` to
+  exist, not to be the connection's _currently published_ version (such drift fails closed but was undetected). The
+  integrity run now applies the down-script's two consistency queries: a held row not supported by its connection's
+  published mapping of that version sourcing the object (`held:<key>/<connection>/v<n>`), and a published mapping
+  sourcing a custom object without its held row (`unheld:…`). Read-only, identifiers only, nothing repaired.
+- A foreign-key violation while claiming (no registry entry or version; unreachable after validation in the same
+  transaction) is reported as `mapping_invalid` / `invalid_entity` instead of a raw database error.

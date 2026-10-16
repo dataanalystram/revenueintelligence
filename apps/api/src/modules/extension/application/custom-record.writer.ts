@@ -74,7 +74,8 @@ export interface CustomRecordObserveOutcome {
     | 'parent_unresolved'
     | 'records_per_object_exceeded'
     | 'record_merged'
-    | 'natural_key_incomplete';
+    | 'natural_key_incomplete'
+    | 'object_not_owned';
   readonly recordId?: string;
   readonly values?: ExtensionObserveOutcome;
 }
@@ -116,7 +117,9 @@ const parentIssue = (tenantId: string, objectKey: string, ref: CustomRecordObser
  * issue). Fields go through `ExtensionValueWriter` in the same transaction.
  * States: `active` ↔ `inactive`, → `retired` (terminal for the source; operator
  * reactivation audited). Records never disappear; absence changes nothing.
- * One owner connection per object is enforced at mapping publish (Q14).
+ * One owner connection per object (Q14): the owner table's primary key refuses
+ * a second owner at mapping publish (tech debt #83), and source writes from any
+ * other connection are rejected here (`object_not_owned`).
  */
 @Injectable()
 export class CustomRecordWriter {
@@ -164,6 +167,12 @@ export class CustomRecordWriter {
     }
     if (object.status !== 'active') return { status: 'rejected', reason: 'object_retired' };
     await this.store.lockObject(tx, object.id);
+    // Tech debt #83 (Q14, defence in depth): only the owning connection's source
+    // writes land; the owner row is held FOR SHARE until this write commits.
+    const owner = await this.store.customObjectOwner(tx, input.objectKey);
+    if (owner === null || owner !== input.provenance.connectionId) {
+      return { status: 'rejected', reason: 'object_not_owned' };
+    }
 
     let recordId = await this.store.customRecordForRef(tx, input.ref);
     if (input.presence === 'absent') {
