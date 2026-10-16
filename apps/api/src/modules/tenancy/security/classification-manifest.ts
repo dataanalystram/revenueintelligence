@@ -87,6 +87,31 @@ const subjectRef = (retention: Retention): ColumnClassification => ({
   ...op('reference', retention),
   subject: { entity: 'person', action: 'erase' },
 });
+/** M10F (plan §7): a commercial fact of a price offer, contract or entitlement (internal). */
+const commercialFact = (
+  kind: ColumnClassification['kind'],
+  history: ColumnClassification['history'],
+): ColumnClassification => ({
+  sensitivity: 'internal',
+  categories: ['commercial'],
+  kind,
+  retention: 'canonical_lifecycle',
+  history,
+});
+/**
+ * M10F (plan §7, M10 §16): an amount, price or contract value (or the renewal date, as M10E
+ * `renewal_date`) — financial, so at least confidential (category floor).
+ */
+const financialFact = (
+  kind: ColumnClassification['kind'],
+  history: ColumnClassification['history'],
+): ColumnClassification => ({
+  sensitivity: 'confidential',
+  categories: ['financial'],
+  kind,
+  retention: 'canonical_lifecycle',
+  history,
+});
 const CV: Retention = 'configuration_version';
 const CL: Retention = 'canonical_lifecycle';
 const SA: Retention = 'security_audit';
@@ -1831,6 +1856,10 @@ export const CLASSIFICATION_MANIFEST: Readonly<
     account_hierarchy_connection_id: op('reference', CV),
     // M10E (Q16): who may write account contexts.
     account_context_connection_id: op('reference', CV),
+    // M10F (Q24): who may write price offers, contracts and entitlements.
+    price_offer_connection_id: op('reference', CV),
+    contract_connection_id: op('reference', CV),
+    entitlement_connection_id: op('reference', CV),
     content_hash: {
       sensitivity: 'internal',
       categories: ['operational'],
@@ -2647,6 +2676,45 @@ export const CLASSIFICATION_MANIFEST: Readonly<
       retention: 'canonical_lifecycle',
       history: 'full',
     },
+    // M10F (Core, E3 §4.1; plan §7): the source header the line belongs to — an attribute,
+    // change log only (no value history).
+    agreement_ref_system: {
+      sensitivity: 'internal',
+      categories: ['commercial'],
+      kind: 'code',
+      retention: 'canonical_lifecycle',
+      history: 'none',
+    },
+    agreement_ref_object_type: {
+      sensitivity: 'internal',
+      categories: ['commercial'],
+      kind: 'reference',
+      retention: 'canonical_lifecycle',
+      history: 'none',
+    },
+    agreement_ref_external_id: {
+      sensitivity: 'internal',
+      categories: ['commercial'],
+      kind: 'reference',
+      retention: 'canonical_lifecycle',
+      history: 'none',
+    },
+    // M10F (plan §9): the line's contract and price offer (full value history); its predecessor.
+    contract_id: {
+      sensitivity: 'internal',
+      categories: ['operational'],
+      kind: 'reference',
+      retention: 'canonical_lifecycle',
+      history: 'full',
+    },
+    price_offer_id: {
+      sensitivity: 'internal',
+      categories: ['operational'],
+      kind: 'reference',
+      retention: 'canonical_lifecycle',
+      history: 'full',
+    },
+    supersedes_line_id: op('reference', CL),
   },
   tenant_sync_checkpoints: {
     tenant_id: {
@@ -3586,6 +3654,60 @@ export const CLASSIFICATION_MANIFEST: Readonly<
     revoked_by_kind: op('code', CV),
     revoked_by_id: operatorId(CV),
     revoked_by_assurance: op('code', CV),
+  },
+  // M10F (plan §7): price offers. The list amount is financial ⇒ confidential (category
+  // floor) and declared value_free: its history records who / when, never the amount (Q18).
+  tenant_price_offers: {
+    tenant_id: op('identifier', CL),
+    id: op('identifier', CL),
+    product_key: commercialFact('reference', 'none'),
+    currency: commercialFact('code', 'none'),
+    billing_period: commercialFact('number', 'none'),
+    billing_period_unit: commercialFact('code', 'none'),
+    pricing_model: commercialFact('code', 'none'),
+    list_amount_minor: financialFact('number', 'value_free'),
+    status: commercialFact('code', 'full'),
+    record_state: op('code', CL),
+    last_change_id: op('reference', CL),
+    created_at: op('timestamp', CL),
+    updated_at: op('timestamp', CL),
+  },
+  // M10F (plan §7): contracts. Total value (amount and currency) and renewal date are
+  // financial ⇒ confidential; renewal date history is value-free (Q18). Links are ids.
+  tenant_contracts: {
+    tenant_id: op('identifier', CL),
+    id: op('identifier', CL),
+    company_id: op('reference', CL),
+    context_id: op('reference', CL),
+    starts_at: commercialFact('timestamp', 'full'),
+    ends_at: commercialFact('timestamp', 'full'),
+    renewal_date: financialFact('timestamp', 'value_free'),
+    auto_renew: commercialFact('boolean', 'none'),
+    status: commercialFact('code', 'full'),
+    total_value_minor: financialFact('number', 'none'),
+    total_value_currency: financialFact('code', 'none'),
+    renews_contract_id: op('reference', CL),
+    amends_contract_id: op('reference', CL),
+    parent_contract_id: op('reference', CL),
+    record_state: op('code', CL),
+    last_change_id: op('reference', CL),
+    created_at: op('timestamp', CL),
+    updated_at: op('timestamp', CL),
+  },
+  // M10F (plan §7): entitlements (informational; E3 §13 fields only).
+  tenant_entitlements: {
+    tenant_id: op('identifier', CL),
+    id: op('identifier', CL),
+    company_id: op('reference', CL),
+    product_key: commercialFact('reference', 'none'),
+    quantity: commercialFact('number', 'none'),
+    status: commercialFact('code', 'full'),
+    starts_at: commercialFact('timestamp', 'full'),
+    ends_at: commercialFact('timestamp', 'full'),
+    record_state: op('code', CL),
+    last_change_id: op('reference', CL),
+    created_at: op('timestamp', CL),
+    updated_at: op('timestamp', CL),
   },
 };
 

@@ -25,7 +25,11 @@ export interface ChangeWrite {
     | 'custom_relationship'
     // M10E (Q24): account contexts and their person memberships.
     | 'account_context'
-    | 'account_context_person';
+    | 'account_context_person'
+    // M10F (Q25): commercial entities (links and line references are field changes).
+    | 'price_offer'
+    | 'contract'
+    | 'entitlement';
   /** Exactly one of `entityId` / `entityKey` (products are key-identified, M10B). */
   readonly entityId: string;
   readonly changeType:

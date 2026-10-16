@@ -100,6 +100,14 @@ export const AUDIT_ACTIONS = [
   // M10E hardening #90
   'capability.grant',
   'capability.revoke',
+  // M10F (plan §16)
+  'commercial.price_offer.write',
+  'commercial.contract.write',
+  'commercial.contract.link',
+  'commercial.entitlement.write',
+  'commercial.line.reference',
+  'commercial.release',
+  'commercial.read',
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -204,6 +212,10 @@ export const AUDIT_TARGET_KINDS = [
   'account_context',
   // M10E hardening #90
   'capability_grant',
+  // M10F
+  'price_offer',
+  'contract',
+  'entitlement',
 ] as const;
 export type AuditTargetKind = (typeof AUDIT_TARGET_KINDS)[number];
 

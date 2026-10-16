@@ -86,6 +86,20 @@ export const EXTENSION_TARGET_KINDS = [
   'custom_record',
   // M10E (0.5, Q19)
   'account_context',
+  // M10F (0.6, Q21): value / relationship CHECKs and catalogue; definitions naming them arrive with phase 2.
+  'price_offer',
+  'contract',
+  'entitlement',
+] as const;
+/** The extension target kinds published with canonical 0.5 (frozen for its catalogue hash). */
+export const EXTENSION_TARGET_KINDS_0_5 = [
+  'company',
+  'person',
+  'subscription',
+  'product',
+  'person_affiliation',
+  'custom_record',
+  'account_context',
 ] as const;
 /** The extension target kinds published with canonical 0.4 (frozen for its catalogue hash). */
 export const EXTENSION_TARGET_KINDS_0_4 = [
@@ -193,6 +207,10 @@ export const IDENTITY_CONFLICT_ENTITY_KINDS = [
   'custom_record',
   // M10E (plan §3.5): account-context data-quality issues name the context.
   'account_context',
+  // M10F (plan §3.5): commercial data-quality issues name the offer, contract or entitlement.
+  'price_offer',
+  'contract',
+  'entitlement',
 ] as const;
 
 /** `changed_fields` / value-history token of an extension field (Q23, Q24). */

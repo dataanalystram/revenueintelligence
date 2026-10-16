@@ -64,7 +64,9 @@ export const CANONICAL_VERSIONS: readonly CanonicalVersionEntry[] = [
   // M10D (ADR 0030): extension framework (registry, typed values, custom objects / relationships).
   { version: '0.4', status: 'supported', adr: '0030' },
   // M10E (ADR 0031): AccountContext (context types, contexts, memberships, line context).
-  { version: '0.5', status: 'current', adr: '0031' },
+  { version: '0.5', status: 'supported', adr: '0031' },
+  // M10F (ADR 0032): Commercial (price offers, contracts and links, entitlements, line references).
+  { version: '0.6', status: 'current', adr: '0032' },
 ];
 
 /**
@@ -84,6 +86,14 @@ export const CANONICAL_VERSION_FEATURES: Readonly<Record<string, readonly string
     'source_attribute_capture',
   ],
   '0.5': ['account_context', 'context_type_registry', 'context_membership', 'line_context'],
+  '0.6': [
+    'agreement_ref',
+    'price_offer',
+    'contract',
+    'contract_links',
+    'entitlement',
+    'line_commercial_refs',
+  ],
 };
 
 /** Features enabled by versions in (from, to] when moving forward, or withdrawn when moving back. */
@@ -137,6 +147,15 @@ export interface CanonicalCatalogue {
   /** M10E (0.5): optional members, hashed only when present, so 0.1–0.4 hashes are unchanged. */
   readonly mappingEntities?: readonly string[];
   readonly registryKinds?: readonly string[];
+  /** M10F (0.6): the closed commercial vocabularies (plan §2), hashed only when present. */
+  readonly commercial?: {
+    readonly pricingModels: readonly string[];
+    readonly billingPeriodUnits: readonly string[];
+    readonly priceOfferStatuses: readonly string[];
+    readonly contractStatuses: readonly string[];
+    readonly contractLinkKinds: readonly string[];
+    readonly entitlementStatuses: readonly string[];
+  };
 }
 
 /**
@@ -169,6 +188,16 @@ export function canonicalCatalogueHash(catalogue: CanonicalCatalogue): string {
     mappingEntryKinds: sorted(catalogue.mappingEntryKinds),
     mappingEntities: sorted(catalogue.mappingEntities),
     registryKinds: sorted(catalogue.registryKinds),
+    commercial: catalogue.commercial
+      ? {
+          pricingModels: sorted(catalogue.commercial.pricingModels),
+          billingPeriodUnits: sorted(catalogue.commercial.billingPeriodUnits),
+          priceOfferStatuses: sorted(catalogue.commercial.priceOfferStatuses),
+          contractStatuses: sorted(catalogue.commercial.contractStatuses),
+          contractLinkKinds: sorted(catalogue.commercial.contractLinkKinds),
+          entitlementStatuses: sorted(catalogue.commercial.entitlementStatuses),
+        }
+      : undefined,
   });
 }
 

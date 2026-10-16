@@ -18,6 +18,10 @@ export const GENERIC_REFERENCE_KINDS = [
   'custom_record',
   // M10E (0.5): an account context's source id (Gainsight Relationship, plan §5.1).
   'account_context',
+  // M10F (0.6): price offer, contract and entitlement source ids (resolution target, plan §6.3).
+  'price_offer',
+  'contract',
+  'entitlement',
 ] as const;
 /** The generic reference kinds published with canonical 0.2 (frozen for its catalogue hash). */
 export const GENERIC_REFERENCE_KINDS_0_2 = ['product'] as const;
@@ -28,6 +32,13 @@ export const GENERIC_REFERENCE_KINDS_0_4 = [
   'product',
   'person_affiliation',
   'custom_record',
+] as const;
+/** The generic reference kinds published with canonical 0.5 (frozen for its catalogue hash). */
+export const GENERIC_REFERENCE_KINDS_0_5 = [
+  'product',
+  'person_affiliation',
+  'custom_record',
+  'account_context',
 ] as const;
 export type GenericReferenceKind = (typeof GENERIC_REFERENCE_KINDS)[number];
 

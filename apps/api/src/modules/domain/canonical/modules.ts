@@ -5,7 +5,7 @@ import { compareCanonicalVersion } from './versions';
  * (Account, hierarchy, Person, affiliation, Product, Subscription line,
  * references, provenance) is not a module. All nine are unavailable in M10A2
  * (Q16); each later sub-milestone's migration makes its module available at
- * the MINOR it publishes (M10D: `extension` at 0.4; M10E: `account_context` at 0.5). The schema guard keeps `canonical_modules` equal to
+ * the MINOR it publishes (M10D: `extension` at 0.4; M10E: `account_context` at 0.5; M10F: `commercial` at 0.6). The schema guard keeps `canonical_modules` equal to
  * this catalogue.
  */
 export const MODULE_KEYS = [
@@ -58,7 +58,17 @@ export const CANONICAL_MODULES: readonly CanonicalModuleEntry[] = [
     configSchemaVersion: 1,
     entityKinds: ['account_context'],
   },
-  unavailable('commercial', 'Commercial'),
+  // M10F (ADR 0032): available at 0.6; price offers, contracts and entitlements belong to it
+  // (plan §11). depends_on stays [] (a contract's context_id additionally needs account_context, Q13).
+  {
+    key: 'commercial',
+    title: 'Commercial',
+    available: true,
+    minimumCanonicalVersion: '0.6',
+    dependsOn: [],
+    configSchemaVersion: 1,
+    entityKinds: ['price_offer', 'contract', 'entitlement'],
+  },
   unavailable('signals', 'Signals', ['account_context']),
   unavailable('opportunities', 'Opportunities', ['commercial']),
   unavailable('decision_chain', 'Decision chain', ['opportunities']),

@@ -9,6 +9,7 @@ import {
   CHANGE_ENTITY_KINDS_0_2,
   CHANGE_ENTITY_KINDS_0_3,
   CHANGE_ENTITY_KINDS_0_4,
+  CHANGE_ENTITY_KINDS_0_5,
   CHANGE_ORIGINS,
   CHANGE_TYPES,
 } from './change-record';
@@ -17,13 +18,16 @@ import {
   ENTITY_INDEX_KINDS_0_1,
   ENTITY_INDEX_KINDS_0_3,
   ENTITY_INDEX_KINDS_0_4,
+  ENTITY_INDEX_KINDS_0_5,
 } from './entity-index';
+import { COMMERCIAL_LINE_MAPPING_TARGETS, COMMERCIAL_VOCABULARIES } from './commercial';
 import { EVIDENCE_ROLES, EVIDENCE_TYPES } from './evidence';
 import {
   EXTENSION_ALLOWED_USES,
   EXTENSION_MAPPING_ENTRY_KINDS,
   EXTENSION_TARGET_KINDS,
   EXTENSION_TARGET_KINDS_0_4,
+  EXTENSION_TARGET_KINDS_0_5,
   EXTENSION_VALUE_TYPES,
 } from './extension';
 import { MODULE_KEYS } from './modules';
@@ -32,8 +36,9 @@ import {
   GENERIC_REFERENCE_KINDS_0_2,
   GENERIC_REFERENCE_KINDS_0_3,
   GENERIC_REFERENCE_KINDS_0_4,
+  GENERIC_REFERENCE_KINDS_0_5,
 } from './source-reference';
-import { AVAILABLE_REGISTRY_KINDS } from './registry';
+import { REGISTRY_KINDS_0_5 } from './registry';
 import type { CanonicalCatalogue } from './versions';
 
 /**
@@ -86,13 +91,45 @@ export const MAPPING_ENTITIES_0_5 = [
 ] as const;
 
 /**
+ * The authority facts published with canonical 0.6 (the 0.5 facts plus the
+ * optional `price_offer`, `contract` and `entitlement`, M10F plan §6.4, Q24). Frozen.
+ */
+export const AUTHORITY_FACTS_0_6 = [
+  ...AUTHORITY_FACTS_0_5,
+  'price_offer',
+  'contract',
+  'entitlement',
+] as const;
+
+/**
+ * The mapping entities published with canonical 0.6 (the 0.5 entities plus the
+ * M10F blocks `price_offer` / `contract` / `entitlement`, plan §6.1). Frozen.
+ */
+export const MAPPING_ENTITIES_0_6 = [
+  ...MAPPING_ENTITIES_0_5,
+  'price_offer',
+  'contract',
+  'entitlement',
+] as const;
+
+/**
+ * The mapping targets published with canonical 0.6: the 0.3 list (unchanged
+ * through 0.5) plus the M10F line targets `subscription.agreement` /
+ * `.priceOfferRef` / `.supersedesRef` (plan §6.2). Frozen.
+ */
+export const MAPPING_TARGETS_0_6 = [...MAPPING_TARGETS_0_3, ...COMMERCIAL_LINE_MAPPING_TARGETS] as const;
+
+/**
  * The catalogue each published canonical version is tied to (its
  * `catalogue_hash` input). 0.1 (ADR 0027) is the M10A2 vocabulary; 0.2
  * (ADR 0028) adds the M10B members; 0.3 (ADR 0029) adds `person_affiliation`
  * to the kind lists and the M10C members; 0.4 (ADR 0030) adds `custom_record`
  * (and the change entity kind `custom_relationship`) and the M10D members; 0.5 (ADR 0031) adds
  * `account_context` (and the change entity kind `account_context_person`), the authority fact,
- * mapping entity, extension target and registry kind of M10E. A version's catalogue never changes
+ * mapping entity, extension target and registry kind of M10E; 0.6 (ADR 0032) adds `price_offer`,
+ * `contract` and `entitlement` (kinds, generic references, extension targets), their authority facts and
+ * mapping entities, the three line mapping targets and the closed commercial vocabularies of M10F. A
+ * version's catalogue never changes
  * once published: earlier versions read frozen lists, and the schema guard
  * recomputes every stored hash from this function.
  */
@@ -120,19 +157,36 @@ export function canonicalCatalogueFor(version: string): CanonicalCatalogue {
     case '0.4':
       return catalogue0_4(base);
     case '0.5':
+      return catalogue0_5(base);
+    case '0.6':
       return {
-        ...catalogue0_4(base),
+        ...catalogue0_5(base),
         entityKinds: ENTITY_INDEX_KINDS,
         changeEntityKinds: CHANGE_ENTITY_KINDS,
         genericReferenceKinds: GENERIC_REFERENCE_KINDS,
         extensionTargets: EXTENSION_TARGET_KINDS,
-        authorityFacts: AUTHORITY_FACTS_0_5,
-        mappingEntities: MAPPING_ENTITIES_0_5,
-        registryKinds: AVAILABLE_REGISTRY_KINDS,
+        authorityFacts: AUTHORITY_FACTS_0_6,
+        mappingEntities: MAPPING_ENTITIES_0_6,
+        mappingTargets: MAPPING_TARGETS_0_6,
+        commercial: COMMERCIAL_VOCABULARIES,
       };
     default:
       throw new Error(`no catalogue for canonical version ${version}`);
   }
+}
+
+/** The 0.5 catalogue from frozen lists only (M10F: the kind lists grew after 0.5 was published). */
+function catalogue0_5(base: CanonicalCatalogue): CanonicalCatalogue {
+  return {
+    ...catalogue0_4(base),
+    entityKinds: ENTITY_INDEX_KINDS_0_5,
+    changeEntityKinds: CHANGE_ENTITY_KINDS_0_5,
+    genericReferenceKinds: GENERIC_REFERENCE_KINDS_0_5,
+    extensionTargets: EXTENSION_TARGET_KINDS_0_5,
+    authorityFacts: AUTHORITY_FACTS_0_5,
+    mappingEntities: MAPPING_ENTITIES_0_5,
+    registryKinds: REGISTRY_KINDS_0_5,
+  };
 }
 
 /** The 0.4 catalogue from frozen lists only (M10E: the kind lists grew after 0.4 was published). */

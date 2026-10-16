@@ -75,6 +75,9 @@ model Tenant {
   contextProducts      TenantAccountContextProduct[]
   capabilityGrants     TenantCapabilityGrant[]
   customObjectOwners   TenantCustomObjectOwner[]
+  priceOffers          TenantPriceOffer[]
+  contracts            TenantContract[]
+  entitlements         TenantEntitlement[]
 
   @@unique([id, slug])
   @@map("tenants")
@@ -95,9 +98,11 @@ model ConnectorKind {
   sourceRelationships TenantSourceRelationship[]
   deadLetters         TenantDeadLetter[]
   syncCheckpoints     TenantSyncCheckpoint[]
-  subscriptions       TenantSubscription[]
+  subscriptions       TenantSubscription[]       @relation("SubscriptionSource")
   sourceConnections   TenantSourceConnection[]
   sourceReferences    TenantSourceReference[]
+  /// M10F: lines whose agreement_ref names a header record of this kind
+  agreementLines      TenantSubscription[]       @relation("SubscriptionAgreementSource")
 
   @@map("connector_kinds")
 }
@@ -286,6 +291,8 @@ model TenantProduct {
   subscriptions   TenantSubscription[]
   snapshots       TenantEligibilitySnapshot[]
   contextProducts TenantAccountContextProduct[]
+  priceOffers     TenantPriceOffer[]
+  entitlements    TenantEntitlement[]
 
   @@id([tenantId, key])
   @@map("tenant_products")
@@ -314,42 +321,62 @@ model TenantProductModel {
 
 /// One source subscription line (ADR 0017). Ownership is derived, never stored.
 model TenantSubscription {
-  tenantId         String    @map("tenant_id") @db.Uuid
-  id               String    @db.Uuid
-  companyId        String    @map("company_id") @db.Uuid
-  productKey       String    @map("product_key")
+  tenantId               String    @map("tenant_id") @db.Uuid
+  id                     String    @db.Uuid
+  companyId              String    @map("company_id") @db.Uuid
+  productKey             String    @map("product_key")
   /// active | trial | expired | cancelled | unknown
-  state            String
-  startsAt         DateTime? @map("starts_at") @db.Timestamptz(3)
-  endsAt           DateTime? @map("ends_at") @db.Timestamptz(3)
-  quantity         Int?
-  sourceSystem     String    @map("source_system")
-  sourceObjectType String    @map("source_object_type")
-  sourceRecordId   String    @map("source_record_id")
+  state                  String
+  startsAt               DateTime? @map("starts_at") @db.Timestamptz(3)
+  endsAt                 DateTime? @map("ends_at") @db.Timestamptz(3)
+  quantity               Int?
+  sourceSystem           String    @map("source_system")
+  sourceObjectType       String    @map("source_object_type")
+  sourceRecordId         String    @map("source_record_id")
   /// active | deleted (source tombstone)
-  recordState      String    @default("active") @map("record_state")
-  sourceUpdatedAt  DateTime? @map("source_updated_at") @db.Timestamptz(3)
-  observedAt       DateTime  @map("observed_at") @db.Timestamptz(3)
-  deletedAt        DateTime? @map("deleted_at") @db.Timestamptz(3)
+  recordState            String    @default("active") @map("record_state")
+  sourceUpdatedAt        DateTime? @map("source_updated_at") @db.Timestamptz(3)
+  observedAt             DateTime  @map("observed_at") @db.Timestamptz(3)
+  deletedAt              DateTime? @map("deleted_at") @db.Timestamptz(3)
   /// SHA-256 of the source-provided values only (never the resolved company)
-  fieldHash        String?   @map("field_hash")
-  firstSeenAt      DateTime  @default(now()) @map("first_seen_at") @db.Timestamptz(3)
-  lastSeenAt       DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(3)
-  lastChangeId     String?   @map("last_change_id") @db.Uuid
+  fieldHash              String?   @map("field_hash")
+  firstSeenAt            DateTime  @default(now()) @map("first_seen_at") @db.Timestamptz(3)
+  lastSeenAt             DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(3)
+  lastChangeId           String?   @map("last_change_id") @db.Uuid
   /// M10E: the line's account context (0..1; same account, guard trigger; NULL = none)
-  contextId        String?   @map("context_id") @db.Uuid
+  contextId              String?   @map("context_id") @db.Uuid
+  /// M10F (Core, E3 §4.1): the source header record the line belongs to — an attribute, never an
+  /// identity or a source reference; all three or none (CHECK)
+  agreementRefSystem     String?   @map("agreement_ref_system")
+  agreementRefObjectType String?   @map("agreement_ref_object_type")
+  agreementRefExternalId String?   @map("agreement_ref_external_id")
+  /// M10F: the line's contract (0..1; same account, deferred guard; module commercial)
+  contractId             String?   @map("contract_id") @db.Uuid
+  /// M10F: the line's price offer (0..1; same product, deferred guard; module commercial)
+  priceOfferId           String?   @map("price_offer_id") @db.Uuid
+  /// M10F: the line this line replaces (0..1; same account, acyclic, guard triggers)
+  supersedesLineId       String?   @map("supersedes_line_id") @db.Uuid
 
-  tenant  Tenant                @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  company Company               @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
-  product TenantProduct         @relation(fields: [tenantId, productKey], references: [tenantId, key], onDelete: Restrict, onUpdate: Restrict)
-  source  ConnectorKind         @relation(fields: [sourceSystem], references: [kind], onDelete: Restrict, onUpdate: Restrict)
-  context TenantAccountContext? @relation(fields: [tenantId, contextId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  tenant          Tenant                @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  company         Company               @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  product         TenantProduct         @relation(fields: [tenantId, productKey], references: [tenantId, key], onDelete: Restrict, onUpdate: Restrict)
+  source          ConnectorKind         @relation("SubscriptionSource", fields: [sourceSystem], references: [kind], onDelete: Restrict, onUpdate: Restrict)
+  context         TenantAccountContext? @relation(fields: [tenantId, contextId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  agreementSource ConnectorKind?        @relation("SubscriptionAgreementSource", fields: [agreementRefSystem], references: [kind], onDelete: Restrict, onUpdate: Restrict, map: "tenant_subscriptions_agreement_ref_system_fkey")
+  contract        TenantContract?       @relation(fields: [tenantId, contractId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "tenant_subscriptions_tenant_id_contract_id_fkey")
+  priceOffer      TenantPriceOffer?     @relation(fields: [tenantId, priceOfferId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "tenant_subscriptions_tenant_id_price_offer_id_fkey")
+  supersedes      TenantSubscription?   @relation("SubscriptionSupersedes", fields: [tenantId, supersedesLineId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "tenant_subscriptions_tenant_id_supersedes_line_id_fkey")
+  supersededBy    TenantSubscription[]  @relation("SubscriptionSupersedes")
 
   @@id([tenantId, id])
   @@unique([tenantId, sourceSystem, sourceObjectType, sourceRecordId])
   @@index([tenantId, companyId])
   @@index([tenantId, productKey])
   @@index([tenantId, contextId])
+  @@index([tenantId, contractId], map: "tenant_subscriptions_tenant_id_contract_id_idx")
+  @@index([tenantId, priceOfferId], map: "tenant_subscriptions_tenant_id_price_offer_id_idx")
+  @@index([tenantId, supersedesLineId], map: "tenant_subscriptions_tenant_id_supersedes_line_id_idx")
+  @@index([tenantId, agreementRefSystem, agreementRefObjectType, agreementRefExternalId], map: "tenant_subscriptions_agreement_ref_idx")
   @@map("tenant_subscriptions")
 }
 
@@ -424,6 +451,8 @@ model Company {
   persons            Person[]
   ownershipGaps      TenantOwnershipGap[]
   accountContexts    TenantAccountContext[]
+  contracts          TenantContract[]
+  entitlements       TenantEntitlement[]
 
   @@unique([tenantId, id])
   @@index([tenantId, name])
@@ -578,6 +607,9 @@ model TenantContextChange {
   customRelationships TenantCustomRelationship[]
   accountContexts     TenantAccountContext[]
   contextPersons      TenantAccountContextPerson[]
+  priceOffers         TenantPriceOffer[]           @relation("PriceOfferLastChange")
+  contracts           TenantContract[]             @relation("ContractLastChange")
+  entitlements        TenantEntitlement[]          @relation("EntitlementLastChange")
   source              ConnectorKind                @relation(fields: [sourceSystem], references: [kind], onDelete: Restrict, onUpdate: Restrict)
   connection          TenantSourceConnection?      @relation(fields: [tenantId, sourceConnectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
   mapping             TenantSourceMappingVersion?  @relation(fields: [tenantId, sourceConnectionId, mappingVersion], references: [tenantId, connectionId, version], onDelete: Restrict, onUpdate: Restrict)
@@ -810,6 +842,9 @@ model TenantSourceConnection {
   authoritySubscriptionTerms TenantSourceAuthorityVersion[] @relation("AuthoritySubscriptionTerms")
   authorityAccountHierarchy  TenantSourceAuthorityVersion[] @relation("AuthorityAccountHierarchy")
   authorityAccountContext    TenantSourceAuthorityVersion[] @relation("AuthorityAccountContext")
+  authorityPriceOffer        TenantSourceAuthorityVersion[] @relation("AuthorityPriceOffer")
+  authorityContract          TenantSourceAuthorityVersion[] @relation("AuthorityContract")
+  authorityEntitlement       TenantSourceAuthorityVersion[] @relation("AuthorityEntitlement")
   extensionValues            TenantExtensionValue[]
   customRelationships        TenantCustomRelationship[]
   customObjectOwners         TenantCustomObjectOwner[]
@@ -886,6 +921,10 @@ model TenantSourceAuthorityVersion {
   accountHierarchyConnectionId  String?  @map("account_hierarchy_connection_id") @db.Uuid
   /// M10E: the connection that may write account contexts (NULL = nobody)
   accountContextConnectionId    String?  @map("account_context_connection_id") @db.Uuid
+  /// M10F: the connections that may write price offers / contracts / entitlements (NULL = nobody)
+  priceOfferConnectionId        String?  @map("price_offer_connection_id") @db.Uuid
+  contractConnectionId          String?  @map("contract_connection_id") @db.Uuid
+  entitlementConnectionId       String?  @map("entitlement_connection_id") @db.Uuid
   contentHash                   String   @map("content_hash")
   /// M9A: operator acceptances of adapter-declared stable_snapshot proofs (ADR 0023)
   proofAcceptances              Json     @default("[]") @map("proof_acceptances")
@@ -900,6 +939,9 @@ model TenantSourceAuthorityVersion {
   subscriptionTerms TenantSourceConnection?      @relation("AuthoritySubscriptionTerms", fields: [tenantId, subscriptionTermsConnectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
   accountHierarchy  TenantSourceConnection?      @relation("AuthorityAccountHierarchy", fields: [tenantId, accountHierarchyConnectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
   accountContext    TenantSourceConnection?      @relation("AuthorityAccountContext", fields: [tenantId, accountContextConnectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  priceOffer        TenantSourceConnection?      @relation("AuthorityPriceOffer", fields: [tenantId, priceOfferConnectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "tenant_source_authority_versions_tenant_id_price_offer_fkey")
+  contract          TenantSourceConnection?      @relation("AuthorityContract", fields: [tenantId, contractConnectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "tenant_source_authority_versions_tenant_id_contract_fkey")
+  entitlement       TenantSourceConnection?      @relation("AuthorityEntitlement", fields: [tenantId, entitlementConnectionId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "tenant_source_authority_versions_tenant_id_entitlement_fkey")
   mappingVersions   TenantSourceMappingVersion[]
 
   @@id([tenantId, version])
@@ -1781,6 +1823,7 @@ model TenantAccountContext {
   persons       TenantAccountContextPerson[]
   products      TenantAccountContextProduct[]
   subscriptions TenantSubscription[]
+  contracts     TenantContract[]
 
   @@id([tenantId, id])
   @@index([tenantId, companyId])
@@ -1884,4 +1927,119 @@ model TenantCapabilityGrant {
 
   @@id([tenantId, actorKind, actorId, capability])
   @@map("tenant_capability_grants")
+}
+
+/// M10F (ADR 0032): a price offer — the commercial terms a product is sold at
+/// (E3 §13). Platform UUID plus generic source references; no natural key (Q5).
+/// product_key is immutable once a line references the offer (Q10). Offers
+/// retire, never disappear (no DELETE grant). Never read by ownership (plan §13).
+model TenantPriceOffer {
+  tenantId          String   @map("tenant_id") @db.Uuid
+  id                String   @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  productKey        String   @map("product_key")
+  /// ISO 4217 shape (CHECK ^[A-Z]{3}$), not a list
+  currency          String
+  /// paired with billing_period_unit (both or neither)
+  billingPeriod     Int?     @map("billing_period")
+  /// day | week | month | year
+  billingPeriodUnit String?  @map("billing_period_unit")
+  /// flat | per_unit | tiered | volume | usage
+  pricingModel      String?  @map("pricing_model")
+  /// minor currency units (confidential / financial; value-free history)
+  listAmountMinor   BigInt?  @map("list_amount_minor")
+  /// active | retired
+  status            String   @default("active")
+  /// active (no merge in M10F)
+  recordState       String   @default("active") @map("record_state")
+  lastChangeId      String?  @map("last_change_id") @db.Uuid
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  tenant        Tenant               @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "tenant_price_offers_tenant_id_fkey")
+  product       TenantProduct        @relation(fields: [tenantId, productKey], references: [tenantId, key], onDelete: Restrict, onUpdate: Restrict, map: "tenant_price_offers_tenant_id_product_key_fkey")
+  lastChange    TenantContextChange? @relation("PriceOfferLastChange", fields: [tenantId, lastChangeId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "tenant_price_offers_tenant_id_last_change_id_fkey")
+  subscriptions TenantSubscription[]
+
+  @@id([tenantId, id], map: "tenant_price_offers_pkey")
+  @@index([tenantId, productKey], map: "tenant_price_offers_tenant_id_product_key_idx")
+  @@map("tenant_price_offers")
+}
+
+/// M10F (ADR 0032): a contract header (E3 §13) of one account, with three
+/// Contract → Contract links as columns (Q6: 0..1 of each, structural), acyclic
+/// over their union and same-account (guard triggers). Contracts change status,
+/// never disappear (no DELETE grant); a status change never cascades to lines.
+model TenantContract {
+  tenantId           String    @map("tenant_id") @db.Uuid
+  id                 String    @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  companyId          String    @map("company_id") @db.Uuid
+  /// optional account context (module account_context; same account, deferred guard)
+  contextId          String?   @map("context_id") @db.Uuid
+  startsAt           DateTime? @map("starts_at") @db.Timestamptz(3)
+  endsAt             DateTime? @map("ends_at") @db.Timestamptz(3)
+  /// confidential / financial; value-free history
+  renewalDate        DateTime? @map("renewal_date") @db.Date
+  autoRenew          Boolean?  @map("auto_renew")
+  /// draft | active | expired | terminated | unknown
+  status             String    @default("unknown")
+  /// money pair with total_value_currency (both or neither); confidential / financial
+  totalValueMinor    BigInt?   @map("total_value_minor")
+  totalValueCurrency String?   @map("total_value_currency")
+  renewsContractId   String?   @map("renews_contract_id") @db.Uuid
+  amendsContractId   String?   @map("amends_contract_id") @db.Uuid
+  parentContractId   String?   @map("parent_contract_id") @db.Uuid
+  /// active (no contract merge in M10F, Q14)
+  recordState        String    @default("active") @map("record_state")
+  lastChangeId       String?   @map("last_change_id") @db.Uuid
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  tenant        Tenant                @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "tenant_contracts_tenant_id_fkey")
+  company       Company               @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "tenant_contracts_tenant_id_company_id_fkey")
+  context       TenantAccountContext? @relation(fields: [tenantId, contextId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "tenant_contracts_tenant_id_context_id_fkey")
+  renews        TenantContract?       @relation("ContractRenews", fields: [tenantId, renewsContractId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "tenant_contracts_tenant_id_renews_contract_id_fkey")
+  renewedBy     TenantContract[]      @relation("ContractRenews")
+  amends        TenantContract?       @relation("ContractAmends", fields: [tenantId, amendsContractId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "tenant_contracts_tenant_id_amends_contract_id_fkey")
+  amendedBy     TenantContract[]      @relation("ContractAmends")
+  parent        TenantContract?       @relation("ContractParent", fields: [tenantId, parentContractId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "tenant_contracts_tenant_id_parent_contract_id_fkey")
+  children      TenantContract[]      @relation("ContractParent")
+  lastChange    TenantContextChange?  @relation("ContractLastChange", fields: [tenantId, lastChangeId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "tenant_contracts_tenant_id_last_change_id_fkey")
+  subscriptions TenantSubscription[]
+
+  @@id([tenantId, id], map: "tenant_contracts_pkey")
+  @@index([tenantId, companyId], map: "tenant_contracts_tenant_id_company_id_idx")
+  @@index([tenantId, contextId], map: "tenant_contracts_tenant_id_context_id_idx")
+  @@index([tenantId, renewsContractId], map: "tenant_contracts_tenant_id_renews_contract_id_idx")
+  @@index([tenantId, amendsContractId], map: "tenant_contracts_tenant_id_amends_contract_id_idx")
+  @@index([tenantId, parentContractId], map: "tenant_contracts_tenant_id_parent_contract_id_idx")
+  @@map("tenant_contracts")
+}
+
+/// M10F (ADR 0032): an entitlement (E3 §13 fields only) — informational: no
+/// reader in ownership or eligibility (plan §13). Never deleted (no DELETE grant).
+model TenantEntitlement {
+  tenantId     String    @map("tenant_id") @db.Uuid
+  id           String    @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  companyId    String    @map("company_id") @db.Uuid
+  productKey   String    @map("product_key")
+  quantity     Int?
+  /// active | inactive | expired | unknown
+  status       String    @default("unknown")
+  startsAt     DateTime? @map("starts_at") @db.Timestamptz(3)
+  endsAt       DateTime? @map("ends_at") @db.Timestamptz(3)
+  /// active (no merge in M10F)
+  recordState  String    @default("active") @map("record_state")
+  lastChangeId String?   @map("last_change_id") @db.Uuid
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  tenant     Tenant               @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "tenant_entitlements_tenant_id_fkey")
+  company    Company              @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "tenant_entitlements_tenant_id_company_id_fkey")
+  product    TenantProduct        @relation(fields: [tenantId, productKey], references: [tenantId, key], onDelete: Restrict, onUpdate: Restrict, map: "tenant_entitlements_tenant_id_product_key_fkey")
+  lastChange TenantContextChange? @relation("EntitlementLastChange", fields: [tenantId, lastChangeId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "tenant_entitlements_tenant_id_last_change_id_fkey")
+
+  @@id([tenantId, id], map: "tenant_entitlements_pkey")
+  @@index([tenantId, companyId], map: "tenant_entitlements_tenant_id_company_id_idx")
+  @@index([tenantId, productKey], map: "tenant_entitlements_tenant_id_product_key_idx")
+  @@map("tenant_entitlements")
 }
