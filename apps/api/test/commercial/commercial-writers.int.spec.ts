@@ -465,7 +465,7 @@ describe('M10F commercial writers', () => {
       observeContract(t, account, 'dup'),
     ]);
     expect(out.map((o) => o.status).sort()).toEqual(['created', 'unchanged']);
-    expect(out[0]!.contractId).toBe(out[1]!.contractId);
+    expect(out[0].contractId).toBe(out[1].contractId);
     expect(
       await c.sql(`SELECT 1 FROM tenant_contracts WHERE tenant_id = $1`, [t.tenantId]),
     ).toHaveLength(1);
