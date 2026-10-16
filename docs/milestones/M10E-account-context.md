@@ -182,8 +182,11 @@ test fail (run 38825272654, PR #117). ADR 0031 addendum.
 | n4 down-script does not refuse on ordinary events stamped `policy_version = 7`                                                          | nit      | noted: consistent with earlier down-scripts (they refuse on new capabilities / actions only); rollback is dev / staging only                                                                                                                                                                                                                                                                                                                                                               |
 | n5 `account-context write --account --type --dim …` `created: true/false` is an oracle for confidential dimension values (pre-existing) | nit      | noted for M15 (operator write paths behind authenticated roles); out of #90's scope                                                                                                                                                                                                                                                                                                                                                                                                        |
 
-Mutation proof **VM3** (re-review m2): the extension read model skips the account-context confidential check →
-see the run below (`mut/m10e-h90-vm3`, PR closed unmerged, branch deleted).
+Mutation proof **VM3** (re-review m2): the extension read model skips the account-context confidential check (the
+`data.extension.read` context is reused and the values released) → **killed**: int
+`account-context-extension-confidential` › "refusal: …" fails (`promise resolved "[ …(9), …(9) ]" instead of
+rejecting`); run 38832570175, PR #119 (closed unmerged, branch `mut/m10e-h90-vm3` deleted). Locally the success and
+tenant-isolation tests fail too (3 failed / 2 passed).
 
 ## Known gaps / judgment calls
 
