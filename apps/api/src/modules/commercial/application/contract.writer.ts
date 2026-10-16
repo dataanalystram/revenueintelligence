@@ -482,7 +482,7 @@ export class ContractWriter {
 
   // --- Operator entry ------------------------------------------------------------------
 
-  @AuditFailures('commercial.contract.write', 'contract')
+  // MUTATION VM9b: @AuditFailures removed
   async write(
     actx: AuthorizedContext<'canonical.human_entry'>,
     input: OperatorContractWrite,
