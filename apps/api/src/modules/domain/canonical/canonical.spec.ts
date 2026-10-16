@@ -582,6 +582,48 @@ describe('value history decision (restricted history, control 12)', () => {
       });
     }
   });
+
+  it('M10F (Q18, VM16): a declared value_free history records no values, even when the policy would allow them', () => {
+    const financial = cls({
+      sensitivity: 'confidential',
+      categories: ['financial'],
+      kind: 'number',
+    });
+    for (const [entityKind, field] of [
+      ['contract', 'renewal_date'],
+      ['price_offer', 'list_amount_minor'],
+    ] as const) {
+      for (const [policyAllows, policyVersion] of [
+        [false, null],
+        [true, 3],
+      ] as const) {
+        expect(
+          decideValueHistory({
+            entityKind,
+            field,
+            classification: { ...financial, history: 'value_free' },
+            policyAllows,
+            policyVersion,
+          }),
+        ).toEqual({ record: true, valuesRecorded: false, retentionClass: 'canonical_lifecycle' });
+      }
+      // The declared policy is what decides: the same classification with full history records values.
+      expect(
+        decideValueHistory({
+          entityKind,
+          field,
+          classification: financial,
+          policyAllows: false,
+          policyVersion: null,
+        }),
+      ).toEqual({
+        record: true,
+        valuesRecorded: true,
+        retentionClass: 'canonical_lifecycle',
+        policyVersion: null,
+      });
+    }
+  });
 });
 
 describe('entity index, change records, lifecycle and integrity vocabulary', () => {
