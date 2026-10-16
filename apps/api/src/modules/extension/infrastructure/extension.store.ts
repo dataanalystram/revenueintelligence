@@ -4,6 +4,9 @@ import { Prisma } from '../../../generated/prisma/client';
 import {
   ACCOUNT_CONTEXT_MIN_VERSION,
   ACCOUNT_CONTEXT_MODULE_KEY,
+  COMMERCIAL_MIN_VERSION,
+  COMMERCIAL_MODULE_KEY,
+  EXTENSION_COMMERCIAL_TARGETS,
   compareCanonicalVersion,
   EXTENSION_MIN_VERSION,
   EXTENSION_MODULE_KEY,
@@ -272,17 +275,25 @@ export class ExtensionStore {
 
   /**
    * M10E (Q19): an `account_context` target additionally needs adopted ≥ 0.5
-   * and module `account_context` enabled; other targets pass.
+   * and module `account_context` enabled; M10F (Q21): a `price_offer` /
+   * `contract` / `entitlement` target needs adopted ≥ 0.6 and module
+   * `commercial`; other targets pass.
    */
   async targetGate(tx: TenantTransaction, target: ExtensionTarget): Promise<ExtensionGateState> {
-    if (target.kind !== 'account_context') return 'ok';
+    const gate =
+      target.kind === 'account_context'
+        ? { min: ACCOUNT_CONTEXT_MIN_VERSION, module: ACCOUNT_CONTEXT_MODULE_KEY }
+        : (EXTENSION_COMMERCIAL_TARGETS as readonly string[]).includes(target.kind)
+          ? { min: COMMERCIAL_MIN_VERSION, module: COMMERCIAL_MODULE_KEY }
+          : undefined;
+    if (!gate) return 'ok';
     const adopted = await adoptedCanonicalVersion(tx);
-    if (compareCanonicalVersion(adopted, ACCOUNT_CONTEXT_MIN_VERSION) < 0) {
+    if (compareCanonicalVersion(adopted, gate.min) < 0) {
       return 'canonical_version_too_low';
     }
     const setting = await tenantClient(tx).tenantModuleSetting.findUnique({
       where: {
-        tenantId_moduleKey: { tenantId: tx.tenantId, moduleKey: ACCOUNT_CONTEXT_MODULE_KEY },
+        tenantId_moduleKey: { tenantId: tx.tenantId, moduleKey: gate.module },
       },
       select: { enabled: true },
     });

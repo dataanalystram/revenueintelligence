@@ -72,7 +72,13 @@ export const EXTENSION_CANONICAL_TARGETS = {
   person_affiliation: 'person_affiliation',
   // M10E (Q19): a target from canonical 0.5 with module account_context enabled.
   account_context: 'account_context',
+  // M10F (Q21): targets from canonical 0.6 with module commercial enabled.
+  price_offer: 'price_offer',
+  contract: 'contract',
+  entitlement: 'entitlement',
 } as const;
+/** M10F (Q21): the definition targets / reference kinds that need canonical 0.6 and module `commercial`. */
+export const EXTENSION_COMMERCIAL_TARGETS = ['price_offer', 'contract', 'entitlement'] as const;
 export type ExtensionCanonicalTarget = keyof typeof EXTENSION_CANONICAL_TARGETS;
 export const EXTENSION_CUSTOM_OBJECT_PREFIX = 'custom_object:';
 
@@ -86,7 +92,7 @@ export const EXTENSION_TARGET_KINDS = [
   'custom_record',
   // M10E (0.5, Q19)
   'account_context',
-  // M10F (0.6, Q21): value / relationship CHECKs and catalogue; definitions naming them arrive with phase 2.
+  // M10F (0.6, Q21): value / relationship CHECKs and catalogue; definitions name them from phase 2b.
   'price_offer',
   'contract',
   'entitlement',

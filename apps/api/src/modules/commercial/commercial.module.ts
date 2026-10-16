@@ -3,6 +3,7 @@ import { GovernanceModule } from '../governance';
 import { TenancyModule } from '../tenancy';
 import { CommercialLineReferenceStep } from './application/commercial-line-reference.step';
 import { CommercialMergeParticipant } from './application/commercial-merge.participant';
+import { CommercialReadModel } from './application/commercial.read-model';
 import { CommercialSourceSync } from './application/commercial-source.sync';
 import { ContractWriter } from './application/contract.writer';
 import { EntitlementWriter } from './application/entitlement.writer';
@@ -16,7 +17,8 @@ import { CommercialStore } from './infrastructure/commercial.store';
  * by the context module (merge participant) and by the sources module
  * (`CommercialSourceSync`, phase 2b). Depends on domain, tenancy and governance
  * only; products (ownership, eligibility, whitespace, coverage) never import
- * it (plan §13; the dependency-cruiser rule arrives with phase 2b).
+ * it (plan §13; dependency-cruiser rule `commercial-never-feeds-ownership-or-eligibility`).
+ * `CommercialReadModel` serves the `commercial` CLI (plan §10).
  */
 @Module({
   imports: [TenancyModule, GovernanceModule],
@@ -28,6 +30,7 @@ import { CommercialStore } from './infrastructure/commercial.store';
     CommercialLineReferenceStep,
     CommercialMergeParticipant,
     CommercialSourceSync,
+    CommercialReadModel,
   ],
   exports: [
     PriceOfferWriter,
@@ -36,6 +39,7 @@ import { CommercialStore } from './infrastructure/commercial.store';
     CommercialLineReferenceStep,
     CommercialMergeParticipant,
     CommercialSourceSync,
+    CommercialReadModel,
   ],
 })
 export class CommercialModule {}

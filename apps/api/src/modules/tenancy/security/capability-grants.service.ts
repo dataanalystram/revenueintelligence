@@ -42,8 +42,9 @@ const isGrantableKind = (kind: string): boolean =>
 
 /**
  * M10E hardening #90 (ADR 0031 addendum): explicit, tenant-scoped grants of the
- * capabilities no actor kind holds by policy (GRANTABLE_CAPABILITIES — only
- * `data.account_context.read_confidential`). A grant names one operator id in one
+ * capabilities no actor kind holds by policy (GRANTABLE_CAPABILITIES —
+ * `data.account_context.read_confidential` and, from M10F (Q22),
+ * `data.commercial.read_confidential`). A grant names one operator id in one
  * tenant (forced RLS; the row carries the tenant). Grant and revoke need
  * `security.capability.grant`, write one audit event each (identifiers and codes
  * only) and refuse a self-grant, a non-grantable capability and a no-op. The
@@ -188,7 +189,7 @@ export class CapabilityGrants {
     if (!isGrantableCapability(input.capability)) {
       throw new CapabilityGrantRefusedError(
         'capability_not_grantable',
-        'Only data.account_context.read_confidential is granted explicitly',
+        'Only data.account_context.read_confidential and data.commercial.read_confidential are granted explicitly',
       );
     }
     // Throws InvalidActorError (validation_failed) for an id outside the pattern.

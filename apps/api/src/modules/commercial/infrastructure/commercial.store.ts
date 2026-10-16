@@ -679,6 +679,111 @@ export class CommercialStore {
     });
   }
 
+  // --- Read models (bounded; `take` = bound + 1 so callers flag truncation) -------------
+
+  async offersOfProducts(
+    tx: TenantTransaction,
+    productKeys: readonly string[],
+    take: number,
+  ): Promise<PriceOfferRow[]> {
+    if (productKeys.length === 0) return [];
+    const rows = await tenantClient(tx).tenantPriceOffer.findMany({
+      where: { tenantId: tx.tenantId, productKey: { in: [...new Set(productKeys)] } },
+      select: OFFER_SELECT,
+      orderBy: [{ productKey: 'asc' }, { id: 'asc' }],
+      take,
+    });
+    return rows.map(toOffer);
+  }
+
+  async contractsForRead(
+    tx: TenantTransaction,
+    companyIds: readonly string[],
+    scope: readonly string[] | undefined,
+    take: number,
+  ): Promise<ContractRow[]> {
+    if (companyIds.length === 0) return [];
+    const rows = await tenantClient(tx).tenantContract.findMany({
+      where: {
+        tenantId: tx.tenantId,
+        companyId: { in: [...new Set(companyIds)] },
+        ...(scope ? { id: { in: [...new Set(scope)] } } : {}),
+      },
+      select: CONTRACT_SELECT,
+      orderBy: [{ companyId: 'asc' }, { id: 'asc' }],
+      take,
+    });
+    return rows.map(toContract);
+  }
+
+  async entitlementsForRead(
+    tx: TenantTransaction,
+    companyIds: readonly string[],
+    take: number,
+  ): Promise<EntitlementRow[]> {
+    if (companyIds.length === 0) return [];
+    const rows = await tenantClient(tx).tenantEntitlement.findMany({
+      where: { tenantId: tx.tenantId, companyId: { in: [...new Set(companyIds)] } },
+      select: ENTITLEMENT_SELECT,
+      orderBy: [{ companyId: 'asc' }, { id: 'asc' }],
+      take,
+    });
+    return rows.map(toEntitlement);
+  }
+
+  /** Contracts whose renews / amends / parent link names `id` (incoming links). */
+  async contractsLinkingTo(
+    tx: TenantTransaction,
+    id: string,
+    take: number,
+  ): Promise<
+    {
+      id: string;
+      renewsContractId: string | null;
+      amendsContractId: string | null;
+      parentContractId: string | null;
+    }[]
+  > {
+    return tenantClient(tx).tenantContract.findMany({
+      where: {
+        tenantId: tx.tenantId,
+        OR: [{ renewsContractId: id }, { amendsContractId: id }, { parentContractId: id }],
+      },
+      select: { id: true, renewsContractId: true, amendsContractId: true, parentContractId: true },
+      orderBy: { id: 'asc' },
+      take,
+    });
+  }
+
+  async linesOfContract(
+    tx: TenantTransaction,
+    contractId: string,
+    take: number,
+  ): Promise<
+    {
+      id: string;
+      companyId: string;
+      productKey: string;
+      state: string;
+      priceOfferId: string | null;
+      supersedesLineId: string | null;
+    }[]
+  > {
+    return tenantClient(tx).tenantSubscription.findMany({
+      where: { tenantId: tx.tenantId, contractId },
+      select: {
+        id: true,
+        companyId: true,
+        productKey: true,
+        state: true,
+        priceOfferId: true,
+        supersedesLineId: true,
+      },
+      orderBy: { id: 'asc' },
+      take,
+    });
+  }
+
   // --- Lines ---------------------------------------------------------------------
 
   async line(tx: TenantTransaction, id: string): Promise<LineCommercialRow | undefined> {

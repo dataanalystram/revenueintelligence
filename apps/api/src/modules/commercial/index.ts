@@ -51,4 +51,16 @@ export {
   type EntitlementSourceRecord,
   type WaitingLineResolution,
 } from './application/commercial-source.sync';
+export {
+  COMMERCIAL_CONFIDENTIAL_CAPABILITY,
+  COMMERCIAL_READ_BATCH,
+  COMMERCIAL_READ_BOUND,
+  COMMERCIAL_VIEW_CLASSIFICATION,
+  CommercialReadModel,
+  type ContractDetail,
+  type ContractLineList,
+  type ContractView,
+  type EntitlementView,
+  type PriceOfferView,
+} from './application/commercial.read-model';
 export type { SourceRef } from './infrastructure/commercial.store';
