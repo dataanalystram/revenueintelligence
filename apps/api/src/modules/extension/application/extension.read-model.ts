@@ -148,6 +148,10 @@ export class ExtensionReadModel {
     if (!includeConfidential || !targets.some((t) => t.kind === 'account_context')) {
       return undefined;
     }
+    // MUTATION VM3: account-context confidential check skipped
+    if (targetRef !== '') {
+      return actx as unknown as AuthorizedContext<typeof ACCOUNT_CONTEXT_CONFIDENTIAL>;
+    }
     return this.authorizer.authorize(actx.tenant, actx.actor, ACCOUNT_CONTEXT_CONFIDENTIAL, {
       action: 'extension.read',
       targetKind: 'extension_value',
