@@ -32,7 +32,10 @@ import { authorizeOperator, OperatorIdRequiredError } from './operator';
  * M10D operator commands) and a reason code; reads need `data.extension.read`.
  * Each call writes one audit event. Output is JSON with identifiers, codes and
  * dates; field values are printed only for `public` / `internal` fields unless
- * `--include-confidential` (audited). Restricted values are never stored. No
+ * `--include-confidential` (audited). With an `account_context` target,
+ * `--include-confidential` also needs an explicit grant of
+ * data.account_context.read_confidential (hardening #90; refused with exit 2
+ * `authorization_denied` otherwise). Restricted values are never stored. No
  * HTTP endpoint (M15). `extension:capture-draft` lives in the sources CLI
  * (it reads the connection's snapshot and profiles).
  *

@@ -14,6 +14,7 @@ import {
   AuditFailures,
   AuditTrail,
   TenantDatabase,
+  WriteAuthorizer,
   type AuthorizedContext,
   type TenantTransaction,
 } from '../../tenancy';
@@ -73,6 +74,12 @@ export interface CustomRecordDetail extends CustomRecordView {
 
 const SHOWN_BY_DEFAULT = new Set(['public', 'internal']);
 const PAGE_MAX = 500;
+/**
+ * M10E hardening #90 (re-review m2): confidential extension values on an
+ * `account_context` target are AccountContext confidential data, so releasing them
+ * needs the same explicit grant as the context's own confidential attributes.
+ */
+const ACCOUNT_CONTEXT_CONFIDENTIAL = 'data.account_context.read_confidential';
 
 /**
  * `ExtensionUseGuard` (M10D plan §6, Q21): every reader of extension values
@@ -120,7 +127,35 @@ export class ExtensionReadModel {
     private readonly store: ExtensionStore,
     private readonly guard: ExtensionUseGuard,
     readonly audit: AuditTrail,
+    private readonly authorizer: WriteAuthorizer,
   ) {}
+
+  /**
+   * M10E hardening #90 (re-review m2): `includeConfidential` over any `account_context`
+   * target also needs data.account_context.read_confidential, for the read's own actor
+   * and tenant (a caller cannot name another), through the WriteAuthorizer and its
+   * explicit tenant grants. Without it the whole read is refused (a `denied` audit event
+   * naming the capability, AuthorizationDeniedError), never silently redacted; decided
+   * before anything is read, whatever the targets hold (no existence oracle). Other
+   * target kinds keep the M10D behaviour (data.extension.read + the audited flag).
+   */
+  private async accountContextConfidential(
+    actx: AuthorizedContext<'data.extension.read'>,
+    targets: readonly ExtensionTarget[],
+    includeConfidential: boolean,
+    targetRef: string,
+  ): Promise<AuthorizedContext<typeof ACCOUNT_CONTEXT_CONFIDENTIAL> | undefined> {
+    if (!includeConfidential || !targets.some((t) => t.kind === 'account_context')) {
+      return undefined;
+    }
+    return this.authorizer.authorize(actx.tenant, actx.actor, ACCOUNT_CONTEXT_CONFIDENTIAL, {
+      action: 'extension.read',
+      targetKind: 'extension_value',
+      targetRef,
+      details: { operation: 'values', includeConfidential: true, targetKind: 'account_context' },
+      correlationId: actx.correlationId,
+    });
+  }
 
   @AuditFailures('extension.read', 'extension_value')
   async valuesFor(
@@ -134,18 +169,27 @@ export class ExtensionReadModel {
       throw new GovernanceError('validation_failed', `Between 1 and ${PAGE_MAX} targets`);
     }
     const parsed = targets.map((t) => parseTarget(t));
+    const ref = parsed.length === 1 ? targetRef(parsed[0]!) : `${parsed.length}_targets`;
+    const confidential = await this.accountContextConfidential(
+      actx,
+      parsed,
+      options.includeConfidential === true,
+      ref,
+    );
     return this.db.transaction(actx.tenant, async (tx) => {
       const registry = await this.store.registry(tx);
-      const views = await this.load(tx, registry, use, parsed, options);
-      await this.audit.record(tx, actx, {
+      const views = await this.load(tx, registry, use, parsed, options, confidential !== undefined);
+      // Granted: the read's single event names the confidential capability.
+      await this.audit.record(tx, confidential ?? actx, {
         action: 'extension.read',
         targetKind: 'extension_value',
-        targetRef: parsed.length === 1 ? targetRef(parsed[0]!) : `${parsed.length}_targets`,
+        targetRef: ref,
         details: {
           use: String(use),
           targets: parsed.length,
           values: views.length,
           includeConfidential: options.includeConfidential === true,
+          ...(confidential ? { accountContextConfidential: true } : {}),
         },
       });
       return views;
@@ -237,6 +281,7 @@ export class ExtensionReadModel {
     use: string,
     targets: readonly ExtensionTarget[],
     options: ExtensionReadOptions,
+    accountContextConfidential = false,
   ): Promise<ExtensionValueView[]> {
     const fields = [...registry.byKey.values()].filter((e) => e.definition.kind === 'field');
     const allowed = new Set(this.guard.require(use, fields, options.fields));
@@ -259,14 +304,17 @@ export class ExtensionReadModel {
         loaded.push({ kind, row, parsed: parsedFromStored(row, items.get(row.id) ?? []) });
       }
     }
-    const isShown = (sensitivity: string) =>
+    // Confidential values on account_context targets only with the authorized grant (#90 m2).
+    const isShown = (kind: ExtensionTargetKind, sensitivity: string) =>
       SHOWN_BY_DEFAULT.has(sensitivity) ||
-      (options.includeConfidential === true && sensitivity === 'confidential');
+      (options.includeConfidential === true &&
+        sensitivity === 'confidential' &&
+        (kind !== 'account_context' || accountContextConfidential));
     // Reference values: merge lineage resolved in one batch (no per-row lookup, plan §8).
     const refs: ExtensionTarget[] = [];
-    for (const { row, parsed } of loaded) {
+    for (const { kind, row, parsed } of loaded) {
       const entry = registry.byId.get(row.fieldId)!;
-      if (isShown(entry.sensitivity) && parsed.state === 'present' && parsed.ref) {
+      if (isShown(kind, entry.sensitivity) && parsed.state === 'present' && parsed.ref) {
         refs.push({ kind: parsed.ref.kind, id: parsed.ref.id ?? parsed.ref.key! });
       }
     }
@@ -277,7 +325,7 @@ export class ExtensionReadModel {
     const out: ExtensionValueView[] = [];
     for (const { kind, row, parsed } of loaded) {
       const entry = registry.byId.get(row.fieldId)!;
-      const shown = isShown(entry.sensitivity);
+      const shown = isShown(kind, entry.sensitivity);
       let resolvedReference: string | undefined;
       if (shown && parsed.state === 'present' && parsed.ref) {
         const ref = { kind: parsed.ref.kind, id: parsed.ref.id ?? parsed.ref.key! };
