@@ -117,7 +117,10 @@ export const MAPPING_ENTITIES_0_6 = [
  * through 0.5) plus the M10F line targets `subscription.agreement` /
  * `.priceOfferRef` / `.supersedesRef` (plan §6.2). Frozen.
  */
-export const MAPPING_TARGETS_0_6 = [...MAPPING_TARGETS_0_3, ...COMMERCIAL_LINE_MAPPING_TARGETS] as const;
+export const MAPPING_TARGETS_0_6 = [
+  ...MAPPING_TARGETS_0_3,
+  ...COMMERCIAL_LINE_MAPPING_TARGETS,
+] as const;
 
 /**
  * The catalogue each published canonical version is tied to (its

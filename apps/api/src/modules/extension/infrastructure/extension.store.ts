@@ -240,7 +240,18 @@ const ENTITY_TABLE: Readonly<Record<Exclude<ExtensionTargetKind, 'product'>, str
   custom_record: 'tenant_custom_records',
   // M10E (Q19): account contexts carry record_state / merged_into_id like custom records.
   account_context: 'tenant_account_contexts',
+  // M10F: commercial entities carry record_state but no merge lineage (like subscriptions).
+  price_offer: 'tenant_price_offers',
+  contract: 'tenant_contracts',
+  entitlement: 'tenant_entitlements',
 };
+
+const NO_MERGE_LINEAGE: ReadonlySet<string> = new Set([
+  'subscription',
+  'price_offer',
+  'contract',
+  'entitlement',
+]);
 
 @Injectable()
 export class ExtensionStore {
@@ -360,7 +371,7 @@ export class ExtensionStore {
     }
     const table = ENTITY_TABLE[target.kind];
     const stateColumn = target.kind === 'person_affiliation' ? 'status' : 'record_state';
-    const merged = target.kind === 'subscription' ? 'NULL::uuid' : 'merged_into_id';
+    const merged = NO_MERGE_LINEAGE.has(target.kind) ? 'NULL::uuid' : 'merged_into_id';
     const rows = await db.$queryRawUnsafe<{ state: string; merged_into: string | null }[]>(
       `SELECT ${stateColumn} AS state, ${merged} AS merged_into FROM ${table} WHERE tenant_id = $1::uuid AND id = $2::uuid`,
       tx.tenantId,
