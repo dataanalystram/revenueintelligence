@@ -44,6 +44,13 @@ export const INTEGRITY_CHECKS = [
   'account_context_member_role_unknown',
   // M10D hardening #83 (ADR 0030 addendum)
   'custom_object_owner_drift',
+  // M10F plan §15 (ADR 0032)
+  'commercial_line_contract_company_mismatch',
+  'commercial_line_price_offer_product_mismatch',
+  'commercial_contract_link_cycle',
+  'commercial_contract_link_cross_account',
+  'commercial_line_lineage_cycle',
+  'commercial_agreement_contract_drift',
 ] as const;
 export type IntegrityCheck = (typeof INTEGRITY_CHECKS)[number];
 
