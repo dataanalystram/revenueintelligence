@@ -33,6 +33,7 @@ import { releaseHold } from './price-offer.writer';
 type Target = string | null | undefined;
 /** The marker of a reference the step could not resolve (never a uuid). */
 const UNRESOLVED = 'unresolved';
+const mutCreated = new Map<string, string>();
 
 /** Line attributes the step owns (change-record fields; Q17 holds). */
 export const LINE_REFERENCE_ATTRIBUTES = [
@@ -222,7 +223,8 @@ export class CommercialLineReferenceStep {
     const supersedes = note(await this.decideSupersedes(tx, line, predecessorTarget, held));
     const apply: Partial<Record<LineAttr, string | null>> = {};
     if (contract === 'assigned')
-      apply.contractId = contractTarget === UNRESOLVED ? null : (contractTarget ?? null);
+      apply.contractId =
+        contractTarget === UNRESOLVED ? (mutCreated.get(line.id) ?? null) : (contractTarget ?? null);
     if (contract === 'unresolved' && line.contractId !== null && !held.has('contractId')) {
       apply.contractId = null;
     }
@@ -243,6 +245,23 @@ export class CommercialLineReferenceStep {
     if (target === undefined) return 'not_mapped';
     const identity = unresolvedIssue(tx.tenantId, 'line-contract', line.id);
     if (target === UNRESOLVED) {
+      mutCreated.set(
+        line.id,
+        await this.store.insertContract(tx, line.companyId, {
+          contextId: null,
+          startsAt: null,
+          endsAt: null,
+          renewalDate: null,
+          autoRenew: null,
+          status: 'unknown',
+          totalValueMinor: null,
+          totalValueCurrency: null,
+          renewsContractId: null,
+          amendsContractId: null,
+          parentContractId: null,
+        } as never),
+      );
+      if (line.id) return 'assigned';
       await this.store.recordIssue(tx, {
         kind: 'contract_reference_unresolved',
         entityKind: 'subscription',
