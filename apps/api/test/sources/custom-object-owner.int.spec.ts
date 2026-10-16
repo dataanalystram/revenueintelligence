@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { MappingDocument } from '../../src/modules/domain';
+import { IntegrityVerificationService } from '../../src/modules/governance';
 import type { TenantContext } from '../../src/modules/tenancy';
 import { advisoryLockKey } from '../../src/modules/tenancy/infrastructure/tenant-database';
 import { CHAIN_LOCK_SCOPE } from '../../src/modules/tenancy/security/audit-trail';
@@ -542,5 +543,47 @@ describe('M10D hardening #83: single-owner custom objects under concurrent publi
       ]);
       expect(await recordsOf(c, f.ctx)).toEqual([]);
     });
+  });
+
+  it('integrity: custom_object_owner_drift passes on published-mapping parity and reports planted drift both ways (identifiers only, nothing repaired)', async () => {
+    const f = await twoConnections('h83int');
+    const integrity = c.app.get(IntegrityVerificationService);
+    const sugarId = f.sugar.connectionId;
+    const cbId = f.chargebee.connectionId;
+    await (
+      await prepare(f.sugar, customOnly([['Opportunities', 'asset']]))
+    )();
+    await (
+      await prepare(f.sugar, customOnly([['Opportunities', 'asset']]), 1)
+    )();
+    const drift = (r: { findings: readonly { check: string; ref: string }[] }) =>
+      r.findings.filter((x) => x.check === 'custom_object_owner_drift').map((x) => x.ref);
+    const clean = await integrity.record(await authz(f.ctx, 'security.integrity.run'));
+    expect(Object.keys(clean.checks)).toContain('custom_object_owner_drift');
+    expect(drift(clean)).toEqual([]);
+    // Plant (owner, test database; replica mode turns the foreign keys and the guard trigger off):
+    // sugar's held row points at its SUPERSEDED v1, and chargebee holds gadget with no published mapping.
+    await c.sql(
+      `SET session_replication_role = replica;
+       UPDATE tenant_custom_object_owners SET mapping_version = 1
+        WHERE tenant_id = '${f.ctx.tenantId}' AND object_key = 'asset';
+       INSERT INTO tenant_custom_object_owners
+         (tenant_id, object_key, connection_id, mapping_version, claimed_at, updated_at)
+       VALUES ('${f.ctx.tenantId}', 'gadget', '${cbId}', 1, now(), now());
+       SET session_replication_role = origin;`,
+    );
+    const found = await integrity.record(await authz(f.ctx, 'security.integrity.run'));
+    expect(found.outcome).toBe('findings');
+    expect(drift(found)).toEqual(
+      [`held:asset/${sugarId}/v1`, `held:gadget/${cbId}/v1`, `unheld:asset/${sugarId}/v2`].sort(),
+    );
+    expect(found.checks.custom_object_owner_drift).toBe(3);
+    // Nothing repaired.
+    expect(
+      (await ownersOf(f.ctx)).map((o) => [o.object_key, o.connection_id, o.mapping_version]),
+    ).toEqual([
+      ['asset', sugarId, 1],
+      ['gadget', cbId, 1],
+    ]);
   });
 });

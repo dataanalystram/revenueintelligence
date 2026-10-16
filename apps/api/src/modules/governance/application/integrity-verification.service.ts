@@ -323,7 +323,53 @@ export class IntegrityVerificationService {
     await this.extensionChecks(tx, add);
     // M10E plan §14 (ADR 0031).
     await this.accountContextChecks(tx, add);
+    // M10D hardening #83 (ADR 0030 addendum).
+    await this.customObjectOwnerChecks(tx, add);
     return findings;
+  }
+
+  /**
+   * 32. Tech debt #83 (Q14): the custom object owner rows agree with the
+   * published mappings, both directions, by the same two consistency queries
+   * the owner table's down-script refuses on. A held owner row must point at
+   * its connection's currently published version and that version must source
+   * the object (`held:`); every published mapping sourcing a custom object must
+   * have the matching held owner row (`unheld:`). The database does not enforce
+   * the first (the foreign key only needs the version to exist): such drift
+   * fails closed (it never makes a second owner) but would otherwise go unseen.
+   */
+  private async customObjectOwnerChecks(
+    tx: TenantTransaction,
+    add: (check: IntegrityFinding['check'], refs: readonly string[]) => void,
+  ): Promise<void> {
+    const db = tenantClient(tx);
+    const drift = await db.$queryRaw<{ ref: string }[]>`
+      WITH claims AS (
+        SELECT DISTINCT v.tenant_id, substr(o ->> 'entity', 15) AS object_key, v.connection_id, v.version
+          FROM tenant_source_mapping_states s
+          JOIN tenant_source_mapping_versions v
+            ON v.tenant_id = s.tenant_id AND v.connection_id = s.connection_id AND v.version = s.version
+         CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(v.document -> 'objects') = 'array'
+                                                      THEN v.document -> 'objects' ELSE '[]'::jsonb END) o
+         WHERE s.tenant_id = ${tx.tenantId}::uuid AND s.state = 'published'
+           AND o ->> 'entity' LIKE 'custom\\_object:%'
+      )
+      SELECT 'held:' || w.object_key || '/' || w.connection_id::text || '/v' || coalesce(w.mapping_version::text, '?') AS ref
+        FROM tenant_custom_object_owners w
+       WHERE w.tenant_id = ${tx.tenantId}::uuid AND w.connection_id IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM claims c
+                          WHERE c.tenant_id = w.tenant_id AND c.object_key = w.object_key
+                            AND c.connection_id = w.connection_id AND c.version = w.mapping_version)
+      UNION ALL
+      SELECT 'unheld:' || c.object_key || '/' || c.connection_id::text || '/v' || c.version FROM claims c
+       WHERE NOT EXISTS (SELECT 1 FROM tenant_custom_object_owners w
+                          WHERE w.tenant_id = c.tenant_id AND w.object_key = c.object_key
+                            AND w.connection_id = c.connection_id AND w.mapping_version = c.version)
+       ORDER BY 1 LIMIT ${INTEGRITY_MAX_FINDINGS}`;
+    add(
+      'custom_object_owner_drift',
+      drift.map((r) => r.ref),
+    );
   }
 
   /** The five M10E checks: read-only, identifiers only, nothing repaired. */

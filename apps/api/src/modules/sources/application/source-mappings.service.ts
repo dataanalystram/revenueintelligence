@@ -770,6 +770,19 @@ export class SourceMappingsService {
         },
       ]);
     }
+    if ('invalid' in result) {
+      // Review #110 n2: a claim the owner table's foreign keys refuse is an
+      // invalid mapping, not a database error.
+      const entity = `${EXTENSION_CUSTOM_OBJECT_PREFIX}${result.invalid}`;
+      const index = document.objects.findIndex((o) => o.entity === entity);
+      throw new MappingInvalidError([
+        {
+          code: 'invalid_entity',
+          path: `objects.${index}.entity`,
+          message: `${entity} is not a published custom object of this tenant`,
+        },
+      ]);
+    }
     return { claimed: result.claimed, released: result.released };
   }
 

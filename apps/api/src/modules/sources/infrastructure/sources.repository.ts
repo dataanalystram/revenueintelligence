@@ -10,6 +10,7 @@ import {
   type ConnectorKind,
 } from '../../domain';
 import {
+  InvalidReferenceError,
   tenantClient,
   translateDatabaseError,
   UniqueConstraintError,
@@ -397,8 +398,10 @@ export class SourcesRepository {
    * deterministic lock order of ADR 0030 addendum #83): each key is kept (already
    * ours), taken from released, or inserted — and the insert raises a unique
    * violation on the primary key when another connection holds or is claiming
-   * the object, which is returned as `conflict`. Releases of the connection's
-   * other objects run after every claim.
+   * the object, which is returned as `conflict`. A foreign-key violation (no
+   * registry entry or mapping version to hold the claim; unreachable after
+   * validation in the same transaction) is returned as `invalid`. Releases of
+   * the connection's other objects run after every claim.
    */
   async claimCustomObjects(
     tx: TenantTransaction,
@@ -408,6 +411,7 @@ export class SourcesRepository {
   ): Promise<
     | { readonly claimed: string[]; readonly kept: string[]; readonly released: string[] }
     | { readonly conflict: string }
+    | { readonly invalid: string }
   > {
     const db = tenantClient(tx);
     const tenantId = tx.tenantId;
@@ -451,7 +455,9 @@ export class SourcesRepository {
           },
         });
       } catch (error) {
-        if (isUniqueViolation(error)) return { conflict: objectKey };
+        const kind = constraintViolation(error);
+        if (kind === 'unique') return { conflict: objectKey };
+        if (kind === 'reference') return { invalid: objectKey };
         throw error;
       }
       claimed.push(objectKey);
@@ -851,11 +857,12 @@ function toAuthority(row: {
 }
 
 /** A primary-key / unique violation (Prisma P2002 or PostgreSQL 23505), translated once. */
-function isUniqueViolation(error: unknown): boolean {
+function constraintViolation(error: unknown): 'unique' | 'reference' | undefined {
   try {
     translateDatabaseError(error, 'custom_object_owner');
   } catch (translated) {
-    return translated instanceof UniqueConstraintError;
+    if (translated instanceof UniqueConstraintError) return 'unique';
+    if (translated instanceof InvalidReferenceError) return 'reference';
   }
-  return false;
+  return undefined;
 }
