@@ -289,33 +289,37 @@ describe('M10F commercial read model, confidential gate, integrity and races', (
     });
 
     it('refusal: includeConfidential without the grant is refused (not redacted) on every read, audited denied under data.commercial.read_confidential; the account-context grant does not help', async () => {
-      await grant(s.t, 'ac-only', AC_CONFIDENTIAL);
+      // One operator per call: the WriteAuthorizer coalesces repeated denials of the same
+      // actor / capability / action within its window into one event (coalescedBefore).
+      for (let i = 0; i < 6; i += 1) await grant(s.t, `ac-only-${i}`, AC_CONFIDENTIAL);
       const before = (await readEvents(s.t)).length;
+      type Read = Awaited<ReturnType<typeof reader>>;
+      // Lazy: each call starts only when awaited (sequential, no unhandled rejection).
+      const calls: ((r: Read) => Promise<unknown>)[] = [
+        (r) =>
+          reads().priceOffersForProducts(r, { productKeys: ['core'], includeConfidential: true }),
+        (r) => reads().priceOffer(r, { priceOfferId: s.offerId, includeConfidential: true }),
+        (r) =>
+          reads().contractsForAccounts(r, { companyIds: [s.account], includeConfidential: true }),
+        (r) => reads().contract(r, { contractId: s.contractId, includeConfidential: true }),
+        (r) =>
+          reads().entitlementsForAccounts(r, {
+            companyIds: [s.account],
+            includeConfidential: true,
+          }),
+        (r) =>
+          reads().entitlement(r, { entitlementId: s.entitlementId, includeConfidential: true }),
+      ];
       for (const who of ['no-grant', 'ac-only']) {
-        const r = await reader(s.t, who);
-        // Lazy: each call starts only when awaited (sequential, no unhandled rejection).
-        const calls = [
-          () =>
-            reads().priceOffersForProducts(r, { productKeys: ['core'], includeConfidential: true }),
-          () => reads().priceOffer(r, { priceOfferId: s.offerId, includeConfidential: true }),
-          () =>
-            reads().contractsForAccounts(r, { companyIds: [s.account], includeConfidential: true }),
-          () => reads().contract(r, { contractId: s.contractId, includeConfidential: true }),
-          () =>
-            reads().entitlementsForAccounts(r, {
-              companyIds: [s.account],
-              includeConfidential: true,
-            }),
-          () =>
-            reads().entitlement(r, { entitlementId: s.entitlementId, includeConfidential: true }),
-        ];
-        for (const call of calls) {
-          await expect(call()).rejects.toBeInstanceOf(AuthorizationDeniedError);
+        for (const [i, call] of calls.entries()) {
+          await expect(call(await reader(s.t, `${who}-${i}`))).rejects.toBeInstanceOf(
+            AuthorizationDeniedError,
+          );
         }
       }
       // A forged unknown id is refused the same way (decided before anything is read).
       await expect(
-        reads().contract(await reader(s.t, 'no-grant'), {
+        reads().contract(await reader(s.t, 'no-grant-forged'), {
           contractId: randomUUID(),
           includeConfidential: true,
         }),
