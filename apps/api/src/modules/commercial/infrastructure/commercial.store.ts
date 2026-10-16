@@ -545,6 +545,22 @@ export class CommercialStore {
   }
 
   /** The tenant's contract graph (outgoing links of every linked contract; read under `contract-graph`). */
+  // MUTATION VM7b: graph of one link kind only (per-kind cycle check)
+  async contractGraphOfKind(tx: TenantTransaction, kind: string): Promise<Map<string, string[]>> {
+    const rows = await tenantClient(tx).tenantContract.findMany({
+      where: { tenantId: tx.tenantId },
+      select: { id: true, renewsContractId: true, amendsContractId: true, parentContractId: true },
+    });
+    return new Map(
+      rows.map((r) => [
+        r.id,
+        [kind === 'renews' ? r.renewsContractId : kind === 'amends' ? r.amendsContractId : r.parentContractId].filter(
+          (x): x is string => !!x,
+        ),
+      ]),
+    );
+  }
+
   async contractGraph(tx: TenantTransaction): Promise<Map<string, string[]>> {
     const rows = await tenantClient(tx).tenantContract.findMany({
       where: {

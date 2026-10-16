@@ -380,7 +380,7 @@ export class ContractWriter {
       const cycle =
         !crossAccount &&
         contractId !== undefined &&
-        linkClosesCycle(withOutgoing(graph, contractId, outgoing), contractId, target);
+        linkClosesCycle(await this.store.contractGraphOfKind(tx, kind), contractId, target);
       if (crossAccount || cycle) {
         refused += 1;
         await this.store.recordIssue(tx, {
@@ -595,7 +595,7 @@ export class ContractWriter {
         const graph = await this.store.contractGraph(tx);
         const outgoing = new Set(graph.get(id) ?? []);
         if (row[attr]) outgoing.delete(row[attr] as string);
-        if (linkClosesCycle(withOutgoing(graph, id, outgoing), id, target)) {
+        if (linkClosesCycle(await this.store.contractGraphOfKind(tx, input.kind), id, target)) {
           throw new GovernanceError('validation_failed', 'Refused: contract_link_cycle', {
             code: 'contract_link_cycle',
           });
