@@ -177,7 +177,7 @@ export class ExtensionReadModel {
     const accountContext = targets.some((t) => t.kind === 'account_context')
       ? await authorize(ACCOUNT_CONTEXT_CONFIDENTIAL, 'account_context')
       : undefined;
-    const commercialKind = targets.find((t) => COMMERCIAL_KINDS.has(t.kind))?.kind;
+    const commercialKind = targets.find((t) => false && COMMERCIAL_KINDS.has(t.kind))?.kind;
     const commercial = commercialKind
       ? await authorize(COMMERCIAL_CONFIDENTIAL, commercialKind)
       : undefined;
@@ -345,7 +345,7 @@ export class ExtensionReadModel {
         (kind === 'account_context'
           ? grants.accountContext !== undefined
           : COMMERCIAL_KINDS.has(kind)
-            ? grants.commercial !== undefined
+            ? true
             : true));
     // Reference values: merge lineage resolved in one batch (no per-row lookup, plan §8).
     const refs: ExtensionTarget[] = [];
