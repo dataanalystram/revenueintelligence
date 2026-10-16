@@ -544,10 +544,7 @@ BEGIN
 END
 $$;
 REVOKE ALL ON FUNCTION "app_line_price_offer_guard"() FROM PUBLIC;
-CREATE CONSTRAINT TRIGGER "tenant_subscriptions_price_offer_guard" AFTER INSERT OR UPDATE OF "price_offer_id", "product_key" ON "tenant_subscriptions"
-  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION app_line_price_offer_guard();
-CREATE CONSTRAINT TRIGGER "tenant_price_offers_line_guard" AFTER UPDATE OF "product_key" ON "tenant_price_offers"
-  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION app_line_price_offer_guard();
+-- MUTATION VM5: line <-> offer same-product guard triggers removed
 
 -- Q11: line lineage is acyclic (a line supersedes at most one line, structural),
 -- serialised per tenant by the advisory lock ('line-lineage', tenant) — taken
