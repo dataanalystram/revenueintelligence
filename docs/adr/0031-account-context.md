@@ -161,12 +161,13 @@ of `data.account_context.read`, with only an audited flag. Owner decision: fix i
   `data.<area>.read` (`data.provenance.read`, `data.account_structure.read`, `data.extension.read`,
   `data.account_context.read`); a widened read keeps the area and qualifies the verb segment in snake_case, as other
   capabilities qualify a segment (`processing.dead_letter.resolve`, `config.product_model.publish`). No existing
-  confidential capability existed to mirror: M10D `--include-confidential` on extension values is still a flag
-  (outside #90's scope).
+  confidential capability existed to mirror: M10D `--include-confidential` on extension values is a flag (see
+  "Extension values on a context" below for the one place #90 tightens it).
 - **Grant model.** The policy grants it to **no actor kind**: an actor-kind grant to `operator` would give it to every
   operator and make the separation nominal. It is held only through an explicit, tenant-scoped grant to one operator
   id (`tenant_capability_grants`, migration `20270126130000`), made with `security.capability.grant` (operator, policy
-  v7) by **another** operator (`security grant|revoke`; self-grant refused by the service and a DB CHECK). Grants are
+  v7) by an operator id other than the grantee (`security grant|revoke`; self-grant refused by the service and a DB
+  CHECK — see Limitation: this is not a two-person control while ids are asserted). Grants are
   revoked (`active = false`), never deleted; history is the grant / revoke audit events. Default mapping: no operator
   holds it; there are no operator roles yet (M15).
 - **No generic bypass.** `GRANTABLE_CAPABILITIES` is closed to this one capability (code and DB CHECK); the
@@ -180,5 +181,27 @@ of `data.account_context.read`, with only an audited flag. Owner decision: fix i
   capability with `includeConfidential: true` and `releasedKeys` (attribute keys only, never values). Ordinary reads
   are unchanged (redacted by default, `withheld` keys). Restricted dimension values are never stored (R-C5) and are
   never released even with the grant. Line reads carry no confidential values and are unchanged.
-- **Limitation.** Operator ids are asserted, not authenticated, until M15: the grant is an explicit, audited,
-  two-person control, not proof of identity (the same limit as every operator control).
+- **Extension values on a context (re-review m2).** Confidential extension values whose target is an `account_context`
+  are confidential AccountContext data too, so `ExtensionReadModel.valuesFor` (`extension values show
+--include-confidential`) over any `account_context` target also authorizes `data.account_context.read_confidential`
+  through the same WriteAuthorizer / grant path, for the read's own actor and tenant, before anything is read. Without
+  the grant the **whole read is refused** (also when other target kinds are in the same call) with one `denied`
+  `extension.read` event naming the capability (details `targetKind: 'account_context'`); with it the read's single
+  `allowed` `extension.read` event is recorded under that capability with `accountContextConfidential: true`
+  (identifiers and counts only). The release itself is also gated per target kind in the loader (defence in depth).
+  Default reads (no flag) still redact. **Other target kinds are unchanged**: confidential extension values on
+  companies, persons, subscriptions, affiliations and custom records keep the M10D design, `data.extension.read` plus
+  the audited `--include-confidential` flag (custom record `show` reads `custom_record` targets only).
+- **Denial audit coalescing.** Denials go through the platform's coalescing (M10A1 §6): identical denials — same
+  tenant, actor kind and id, capability, action and reason — within 60 s are written once; the next written `denied`
+  row carries the suppressed count in `coalescedBefore` (and `lip_audit_denials_coalesced_total` counts them). "One
+  `denied` event per refusal" therefore holds per actor per 60-second window; the tests use distinct actor ids.
+- **Time of check (re-review n3).** The grant is read (`holds`, its own transaction) before the read transaction; a
+  revoke that commits between the two lets that one in-flight read through. Accepted: the window is one call, and the
+  revoke's own audit event dates it.
+- **Limitation (re-review m1).** This is **not** a two-person control. Operator ids are asserted, not authenticated,
+  until M15, so any operator can grant the capability to an id they control and then assert that id themselves; the
+  self-grant refusal only stops the same asserted id on both sides. The gain is a separate, explicitly audited
+  `capability.grant` event (granter, grantee, capability, version) before any confidential read, and the read itself is
+  audited under the capability — accountability, not identity. Binding grants to authenticated users and restricting
+  who may grant to an admin role is tech debt #93 (M15).

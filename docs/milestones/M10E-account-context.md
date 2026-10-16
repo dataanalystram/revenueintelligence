@@ -157,7 +157,7 @@ Independent review of `26da394`: **PASS WITH FINDINGS** — no blockers, three m
 
 Branch `m10e-h90`, PR #115 into `integration`. Policy v7 adds `data.account_context.read_confidential` (no actor kind
 holds it) and `security.capability.grant` (operator). An operator holds the confidential read only through an
-explicit, tenant-scoped grant by another operator (`tenant_capability_grants`, migration `20270126130000`; `security
+explicit, tenant-scoped grant by a different operator id (`tenant_capability_grants`, migration `20270126130000`; `security
 grant|revoke`). `includeConfidential` without it is refused and audited as `denied` with that capability; with it the
 read is audited under that capability with the released keys only. Ordinary reads unchanged. Tests: policy /
 authorizer unit (`security.spec.ts`, `write-authorizer-grants.spec.ts`, S2 static guard), integration
@@ -168,11 +168,30 @@ the read model skips the extra capability check → the refusal test fails (run 
 WriteAuthorizer allows a grantable capability without the grant lookup → the authorizer unit tests and the refusal
 test fail (run 38825272654, PR #117). ADR 0031 addendum.
 
+**Independent re-review of `420b756`: PASS WITH FINDINGS** (no Major; 3 minor, 5 nit). CI on `420b756` run
+38827272791 all green. Findings and resolution:
+
+| Finding                                                                                                                                 | Severity | Resolution                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| --------------------------------------------------------------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| m1 "two-person control" overclaims; follow-up untracked                                                                                 | minor    | reworded (ADR 0031 addendum "Limitation", this record): not a two-person control — until M15 operator ids are asserted, so an operator can grant to an id they control; the gain is a separate audited grant event. Tech debt #93 (M15): bind grants to authenticated users, restrict granters to an admin role                                                                                                                                                                            |
+| m2 confidential extension values on an `account_context` target released with `data.extension.read` + flag                              | minor    | **fixed** (Ram: no bypass of confidential AccountContext data): `--include-confidential` over an `account_context` target also needs `data.account_context.read_confidential` (same authorizer / grant path); refused + `denied` audit without it; allowed audit under the capability with it; other target kinds unchanged. Int `account-context-extension-confidential.int.spec.ts` (default redaction, refusal + denied, grant + allowed, revoke, other kinds unaffected, cross-tenant) |
+| m3 revoke audit untested (mutation survived)                                                                                            | minor    | fixed: int success test asserts exactly one `allowed` `capability.revoke` event (capability, target ref, version 2, value-free); runtime script 90 revokes, checks the event and the inactive row, and that the flag is refused again                                                                                                                                                                                                                                                      |
+| n1 guard trigger version check untested (mutation survived)                                                                             | nit      | fixed: raw-SQL revoke without a version bump (and with a jump of 2) → `capability_grant_version_not_incremented`, grant still held                                                                                                                                                                                                                                                                                                                                                         |
+| n2 denial coalescing                                                                                                                    | nit      | documented (ADR addendum): one `denied` row per actor / capability / action / reason per 60 s, `coalescedBefore` on the next                                                                                                                                                                                                                                                                                                                                                               |
+| n3 TOCTOU between `holds()` and the read transaction                                                                                    | nit      | noted (ADR addendum): one in-flight read can pass a concurrent revoke; accepted                                                                                                                                                                                                                                                                                                                                                                                                            |
+| n4 down-script does not refuse on ordinary events stamped `policy_version = 7`                                                          | nit      | noted: consistent with earlier down-scripts (they refuse on new capabilities / actions only); rollback is dev / staging only                                                                                                                                                                                                                                                                                                                                                               |
+| n5 `account-context write --account --type --dim …` `created: true/false` is an oracle for confidential dimension values (pre-existing) | nit      | noted for M15 (operator write paths behind authenticated roles); out of #90's scope                                                                                                                                                                                                                                                                                                                                                                                                        |
+
+Mutation proof **VM3** (re-review m2): the extension read model skips the account-context confidential check →
+see the run below (`mut/m10e-h90-vm3`, PR closed unmerged, branch deleted).
+
 ## Known gaps / judgment calls
 
 - The database does not refuse new members or products on a merged or retired context; the writers do (#89).
-- Confidential reads need `data.account_context.read_confidential` (explicit tenant grant; #90 resolved). Operator
-  ids stay asserted until M15, so the grant is an audited two-person control, not proof of identity.
+- Confidential reads (the context's own attributes and confidential extension values on `account_context` targets)
+  need `data.account_context.read_confidential` (explicit tenant grant; #90 resolved). Not a two-person control:
+  operator ids stay asserted until M15, so an operator can grant to an id they control; the gain is a separate,
+  audited grant event (#93).
 - Extension values on a merged-away context are not moved; readers follow lineage (#92).
 - Inherited: integrity worker job (#65), evidence partitioning (#71), migration suite timing (#72).
 - Live Gainsight / Salesforce context sources: not run (synthetic fixtures only).
@@ -187,4 +206,4 @@ writes refused, `modulesStranded: ['account_context']` listed).
 ## Remaining
 
 - Tech debt #90 resolved by hardening PR #115 (owner approval still needed before `main`).
-- Tech debt #89, #91, #92; inherited #65, #71, #72.
+- Tech debt #89, #91, #92, #93 (M15: authenticated grants, admin-only granters); inherited #65, #71, #72.
