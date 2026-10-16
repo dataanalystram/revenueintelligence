@@ -315,6 +315,54 @@ const SERVICES: readonly ServiceSpec[] = [
     writes: ['listForAccounts', 'get', 'linesForContext'],
     reads: [],
   },
+  // M10F (ADR 0032): the commercial writers, the line commercial-reference step
+  // and the merge participant. `observe` / `applyFromSource` run inside the
+  // sync transaction with a source_sync context; the participant runs inside
+  // the merge's transaction.
+  {
+    file: 'commercial/application/price-offer.writer.ts',
+    className: 'PriceOfferWriter',
+    writes: ['observeSource', 'observe', 'write', 'retire', 'release'],
+    reads: [],
+  },
+  {
+    file: 'commercial/application/contract.writer.ts',
+    className: 'ContractWriter',
+    writes: ['observeSource', 'observe', 'write', 'link', 'release'],
+    reads: [],
+  },
+  {
+    file: 'commercial/application/entitlement.writer.ts',
+    className: 'EntitlementWriter',
+    writes: ['observeSource', 'observe', 'write', 'release'],
+    reads: [],
+  },
+  {
+    file: 'commercial/application/commercial-line-reference.step.ts',
+    className: 'CommercialLineReferenceStep',
+    writes: ['applyFromSource', 'assignContract', 'assignPriceOffer', 'setSupersedes', 'release'],
+    reads: [],
+  },
+  // M10F phase 2b: the source-sync entry (references resolved, then the single writers).
+  {
+    file: 'commercial/application/commercial-source.sync.ts',
+    className: 'CommercialSourceSync',
+    writes: [
+      'observePriceOffer',
+      'observeContract',
+      'observeEntitlement',
+      'lineReferences',
+      'resolveWaitingLines',
+    ],
+    reads: [],
+  },
+  {
+    file: 'commercial/application/commercial-merge.participant.ts',
+    className: 'CommercialMergeParticipant',
+    writes: [],
+    reads: [],
+    authorizeInside: ['onCompanyMerged'],
+  },
   // M10E hardening #90: explicit capability grants (one audit event each); `holds` is
   // the WriteAuthorizer's read of the grant (tenant context, no AuthorizedContext).
   {
@@ -423,6 +471,16 @@ describe('S2: privileged service writes take an authorized context (static)', ()
       // M10E (plan §15, Q22): human-entry scope widened to the AccountContext commands.
       AccountContextWriter: ['write', 'retire', 'reactivate', 'release', 'assignLine'],
       AccountContextMembershipWriter: ['add', 'end', 'addProduct'],
+      // M10F (plan §16): human-entry scope widened to the commercial operator commands.
+      PriceOfferWriter: ['write', 'retire', 'release'],
+      ContractWriter: ['write', 'link', 'release'],
+      EntitlementWriter: ['write', 'release'],
+      CommercialLineReferenceStep: [
+        'assignContract',
+        'assignPriceOffer',
+        'setSupersedes',
+        'release',
+      ],
     });
   });
 
@@ -438,6 +496,10 @@ describe('S2: privileged service writes take an authorized context (static)', ()
       .map((f) => f.split(sep).join('/'))
       .sort();
     expect(files).toEqual([
+      'modules/commercial/application/commercial-line-reference.step.ts',
+      'modules/commercial/application/contract.writer.ts',
+      'modules/commercial/application/entitlement.writer.ts',
+      'modules/commercial/application/price-offer.writer.ts',
       'modules/context/application/account-context-membership.writer.ts',
       'modules/context/application/account-context.writer.ts',
       'modules/context/application/account-hierarchy.writer.ts',
@@ -448,7 +510,7 @@ describe('S2: privileged service writes take an authorized context (static)', ()
     ]);
   });
 
-  it('M10E hardening #90: data.account_context.read_confidential is named only by the policy, the AccountContext read model and the extension read model for account_context targets (no other path widens a read)', () => {
+  it('M10E hardening #90 / M10F §16: the read_confidential capabilities are named only by the policy, the grant service, the AccountContext and Commercial read models, the extension read model for account_context / commercial targets and their CLIs (no other path widens a read)', () => {
     const SRC = resolve(MODULES, '..');
     const files = (readdirSync(SRC, { recursive: true }) as string[])
       .filter((f) => f.endsWith('.ts') && !f.endsWith('.spec.ts') && !f.startsWith('generated'))
@@ -457,8 +519,10 @@ describe('S2: privileged service writes take an authorized context (static)', ()
       .sort();
     expect(files).toEqual([
       'cli/account-context.ts',
+      'cli/commercial.ts',
       'cli/extension.ts',
       'cli/security.ts',
+      'modules/commercial/application/commercial.read-model.ts',
       'modules/context/application/account-context.read-model.ts',
       'modules/domain/security/capabilities.ts',
       'modules/extension/application/extension.read-model.ts',

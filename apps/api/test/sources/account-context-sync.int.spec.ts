@@ -278,6 +278,13 @@ describe('M10E account contexts through a source run (Sugar adapter, fake Sugar)
       try {
         // A: the pre-M10E world (adopted 0.4); B: 0.5 with module account_context disabled.
         const a = await sugarTenant(c, fakeA, { prefix: 'acv4old' });
+        // M10F: new tenants adopt 0.6; step both back to 0.5 first.
+        await c.app
+          .get(CanonicalAdoptionService)
+          .adopt(await authz(a.ctx, 'config.canonical.adopt'), {
+            target: '0.5',
+            expectedCurrent: '0.6',
+          });
         await c.app
           .get(CanonicalAdoptionService)
           .adopt(await authz(a.ctx, 'config.canonical.adopt'), {
@@ -285,6 +292,12 @@ describe('M10E account contexts through a source run (Sugar adapter, fake Sugar)
             expectedCurrent: '0.5',
           });
         const b = await sugarTenant(c, fakeB, { prefix: 'acv4new' });
+        await c.app
+          .get(CanonicalAdoptionService)
+          .adopt(await authz(b.ctx, 'config.canonical.adopt'), {
+            target: '0.5',
+            expectedCurrent: '0.6',
+          });
         const runA = await runSync(c, a, 'full');
         const runB = await runSync(c, b, 'full');
         expect(runA.status).toBe('completed');
@@ -462,7 +475,7 @@ describe('M10E account contexts through a source run (Sugar adapter, fake Sugar)
         ),
       ).toContain('identity_unsuitable');
 
-      // Valid now (only the profile findings to acknowledge remain): published at canonical 0.5.
+      // Valid now (only the profile findings to acknowledge remain): published at canonical 0.6.
       const report = await s.mappings.validate(f.ctx, f.connectionId, mapping);
       expect(
         report.errors.filter(
@@ -476,7 +489,7 @@ describe('M10E account contexts through a source run (Sugar adapter, fake Sugar)
           `SELECT canonical_version_min FROM tenant_source_mapping_versions WHERE tenant_id = $1 AND version = $2`,
           [f.ctx.tenantId, published.version],
         ),
-      ).toEqual([{ canonical_version_min: '0.5' }]);
+      ).toEqual([{ canonical_version_min: '0.6' }]);
     });
 
     it('V14 / V15: a run creates one context per Relationship record (natural key), unresolved accounts and references become issues, line references are assigned or refused; re-run idempotent; changes update; absence never clears', async () => {

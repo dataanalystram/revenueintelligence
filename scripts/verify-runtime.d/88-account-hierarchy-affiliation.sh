@@ -53,18 +53,19 @@ as_setup() {
             ('$AS_C3', '$tid', 'Runtime Campus', now(), now());
           INSERT INTO persons (id, tenant_id, primary_email, first_name, company_id, created_at, updated_at)
             VALUES ('$AS_P1', '$tid', '$AS_EMAIL', '$AS_NAME', '$AS_C1', now(), now());" >/dev/null || return 1
-  # M10D / M10E: a new tenant adopts 0.5; this script exercises the 0.3 boundary from 0.3.
-  [ "$(as_sql "SELECT version || ':' || reason FROM tenant_canonical_adoptions WHERE tenant_id = '$tid' ORDER BY seq")" = "0.5:new_tenant" ] || return 1
+  # M10D / M10E / M10F: a new tenant adopts 0.6; this script exercises the 0.3 boundary from 0.3.
+  [ "$(as_sql "SELECT version || ':' || reason FROM tenant_canonical_adoptions WHERE tenant_id = '$tid' ORDER BY seq")" = "0.6:new_tenant" ] || return 1
+  as_cli canonical adopt --tenant "$AS_TENANT" --version 0.5 --expected-current 0.6 --actor "$AS_ACTOR" --execute >"$AS_OUT/adopt-05-from-06.json" || return 1
   as_cli canonical adopt --tenant "$AS_TENANT" --version 0.4 --expected-current 0.5 --actor "$AS_ACTOR" --execute >"$AS_OUT/adopt-04-from-05.json" || return 1
   as_cli canonical adopt --tenant "$AS_TENANT" --version 0.3 --expected-current 0.4 --actor "$AS_ACTOR" --execute >"$AS_OUT/adopt-03-from-04.json"
 }
-check "a new tenant is at canonical 0.5 (new_tenant), rolled back to 0.3 for the M10C boundary" as_setup
+check "a new tenant is at canonical 0.6 (new_tenant), rolled back to 0.3 for the M10C boundary" as_setup
 
 as_adoption() {
   as_cli canonical adopt --tenant "$AS_TENANT" --version 0.2 --expected-current 0.3 >"$AS_OUT/adopt-02-dry.json" || return 1
   grep -q '"dryRun": true' "$AS_OUT/adopt-02-dry.json" && grep -q 'account_hierarchy' "$AS_OUT/adopt-02-dry.json" &&
     grep -q 'person_affiliations' "$AS_OUT/adopt-02-dry.json" || return 1
-  [ "$(as_count tenant_canonical_adoptions)" = 3 ] || return 1
+  [ "$(as_count tenant_canonical_adoptions)" = 4 ] || return 1
   as_cli canonical adopt --tenant "$AS_TENANT" --version 0.2 --expected-current 0.3 --actor "$AS_ACTOR" --execute >"$AS_OUT/adopt-02.json" || return 1
   # Below 0.3 operator entry is refused (exit 2), audited as failed, nothing written.
   local code=0
@@ -76,7 +77,7 @@ as_adoption() {
   grep -q 'hierarchy_operator_entry' "$AS_OUT/adopt-03-dry.json" || return 1
   as_cli canonical adopt --tenant "$AS_TENANT" --version 0.3 --expected-current 0.2 --actor "$AS_ACTOR" --execute >"$AS_OUT/adopt-03.json" || return 1
   [ "$(as_sql "SELECT string_agg(version || ':' || reason, ',' ORDER BY seq) FROM tenant_canonical_adoptions WHERE tenant_id = '$(as_tid)'")" = \
-    "0.5:new_tenant,0.4:rollback,0.3:rollback,0.2:rollback,0.3:operator_adoption" ]
+    "0.6:new_tenant,0.5:rollback,0.4:rollback,0.3:rollback,0.2:rollback,0.3:operator_adoption" ]
 }
 check "adoption 0.3 → 0.2 → 0.3: dry runs list the M10C features; at 0.2 operator entry is refused (exit 2, audited)" as_adoption
 

@@ -88,16 +88,21 @@ ac_setup() {
             ('$AC_C2', '$tid', 'Runtime Context School', now(), now());
           INSERT INTO persons (id, tenant_id, primary_email, first_name, company_id, created_at, updated_at)
             VALUES ('$AC_P1', '$tid', 'runtime.context@example.test', 'Runtime', '$AC_C1', now(), now());" >/dev/null || return 1
-  [ "$(ac_sql "SELECT string_agg(version || ':' || reason, ',' ORDER BY seq) FROM tenant_canonical_adoptions WHERE tenant_id = '$tid'")" = "0.5:new_tenant" ] || return 1
+  [ "$(ac_sql "SELECT string_agg(version || ':' || reason, ',' ORDER BY seq) FROM tenant_canonical_adoptions WHERE tenant_id = '$tid'")" = "0.6:new_tenant" ] || return 1
   [ "$(ac_count tenant_module_settings "module_key = 'account_context' AND enabled")" = 0 ] || return 1
   # Module disabled (Q17): an operator write is refused (exit 2) and writes nothing.
   ac_ctx write --account "$AC_C1" --type deal_desk --dim region=emea --name 'Refused' --reason runtime_check >"$AC_OUT/write-disabled.json" || code=$?
   ac_refused "$AC_OUT/write-disabled.json" '' "$code" || return 1
   [ "$(ac_count tenant_account_contexts)" = 0 ]
 }
-check "a new tenant is at canonical 0.5 with module account_context disabled; an operator write is refused (exit 2)" ac_setup
+check "a new tenant is at canonical 0.6 with module account_context disabled; an operator write is refused (exit 2)" ac_setup
 
 ac_adoption() {
+  # M10F: a new tenant is at 0.6; step back to 0.5 first (nothing of M10F is enabled).
+  ac_cli canonical adopt --tenant "$AC_TENANT" --version 0.5 --expected-current 0.6 --actor "$AC_ACTOR" --execute >"$AC_OUT/adopt-05-from-06.json" || {
+    ac_dump "$AC_OUT/adopt-05-from-06.json"
+    return 1
+  }
   ac_cli canonical adopt --tenant "$AC_TENANT" --version 0.4 --expected-current 0.5 --actor "$AC_ACTOR" --execute >"$AC_OUT/adopt-04.json" || {
     ac_dump "$AC_OUT/adopt-04.json"
     return 1

@@ -4,6 +4,9 @@ import { APP_CONFIG, type AppConfig } from '../../../platform/config';
 import {
   ACCOUNT_CONTEXT_MIN_VERSION,
   ACCOUNT_CONTEXT_MODULE_KEY,
+  COMMERCIAL_MIN_VERSION,
+  COMMERCIAL_MODULE_KEY,
+  EXTENSION_COMMERCIAL_TARGETS,
   CONTEXT_EXTENSION_REF_VALUE_TYPES,
   CONTEXT_TYPE_DOCUMENT_SCHEMA_VERSION,
   CONTEXT_TYPE_REFUSAL_CODES,
@@ -147,6 +150,10 @@ export class RegistryService {
               ...(parsed.ok && this.targetsAccountContext(parsed.value.document)
                 ? await this.contextGateIssues(tx, canonicalVersionMin)
                 : []),
+              // M10F (Q21): a price_offer / contract / entitlement target needs 0.6 and module commercial.
+              ...(parsed.ok && this.targetsCommercial(parsed.value.document)
+                ? await this.commercialGateIssues(tx, canonicalVersionMin)
+                : []),
             ]
           : k === 'context_type'
             ? await this.contextGateIssues(tx, canonicalVersionMin)
@@ -266,6 +273,9 @@ export class RegistryService {
     if (kind === 'extension' && this.targetsAccountContext(parsed.value.document)) {
       await this.db.transaction(actx.tenant, (tx) => this.requireContextGate(tx, actx));
     }
+    if (kind === 'extension' && this.targetsCommercial(parsed.value.document)) {
+      await this.db.transaction(actx.tenant, (tx) => this.requireCommercialGate(tx, actx));
+    }
     const contentHash = registryContentHash(parsed.value.document);
     if (input.expectedContentHash !== contentHash) {
       throw new GovernanceError(
@@ -279,6 +289,9 @@ export class RegistryService {
         await this.requireExtensionGate(tx, actx);
         if (this.targetsAccountContext(parsed.value.document)) {
           await this.requireContextGate(tx, actx);
+        }
+        if (this.targetsCommercial(parsed.value.document)) {
+          await this.requireCommercialGate(tx, actx);
         }
       }
       if (kind === 'context_type') await this.requireContextGate(tx, actx);
@@ -685,6 +698,37 @@ export class RegistryService {
     return issues;
   }
 
+  /** M10F (Q21): adopted canonical >= 0.6 and module `commercial` enabled; refusals audited. */
+  private async requireCommercialGate(
+    tx: TenantTransaction,
+    actx: AuthorizedContext<'config.data_policy.publish' | 'config.registry.publish'>,
+  ): Promise<void> {
+    const adopted = await adoptedCanonicalVersion(tx);
+    if (compareCanonicalVersion(adopted, COMMERCIAL_MIN_VERSION) < 0) {
+      throw new GovernanceError(
+        'canonical_version_too_low',
+        `Commercial extension targets need canonical ${COMMERCIAL_MIN_VERSION} (adopted ${adopted})`,
+      );
+    }
+    if (this.moduleGate) {
+      await this.moduleGate.require(tx, actx, COMMERCIAL_MODULE_KEY);
+      return;
+    }
+    if (!(await this.moduleEnabled(tx, COMMERCIAL_MODULE_KEY))) {
+      throw new GovernanceError('module_disabled', 'Module commercial is disabled for this tenant');
+    }
+  }
+
+  /** The dry run reports the M10F gate as issues (nothing audited, nothing written). */
+  private async commercialGateIssues(tx: TenantTransaction, adopted: string): Promise<string[]> {
+    const issues: string[] = [];
+    if (compareCanonicalVersion(adopted, COMMERCIAL_MIN_VERSION) < 0) {
+      issues.push('canonical_version_too_low');
+    }
+    if (!(await this.moduleEnabled(tx, COMMERCIAL_MODULE_KEY))) issues.push('module_disabled');
+    return issues;
+  }
+
   private async moduleEnabled(tx: TenantTransaction, moduleKey: string): Promise<boolean> {
     const setting = await tenantClient(tx).tenantModuleSetting.findUnique({
       where: { tenantId_moduleKey: { tenantId: tx.tenantId, moduleKey } },
@@ -699,7 +743,16 @@ export class RegistryService {
    * `reference_to`, or either end of a custom relationship.
    */
   private targetsAccountContext(document: Record<string, unknown>): boolean {
-    const CTX = 'account_context';
+    return this.targetsAny(document, ['account_context']);
+  }
+
+  /** M10F (Q21): an extension document naming a price offer, contract or entitlement anywhere. */
+  private targetsCommercial(document: Record<string, unknown>): boolean {
+    return this.targetsAny(document, EXTENSION_COMMERCIAL_TARGETS);
+  }
+
+  private targetsAny(document: Record<string, unknown>, kinds: readonly string[]): boolean {
+    const hit = (v: unknown) => typeof v === 'string' && kinds.includes(v);
     const items = (k: string): Record<string, unknown>[] => {
       const v = document[k];
       return Array.isArray(v)
@@ -707,13 +760,13 @@ export class RegistryService {
         : [];
     };
     const fieldHit = items('fields').some((f) => {
-      if (f.target === CTX) return true;
+      if (hit(f.target)) return true;
       const c = f.constraints;
       const refs =
         c !== null && typeof c === 'object' ? (c as { reference_to?: unknown }).reference_to : [];
-      return Array.isArray(refs) && refs.includes(CTX);
+      return Array.isArray(refs) && refs.some(hit);
     });
-    return fieldHit || items('relationships').some((r) => r.from === CTX || r.to === CTX);
+    return fieldHit || items('relationships').some((r) => hit(r.from) || hit(r.to));
   }
 
   /**

@@ -4,6 +4,9 @@ import { Prisma } from '../../../generated/prisma/client';
 import {
   ACCOUNT_CONTEXT_MIN_VERSION,
   ACCOUNT_CONTEXT_MODULE_KEY,
+  COMMERCIAL_MIN_VERSION,
+  COMMERCIAL_MODULE_KEY,
+  EXTENSION_COMMERCIAL_TARGETS,
   compareCanonicalVersion,
   EXTENSION_MIN_VERSION,
   EXTENSION_MODULE_KEY,
@@ -240,7 +243,18 @@ const ENTITY_TABLE: Readonly<Record<Exclude<ExtensionTargetKind, 'product'>, str
   custom_record: 'tenant_custom_records',
   // M10E (Q19): account contexts carry record_state / merged_into_id like custom records.
   account_context: 'tenant_account_contexts',
+  // M10F: commercial entities carry record_state but no merge lineage (like subscriptions).
+  price_offer: 'tenant_price_offers',
+  contract: 'tenant_contracts',
+  entitlement: 'tenant_entitlements',
 };
+
+const NO_MERGE_LINEAGE: ReadonlySet<string> = new Set([
+  'subscription',
+  'price_offer',
+  'contract',
+  'entitlement',
+]);
 
 @Injectable()
 export class ExtensionStore {
@@ -261,17 +275,25 @@ export class ExtensionStore {
 
   /**
    * M10E (Q19): an `account_context` target additionally needs adopted ≥ 0.5
-   * and module `account_context` enabled; other targets pass.
+   * and module `account_context` enabled; M10F (Q21): a `price_offer` /
+   * `contract` / `entitlement` target needs adopted ≥ 0.6 and module
+   * `commercial`; other targets pass.
    */
   async targetGate(tx: TenantTransaction, target: ExtensionTarget): Promise<ExtensionGateState> {
-    if (target.kind !== 'account_context') return 'ok';
+    const gate =
+      target.kind === 'account_context'
+        ? { min: ACCOUNT_CONTEXT_MIN_VERSION, module: ACCOUNT_CONTEXT_MODULE_KEY }
+        : (EXTENSION_COMMERCIAL_TARGETS as readonly string[]).includes(target.kind)
+          ? { min: COMMERCIAL_MIN_VERSION, module: COMMERCIAL_MODULE_KEY }
+          : undefined;
+    if (!gate) return 'ok';
     const adopted = await adoptedCanonicalVersion(tx);
-    if (compareCanonicalVersion(adopted, ACCOUNT_CONTEXT_MIN_VERSION) < 0) {
+    if (compareCanonicalVersion(adopted, gate.min) < 0) {
       return 'canonical_version_too_low';
     }
     const setting = await tenantClient(tx).tenantModuleSetting.findUnique({
       where: {
-        tenantId_moduleKey: { tenantId: tx.tenantId, moduleKey: ACCOUNT_CONTEXT_MODULE_KEY },
+        tenantId_moduleKey: { tenantId: tx.tenantId, moduleKey: gate.module },
       },
       select: { enabled: true },
     });
@@ -360,7 +382,7 @@ export class ExtensionStore {
     }
     const table = ENTITY_TABLE[target.kind];
     const stateColumn = target.kind === 'person_affiliation' ? 'status' : 'record_state';
-    const merged = target.kind === 'subscription' ? 'NULL::uuid' : 'merged_into_id';
+    const merged = NO_MERGE_LINEAGE.has(target.kind) ? 'NULL::uuid' : 'merged_into_id';
     const rows = await db.$queryRawUnsafe<{ state: string; merged_into: string | null }[]>(
       `SELECT ${stateColumn} AS state, ${merged} AS merged_into FROM ${table} WHERE tenant_id = $1::uuid AND id = $2::uuid`,
       tx.tenantId,

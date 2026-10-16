@@ -37,6 +37,8 @@ const M10D_DOWN = resolve('prisma/rollback/20270112120000_m10d_extension_framewo
 /** M10E sits on top of M10D: its (data-free) down-script runs before M10D's. */
 const M10E_DOWN = resolve('prisma/rollback/20270119120000_m10e_account_context.down.sql');
 /** M10E hardening #90 sits on top of M10E: its (data-free) down-script runs first of all. */
+/** M10F (commercial, canonical 0.6) sits on top of #90: its (data-free) down-script runs first of all. */
+const M10F_DOWN = resolve('prisma/rollback/20270202120000_m10f_commercial.down.sql');
 const H90_DOWN = resolve(
   'prisma/rollback/20270126130000_m10e_h90_confidential_read_grants.down.sql',
 );
@@ -113,14 +115,21 @@ describe('M10C migration and schema guard', () => {
         // M10E (ADR 0031) sits on top.
         {
           version: '0.5',
-          status: 'current',
+          status: 'supported',
           adr: '0031',
           catalogue_hash: canonicalCatalogueHash(canonicalCatalogueFor('0.5')),
+        },
+        // M10F (ADR 0032) sits on top.
+        {
+          version: '0.6',
+          status: 'current',
+          adr: '0032',
+          catalogue_hash: canonicalCatalogueHash(canonicalCatalogueFor('0.6')),
         },
       ]);
       expect(
         CANONICAL_VERSIONS.filter((v) => v.status === 'current').map((v) => v.version),
-      ).toEqual(['0.5']);
+      ).toEqual(['0.6']);
       for (const v of ['0.1', '0.2', '0.3'] as const) {
         expect(canonicalCatalogueHash(canonicalCatalogueFor(v)), v).toBe(STORED_HASHES[v]);
       }
@@ -399,7 +408,8 @@ INSERT INTO tenant_source_authority_versions (tenant_id, version, base_version, 
         // M10D / M10E sit on top: 0.3 and 0.4 are supported and 0.5 current once every migration applied.
         { version: '0.3', status: 'supported' },
         { version: '0.4', status: 'supported' },
-        { version: '0.5', status: 'current' },
+        { version: '0.5', status: 'supported' },
+        { version: '0.6', status: 'current' },
       ]);
       // No tenant adopts 0.3 by migration (explicit adoption, Q19).
       expect(
@@ -415,6 +425,7 @@ INSERT INTO tenant_source_authority_versions (tenant_id, version, base_version, 
       await migrate(url);
       const latest = await schemaSnapshot(url);
       // #90, #83, M10E and M10D sit on top of M10C: their (data-free) rollbacks run first (#90 first).
+      await withAdmin(url, (db) => db.query(readFileSync(M10F_DOWN, 'utf8')));
       await withAdmin(url, (db) => db.query(readFileSync(H90_DOWN, 'utf8')));
       await withAdmin(url, (db) => db.query(readFileSync(H83_DOWN, 'utf8')));
       await withAdmin(url, (db) => db.query(readFileSync(M10E_DOWN, 'utf8')));

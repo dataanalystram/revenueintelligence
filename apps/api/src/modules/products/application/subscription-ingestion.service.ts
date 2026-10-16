@@ -63,6 +63,22 @@ export type SubscriptionIngestOutcome =
 const MAX_LOCK_ROUNDS = 5;
 
 /**
+ * M10F (plan §5.4; M10E D11 pattern): a step another module runs after the
+ * line write, inside the same line transaction (the commercial
+ * line-reference step, wired by the sources module). Products never imports
+ * the module that supplies it: this port is the only contract. It runs only
+ * when the observation is present and the line was created, updated,
+ * restored or found unchanged (never for stale, deleted or rejected writes).
+ */
+export type LineAfterWrite<T> = (
+  tx: TenantTransaction,
+  line: {
+    readonly subscriptionId: string;
+    readonly outcome: 'created' | 'updated' | 'restored' | 'unchanged';
+  },
+) => Promise<T>;
+
+/**
  * The single subscription writer (ADR 0017 §3): imports now, connectors in M8.
  * One tenant transaction per line; the line lock first, then the
  * canonical-company lock(s) before touching any subscription row, so a line can
@@ -105,13 +121,39 @@ export class SubscriptionIngestionService {
     actx: SubscriptionWriteContext,
     observation: SubscriptionObservation,
     meta: SubscriptionIngestMeta,
-  ): Promise<SubscriptionIngestOutcome> {
+  ): Promise<SubscriptionIngestOutcome>;
+  async ingest<T>(
+    actx: SubscriptionWriteContext,
+    observation: SubscriptionObservation,
+    meta: SubscriptionIngestMeta,
+    afterWrite: LineAfterWrite<T>,
+  ): Promise<SubscriptionIngestOutcome & { readonly after?: T }>;
+  async ingest<T>(
+    actx: SubscriptionWriteContext,
+    observation: SubscriptionObservation,
+    meta: SubscriptionIngestMeta,
+    afterWrite?: LineAfterWrite<T>,
+  ): Promise<SubscriptionIngestOutcome & { readonly after?: T }> {
     assertAuthorizedFor(actx, SUBSCRIPTION_WRITE);
     const parsed = SubscriptionObservationSchema.safeParse(observation);
     if (!parsed.success) return { outcome: 'rejected', reason: 'invalid_observation' };
-    return this.db.transaction(actx.tenant, (tx) =>
-      this.apply(tx, parsed.data, { ...meta, actor: actx.actor }),
-    );
+    return this.db.transaction(actx.tenant, async (tx) => {
+      const out = await this.apply(tx, parsed.data, { ...meta, actor: actx.actor });
+      if (
+        !afterWrite ||
+        parsed.data.presence !== 'present' ||
+        !('subscriptionId' in out) ||
+        !out.subscriptionId ||
+        !['created', 'updated', 'restored', 'unchanged'].includes(out.outcome)
+      ) {
+        return out;
+      }
+      const after = await afterWrite(tx, {
+        subscriptionId: out.subscriptionId,
+        outcome: out.outcome as 'created' | 'updated' | 'restored' | 'unchanged',
+      });
+      return { ...out, after };
+    });
   }
 
   private async apply(
@@ -179,6 +221,8 @@ export class SubscriptionIngestionService {
       startsAt: obs.startsAt,
       endsAt: obs.endsAt,
       quantity: obs.quantity,
+      // M10F (V4): only when the mapping states subscription.agreement.
+      ...(obs.agreementRef !== undefined ? { agreementRef: obs.agreementRef } : {}),
     });
     const values: SubscriptionValues = {
       companyId,

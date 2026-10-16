@@ -111,6 +111,25 @@ module.exports = {
       },
     },
     {
+      name: 'commercial-never-feeds-ownership-or-eligibility',
+      severity: 'error',
+      comment:
+        'M10F (ADR 0032, plan §13, Q27): price offers never affect ownership and entitlements ' +
+        'never affect eligibility. The products module (ownership, eligibility, whitespace, ' +
+        'coverage) and the pure eligibility / coverage / holding domain code never import the ' +
+        'commercial module or the commercial domain vocabulary (the line sync reaches the ' +
+        'commercial step only through the LineAfterWrite port wired by sources).',
+      from: {
+        path: [
+          '^src/modules/products/',
+          '^src/modules/domain/(eligibility|coverage|holding-domain)\\.ts$',
+        ],
+      },
+      to: {
+        path: ['^src/modules/commercial/', '^src/modules/domain/canonical/commercial\\.ts$'],
+      },
+    },
+    {
       name: 'hubspot-sdk-only-in-hubspot-connector',
       severity: 'error',
       comment: 'External systems are accessed only through connector modules.',

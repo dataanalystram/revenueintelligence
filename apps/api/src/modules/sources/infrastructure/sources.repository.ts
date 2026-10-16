@@ -136,9 +136,19 @@ const FACT_COLUMNS = {
   account_hierarchy: 'accountHierarchyConnectionId',
   // M10E: optional fact; omitted from the read document while unassigned.
   account_context: 'accountContextConnectionId',
+  // M10F (plan §6.4): optional facts; omitted from the read document while unassigned.
+  price_offer: 'priceOfferConnectionId',
+  contract: 'contractConnectionId',
+  entitlement: 'entitlementConnectionId',
 } as const;
 /** Facts added after ADR 0020: omitted from the read document while unassigned (hash unchanged). */
-const OPTIONAL_FACT_COLUMNS: readonly string[] = ['account_hierarchy', 'account_context'];
+const OPTIONAL_FACT_COLUMNS: readonly string[] = [
+  'account_hierarchy',
+  'account_context',
+  'price_offer',
+  'contract',
+  'entitlement',
+];
 
 /** One active source run per connection (full and incremental exclude each other). */
 export const sourceRunActiveKey = (connectionId: string) => `source:${connectionId}`;
@@ -561,6 +571,9 @@ export class SourcesRepository {
           subscriptionTermsConnectionId: facts.subscription_terms,
           accountHierarchyConnectionId: facts.account_hierarchy ?? null,
           accountContextConnectionId: facts.account_context ?? null,
+          priceOfferConnectionId: facts.price_offer ?? null,
+          contractConnectionId: facts.contract ?? null,
+          entitlementConnectionId: facts.entitlement ?? null,
           contentHash: input.contentHash,
           publishedBy: input.publishedBy,
           proofAcceptances: input.proofAcceptances ?? [],
@@ -834,6 +847,9 @@ function toAuthority(row: {
   subscriptionTermsConnectionId: string | null;
   accountHierarchyConnectionId?: string | null;
   accountContextConnectionId?: string | null;
+  priceOfferConnectionId?: string | null;
+  contractConnectionId?: string | null;
+  entitlementConnectionId?: string | null;
   contentHash: string;
   publishedBy: string;
   publishedAt: Date;

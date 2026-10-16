@@ -32,8 +32,8 @@ import { authorizeOperator, OperatorIdRequiredError } from './operator';
  *   pnpm --filter @lip/api security:revoke --tenant <slug> --grantee <operator-id> --capability <c> --actor <id>
  *
  * Grant / revoke (M10E hardening #90, ADR 0031 addendum): an explicit, tenant-scoped
- * grant to one operator id of a capability no actor kind holds by policy — only
- * `data.account_context.read_confidential`. Needs `security.capability.grant`; one
+ * grant to one operator id of a capability no actor kind holds by policy —
+ * `data.account_context.read_confidential` or (M10F) `data.commercial.read_confidential`. Needs `security.capability.grant`; one
  * audit event each; a self-grant, any other capability and a no-op are refused
  * (exit 2, audited). Operator ids are asserted until authenticated identity (M15).
  *

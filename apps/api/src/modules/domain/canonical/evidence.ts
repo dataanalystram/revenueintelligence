@@ -61,6 +61,10 @@ export const EVIDENCE_KIND_MODULES: Readonly<Partial<Record<EntityIndexKind, Mod
   custom_record: 'extension',
   // M10E (#71): account contexts are the second module-owned entity kind.
   account_context: 'account_context',
+  // M10F (#71): price offers, contracts and entitlements belong to module commercial.
+  price_offer: 'commercial',
+  contract: 'commercial',
+  entitlement: 'commercial',
 };
 
 /** A derivation key / version: identifiers only (secret-like refusal, M10A1 A1). */

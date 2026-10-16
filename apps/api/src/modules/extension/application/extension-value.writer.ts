@@ -3,6 +3,8 @@ import { APP_CONFIG, type AppConfig } from '../../../platform/config';
 import {
   ACCOUNT_CONTEXT_MIN_VERSION,
   ACCOUNT_CONTEXT_MODULE_KEY,
+  COMMERCIAL_MIN_VERSION,
+  COMMERCIAL_MODULE_KEY,
   DEFAULT_EXTENSION_GUARDRAILS,
   displayExtensionValue,
   extensionFieldToken,
@@ -332,9 +334,10 @@ export class ExtensionValueWriter {
     tx: TenantTransaction,
     value: ParsedExtensionValue,
   ): Promise<'ok' | 'canonical_version_too_low' | 'module_disabled'> {
-    if (value.state !== 'present' || value.ref?.kind !== 'account_context') return 'ok';
+    // M10F (Q21): a reference naming a commercial entity passes the commercial gate too.
+    if (value.state !== 'present' || !value.ref) return 'ok';
     const state = await this.store.targetGate(tx, {
-      kind: 'account_context',
+      kind: value.ref.kind,
       id: value.ref.id ?? '',
     });
     return state === 'canonical_version_too_low' || state === 'module_disabled' ? state : 'ok';
@@ -593,9 +596,9 @@ export class ExtensionValueWriter {
         `extension_value_invalid:${parsed.reason}`,
       );
     }
-    if (parsed.value.state === 'present' && parsed.value.ref?.kind === 'account_context') {
+    if (parsed.value.state === 'present' && parsed.value.ref) {
       await this.requireTargetGate(tx, actx, {
-        kind: 'account_context',
+        kind: parsed.value.ref.kind,
         id: parsed.value.ref.id ?? '',
       });
     }
@@ -647,21 +650,31 @@ export class ExtensionValueWriter {
 
   // --- Merge (plan §7, Q22) -------------------------------------------------------
 
-  /** M10E (Q19): operator values on an account context need 0.5 + module account_context (audited). */
+  /**
+   * M10E (Q19): operator values on an account context need 0.5 + module account_context;
+   * M10F (Q21): on a price offer / contract / entitlement 0.6 + module commercial (audited).
+   */
   private async requireTargetGate(
     tx: TenantTransaction,
     actx: AuthorizedContext,
     target: ExtensionTarget,
   ): Promise<void> {
     const state = await this.store.targetGate(tx, target);
+    const context = target.kind === 'account_context';
     if (state === 'canonical_version_too_low') {
       throw new GovernanceError(
         'canonical_version_too_low',
-        `Values on an account context need canonical ${ACCOUNT_CONTEXT_MIN_VERSION}`,
+        context
+          ? `Values on an account context need canonical ${ACCOUNT_CONTEXT_MIN_VERSION}`
+          : `Values on a ${target.kind} need canonical ${COMMERCIAL_MIN_VERSION}`,
       );
     }
     if (state === 'module_disabled') {
-      await this.moduleGate.require(tx, actx, ACCOUNT_CONTEXT_MODULE_KEY);
+      await this.moduleGate.require(
+        tx,
+        actx,
+        context ? ACCOUNT_CONTEXT_MODULE_KEY : COMMERCIAL_MODULE_KEY,
+      );
     }
   }
 

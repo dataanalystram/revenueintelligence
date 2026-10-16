@@ -42,13 +42,22 @@ function jsonValue(v: unknown): unknown {
  * transaction of the projection update and its change record, so the three
  * commit or roll back together. Per field: not catalogued → nothing;
  * sensitive (restricted, `tbc`, personal, communication or security) and not
- * allowed by the published data policy → a value-free row; otherwise the old
- * and new values. Returns the number of rows written.
+ * allowed by the published data policy → a value-free row; a column whose
+ * manifest declares `history: 'value_free'` (M10F, Q18) → a value-free row;
+ * otherwise the old and new values. Returns the number of rows written.
  */
 export async function recordValueHistory(
   tx: TenantTransaction,
   input: {
-    readonly entityKind: 'company' | 'subscription' | 'person_affiliation' | 'account_context';
+    readonly entityKind:
+      | 'company'
+      | 'subscription'
+      | 'person_affiliation'
+      | 'account_context'
+      // M10F (plan §9): commercial entities.
+      | 'contract'
+      | 'price_offer'
+      | 'entitlement';
     readonly entityId: string;
     readonly changeId: string;
     readonly effectiveAt: Date;

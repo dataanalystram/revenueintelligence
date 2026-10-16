@@ -80,6 +80,11 @@ describe('M10C account-structure governance', () => {
   describe('V14 / V15: catalogue and adoption', () => {
     it('the adoption dry run lists the 0.3 features both ways and writes nothing', async () => {
       const t = await c.tenant('govplan', 1001);
+      // M10F: new tenants adopt 0.6; step back to 0.5 first.
+      await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
+        target: '0.5',
+        expectedCurrent: '0.6',
+      });
       // M10E: new tenants adopt 0.5; rollback goes one MINOR at a time (0.5 → 0.4 first).
       await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
         target: '0.4',
@@ -111,7 +116,7 @@ describe('M10C account-structure governance', () => {
         `SELECT count(*)::int AS n FROM tenant_canonical_adoptions WHERE tenant_id = $1`,
         [t.tenantId],
       )) as [{ n: number }];
-      expect(n).toBe(4);
+      expect(n).toBe(5);
     });
 
     it('a generic person_affiliation reference needs canonical 0.3 and resolves to its affiliation', async () => {
@@ -137,6 +142,11 @@ describe('M10C account-structure governance', () => {
         entity_id: row!.id,
         origin: 'observed',
         state: 'active',
+      });
+      // M10F: new tenants adopt 0.6; step back to 0.5 first.
+      await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
+        target: '0.5',
+        expectedCurrent: '0.6',
       });
       // M10E: new tenants adopt 0.5; rollback goes one MINOR at a time (0.5 → 0.4 first).
       await adoption().adopt(await authz(t, 'config.canonical.adopt'), {

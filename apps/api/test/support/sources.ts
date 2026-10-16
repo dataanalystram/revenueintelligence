@@ -171,6 +171,8 @@ export async function sugarTenant(
     overlapMinutes?: number;
     /** TEST value (D2 minimum); the connection limit has no production default. */
     profileMaxRows?: number | null;
+    /** M10F: further (synthetic) modules the connection reads. */
+    extraModules?: readonly string[];
   } = {},
 ): Promise<SourcesFixture> {
   const s = sourcesServices(c);
@@ -191,7 +193,14 @@ export async function sugarTenant(
     config: {
       instanceUrl: fake.url,
       apiVersion: fake.version,
-      modules: ['Accounts', 'Opportunities', 'RevenueLineItems', 'ProductTemplates', 'Users'],
+      modules: [
+        'Accounts',
+        'Opportunities',
+        'RevenueLineItems',
+        'ProductTemplates',
+        'Users',
+        ...(options.extraModules ?? []),
+      ],
       referenceModules: ['ProductTemplates'],
       maxRetries: 2,
       // TEST value only: the overlap has no production default.

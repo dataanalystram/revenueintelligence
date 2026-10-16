@@ -7,6 +7,11 @@ import {
   CANONICAL_MODULES,
   parseStoredContextType,
   CONTEXT_REF_TARGET,
+  COMMERCIAL_MIN_VERSION,
+  COMMERCIAL_MODULE_KEY,
+  PRICE_OFFER_REF_TARGET,
+  SUPERSEDES_REF_TARGET,
+  type CommercialMappingContext,
   type AccountContextMappingContext,
   type AccountContextMappingType,
   canonicalHash,
@@ -650,6 +655,13 @@ export class SourceMappingsService {
         ...(o.relationships.some((r) => r.target === CONTEXT_REF_TARGET)
           ? ['account_context']
           : []),
+        // M10F: a line's price-offer / predecessor reference is a commercial reference
+        // (module commercial); subscription.agreement is Core (Q2) and adds nothing.
+        ...(o.relationships.some(
+          (r) => r.target === PRICE_OFFER_REF_TARGET || r.target === SUPERSEDES_REF_TARGET,
+        )
+          ? ['price_offer']
+          : []),
       ]),
       CANONICAL_MODULES,
       enabled,
@@ -660,6 +672,18 @@ export class SourceMappingsService {
         `Mapping targets ${blocked[0]!.entityKind} of disabled module ${blocked[0]!.module}`,
       );
     }
+  }
+
+  /** M10F (plan §6.1): the 0.6 + module `commercial` gate. */
+  private async commercialMappingContext(tx: TenantTransaction): Promise<CommercialMappingContext> {
+    const adopted = await adoptedCanonicalVersion(tx);
+    if (compareCanonicalVersion(adopted, COMMERCIAL_MIN_VERSION) < 0) {
+      return { gate: 'canonical_version_too_low' };
+    }
+    const enabled = (await moduleSettings(tx)).some(
+      (m) => m.moduleKey === COMMERCIAL_MODULE_KEY && m.enabled,
+    );
+    return { gate: enabled ? 'ok' : 'module_disabled' };
   }
 
   /**
@@ -863,6 +887,7 @@ export class SourceMappingsService {
       },
       extension: await this.extensionContext(tx, connectionId),
       accountContext: await this.accountContextMappingContext(tx),
+      commercial: await this.commercialMappingContext(tx),
     });
     return {
       validation,

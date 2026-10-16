@@ -51,10 +51,12 @@ ex_setup() {
   ex_sql "INSERT INTO companies (id, tenant_id, name, created_at, updated_at) VALUES
             ('$EX_C1', '$tid', 'Runtime Extension School', now(), now()),
             ('$EX_C2', '$tid', 'Runtime Extension Trust', now(), now());" >/dev/null || return 1
-  [ "$(ex_sql "SELECT string_agg(version || ':' || reason, ',' ORDER BY seq) FROM tenant_canonical_adoptions WHERE tenant_id = '$tid'")" = "0.5:new_tenant" ] || return 1
+  [ "$(ex_sql "SELECT string_agg(version || ':' || reason, ',' ORDER BY seq) FROM tenant_canonical_adoptions WHERE tenant_id = '$tid'")" = "0.6:new_tenant" ] || return 1
+  # M10F: a new tenant is at 0.6; this script exercises the extension boundaries from 0.5.
+  ex_cli canonical adopt --tenant "$EX_TENANT" --version 0.5 --expected-current 0.6 --actor "$EX_ACTOR" --execute >"$EX_OUT/adopt-05-from-06.json" || return 1
   [ "$(ex_count tenant_module_settings "module_key = 'extension' AND enabled")" = 0 ]
 }
-check "a new tenant is at canonical 0.5 (new_tenant, M10E) with module extension disabled" ex_setup
+check "a new tenant is at canonical 0.6 (new_tenant, M10F), stepped back to 0.5, with module extension disabled" ex_setup
 
 ex_registry() {
   local code=0 hash

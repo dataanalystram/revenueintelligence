@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { MAPPING_TARGETS_0_3 } from './canonical/catalogue';
+import { COMMERCIAL_LINE_MAPPING_TARGETS } from './canonical/commercial';
 import {
   OTHER_CONNECTION_ID,
   TEST_CONNECTION_ID,
@@ -60,9 +61,14 @@ describe('canonical 0.3 mapping-target catalogue (review n3)', () => {
   it('the frozen 0.3 list equals the code catalogue, so the stored 0.3 hash describes the code', () => {
     // M10E: `subscription.contextRef` is hashed at 0.5 through the mapping entity
     // `account_context` (MAPPING_ENTITIES_0_5), not as a 0.3 target (ADR 0031).
-    expect([...MAPPING_TARGETS_0_3, 'subscription.contextRef'].sort()).toEqual(
-      Object.keys(MAPPING_TARGETS).sort(),
-    );
+    // M10F: the three line targets are hashed at 0.6 (MAPPING_TARGETS_0_6, ADR 0032).
+    expect(
+      [
+        ...MAPPING_TARGETS_0_3,
+        'subscription.contextRef',
+        ...COMMERCIAL_LINE_MAPPING_TARGETS,
+      ].sort(),
+    ).toEqual(Object.keys(MAPPING_TARGETS).sort());
   });
 });
 

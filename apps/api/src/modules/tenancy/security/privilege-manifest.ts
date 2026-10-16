@@ -82,6 +82,10 @@ export const PRIVILEGE_MANIFEST: Readonly<Record<string, readonly TablePrivilege
   tenant_account_context_products: APPEND_UPDATE,
   // M10E hardening #90: explicit capability grants are revoked (active = false), never deleted.
   tenant_capability_grants: APPEND_UPDATE,
+  // M10F: offers retire, contracts and entitlements change status — nothing disappears (no DELETE).
+  tenant_price_offers: APPEND_UPDATE,
+  tenant_contracts: APPEND_UPDATE,
+  tenant_entitlements: APPEND_UPDATE,
   companies: DML,
   company_external_refs: DML,
   person_external_refs: DML,

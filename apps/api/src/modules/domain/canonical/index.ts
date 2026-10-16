@@ -2,6 +2,7 @@ export * from './account-context';
 export * from './account-structure';
 export * from './catalogue';
 export * from './change-record';
+export * from './commercial';
 export * from './data-policy';
 export * from './entity-index';
 export * from './evidence';

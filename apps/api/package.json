@@ -42,6 +42,7 @@
     "extension:record": "node dist/cli/extension.js record",
     "extension:relationship": "node dist/cli/extension.js relationship",
     "account-context": "node dist/cli/account-context.js",
+    "commercial": "node dist/cli/commercial.js",
     "context:report": "node dist/cli/context.js report",
     "context:receipts": "node dist/cli/context.js receipts",
     "context:backfill": "node dist/cli/context.js backfill",

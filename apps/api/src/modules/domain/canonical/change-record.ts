@@ -16,6 +16,10 @@ export const CHANGE_ENTITY_KINDS = [
   // M10E (0.5): account contexts and their person memberships (Q24).
   'account_context',
   'account_context_person',
+  // M10F (0.6, Q25): commercial entities; links and line references are field changes.
+  'price_offer',
+  'contract',
+  'entitlement',
 ] as const;
 /** The change entity kinds published with canonical 0.2 (frozen for its catalogue hash). */
 export const CHANGE_ENTITY_KINDS_0_2 = ['company', 'person', 'subscription', 'product'] as const;
@@ -36,6 +40,18 @@ export const CHANGE_ENTITY_KINDS_0_4 = [
   'person_affiliation',
   'custom_record',
   'custom_relationship',
+] as const;
+/** The change entity kinds published with canonical 0.5 (frozen for its catalogue hash). */
+export const CHANGE_ENTITY_KINDS_0_5 = [
+  'company',
+  'person',
+  'subscription',
+  'product',
+  'person_affiliation',
+  'custom_record',
+  'custom_relationship',
+  'account_context',
+  'account_context_person',
 ] as const;
 export type ChangeEntityKind = (typeof CHANGE_ENTITY_KINDS)[number];
 

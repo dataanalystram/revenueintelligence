@@ -251,6 +251,11 @@ describe('M10E account context governance', () => {
       // Below 0.5 (a tenant rolled back to 0.4): version first, whatever the module says.
       const low = await c.tenant('acgatelow', 1001);
       const lowIds = await companies(c, low, ['6101']);
+      // M10F: new tenants adopt 0.6; step back to 0.5 first.
+      await adoption().adopt(await authz(low, 'config.canonical.adopt'), {
+        target: '0.5',
+        expectedCurrent: '0.6',
+      });
       await adoption().adopt(await authz(low, 'config.canonical.adopt'), {
         target: '0.4',
         expectedCurrent: '0.5',
@@ -400,7 +405,7 @@ describe('M10E account context governance', () => {
       await expect(publish(t, doc(v1))).resolves.toMatchObject({
         kind: 'context_type',
         version: 1,
-        canonicalVersionMin: '0.5',
+        canonicalVersionMin: '0.6',
         entries: 1,
       });
       expect(
@@ -601,6 +606,11 @@ describe('M10E account context governance', () => {
     it('the dry run lists the newly available module and the enabled features; apply; the rollback dry run lists the stranded module; at 0.4 data is kept and readable and every write is refused (audited); 0.5 again restores writes', async () => {
       const t = await c.tenant('acadopt', 1001);
       const ids = await companies(c, t, ['6401']);
+      // M10F: new tenants adopt 0.6; step back to 0.5 first.
+      await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
+        target: '0.5',
+        expectedCurrent: '0.6',
+      });
       await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
         target: '0.4',
         expectedCurrent: '0.5',
@@ -774,6 +784,11 @@ describe('M10E account context governance', () => {
     it('publish: a relationship end or a reference_to naming account_context needs 0.5 + module account_context (dry run issues, refusals audited)', async () => {
       const low = await c.tenant('acm2low', 1001);
       await enableExtension(c, low);
+      // M10F: new tenants adopt 0.6; step back to 0.5 first.
+      await adoption().adopt(await authz(low, 'config.canonical.adopt'), {
+        target: '0.5',
+        expectedCurrent: '0.6',
+      });
       await adoption().adopt(await authz(low, 'config.canonical.adopt'), {
         target: '0.4',
         expectedCurrent: '0.5',
@@ -876,6 +891,11 @@ describe('M10E account context governance', () => {
       ).resolves.toMatchObject({ status: 'ok', written: 0, rejected: { module_disabled: 1 } });
 
       // Below 0.5 the code is canonical_version_too_low.
+      // M10F: new tenants adopt 0.6; step back to 0.5 first.
+      await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
+        target: '0.5',
+        expectedCurrent: '0.6',
+      });
       await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
         target: '0.4',
         expectedCurrent: '0.5',

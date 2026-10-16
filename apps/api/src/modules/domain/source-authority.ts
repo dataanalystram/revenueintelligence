@@ -17,6 +17,11 @@ export const AuthorityFactSchema = z.enum([
   'account_hierarchy',
   // M10E (ADR 0031, Q16): who may write account contexts. Optional in documents.
   'account_context',
+  // M10F (ADR 0032, plan §6.4, Q24): who may write price offers, contracts and
+  // entitlements. Optional in documents; line references follow `subscription_lines`.
+  'price_offer',
+  'contract',
+  'entitlement',
 ]);
 export type AuthorityFact = z.infer<typeof AuthorityFactSchema>;
 
@@ -24,7 +29,8 @@ export const AUTHORITY_FACTS = AuthorityFactSchema.options;
 
 /**
  * The ADR 0020 facts every authority document states. Facts added later
- * (M10C `account_hierarchy`, M10E `account_context`) are optional: a document without them reads as
+ * (M10C `account_hierarchy`, M10E `account_context`, M10F `price_offer` / `contract` /
+ * `entitlement`) are optional: a document without them reads as
  * unassigned, and the content hash covers them only when assigned.
  */
 export const REQUIRED_AUTHORITY_FACTS = [
@@ -47,6 +53,9 @@ export const AuthorityDocumentSchema = z
       ) as Record<(typeof REQUIRED_AUTHORITY_FACTS)[number], z.ZodNullable<z.ZodUUID>>),
       account_hierarchy: z.uuid().nullable().optional(),
       account_context: z.uuid().nullable().optional(),
+      price_offer: z.uuid().nullable().optional(),
+      contract: z.uuid().nullable().optional(),
+      entitlement: z.uuid().nullable().optional(),
     }),
   })
   .readonly();

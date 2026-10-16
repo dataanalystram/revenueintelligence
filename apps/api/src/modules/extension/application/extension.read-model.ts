@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import {
   decideExtensionUse,
+  EXTENSION_COMMERCIAL_TARGETS,
   displayExtensionValue,
   isExtensionUse,
   parsedFromStored,
@@ -80,6 +81,18 @@ const PAGE_MAX = 500;
  * needs the same explicit grant as the context's own confidential attributes.
  */
 const ACCOUNT_CONTEXT_CONFIDENTIAL = 'data.account_context.read_confidential';
+/**
+ * M10F (plan §16, V21): confidential extension values on a `price_offer` / `contract` /
+ * `entitlement` target are commercial confidential data: releasing them needs the
+ * explicit commercial grant (no bypass through data.extension.read).
+ */
+const COMMERCIAL_CONFIDENTIAL = 'data.commercial.read_confidential';
+const COMMERCIAL_KINDS: ReadonlySet<string> = new Set(EXTENSION_COMMERCIAL_TARGETS);
+
+type ConfidentialGrants = {
+  readonly accountContext?: AuthorizedContext<typeof ACCOUNT_CONTEXT_CONFIDENTIAL>;
+  readonly commercial?: AuthorizedContext<typeof COMMERCIAL_CONFIDENTIAL>;
+};
 
 /**
  * `ExtensionUseGuard` (M10D plan §6, Q21): every reader of extension values
@@ -132,29 +145,46 @@ export class ExtensionReadModel {
 
   /**
    * M10E hardening #90 (re-review m2): `includeConfidential` over any `account_context`
-   * target also needs data.account_context.read_confidential, for the read's own actor
-   * and tenant (a caller cannot name another), through the WriteAuthorizer and its
-   * explicit tenant grants. Without it the whole read is refused (a `denied` audit event
-   * naming the capability, AuthorizationDeniedError), never silently redacted; decided
-   * before anything is read, whatever the targets hold (no existence oracle). Other
-   * target kinds keep the M10D behaviour (data.extension.read + the audited flag).
+   * target also needs data.account_context.read_confidential; M10F (V21): over any
+   * `price_offer` / `contract` / `entitlement` target data.commercial.read_confidential —
+   * for the read's own actor and tenant (a caller cannot name another), through the
+   * WriteAuthorizer and its explicit tenant grants. Without it the whole read is refused
+   * (a `denied` audit event naming the capability, AuthorizationDeniedError), never
+   * silently redacted; decided before anything is read, whatever the targets hold (no
+   * existence oracle). Other target kinds keep the M10D behaviour (data.extension.read +
+   * the audited flag).
    */
-  private async accountContextConfidential(
+  private async confidentialGrants(
     actx: AuthorizedContext<'data.extension.read'>,
     targets: readonly ExtensionTarget[],
     includeConfidential: boolean,
     targetRef: string,
-  ): Promise<AuthorizedContext<typeof ACCOUNT_CONTEXT_CONFIDENTIAL> | undefined> {
-    if (!includeConfidential || !targets.some((t) => t.kind === 'account_context')) {
-      return undefined;
-    }
-    return this.authorizer.authorize(actx.tenant, actx.actor, ACCOUNT_CONTEXT_CONFIDENTIAL, {
-      action: 'extension.read',
-      targetKind: 'extension_value',
-      targetRef,
-      details: { operation: 'values', includeConfidential: true, targetKind: 'account_context' },
-      correlationId: actx.correlationId,
-    });
+  ): Promise<ConfidentialGrants> {
+    if (!includeConfidential) return {};
+    const authorize = <
+      C extends typeof ACCOUNT_CONTEXT_CONFIDENTIAL | typeof COMMERCIAL_CONFIDENTIAL,
+    >(
+      capability: C,
+      targetKind: string,
+    ) =>
+      this.authorizer.authorize(actx.tenant, actx.actor, capability, {
+        action: 'extension.read',
+        targetKind: 'extension_value',
+        targetRef,
+        details: { operation: 'values', includeConfidential: true, targetKind },
+        correlationId: actx.correlationId,
+      });
+    const accountContext = targets.some((t) => t.kind === 'account_context')
+      ? await authorize(ACCOUNT_CONTEXT_CONFIDENTIAL, 'account_context')
+      : undefined;
+    const commercialKind = targets.find((t) => COMMERCIAL_KINDS.has(t.kind))?.kind;
+    const commercial = commercialKind
+      ? await authorize(COMMERCIAL_CONFIDENTIAL, commercialKind)
+      : undefined;
+    return {
+      ...(accountContext ? { accountContext } : {}),
+      ...(commercial ? { commercial } : {}),
+    };
   }
 
   @AuditFailures('extension.read', 'extension_value')
@@ -170,7 +200,7 @@ export class ExtensionReadModel {
     }
     const parsed = targets.map((t) => parseTarget(t));
     const ref = parsed.length === 1 ? targetRef(parsed[0]!) : `${parsed.length}_targets`;
-    const confidential = await this.accountContextConfidential(
+    const grants = await this.confidentialGrants(
       actx,
       parsed,
       options.includeConfidential === true,
@@ -178,9 +208,10 @@ export class ExtensionReadModel {
     );
     return this.db.transaction(actx.tenant, async (tx) => {
       const registry = await this.store.registry(tx);
-      const views = await this.load(tx, registry, use, parsed, options, confidential !== undefined);
-      // Granted: the read's single event names the confidential capability.
-      await this.audit.record(tx, confidential ?? actx, {
+      const views = await this.load(tx, registry, use, parsed, options, grants);
+      // Granted: the read's single event names the confidential capability (the
+      // commercial one when both were needed; the flags name both).
+      await this.audit.record(tx, grants.commercial ?? grants.accountContext ?? actx, {
         action: 'extension.read',
         targetKind: 'extension_value',
         targetRef: ref,
@@ -189,7 +220,8 @@ export class ExtensionReadModel {
           targets: parsed.length,
           values: views.length,
           includeConfidential: options.includeConfidential === true,
-          ...(confidential ? { accountContextConfidential: true } : {}),
+          ...(grants.accountContext ? { accountContextConfidential: true } : {}),
+          ...(grants.commercial ? { commercialConfidential: true } : {}),
         },
       });
       return views;
@@ -281,7 +313,7 @@ export class ExtensionReadModel {
     use: string,
     targets: readonly ExtensionTarget[],
     options: ExtensionReadOptions,
-    accountContextConfidential = false,
+    grants: ConfidentialGrants = {},
   ): Promise<ExtensionValueView[]> {
     const fields = [...registry.byKey.values()].filter((e) => e.definition.kind === 'field');
     const allowed = new Set(this.guard.require(use, fields, options.fields));
@@ -304,12 +336,17 @@ export class ExtensionReadModel {
         loaded.push({ kind, row, parsed: parsedFromStored(row, items.get(row.id) ?? []) });
       }
     }
-    // Confidential values on account_context targets only with the authorized grant (#90 m2).
+    // Confidential values on account_context targets only with the authorized grant (#90 m2),
+    // on commercial targets only with the commercial grant (M10F V21).
     const isShown = (kind: ExtensionTargetKind, sensitivity: string) =>
       SHOWN_BY_DEFAULT.has(sensitivity) ||
       (options.includeConfidential === true &&
         sensitivity === 'confidential' &&
-        (kind !== 'account_context' || accountContextConfidential));
+        (kind === 'account_context'
+          ? grants.accountContext !== undefined
+          : COMMERCIAL_KINDS.has(kind)
+            ? grants.commercial !== undefined
+            : true));
     // Reference values: merge lineage resolved in one batch (no per-row lookup, plan §8).
     const refs: ExtensionTarget[] = [];
     for (const { kind, row, parsed } of loaded) {

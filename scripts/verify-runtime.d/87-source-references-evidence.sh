@@ -111,23 +111,24 @@ sr_integrity() {
 check "integrity verification runs the six M10B checks with zero findings" sr_integrity
 
 sr_adoption() {
-  # M10C / M10D / M10E: a new tenant adopts 0.5; roll back one MINOR at a time to 0.2 first.
+  # M10C / M10D / M10E / M10F: a new tenant adopts 0.6; roll back one MINOR at a time to 0.2 first.
+  sr_cli canonical adopt --tenant "$SR_TENANT" --version 0.5 --expected-current 0.6 --actor runtime-refs --execute >"$SR_OUT/adopt-05-from-06.json" || return 1
   sr_cli canonical adopt --tenant "$SR_TENANT" --version 0.4 --expected-current 0.5 --actor runtime-refs --execute >"$SR_OUT/adopt-04-from-05.json" || return 1
   sr_cli canonical adopt --tenant "$SR_TENANT" --version 0.3 --expected-current 0.4 --actor runtime-refs --execute >"$SR_OUT/adopt-03-from-04.json" || return 1
   sr_cli canonical adopt --tenant "$SR_TENANT" --version 0.2 --expected-current 0.3 --actor runtime-refs --execute >"$SR_OUT/adopt-02-from-03.json" || return 1
   sr_cli canonical adopt --tenant "$SR_TENANT" --version 0.1 --expected-current 0.2 >"$SR_OUT/adopt-dry.json" || return 1
   grep -q '"dryRun": true' "$SR_OUT/adopt-dry.json" && grep -q 'evidence_links' "$SR_OUT/adopt-dry.json" || return 1
-  [ "$(sr_sql "SELECT count(*) FROM tenant_canonical_adoptions WHERE tenant_id = '$(sr_tid)'")" = 4 ] || return 1
+  [ "$(sr_sql "SELECT count(*) FROM tenant_canonical_adoptions WHERE tenant_id = '$(sr_tid)'")" = 5 ] || return 1
   sr_cli canonical adopt --tenant "$SR_TENANT" --version 0.1 --expected-current 0.2 --actor runtime-refs --execute >"$SR_OUT/adopt-01.json" || return 1
   sr_cli canonical adopt --tenant "$SR_TENANT" --version 0.2 --expected-current 0.1 >"$SR_OUT/adopt-02-dry.json" || return 1
   grep -q '"dryRun": true' "$SR_OUT/adopt-02-dry.json" && grep -q 'observed_generic_source_references' "$SR_OUT/adopt-02-dry.json" || return 1
   sr_cli canonical adopt --tenant "$SR_TENANT" --version 0.2 --expected-current 0.1 --actor runtime-refs --execute >"$SR_OUT/adopt-02.json" || return 1
   [ "$(sr_sql "SELECT string_agg(version || ':' || reason, ',' ORDER BY seq) FROM tenant_canonical_adoptions WHERE tenant_id = '$(sr_tid)'")" = \
-    "0.5:new_tenant,0.4:rollback,0.3:rollback,0.2:rollback,0.1:rollback,0.2:operator_adoption" ] || return 1
+    "0.6:new_tenant,0.5:rollback,0.4:rollback,0.3:rollback,0.2:rollback,0.1:rollback,0.2:operator_adoption" ] || return 1
   # References are kept across the rollback and re-adoption.
   [ "$(sr_refs)" = "$(printf 'rt-1|core|declared|active\nrt-2|core|declared|active')" ]
 }
-check "adoption 0.5 → 0.4 → 0.3 → 0.2 → 0.1 → 0.2: dry runs list the M10B features and write nothing; references kept" sr_adoption
+check "adoption 0.6 → 0.5 → 0.4 → 0.3 → 0.2 → 0.1 → 0.2: dry runs list the M10B features and write nothing; references kept" sr_adoption
 
 sr_app_role() {
   sr_app_refused "DELETE FROM tenant_source_references" || return 1

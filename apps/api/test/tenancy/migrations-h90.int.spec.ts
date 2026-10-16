@@ -14,6 +14,8 @@ import { createDatabase, migrationsBefore, schemaSnapshot } from '../support/mig
 
 /** M10E hardening #90 migration (explicit capability grants, policy v7). */
 const H90 = '20270126130000_m10e_h90_confidential_read_grants';
+/** M10F (commercial, canonical 0.6) sits on top of #90: its (data-free) down-script runs first of all. */
+const M10F_DOWN = resolve('prisma/rollback/20270202120000_m10f_commercial.down.sql');
 const H90_DOWN = resolve(`prisma/rollback/${H90}.down.sql`);
 const TABLE = 'tenant_capability_grants';
 
@@ -111,7 +113,11 @@ describe('M10E hardening #90 migration and schema guard', () => {
     expect(await checkValues(cleanUrl, 'tenant_capability_grants_capability_grantable')).toEqual(
       sorted(GRANTABLE_CAPABILITIES),
     );
-    expect(GRANTABLE_CAPABILITIES).toEqual(['data.account_context.read_confidential']);
+    // M10F: data.commercial.read_confidential is the second grantable capability.
+    expect(GRANTABLE_CAPABILITIES).toEqual([
+      'data.account_context.read_confidential',
+      'data.commercial.read_confidential',
+    ]);
     expect(await checkValues(cleanUrl, 'tenant_audit_events_capability_valid')).toEqual(
       sorted(CAPABILITIES),
     );
@@ -183,6 +189,8 @@ describe('M10E hardening #90 migration and schema guard', () => {
       expect(await q(url, `SELECT count(*)::int AS n FROM ${TABLE}`)).toEqual([{ n: 0 }]);
       await expect(migrate(url)).resolves.toMatch(/No pending migrations/);
       const latest = await schemaSnapshot(url);
+      // M10F (20270202120000) was applied on top of #90: roll it back first.
+      await withAdmin(url, (db) => db.query(readFileSync(M10F_DOWN, 'utf8')));
       const down = readFileSync(H90_DOWN, 'utf8');
       const audit = (capability: string, action: string) =>
         `INSERT INTO tenant_audit_events (tenant_id, id, seq, occurred_at, actor_kind, actor_id, actor_assurance,

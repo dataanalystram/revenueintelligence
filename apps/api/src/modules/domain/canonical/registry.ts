@@ -23,6 +23,9 @@ export const AVAILABLE_REGISTRY_KINDS: readonly RegistryKind[] = [
   'context_type',
 ];
 
+/** The available registry kinds published with canonical 0.5 (frozen for its catalogue hash; M10F adds none, Q3). */
+export const REGISTRY_KINDS_0_5 = ['data_policy', 'extension', 'context_type'] as const;
+
 export const REGISTRY_ENTRY_STATUSES = ['active', 'retired', 'promoted'] as const;
 export type RegistryEntryStatus = (typeof REGISTRY_ENTRY_STATUSES)[number];
 

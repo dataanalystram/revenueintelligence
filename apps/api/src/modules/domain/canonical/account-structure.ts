@@ -6,6 +6,7 @@
  */
 
 import { ACCOUNT_CONTEXT_CONFLICT_KINDS } from './account-context';
+import { COMMERCIAL_CONFLICT_KINDS } from './commercial';
 import { EXTENSION_CONFLICT_KINDS } from './extension';
 
 /** Minimum canonical version for hierarchy / affiliation writes and the new mapping targets (plan §7). */
@@ -74,7 +75,7 @@ export const ACCOUNT_STRUCTURE_CONFLICT_KINDS = [
   'affiliation_endpoint_unresolved',
 ] as const;
 
-/** Every `tenant_identity_conflicts.kind` (M6 kinds + M10C + M10D + M10E); the CHECK equals this list. */
+/** Every `tenant_identity_conflicts.kind` (M6 kinds + M10C + M10D + M10E + M10F); the CHECK equals this list. */
 export const IDENTITY_CONFLICT_KINDS = [
   'shared_email',
   'merge_across_systems',
@@ -82,6 +83,7 @@ export const IDENTITY_CONFLICT_KINDS = [
   ...ACCOUNT_STRUCTURE_CONFLICT_KINDS,
   ...EXTENSION_CONFLICT_KINDS,
   ...ACCOUNT_CONTEXT_CONFLICT_KINDS,
+  ...COMMERCIAL_CONFLICT_KINDS,
 ] as const;
 export type IdentityConflictKind = (typeof IDENTITY_CONFLICT_KINDS)[number];
 

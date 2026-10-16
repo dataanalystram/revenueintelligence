@@ -3,6 +3,7 @@ import { Inject, Injectable, Optional } from '@nestjs/common';
 import { APP_CONFIG, type AppConfig } from '../../../platform/config';
 import {
   canonicalDecimal,
+  COMMERCIAL_MODULE_KEY,
   canonicalHash,
   displayExtensionValue,
   findSecretLike,
@@ -325,7 +326,118 @@ export class IntegrityVerificationService {
     await this.accountContextChecks(tx, add);
     // M10D hardening #83 (ADR 0030 addendum).
     await this.customObjectOwnerChecks(tx, add);
+    // M10F plan §15 (ADR 0032).
+    await this.commercialChecks(tx, add);
     return findings;
+  }
+
+  /**
+   * 33–38. The six M10F checks: read-only, identifiers only, nothing repaired.
+   * The deferred guards / acyclic triggers make 33–37 impossible through the
+   * app role; they detect owner tampering or a guard regression. 38 detects a
+   * line whose stored `contract_id` disagrees with what its `agreement_ref`
+   * resolves to now (module enabled, generic contract reference of the same
+   * account, no operator hold on the line's contract reference).
+   */
+  private async commercialChecks(
+    tx: TenantTransaction,
+    add: (check: IntegrityFinding['check'], refs: readonly string[]) => void,
+  ): Promise<void> {
+    const db = tenantClient(tx);
+    const t = tx.tenantId;
+    const refs = async (sql: string): Promise<string[]> =>
+      (
+        await db.$queryRawUnsafe<{ ref: string }[]>(
+          `${sql} ORDER BY 1 LIMIT ${INTEGRITY_MAX_FINDINGS}`,
+          t,
+        )
+      ).map((r) => r.ref);
+    // 33. A line's contract belongs to the line's account.
+    add(
+      'commercial_line_contract_company_mismatch',
+      await refs(`SELECT s.id::text AS ref FROM tenant_subscriptions s
+                    JOIN tenant_contracts c ON c.tenant_id = s.tenant_id AND c.id = s.contract_id
+                   WHERE s.tenant_id = $1::uuid AND s.company_id <> c.company_id`),
+    );
+    // 34. A line's price offer is an offer of the line's product.
+    add(
+      'commercial_line_price_offer_product_mismatch',
+      await refs(`SELECT s.id::text AS ref FROM tenant_subscriptions s
+                    JOIN tenant_price_offers o ON o.tenant_id = s.tenant_id AND o.id = s.price_offer_id
+                   WHERE s.tenant_id = $1::uuid AND s.product_key <> o.product_key`),
+    );
+    // 35. No contract reaches itself over the union of renews / amends / parent (Q7),
+    // walked from every linked contract, bounded by the trigger ceiling (64).
+    add(
+      'commercial_contract_link_cycle',
+      await refs(`WITH RECURSIVE edges AS (
+                    SELECT id AS src, unnest(ARRAY[renews_contract_id, amends_contract_id, parent_contract_id]) AS dst
+                      FROM tenant_contracts WHERE tenant_id = $1::uuid
+                  ), walk (start_id, cur, steps, reached) AS (
+                    SELECT e.src, e.dst, 1, e.dst = e.src FROM edges e WHERE e.dst IS NOT NULL
+                    UNION
+                    SELECT w.start_id, e.dst, w.steps + 1, e.dst = w.start_id
+                      FROM walk w JOIN edges e ON e.src = w.cur
+                     WHERE NOT w.reached AND e.dst IS NOT NULL AND w.steps < 65
+                  )
+                  SELECT DISTINCT start_id::text AS ref FROM walk WHERE reached`),
+    );
+    // 36. Every link names a contract of the same account (Q12).
+    add(
+      'commercial_contract_link_cross_account',
+      await refs(`SELECT c.id::text || '/' || l.kind AS ref
+                    FROM tenant_contracts c
+                    CROSS JOIN LATERAL (VALUES ('renews', c.renews_contract_id),
+                                               ('amends', c.amends_contract_id),
+                                               ('parent', c.parent_contract_id)) AS l(kind, target)
+                    JOIN tenant_contracts x ON x.tenant_id = c.tenant_id AND x.id = l.target
+                   WHERE c.tenant_id = $1::uuid AND x.company_id <> c.company_id`),
+    );
+    // 37. No line reaches itself through supersedes_line_id (Q11), bounded (64).
+    add(
+      'commercial_line_lineage_cycle',
+      await refs(`WITH RECURSIVE walk (start_id, cur, steps, reached) AS (
+                    SELECT s.id, s.supersedes_line_id, 1, s.supersedes_line_id = s.id
+                      FROM tenant_subscriptions s
+                     WHERE s.tenant_id = $1::uuid AND s.supersedes_line_id IS NOT NULL
+                    UNION
+                    SELECT w.start_id, s.supersedes_line_id, w.steps + 1, s.supersedes_line_id = w.start_id
+                      FROM walk w JOIN tenant_subscriptions s ON s.tenant_id = $1::uuid AND s.id = w.cur
+                     WHERE NOT w.reached AND s.supersedes_line_id IS NOT NULL AND w.steps < 65
+                  )
+                  SELECT DISTINCT start_id::text AS ref FROM walk WHERE reached`),
+    );
+    // 38. agreement_ref → contract_id drift (module enabled only).
+    const enabled = await db.tenantModuleSetting.findUnique({
+      where: { tenantId_moduleKey: { tenantId: t, moduleKey: COMMERCIAL_MODULE_KEY } },
+      select: { enabled: true },
+    });
+    if (enabled?.enabled !== true) return;
+    add(
+      'commercial_agreement_contract_drift',
+      await refs(`SELECT s.id::text AS ref FROM tenant_subscriptions s
+                    JOIN tenant_source_references r
+                      ON r.tenant_id = s.tenant_id AND r.system = s.agreement_ref_system
+                     AND r.object_type = s.agreement_ref_object_type
+                     AND r.external_id = s.agreement_ref_external_id
+                     AND r.entity_kind = 'contract' AND r.entity_id IS NOT NULL
+                    JOIN tenant_contracts c ON c.tenant_id = r.tenant_id AND c.id = r.entity_id
+                   WHERE s.tenant_id = $1::uuid
+                     AND s.agreement_ref_external_id IS NOT NULL
+                     AND c.company_id = s.company_id
+                     AND s.contract_id IS DISTINCT FROM c.id
+                     AND NOT EXISTS (
+                           SELECT 1 FROM tenant_context_changes h
+                            WHERE h.tenant_id = s.tenant_id AND h.entity_kind = 'subscription'
+                              AND h.entity_id = s.id AND h.origin = 'human'
+                              AND 'contractId' = ANY (h.changed_fields)
+                              AND NOT EXISTS (
+                                    SELECT 1 FROM tenant_context_changes x
+                                     WHERE x.tenant_id = h.tenant_id AND x.entity_kind = 'subscription'
+                                       AND x.entity_id = h.entity_id AND x.origin = 'human'
+                                       AND 'humanOverride' = ANY (x.changed_fields)
+                                       AND (x.ingested_at, x.id) > (h.ingested_at, h.id)))`),
+    );
   }
 
   /**

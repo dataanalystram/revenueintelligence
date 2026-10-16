@@ -27,11 +27,31 @@ export const VALUE_HISTORY_FIELDS = {
     quantity: { table: 'tenant_subscriptions', column: 'quantity' },
     // M10E (Q23): the line's account context.
     context_id: { table: 'tenant_subscriptions', column: 'context_id' },
+    // M10F (M10 §10 "Subscription `contract_id`"; plan §9): the line's contract and price offer.
+    contract_id: { table: 'tenant_subscriptions', column: 'contract_id' },
+    price_offer_id: { table: 'tenant_subscriptions', column: 'price_offer_id' },
   },
   // M10E (M10 §10 "AccountContext owner / status").
   account_context: {
     owner_ref: { table: 'tenant_account_contexts', column: 'owner_ref' },
     status: { table: 'tenant_account_contexts', column: 'status' },
+  },
+  // M10F (M10 §10 "Contract status / dates"; plan §9). renewal_date and list_amount_minor are
+  // declared `value_free` in the classification manifest: recorded without values (Q18).
+  contract: {
+    status: { table: 'tenant_contracts', column: 'status' },
+    starts_at: { table: 'tenant_contracts', column: 'starts_at' },
+    ends_at: { table: 'tenant_contracts', column: 'ends_at' },
+    renewal_date: { table: 'tenant_contracts', column: 'renewal_date' },
+  },
+  price_offer: {
+    status: { table: 'tenant_price_offers', column: 'status' },
+    list_amount_minor: { table: 'tenant_price_offers', column: 'list_amount_minor' },
+  },
+  entitlement: {
+    status: { table: 'tenant_entitlements', column: 'status' },
+    starts_at: { table: 'tenant_entitlements', column: 'starts_at' },
+    ends_at: { table: 'tenant_entitlements', column: 'ends_at' },
   },
 } as const satisfies Readonly<
   Record<string, Readonly<Record<string, { readonly table: string; readonly column: string }>>>
@@ -86,6 +106,13 @@ export type ValueHistoryDecision =
  * Per field: not in the catalogue → nothing; sensitive and not allowed by the
  * published data policy → a value-free row; otherwise a full row (policy-allowed
  * sensitive fields carry `sensitive_value_history` and the policy version).
+ *
+ * M10F (plan §9, Q18): a column that is not sensitive for history but whose
+ * manifest declares `history: 'value_free'` (the financial `renewal_date` and
+ * `list_amount_minor`) is recorded value-free too: who / when / change id,
+ * never the value. Sensitive columns keep the rule above unchanged (a published
+ * data policy may still allow their values), so no pre-M10F decision moves;
+ * `isSensitiveForHistory` is not widened (tech debt #94).
  */
 export function decideValueHistory(input: {
   readonly entityKind: string;
@@ -98,6 +125,9 @@ export function decideValueHistory(input: {
     return { record: false };
   }
   if (!isSensitiveForHistory(input.classification)) {
+    if (input.classification.history === 'value_free') {
+      return { record: true, valuesRecorded: false, retentionClass: 'canonical_lifecycle' };
+    }
     return {
       record: true,
       valuesRecorded: true,

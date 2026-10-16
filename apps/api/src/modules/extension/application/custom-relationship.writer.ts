@@ -3,6 +3,8 @@ import { Injectable } from '@nestjs/common';
 import {
   ACCOUNT_CONTEXT_MIN_VERSION,
   ACCOUNT_CONTEXT_MODULE_KEY,
+  COMMERCIAL_MIN_VERSION,
+  COMMERCIAL_MODULE_KEY,
   extensionTargetKind,
   type ExtensionTargetKind,
 } from '../../domain';
@@ -227,14 +229,23 @@ export class CustomRelationshipWriter {
     return role !== undefined && role === declared ? role : (declared ?? null);
   }
 
-  /** M10E (Q19, review M2): the account_context gate over the ends' kinds (no audit). */
+  /**
+   * M10E (Q19, review M2): the account_context gate over the ends' kinds (no audit);
+   * M10F (Q21): a price_offer / contract / entitlement end needs 0.6 + module commercial.
+   */
   private async endsGate(
     tx: TenantTransaction,
     kinds: readonly (string | undefined)[],
   ): Promise<'ok' | 'canonical_version_too_low' | 'module_disabled'> {
-    if (!kinds.includes('account_context')) return 'ok';
-    const state = await this.store.targetGate(tx, { kind: 'account_context', id: '' });
-    return state === 'canonical_version_too_low' || state === 'module_disabled' ? state : 'ok';
+    for (const kind of [...new Set(kinds)]) {
+      if (!kind) continue;
+      const state = await this.store.targetGate(tx, {
+        kind: kind as ExtensionTarget['kind'],
+        id: '',
+      });
+      if (state === 'canonical_version_too_low' || state === 'module_disabled') return state;
+    }
+    return 'ok';
   }
 
   /** Operator form: refused with the canonical codes; module_disabled audited by the module gate. */
@@ -243,15 +254,26 @@ export class CustomRelationshipWriter {
     actx: AuthorizedContext,
     kinds: readonly (string | undefined)[],
   ): Promise<void> {
-    const state = await this.endsGate(tx, kinds);
-    if (state === 'canonical_version_too_low') {
-      throw new GovernanceError(
-        'canonical_version_too_low',
-        `Relationships with an account context end need canonical ${ACCOUNT_CONTEXT_MIN_VERSION}`,
-      );
-    }
-    if (state === 'module_disabled') {
-      await this.moduleGate.require(tx, actx, ACCOUNT_CONTEXT_MODULE_KEY);
+    // The account_context end first (M10E), then the commercial ends (M10F).
+    const context = kinds.filter((k) => k === 'account_context');
+    for (const group of [context, kinds.filter((k) => k !== 'account_context')]) {
+      const state = await this.endsGate(tx, group);
+      const isContext = group === context;
+      if (state === 'canonical_version_too_low') {
+        throw new GovernanceError(
+          'canonical_version_too_low',
+          isContext
+            ? `Relationships with an account context end need canonical ${ACCOUNT_CONTEXT_MIN_VERSION}`
+            : `Relationships with a commercial end need canonical ${COMMERCIAL_MIN_VERSION}`,
+        );
+      }
+      if (state === 'module_disabled') {
+        await this.moduleGate.require(
+          tx,
+          actx,
+          isContext ? ACCOUNT_CONTEXT_MODULE_KEY : COMMERCIAL_MODULE_KEY,
+        );
+      }
     }
   }
 

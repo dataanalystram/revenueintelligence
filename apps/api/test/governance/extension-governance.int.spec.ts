@@ -195,7 +195,7 @@ describe('M10D extension governance', () => {
         valid: true,
         issues: [],
         currentVersion: 0,
-        canonicalVersionMin: '0.5',
+        canonicalVersionMin: '0.6',
       });
       expect(dry.contentHash).toMatch(/^[0-9a-f]{64}$/);
       expect(await registry().dryRun(t, 'extension', structuredClone(doc))).toMatchObject({
@@ -843,7 +843,12 @@ describe('M10D extension governance', () => {
           `SELECT version, reason FROM tenant_canonical_adoptions WHERE tenant_id = $1 ORDER BY seq`,
           [t.tenantId],
         ),
-      ).toEqual([{ version: '0.5', reason: 'new_tenant' }]);
+      ).toEqual([{ version: '0.6', reason: 'new_tenant' }]);
+      // M10F: new tenants adopt 0.6; step back to 0.5 first.
+      await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
+        target: '0.5',
+        expectedCurrent: '0.6',
+      });
       // M10E: new tenants adopt 0.5; this test exercises the 0.4 <-> 0.3 boundary.
       await adoption().adopt(await authz(t, 'config.canonical.adopt'), {
         target: '0.4',
