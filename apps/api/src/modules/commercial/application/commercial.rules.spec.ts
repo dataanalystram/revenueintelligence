@@ -108,7 +108,7 @@ describe('M10F commercial rules (plan §5, V6 / V7 / V10 / V17)', () => {
   });
 
   it('Q17: a source value never overwrites a held attribute; the difference is a disagreement', () => {
-    const d = decideAttributes(
+    const d = decideAttributes<'status' | 'endsAt'>(
       { status: 'active', endsAt: '2027-01-01T00:00:00.000Z' },
       { status: 'terminated', endsAt: '2027-01-01T00:00:00Z' },
       new Set(['status']),
