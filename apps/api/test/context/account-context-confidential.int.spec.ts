@@ -367,6 +367,16 @@ describe('M10E hardening #90: confidential AccountContext reads', () => {
         `UPDATE tenant_capability_grants SET capability = 'security.audit.read', version = version + 1`,
         /capability_grant_identity_immutable|capability_grantable/,
       );
+      // Re-review n1: a well-formed revoke that does not bump the version is refused by the
+      // guard trigger (no silent state change without a new version), as is a version jump.
+      const revokeSql = (version: string) =>
+        `UPDATE tenant_capability_grants SET active = false, revoked_at = now(),
+                revoked_by_kind = 'operator', revoked_by_id = 'sql-grantor',
+                revoked_by_assurance = 'asserted', version = ${version}
+          WHERE actor_id = 'sql-reader'`;
+      await refused(revokeSql('version'), /capability_grant_version_not_incremented/);
+      await refused(revokeSql('version + 2'), /capability_grant_version_not_incremented/);
+      expect(await grants().holds(tA, operatorActor('sql-reader'), CONFIDENTIAL)).toBe(true);
       await refused(`DELETE FROM tenant_capability_grants`, /permission denied/);
       await revoke(tA, 'sql-reader');
     });
