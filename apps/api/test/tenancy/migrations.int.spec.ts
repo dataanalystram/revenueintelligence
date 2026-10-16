@@ -661,10 +661,11 @@ describe('database migrations and schema guard', () => {
     });
 
     it('every polymorphic column set (<p>_kind + <p>_id) references the entity index by id and by key', async () => {
-      // Actor columns name a security actor, not an entity. tenant_context_changes
+      // Actor columns name a security actor, not an entity (M10E hardening #90: the
+      // grantor / revoker of a capability grant, too). tenant_context_changes
       // predates the index (M6): its entity columns are a historical log that
       // outlives physical deletes, recorded in ADR 0027 as the one exception.
-      const NOT_ENTITY_REFERENCES = ['actor', 'updated_by'];
+      const NOT_ENTITY_REFERENCES = ['actor', 'updated_by', 'granted_by', 'revoked_by'];
       const LEGACY = ['tenant_context_changes.entity'];
       // A view carries no foreign keys; the stores it unions are checked as tables (M10B).
       const VIEWS = ['source_reference_index.entity'];

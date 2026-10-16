@@ -163,8 +163,10 @@ read is audited under that capability with the released keys only. Ordinary read
 authorizer unit (`security.spec.ts`, `write-authorizer-grants.spec.ts`, S2 static guard), integration
 (`account-context-confidential.int.spec.ts`: default redaction, refusal + denied audit, success + allowed audit,
 revoke, tenant isolation of contexts and grants, grant rules, adversarial), migration round trip
-(`migrations-h90.int.spec.ts`), runtime script 90. Mutation proof: skipping the extra capability check fails the
-refusal test (notes: `work/h90-notes.md`). ADR 0031 addendum.
+(`migrations-h90.int.spec.ts`), runtime script 90. Mutation proofs (CI, throwaway branches, PRs closed unmerged): **VM1**
+the read model skips the extra capability check → the refusal test fails (run 38825269777, PR #116); **VM2** the
+WriteAuthorizer allows a grantable capability without the grant lookup → the authorizer unit tests and the refusal
+test fail (run 38825272654, PR #117). ADR 0031 addendum.
 
 ## Known gaps / judgment calls
 
