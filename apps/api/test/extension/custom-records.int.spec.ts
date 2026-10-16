@@ -15,6 +15,7 @@ import {
   extIssuesOf,
   extensionTenant,
   importConnectionId,
+  plantCustomObjectOwners,
   recordsOf,
   REASON,
   services,
@@ -49,6 +50,21 @@ describe('M10D custom records (CustomRecordWriter)', () => {
     kind: 'company',
     ref: { system: 'hubspot', objectType: 'companies', id },
   });
+  /**
+   * Tech debt #83: source writes land only from the object's owner connection.
+   * These writer-level cases observe as the tenant's import connection, planted
+   * as the owner of `site` and `asset` (no published mapping at this level).
+   */
+  const owners = new Map<string, string>();
+  const ownerOf = async (t: TenantContext) => {
+    let id = owners.get(t.tenantId);
+    if (!id) {
+      id = await importConnectionId(c, t);
+      await plantCustomObjectOwners(c, t, id, ['site', 'asset']);
+      owners.set(t.tenantId, id);
+    }
+    return id;
+  };
   const observe = async (
     t: TenantContext,
     over: Partial<CustomRecordObservation> & { id: string },
@@ -63,6 +79,7 @@ describe('M10D custom records (CustomRecordWriter)', () => {
       observedAt: new Date(),
       provenance: sourceProvenance(id, {
         source: { system: 'hubspot', objectType: 'p_sites', id },
+        connectionId: await ownerOf(t),
       }),
       ...rest,
     });
@@ -409,6 +426,44 @@ describe('M10D custom records (CustomRecordWriter)', () => {
         provenance: sourceProvenance('S-op'),
       });
       expect(src).toMatchObject({ humanOverride: 1, written: 0 });
+    });
+  });
+
+  describe('tech debt #83 (Q14): source writes only from the owning connection', () => {
+    it('a source write from a connection that does not own the object, with no connection, or with no owner is rejected object_not_owned and writes nothing', async () => {
+      const t = await extensionTenant(c, 'crowner');
+      const owner = await ownerOf(t);
+      const [other] = await c.sql<{ id: string }>(
+        `INSERT INTO tenant_source_connections (tenant_id, id, kind, label, mapping_mode, updated_at)
+         VALUES ($1, gen_random_uuid(), 'sugar', 'Other (TEST)', 'versioned', now()) RETURNING id::text`,
+        [t.tenantId],
+      );
+      const as = (id: string, connectionId?: string) =>
+        observe(t, {
+          id,
+          objectKey: 'asset',
+          provenance: sourceProvenance(id, {
+            source: { system: 'hubspot', objectType: 'p_sites', id },
+            ...(connectionId ? { connectionId } : {}),
+          }),
+        });
+      expect(await as('A-1', other!.id)).toEqual({
+        status: 'rejected',
+        reason: 'object_not_owned',
+      });
+      expect(await as('A-2')).toEqual({ status: 'rejected', reason: 'object_not_owned' });
+      expect(await recordsOf(c, t)).toEqual([]);
+      expect(await refsOf(t)).toEqual([]);
+      // The owner writes.
+      expect(await as('A-3', owner)).toMatchObject({ status: 'created' });
+      // Released (no owner): nobody's source write lands, the owner's included.
+      await c.sql(
+        `UPDATE tenant_custom_object_owners SET connection_id = NULL, mapping_version = NULL, released_at = now()
+          WHERE tenant_id = $1 AND object_key = 'asset'`,
+        [t.tenantId],
+      );
+      expect(await as('A-4', owner)).toEqual({ status: 'rejected', reason: 'object_not_owned' });
+      expect(await recordsOf(c, t)).toHaveLength(1);
     });
   });
 });

@@ -158,7 +158,8 @@ ex_integrity() {
   grep -q '"outcome": "passed"' "$EX_OUT/integrity.json" || return 1
   checks="$(ex_sql "SELECT checks::text FROM tenant_integrity_runs WHERE tenant_id = '$(ex_tid)' ORDER BY started_at DESC LIMIT 1")" || return 1
   for c in extension_value_type_mismatch extension_value_restricted extension_value_target_kind extension_items_parity \
-    extension_value_secret_like custom_record_parent_missing custom_relationship_cardinality extension_history_parity; do
+    extension_value_secret_like custom_record_parent_missing custom_relationship_cardinality extension_history_parity \
+    custom_object_owner_drift; do
     printf '%s' "$checks" | grep -q "$c" || {
       echo "    integrity run lacks check $c" >&2
       return 1

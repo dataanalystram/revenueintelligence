@@ -42,6 +42,8 @@ export const INTEGRITY_CHECKS = [
   'account_context_type_mismatch',
   'account_context_dangling_merge',
   'account_context_member_role_unknown',
+  // M10D hardening #83 (ADR 0030 addendum)
+  'custom_object_owner_drift',
 ] as const;
 export type IntegrityCheck = (typeof INTEGRITY_CHECKS)[number];
 

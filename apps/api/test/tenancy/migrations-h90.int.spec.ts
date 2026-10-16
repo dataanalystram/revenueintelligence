@@ -163,7 +163,8 @@ describe('M10E hardening #90 migration and schema guard', () => {
       const url = await createDatabase(pg, name);
       const dir = resolve(`test/.tmp/${name}-m10e`);
       try {
-        await migrate(url, ['--config', migrationsBefore(dir, '20270126')]);
+        // The state before #90: M10E plus M10D hardening #83 (20270126120000), which #90 sits on.
+        await migrate(url, ['--config', migrationsBefore(dir, '20270126130000')]);
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
