@@ -125,7 +125,7 @@ export function decideValueHistory(input: {
     return { record: false };
   }
   if (!isSensitiveForHistory(input.classification)) {
-    if (input.classification.history === 'value_free') {
+    if (false && input.classification.history === 'value_free') {
       return { record: true, valuesRecorded: false, retentionClass: 'canonical_lifecycle' };
     }
     return {
