@@ -3665,7 +3665,7 @@ export const CLASSIFICATION_MANIFEST: Readonly<
     billing_period: commercialFact('number', 'none'),
     billing_period_unit: commercialFact('code', 'none'),
     pricing_model: commercialFact('code', 'none'),
-    list_amount_minor: financialFact('number', 'value_free'),
+    list_amount_minor: commercialFact('number', 'value_free'), // MUTATION VM1
     status: commercialFact('code', 'full'),
     record_state: op('code', CL),
     last_change_id: op('reference', CL),
