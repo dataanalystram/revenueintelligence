@@ -116,7 +116,7 @@ describe('M10C account-structure governance', () => {
         `SELECT count(*)::int AS n FROM tenant_canonical_adoptions WHERE tenant_id = $1`,
         [t.tenantId],
       )) as [{ n: number }];
-      expect(n).toBe(4);
+      expect(n).toBe(5);
     });
 
     it('a generic person_affiliation reference needs canonical 0.3 and resolves to its affiliation', async () => {
