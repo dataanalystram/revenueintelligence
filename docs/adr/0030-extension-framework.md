@@ -162,7 +162,10 @@ pass and both commit; `CustomRecordWriter` did no owner check, so both would the
    the connection and to `(tenant, connection, version)` of `tenant_source_mapping_versions`; a state-shape CHECK
    (held = owner + version + claimed, not released; released = no owner, no version, `released_at`); a guard
    trigger (identity immutable; an owner change passes through released — no direct handover); forced RLS, the
-   tenant policy, tenant-id immutability; `SELECT / INSERT / UPDATE` for the app role, **no DELETE**.
+   tenant policy, tenant-id immutability; `SELECT / INSERT / UPDATE` for the app role, **no DELETE**. The guard
+   trigger prevents an _accidental_ direct handover by a bug; it is not a security boundary: code running as the app
+   role may release and re-claim in one transaction by design. The invariant it protects (at most one owner at any
+   instant) rests on the primary key.
 2. **Claimed in the publish transaction.** `SourceMappingsService.publish` claims the owner rows of every
    `custom_object:<key>` the new version sources **after inserting the version and before the audit event**, then
    releases the connection's other rows. A claim keeps the row (already ours, moving `mapping_version`), takes a
@@ -182,7 +185,9 @@ pass and both commit; `CustomRecordWriter` did no owner check, so both would the
    after the per-object lock and rejects (`rejected` / `object_not_owned`, counted on the run as
    `custom_record_rejected_object_not_owned`) a source write whose `provenance.connectionId` is not the owner —
    including a released object or a write with no connection. `FOR SHARE` makes a concurrent release / re-claim
-   wait for the write to commit, so the owner cannot change between the check and the write.
+   wait for the write to commit, so the owner cannot change between the check and the write; a write arriving
+   behind an uncommitted release waits for it and re-reads the released row (refused). No write of the old owner
+   commits after another connection's claim.
 6. **Backfill and refusal.** The migration inserts one held row per custom object of each connection's currently
    published mapping (lifecycle state `published`; `claimed_at` = that version's `published_at`), and **refuses
    with a clear error** (changing nothing) when two connections' published mappings already source one object, or
@@ -217,3 +222,18 @@ fix (CI run `38821831803` on `4614146` failed exactly that test; `a620ff9` is gr
 killed: owner rows skipped (VM1), primary key dropped (VM2), claim sort removed (VM3 — the opposite-order publishers
 deadlock, PostgreSQL aborts one with `P2034` instead of the Q14 refusal) and the writer owner check removed (VM4) —
 recorded in the M10D record (review section, "Tech debt #83 hardening") and in tech debt #83.
+
+**Re-review follow-up (PR #110 review m1, m2, n1–n3).**
+
+- **Stale writer under concurrency.** Two barrier tests in `test/sources/custom-object-owner.int.spec.ts`
+  ("stale writer"), two independent app-role sessions plus a barrier session, both orders: (a) the owner's source
+  write paused after its owner check — the retire waits on the writer's row lock (proven in `pg_locks`), the write
+  commits first, the other connection claims afterwards; (b) the retire paused after its release — the owner's write
+  waits on the releasing transaction and is refused `object_not_owned`. Mutation VM5 (`FOR SHARE` removed) is killed.
+- **Integrity check 32 `custom_object_owner_drift`.** The database only requires a held row's `mapping_version` to
+  exist, not to be the connection's _currently published_ version (such drift fails closed but was undetected). The
+  integrity run now applies the down-script's two consistency queries: a held row not supported by its connection's
+  published mapping of that version sourcing the object (`held:<key>/<connection>/v<n>`), and a published mapping
+  sourcing a custom object without its held row (`unheld:…`). Read-only, identifiers only, nothing repaired.
+- A foreign-key violation while claiming (no registry entry or version; unreachable after validation in the same
+  transaction) is reported as `mapping_invalid` / `invalid_entity` instead of a raw database error.

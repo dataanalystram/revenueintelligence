@@ -193,7 +193,8 @@ rejects a non-owner source write (`object_not_owned`).
 active rows: a partial unique index is not expressible in the Prisma schema without schema-guard drift (same reason as
 D1). Claim history is in the `mapping.publish` / `mapping.retire` audit details.
 
-**Tests.** `test/sources/custom-object-owner.int.spec.ts` (control, race, release / audit, no deadlock),
+**Tests.** `test/sources/custom-object-owner.int.spec.ts` (control, race, release / audit, no deadlock, stale writer
+× 2 orders, integrity `custom_object_owner_drift`),
 `test/tenancy/migrations-m10d-owner.int.spec.ts` (schema guard, raw SQL as the app role, migration on M10E data,
 down-script), `test/extension/custom-records.int.spec.ts` "tech debt #83 (Q14)".
 
@@ -202,14 +203,32 @@ down-script), `test/extension/custom-records.int.spec.ts` "tech debt #83 (Q14)".
 | `38821831803` | `4614146` | race test only, on unfixed code: **failed as intended** (both concurrent publications committed)                                |
 | `38823851901` | `a620ff9` | **all four jobs ✅** (fix); integration 51 files / 775 tests incl. every extension, custom-\*, owner, m10c–m10e migration suite |
 
-| VM  | Mutation (throwaway branch off `a620ff9`)                        | Guarding test that failed                                                                          | PR  | Run           | Result |
-| --- | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | --- | ------------- | ------ |
-| VM1 | publish skips owner rows (no claim / release)                    | `custom-object-owner` control, race (2 fulfilled), release / audit, no deadlock                    | 111 | `38824469658` | killed |
-| VM2 | primary key `(tenant_id, object_key)` dropped (non-unique index) | `custom-object-owner` race (2 fulfilled); `migrations-m10d-owner` "one owner per (tenant, object)" | 112 | `38824471823` | killed |
-| VM3 | claim sort removed (document order)                              | `custom-object-owner` no deadlock (loser got `P2034` deadlock instead of the Q14 refusal)          | 113 | `38824476583` | killed |
-| VM4 | `CustomRecordWriter` owner check removed                         | `custom-records` "tech debt #83 (Q14)" (non-owner write `created`)                                 | 114 | `38824480175` | killed |
+| VM  | Mutation (throwaway branch off `a620ff9`)                        | Guarding test that failed                                                                                                                                                  | PR  | Run           | Result |
+| --- | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --- | ------------- | ------ |
+| VM1 | publish skips owner rows (no claim / release)                    | `custom-object-owner` control, race (2 fulfilled), release / audit, no deadlock                                                                                            | 111 | `38824469658` | killed |
+| VM2 | primary key `(tenant_id, object_key)` dropped (non-unique index) | `custom-object-owner` race (2 fulfilled); `migrations-m10d-owner` "one owner per (tenant, object)"                                                                         | 112 | `38824471823` | killed |
+| VM3 | claim sort removed (document order)                              | `custom-object-owner` no deadlock (loser got `P2034` deadlock instead of the Q14 refusal)                                                                                  | 113 | `38824476583` | killed |
+| VM4 | `CustomRecordWriter` owner check removed                         | `custom-records` "tech debt #83 (Q14)" (non-owner write `created`)                                                                                                         | 114 | `38824480175` | killed |
+| VM5 | writer owner row read without `FOR SHARE` (off `4f740b1`)        | `custom-object-owner` "stale writer" writer first: the retire committed while the owner write was in flight; release first: the stale owner write finished without waiting | 118 | `38830363220` | killed |
 
-All four PRs closed unmerged and their branches deleted (verified with `git ls-remote`). No survivors.
+All five PRs closed unmerged and their branches deleted (verified with `git ls-remote`). No survivors.
+
+**Independent re-review (PR #110 at `c8bcd91`): PASS WITH FINDINGS — no Major.** All six acceptance criteria met
+(race reproduced with two independent sessions; PK-enforced single owner on every path; sound lock order, no deadlock
+path; VM1–VM4 meaningful; migration / down-script / Prisma parity correct; not closed on app validation alone).
+Findings and resolution:
+
+| Finding                                                                         | Severity | Resolution                                                                                                                                        |
+| ------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| m1 writer `FOR SHARE` (stale-writer guarantee) untested; that mutation survived | minor    | **fixed (`7fc3001`):** two barrier tests ("stale writer", both orders, waits proven in `pg_locks`); VM5 (`FOR SHARE` removed) killed              |
+| m2 no runtime parity check between held owner rows and published mappings       | minor    | **fixed (`4f740b1`):** integrity check 32 `custom_object_owner_drift` (down-script's two queries), clean → pass, planted drift reported both ways |
+| n1 lock-wait count was cluster-wide                                             | nit      | fixed (`7fc3001`): scoped to the test's own sessions (`pg_blocking_pids`)                                                                         |
+| n2 FK violation during claim escaped as a raw DB error                          | nit      | fixed (`4f740b1`): mapped to `mapping_invalid` / `invalid_entity` (no test: unreachable after validation in the same transaction)                 |
+| n3 guard trigger is not an authorization boundary                               | nit      | fixed: ADR 0030 addendum §1 sentence                                                                                                              |
+| n4 `plantCustomObjectOwners` interpolated SQL / replica mode                    | nit      | not changed (test-only, inputs sanitised / DB-generated); left as is                                                                              |
+| n5 writer does not compare `provenance.mappingVersion` with the owner's version | nit      | not changed: same pre-#83 semantics for every entity, not a Q14 issue                                                                             |
+
+Final CI for the re-review head is recorded on PR #110 (all four jobs).
 
 ## Known gaps / judgment calls
 
